@@ -37,8 +37,10 @@ struct OwnedShader {
 
 // XenosRecomp's dxc-bin, relative to the working directory (the checkout):
 // SPIR-V everywhere, and DXIL on Windows.
-#ifdef _WIN32
+#if defined(_WIN32)
 constexpr const char* default_dxc = "tools/XenosRecomp/thirdparty/dxc-bin/bin/x64/dxc.exe";
+#elif defined(__APPLE__)
+constexpr const char* default_dxc = "tools/XenosRecomp/thirdparty/dxc-bin/bin/x64/dxc-macos";
 #else
 constexpr const char* default_dxc = "tools/XenosRecomp/thirdparty/dxc-bin/bin/x64/dxc-linux";
 #endif
@@ -111,7 +113,11 @@ void run(const std::vector<fs::path>& arguments, const fs::path& log, const char
     // dxc-linux loads libdxcompiler.so from dxc-bin's lib directory (a
     // release's own: SFR_DXC_LIBRARY).
     const std::string libraries = setting("SFR_DXC_LIBRARY", "tools/XenosRecomp/thirdparty/dxc-bin/lib/x64").string();
+#ifdef __APPLE__
+    std::string command = "DYLD_LIBRARY_PATH=" + quoted(libraries) + " ";
+#else
     std::string command = "LD_LIBRARY_PATH=" + quoted(libraries) + "${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} ";
+#endif
     for (const auto& argument : arguments) command += quoted(argument.string()) + " ";
     command += "> " + quoted(log.string()) + " 2>&1";
     if (std::system(command.c_str()) != 0) {
