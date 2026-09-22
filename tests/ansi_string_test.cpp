@@ -151,9 +151,37 @@ void unicode_descriptor_counts_bytes() {
 }
 }
 
+void unicode_converts_into_a_pooled_ansi_string() {
+    sfr::GuestMemory memory;
+    memory.map(0xe0000, 0x1000);
+    const std::array<uint16_t, 4> text{u'g', u'p', 0x3042, 0};
+    for (size_t i = 0; i < text.size(); ++i) memory.store<uint16_t>(0xe0100 + 2 * i, text[i]);
+    sfr::initialize_unicode_string(memory, 0xe0200, 0xe0100);
+    require(sfr::unicode_string_to_ansi(memory, 0xe0300, 0xe0200, true) == 0, "allocating conversion succeeds");
+    require(memory.load<uint16_t>(0xe0300) == 3 && memory.load<uint16_t>(0xe0302) == 4, "ANSI length and maximum");
+    const uint32_t buffer = memory.load<uint32_t>(0xe0304);
+    require(memory.load<uint8_t>(buffer) == 'g' && memory.load<uint8_t>(buffer + 1) == 'p' &&
+            memory.load<uint8_t>(buffer + 2) == '?' && memory.load<uint8_t>(buffer + 3) == 0,
+            "ASCII copied, other characters become '?', terminated");
+    sfr::free_ansi_string(memory, 0xe0300);
+    require(memory.load<uint64_t>(0xe0300) == 0, "freeing clears the descriptor");
+    require(sfr::unicode_string_to_ansi(memory, 0xe0300, 0xe0200, true) == 0 && memory.load<uint32_t>(0xe0304) == buffer,
+            "a freed buffer is reused");
+
+    // Into the caller's buffer: too small overflows, big enough converts.
+    memory.store<uint16_t>(0xe0400, 0);
+    memory.store<uint16_t>(0xe0402, 3);
+    memory.store<uint32_t>(0xe0404, 0xe0500);
+    require(sfr::unicode_string_to_ansi(memory, 0xe0400, 0xe0200, false) == 0x80000005u, "short buffer overflows");
+    memory.store<uint16_t>(0xe0402, 8);
+    require(sfr::unicode_string_to_ansi(memory, 0xe0400, 0xe0200, false) == 0 && memory.load<uint8_t>(0xe0500) == 'g',
+            "caller's buffer receives the text");
+}
+
 int main() {
     try {
         unicode_descriptor_counts_bytes();
+        unicode_converts_into_a_pooled_ansi_string();
         exact_descriptor_aliases_and_preserves_source();
         null_and_non_null_empty_are_distinct();
         nul_at_last_mapped_byte_succeeds();

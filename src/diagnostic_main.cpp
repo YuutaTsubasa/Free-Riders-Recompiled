@@ -1046,6 +1046,14 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         initialize_unicode_string(*active_memory, ctx.r3.u32, ctx.r4.u32);
         return;
     }
+    if (address == 0x82ACC42C && std::string_view(name) == "__imp__RtlUnicodeStringToAnsiString" && active_memory) {
+        ctx.r3.u64 = unicode_string_to_ansi(*active_memory, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32 & 0xFF);
+        return;
+    }
+    if (address == 0x82ACC41C && std::string_view(name) == "__imp__RtlFreeAnsiString" && active_memory) {
+        free_ansi_string(*active_memory, ctx.r3.u32);
+        return;
+    }
     if (address == 0x82ACB6DC && std::string_view(name) == "__imp__MmQueryAddressProtect" &&
         virtual_memory && physical_memory && image_protection) {
         const uint32_t queried_address = ctx.r3.u32;
@@ -3077,6 +3085,17 @@ int main(int argc, char** argv) {
     std::setvbuf(stderr, trace_buffer, _IOFBF, sizeof trace_buffer);
     std::cerr.unsetf(std::ios::unitbuf);
     struct TraceFlush { ~TraceFlush() { std::cerr.flush(); std::fflush(stderr); } } trace_flush;
+    // A hang reports nothing, so the buffer is also written out twice a
+    // second: a stuck game's log ends where it stopped (stdio locks the stream).
+    std::jthread trace_flusher([](std::stop_token stop) {
+        std::mutex mutex;
+        std::condition_variable_any wake;
+        std::unique_lock lock(mutex);
+        while (!stop.stop_requested()) {
+            wake.wait_for(lock, stop, std::chrono::milliseconds(500), [] { return false; });
+            std::fflush(stderr);
+        }
+    });
     PPCContext ctx{};
     if (std::getenv("SFR_FUNCTION_TRACE"))
         sfr::entered_functions = std::make_unique<std::atomic<uint32_t>[]>((sfr::trace_limit - sfr::trace_base) / 4 / 32);

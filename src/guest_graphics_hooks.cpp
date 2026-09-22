@@ -398,6 +398,27 @@ SFR_HOOK(sub_824E65A0) {
     frame_index_cycles=frame_gather_cycles=0;
     frame_constants_ms=frame_record_ms=frame_draw_ms=0;
     ++sfr::present_count;
+    // SFR_MEMORY_DUMP=P1,P2,... (investigation): at those presents, every
+    // readable guest page from 0x40000000 to 0x90000000 (heaps, stacks, the
+    // image's data) goes to out/memdump-P.bin as (big-endian u32 address,
+    // 4096 bytes) records, for finding game state by comparing dumps.
+    static const std::vector<uint32_t> dumps=[]{
+        std::vector<uint32_t> at;
+        if(const char* t=std::getenv("SFR_MEMORY_DUMP"))
+            for(const char* p=t; *p; ) { char* end; at.push_back(uint32_t(std::strtoul(p,&end,10))); p=*end?end+1:end; }
+        return at;
+    }();
+    if(!dumps.empty() && std::find(dumps.begin(),dumps.end(),sfr::present_count.load())!=dumps.end()) {
+        const auto& memory=*sfr::active_memory;
+        std::ofstream out("out/memdump-"+std::to_string(sfr::present_count.load())+".bin",std::ios::binary);
+        for(uint64_t page=0x40000000; page<0x90000000; page+=4096) {
+            if(!memory.readable(page,4096)) continue;
+            const uint8_t address[4]={uint8_t(page>>24),uint8_t(page>>16),uint8_t(page>>8),uint8_t(page)};
+            out.write(reinterpret_cast<const char*>(address),4);
+            out.write(reinterpret_cast<const char*>(memory.base()+page),4096);
+        }
+        std::cerr<<"MEMORY_DUMP present="<<sfr::present_count.load()<<'\n';
+    }
     // SFR_PRESENT_LIMIT=N ends the run after N presents (debugging aid).
     static const uint32_t limit=[]{ const char* t=std::getenv("SFR_PRESENT_LIMIT"); return t?uint32_t(std::strtoul(t,nullptr,10)):0u; }();
     if(limit && sfr::present_count>=limit)
