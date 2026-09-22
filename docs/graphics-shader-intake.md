@@ -41,6 +41,8 @@ The ignored harness compiles the unmodified pinned `shader_recompiler.cpp` and a
 ./out/shader-intake-build.ps1
 ./out/shader-intake-harness.exe out/shader-intake-vertex.bin out/shader-intake-vertex.hlsl out/shader-intake-upstream/shader_common.h
 ./out/shader-intake-harness.exe out/shader-intake-pixel.bin out/shader-intake-pixel.hlsl out/shader-intake-upstream/shader_common.h
+# Historical: this investigation used the Windows SDK's DXC; the project now
+# uses tools/XenosRecomp/thirdparty/dxc-bin/bin/x64/dxc.exe everywhere.
 $shaderDxc = 'C:/Program Files (x86)/Windows Kits/10/bin/10.0.26100.0/x64/dxc.exe'
 & $shaderDxc -T lib_6_3 -HV 2021 -all-resources-bound -Wno-ignored-attributes -Qstrip_reflect -Qstrip_debug -Fo out/shader-intake-vertex.dxil out/shader-intake-vertex.hlsl
 & $shaderDxc -T lib_6_3 -HV 2021 -all-resources-bound -Wno-ignored-attributes -Qstrip_reflect -Qstrip_debug -Fo out/shader-intake-pixel.dxil out/shader-intake-pixel.hlsl

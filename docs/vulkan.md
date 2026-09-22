@@ -32,7 +32,7 @@ XenosRecomp 翻譯出的 HLSL 本來就有 SPIR-V 分支：常數透過 push con
 在 Vulkan 上設定在管線上，不需要 D3D12 那樣用 DXC 連結。模板參考值 Vulkan 也存在管線裡，
 不需要 D3D12 的 `OMSetStencilRef` 補丁。
 
-執行期快取（`out/shaders/runtime/v5-*`）在 Vulkan 上從已翻譯的 `shader.hlsl` 產生
+執行期快取（`out/shaders/runtime/v6-*`）在 Vulkan 上從已翻譯的 `shader.hlsl` 產生
 `shader.vulkan.hlsl` 與 `shader.spv`，用的是 XenosRecomp 釘選的 dxc-bin（Windows SDK 的 DXC 沒有
 SPIR-V 輸出）；DXIL 那一步在 Vulkan 上略過，所以 Vulkan 版執行時不需要 Windows SDK。
 SPIR-V 編譯失敗不寫入 `untranslatable.txt`，因為 D3D12 共用同一個資料夾。

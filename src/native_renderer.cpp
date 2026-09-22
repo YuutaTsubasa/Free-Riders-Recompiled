@@ -14,6 +14,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <map>
 #include <optional>
@@ -62,12 +63,14 @@ uint64_t content_hash(const uint8_t* data, uint64_t size) {
 
 #ifdef _WIN32
 // Links XenosRecomp pixel-shader libraries with their specialization constants
-// using the DXC that built the shader cache: the Windows SDK's in a checkout,
-// a release's own in SFR_DXC_LIBRARY (the directory holding dxcompiler.dll).
+// using the DXC that built the shader cache (DXC links no libraries of another
+// version): XenosRecomp's dxc-bin in the checkout (the working directory), a
+// release's own copy in SFR_DXC_LIBRARY (the directory holding dxcompiler.dll).
 class DxcLinker {
 public:
     DxcLinker() {
-        std::wstring directory = L"C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.26100.0\\x64\\";
+        std::wstring directory =
+            (std::filesystem::current_path() / L"tools\\XenosRecomp\\thirdparty\\dxc-bin\\bin\\x64\\").wstring();
         if (const wchar_t* chosen = _wgetenv(L"SFR_DXC_LIBRARY"); chosen && *chosen)
             directory = std::wstring(chosen) + L"\\";
         // dxcompiler loads dxil.dll by name for signing; load it first from the same directory.

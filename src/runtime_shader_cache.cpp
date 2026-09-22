@@ -35,11 +35,12 @@ struct OwnedShader {
     throw RuntimeStop("runtime-shader", 0, reason);
 }
 
-// XenosRecomp's dxc-bin, relative to the working directory (the checkout).
+// XenosRecomp's dxc-bin, relative to the working directory (the checkout):
+// SPIR-V everywhere, and DXIL on Windows.
 #ifdef _WIN32
-constexpr const char* default_spirv_compiler = "tools/XenosRecomp/thirdparty/dxc-bin/bin/x64/dxc.exe";
+constexpr const char* default_dxc = "tools/XenosRecomp/thirdparty/dxc-bin/bin/x64/dxc.exe";
 #else
-constexpr const char* default_spirv_compiler = "tools/XenosRecomp/thirdparty/dxc-bin/bin/x64/dxc-linux";
+constexpr const char* default_dxc = "tools/XenosRecomp/thirdparty/dxc-bin/bin/x64/dxc-linux";
 #endif
 
 fs::path setting(const char* name, const char* fallback) {
@@ -266,8 +267,9 @@ const ShaderCacheEntry& runtime_shader(ShaderStage stage, std::span<const uint8_
     // TEXCOORD4-7 vertex elements before translation; "v4" declares the
     // skinning palette fetches the vertex declaration leaves out and the
     // loop constants the title sets at draw time; "v5" renames TEXCOORD8-12
-    // as well and drops repeated declarations of one input.
-    std::snprintf(name, sizeof name, "v5-%016llx-%zu", static_cast<unsigned long long>(hash), source.size());
+    // as well and drops repeated declarations of one input; "v6" compiles the
+    // DXIL with dxc-bin (not the Windows SDK's DXC), whose linker the game uses.
+    std::snprintf(name, sizeof name, "v6-%016llx-%zu", static_cast<unsigned long long>(hash), source.size());
     const fs::path folder = setting("SFR_RUNTIME_SHADER_CACHE", "out/shaders/runtime") / name;
     const fs::path original = folder / "original.bin", hlsl = folder / "shader.hlsl",
                    dxil = folder / "shader.dxil", mask_file = folder / "specialization_mask.txt",
@@ -331,7 +333,7 @@ const ShaderCacheEntry& runtime_shader(ShaderStage stage, std::span<const uint8_
         if (vertex_reported != (stage == ShaderStage::vertex)) failed("translator stage differs from container stage");
         if (!vulkan) {
         // Same profile as scripts/prepare_shaders.py: specialized shaders stay libraries.
-        std::vector<fs::path> compile{setting("SFR_DXC", "C:/Program Files (x86)/Windows Kits/10/bin/10.0.26100.0/x64/dxc.exe")};
+        std::vector<fs::path> compile{setting("SFR_DXC", default_dxc)};
         if (mask) {
             compile.insert(compile.end(), {"-T", "lib_6_3"});
         } else {
@@ -357,7 +359,7 @@ const ShaderCacheEntry& runtime_shader(ShaderStage stage, std::span<const uint8_
             if (!text) failed("translated shader lacks the common header's SPIR-V branch");
             const fs::path vulkan_hlsl = folder / "shader.vulkan.hlsl";
             write_file(vulkan_hlsl, std::span(reinterpret_cast<const uint8_t*>(text->data()), text->size()));
-            std::vector<fs::path> compile{setting("SFR_DXC_SPIRV", default_spirv_compiler),
+            std::vector<fs::path> compile{setting("SFR_DXC_SPIRV", default_dxc),
                                           "-T", stage == ShaderStage::vertex ? "vs_6_0" : "ps_6_0", "-E", "shaderMain",
                                           "-HV", "2021", "-all-resources-bound", "-spirv", "-fvk-use-dx-layout"};
             if (stage == ShaderStage::vertex) compile.push_back("-fvk-invert-y");  // D3D clip space to Vulkan's

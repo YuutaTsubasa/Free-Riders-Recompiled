@@ -61,7 +61,9 @@ ctest --test-dir out/build/host -R native_shaders -V
 ```
 
 The preparation defaults use `private/assets/shader/Xbox360BasicShader.fxobj`,
-SDK10.0.26100.0 DXC and `out/shaders/basic`. The generated cache contains private
+XenosRecomp's dxc-bin DXC (1.8.2407; the Windows SDK's 1.8.2502 was used until
+2026-09-22, but the game links these libraries at run time and DXC refuses to
+link libraries from another version) and `out/shaders/basic`. The generated cache contains private
 original and translated bytes; it is never committed. CMake consumes
 `out/shaders/basic/shader_cache_data.cpp` when available. A checkout without a
 prepared cache builds an empty cache and explicitly stops on the first shader

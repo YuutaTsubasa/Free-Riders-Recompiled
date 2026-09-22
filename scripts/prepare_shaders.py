@@ -32,7 +32,10 @@ TOOL_ROOT = ROOT / 'tools/XenosRecomp'
 COMMON = TOOL_ROOT / 'XenosRecomp/shader_common.h'
 UPSTREAM_NAMES = ('constant_table.h', 'shader.h', 'shader_code.h', 'shader_common.h', 'shader_recompiler.h', 'shader_recompiler.cpp', 'pch.h')
 TRANSLATOR_SOURCES = tuple('tools/XenosRecomp/XenosRecomp/' + name for name in UPSTREAM_NAMES) + ('src/shader_translate_main.cpp',)
-DXC = Path('C:/Program Files (x86)/Windows Kits/10/bin/10.0.26100.0/x64/dxc.exe')
+# XenosRecomp's pinned dxc-bin, as everywhere else: the game links these
+# libraries at run time with the same DXC (a release ships it), and DXC refuses
+# to link libraries from another version.
+DXC = ROOT / 'tools/XenosRecomp/thirdparty/dxc-bin/bin/x64/dxc.exe'
 
 
 def sha(data):
