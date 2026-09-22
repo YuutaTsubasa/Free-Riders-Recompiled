@@ -117,4 +117,7 @@ python -m unittest discover -s tests
 Tests that need the game's files skip unless their environment variables point
 at them (see `tests/`). The GitHub workflow (`.github/workflows/build.yml`)
 builds and tests everything that does not need the game on Windows and Linux,
-and the Android launcher libraries.
+and the Android launcher libraries. It also checks that the runtime and
+launcher build on macOS (Apple Silicon, Homebrew LLVM and SDL2); the game has
+not been run on a Mac yet, and the tests that map guest memory are left out
+there because they need 4 KiB host pages.
