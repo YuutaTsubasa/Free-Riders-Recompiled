@@ -683,13 +683,14 @@ static const std::chrono::milliseconds resumer_wait{[] {
     const char* text = std::getenv("SFR_RESUMER_WAIT_MS");
     return text ? std::strtol(text, nullptr, 10) : 20L;
 }()};
-// The thread entries that wait: the title's job workers, whose first job can
-// be one its resumer is still constructing. SFR_RESUMER_WAIT_WORKERS=hex,...
-// replaces the list, "all" makes every started thread wait (which costs about
-// a second of the title's start) and an empty value turns the wait off.
+// The thread entries that wait, none by default: waiting for the resumer did
+// not stop the job races (worker 824B1E58 still took an unfinished job with
+// it, twice in two runs) and costs start time, so only the delay below is
+// kept. SFR_RESUMER_WAIT_WORKERS=hex,... names entries to try it on, "all"
+// every started thread.
 static const std::vector<uint32_t> resumer_wait_workers = [] {
     const char* text = std::getenv("SFR_RESUMER_WAIT_WORKERS");
-    if (!text) return std::vector<uint32_t>{0x823B60C0, 0x824B1E58};
+    if (!text) return std::vector<uint32_t>{};
     if (std::string_view(text) == "all") return std::vector<uint32_t>{};
     std::vector<uint32_t> entries;
     for (const char* p = text; *p; ) {
@@ -3439,6 +3440,17 @@ int main(int argc, char** argv) {
                 context->r4.u64 = state.argument;
                 return [context, &memory, &execution, state](std::stop_token stop) -> uint32_t {
                     if (stop.stop_requested()) return 0;
+                    // A console thread starts some time after it is resumed,
+                    // and the title relies on it: a job's constructor queues
+                    // the job and resumes a worker before it has filled the
+                    // job in, and a worker entering at once takes it (R6025,
+                    // about one Grand Prix load in four without this).
+                    // SFR_THREAD_START_DELAY_US=0 turns the delay off.
+                    static const auto start_delay = std::chrono::microseconds([] {
+                        const char* text = std::getenv("SFR_THREAD_START_DELAY_US");
+                        return text ? std::strtol(text, nullptr, 10) : 2000L;
+                    }());
+                    if (state.startup && start_delay.count() > 0) std::this_thread::sleep_for(start_delay);
                     std::unique_ptr<sfr::GuestExecution::Lease> permit;
                     try {
                         permit = execution.enter(state.id);
