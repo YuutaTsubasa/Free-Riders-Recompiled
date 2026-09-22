@@ -677,10 +677,34 @@ void wait_without_permit(void (*wait)(void*), void* argument) {
 // Who resumed a created-suspended thread, and how many times that resumer
 // had blocked then (GuestExecution::wait_for_block), by thread handle.
 struct ThreadResumer { uint32_t guest_id; uint64_t blocks; };
-// The worker the loaders' jobs run on (823B60C0): a job's base constructor
-// queues it and resumes one of these before the derived constructor fills in
-// the callback, which we saw as R6025 aborts and null vtables.
-static constexpr uint32_t loader_job_worker = 0x823B60C0;
+// How long a started thread waits for the guest that resumed it to block
+// (SFR_RESUMER_WAIT_MS, 0 turns the wait off).
+static const std::chrono::milliseconds resumer_wait{[] {
+    const char* text = std::getenv("SFR_RESUMER_WAIT_MS");
+    return text ? std::strtol(text, nullptr, 10) : 20L;
+}()};
+// The thread entries that wait: the title's job workers, whose first job can
+// be one its resumer is still constructing. SFR_RESUMER_WAIT_WORKERS=hex,...
+// replaces the list, "all" makes every started thread wait (which costs about
+// a second of the title's start) and an empty value turns the wait off.
+static const std::vector<uint32_t> resumer_wait_workers = [] {
+    const char* text = std::getenv("SFR_RESUMER_WAIT_WORKERS");
+    if (!text) return std::vector<uint32_t>{0x823B60C0, 0x824B1E58};
+    if (std::string_view(text) == "all") return std::vector<uint32_t>{};
+    std::vector<uint32_t> entries;
+    for (const char* p = text; *p; ) {
+        char* end;
+        const unsigned long value = std::strtoul(p, &end, 16);
+        if (end == p) break;
+        entries.push_back(uint32_t(value));
+        p = *end ? end + 1 : end;
+    }
+    return entries;
+}();
+static const bool resumer_wait_all = [] {
+    const char* text = std::getenv("SFR_RESUMER_WAIT_WORKERS");
+    return text && std::string_view(text) == "all";
+}();
 static std::mutex thread_resumers_lock;
 static std::unordered_map<uint32_t, ThreadResumer> thread_resumers;
 
@@ -3429,14 +3453,18 @@ int main(int argc, char** argv) {
                         if (state.id < 64 && std::getenv("SFR_PROFILE_GUEST"))
                             sfr::guest_host_threads[state.id] = sfr::own_thread_handle();
 #endif
-                        // The loaders' job worker, resumed by another guest:
-                        // let that guest reach its next wait before running any
-                        // guest code, because it may still be constructing the
-                        // job this thread would take (see
-                        // GuestExecution::wait_for_block). The permit goes back
-                        // to it meanwhile. Only this worker waits: every thread
-                        // waiting cost a second of the title's start.
-                        if (state.startup && state.worker == sfr::loader_job_worker) {
+                        // Resumed by another guest: let it reach its next wait
+                        // before running any guest code, because it may still
+                        // be constructing what this thread was started for (a
+                        // job whose callback or vtable is not written yet; the
+                        // workers that take them are 823B60C0 and 824B1E58 so
+                        // far). The permit goes back to the resumer meanwhile,
+                        // and the wait is short: waiting 20 ms cost about a
+                        // second of the title's start.
+                        if (state.startup && sfr::resumer_wait.count() > 0 &&
+                            (sfr::resumer_wait_all ||
+                             std::find(sfr::resumer_wait_workers.begin(), sfr::resumer_wait_workers.end(),
+                                       state.worker) != sfr::resumer_wait_workers.end())) {
                             std::optional<sfr::ThreadResumer> resumer;
                             {
                                 std::lock_guard lock(sfr::thread_resumers_lock);
@@ -3449,7 +3477,7 @@ int main(int argc, char** argv) {
                             if (resumer && resumer->guest_id != state.id)
                                 permit->run_blocking([&](std::stop_token token) {
                                     sfr::GuestExecution::wait_for_block(resumer->guest_id, resumer->blocks,
-                                                                        std::chrono::milliseconds(20), token);
+                                                                        sfr::resumer_wait, token);
                                 });
                         }
                         const unsigned processor = memory.load<uint8_t>(uint64_t(state.pcr) + 0x10C);
