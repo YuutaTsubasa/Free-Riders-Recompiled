@@ -133,10 +133,27 @@ void readonly_destination_is_rejected_atomically() {
     require(memory.base()[0xc0000] == 0x11 && memory.base()[0xc0007] == 0x88,
             "read-only destination rejection preserves backing");
 }
+
+void unicode_descriptor_counts_bytes() {
+    sfr::GuestMemory memory;
+    memory.map(0xd0000, 0x1000);
+    constexpr uint32_t source = 0xd0100;
+    constexpr uint32_t destination = 0xd0200;
+    const std::array<uint16_t, 4> text{u'g', u'a', 0x3042, 0};
+    for (size_t i = 0; i < text.size(); ++i) memory.store<uint16_t>(source + 2 * i, text[i]);
+    sfr::initialize_unicode_string(memory, destination, source);
+    // Length 6, MaximumLength 8, Buffer 0x000d0100, big-endian.
+    const std::array<uint8_t, 8> expected{0x00, 0x06, 0x00, 0x08, 0x00, 0x0d, 0x01, 0x00};
+    require(bytes_at(memory, destination) == expected, "UNICODE_STRING counts bytes and the terminator");
+
+    sfr::initialize_unicode_string(memory, destination, 0);
+    require(bytes_at(memory, destination) == std::array<uint8_t, 8>{}, "null source produces an all-zero descriptor");
+}
 }
 
 int main() {
     try {
+        unicode_descriptor_counts_bytes();
         exact_descriptor_aliases_and_preserves_source();
         null_and_non_null_empty_are_distinct();
         nul_at_last_mapped_byte_succeeds();

@@ -1042,6 +1042,10 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
                   << " maximum_length=" << active_memory->load<uint16_t>(uint64_t(destination) + 2) << '\n';
         return;
     }
+    if (address == 0x82ACC43C && std::string_view(name) == "__imp__RtlInitUnicodeString" && active_memory) {
+        initialize_unicode_string(*active_memory, ctx.r3.u32, ctx.r4.u32);
+        return;
+    }
     if (address == 0x82ACB6DC && std::string_view(name) == "__imp__MmQueryAddressProtect" &&
         virtual_memory && physical_memory && image_protection) {
         const uint32_t queried_address = ctx.r3.u32;
