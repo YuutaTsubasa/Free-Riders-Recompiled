@@ -8,6 +8,7 @@
 #include <limits>
 #include <stop_token>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -226,6 +227,34 @@ void GuestExecution::Lease::checkpoint(bool allow_handoff) {
     }
 }
 
+namespace {
+std::mutex block_count_mutex;
+std::condition_variable_any block_counted;
+std::unordered_map<uint32_t, uint64_t> block_counts;
+void count_block(uint32_t guest_id) {
+    {
+        std::lock_guard lock(block_count_mutex);
+        ++block_counts[guest_id];
+    }
+    block_counted.notify_all();
+}
+}
+
+uint64_t GuestExecution::blocking_waits(uint32_t guest_id) {
+    std::lock_guard lock(block_count_mutex);
+    const auto found = block_counts.find(guest_id);
+    return found == block_counts.end() ? 0 : found->second;
+}
+
+void GuestExecution::wait_for_block(uint32_t guest_id, uint64_t after, std::chrono::milliseconds limit,
+                                    std::stop_token stop) {
+    std::unique_lock lock(block_count_mutex);
+    block_counted.wait_for(lock, stop, limit, [&] {
+        const auto found = block_counts.find(guest_id);
+        return found != block_counts.end() && found->second > after;
+    });
+}
+
 void GuestExecution::Lease::run_blocking(std::function<void(std::stop_token)> operation,
                                         std::function<void()> before_release) {
     if (!operation) throw std::logic_error("blocking guest operation is required");
@@ -252,6 +281,7 @@ void GuestExecution::Lease::run_blocking(std::function<void(std::stop_token)> op
         state_->owner_thread = {};
         state_->changed.notify_all();
     }
+    if (guest_id_ && guest_id_ <= 0xFFFFFFFFu) count_block(uint32_t(guest_id_));
 
     std::exception_ptr operation_failure;
     const auto blocked_at = std::chrono::steady_clock::now();

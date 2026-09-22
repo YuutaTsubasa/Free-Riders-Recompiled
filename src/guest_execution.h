@@ -109,6 +109,17 @@ public:
     // A stop token that fires when this execution stops, for blocking done
     // outside run_blocking (by a guest that holds only a follower's permit).
     std::stop_token stop_token() const;
+
+    // Blocking waits each guest thread has entered through any permit's
+    // run_blocking, process-wide. A thread another guest resumed first waits,
+    // without the permit, until that resumer blocks once more (or `limit`
+    // passes): the resumer may still be constructing the object the new
+    // thread works on (a job queued and its worker resumed from a base
+    // constructor), and on a console it finishes long before the new thread
+    // starts. Our permit could hand over in between.
+    static uint64_t blocking_waits(uint32_t guest_id);
+    static void wait_for_block(uint32_t guest_id, uint64_t after, std::chrono::milliseconds limit,
+                               std::stop_token stop);
     void fail(std::exception_ptr failure) noexcept;
     void stop() noexcept;
     void stop_and_drain() noexcept;
