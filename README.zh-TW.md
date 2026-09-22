@@ -8,9 +8,10 @@ Free Riders Recompiled 是以靜態重編譯製作的 Xbox 360 版《Sonic Free 
 [XenosRecomp](https://github.com/sonicnext-dev/XenosRecomp) 轉換，再由原生執行期代替主機的
 核心、繪圖、音效、輸入與 Kinect。
 
-**本專案不包含任何遊戲程式碼或素材。建置與遊玩需要你自己合法取得的遊戲（美版／歐版光碟），
-由它產生的程式碼也不得散布。** 因此沒有預先建置的版本：每個人都從自己的光碟建置遊戲
-（[建置說明](docs/building.md)，英文）。
+**本專案不包含任何遊戲素材。遊玩需要你自己合法取得的遊戲（美版／歐版光碟）：**啟動器會從
+你的光碟映像檔安裝遊戲資料。預先建置的版本在
+[Releases](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases) 頁面；想自己建置，
+見[建置說明](docs/building.md)（英文）。
 
 > [!IMPORTANT]
 > 仍在開發中。遊戲可以啟動、選單可以操作、比賽可以遊玩，但許多部分尚未測試，可能會停止或
@@ -47,7 +48,15 @@ Free Riders Recompiled 是以靜態重編譯製作的 Xbox 360 版《Sonic Free 
 - **Android**：Android 9 以上、arm64-v8a、Vulkan 1.1；安裝需約 2 GB 可用空間。
 - 建置所需工具見 [docs/building.md](docs/building.md)。
 
-## 建置與安裝
+## 安裝
+
+1. 從 [Releases](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases) 下載對應系統
+   的版本：Windows 的 zip、Linux 的 tar.gz，或 Android 的 APK。
+2. 解壓縮到一個獨立的資料夾（Android 則安裝 APK）。
+3. 執行 `FreeRidersRecompiled`，在啟動器要求時選擇你的光碟映像檔（`.iso`），它會把遊戲資料
+   複製到旁邊。然後按 **開始遊戲**。
+
+## 建置
 
 Windows 的簡短步驟：
 
@@ -99,8 +108,9 @@ Xbox 與 PlayStation 手把都能使用。Android 沒有連接手把時，畫面
 **能用 No Kinect Patch 或其他模組嗎？** 目前沒有模組支援。這裡的 Kinect 模擬是本專案自己的
 程式碼。
 
-**會提供下載嗎？** 遊戲本身不會：它的程式碼由你的光碟產生，不能分享。`.github/workflows`
-中的工作流程只建置不含任何遊戲內容的部分。
+**為什麼發布版還需要我的光碟？** 發布版只有重編譯後的程式，不含任何遊戲資料（模型、貼圖、
+聲音、影片）：這些來自你自己的光碟映像檔。`.github/workflows` 的工作流程只建置與測試不含
+遊戲內容的部分；發布版在維護者的電腦上以光碟建置（[docs/releasing.md](docs/releasing.md)）。
 
 ## 致謝
 
@@ -129,5 +139,5 @@ Xbox 與 PlayStation 手把都能使用。Android 沒有連接手把時，畫面
 
 ## 授權
 
-本專案程式碼以 GNU General Public License v3.0 或更新版本授權（[COPYING](COPYING)）。由你的
-遊戲產生的程式碼不在此授權範圍內，也不得散布。
+本專案程式碼以 GNU General Public License v3.0 或更新版本授權（[COPYING](COPYING)）。遊戲本身
+的程式與資料仍屬 SEGA，不在此授權範圍內。

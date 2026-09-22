@@ -1,10 +1,12 @@
 # Building
 
-Free Riders Recompiled is built from source on your own machine. The game's
-code is C++ generated from the `default.xex` on **your own** Sonic Free Riders
-disc; that output (and anything else derived from the disc) must stay on your
-machine and may not be redistributed. Nothing in this repository contains game
-code or data.
+This is how to build Free Riders Recompiled from source; players can use the
+[releases](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases)
+instead. The game's code is C++ generated from the `default.xex` on **your
+own** Sonic Free Riders disc. The disc's files and everything extracted from
+them stay on your machine (`private/`, `game/` and `out/` are ignored by Git);
+nothing in this repository contains game code or data. Making a release from
+such a build is described in [releasing.md](releasing.md).
 
 Supported disc: *Sonic Free Riders (USA, Europe) (En,Ja,Fr,De,Es,It)*. The
 scripts check its `default.xex` fingerprint (`config/source.json`) and refuse

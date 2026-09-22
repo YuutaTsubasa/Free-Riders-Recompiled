@@ -10,11 +10,11 @@ with [XenosRecomp](https://github.com/sonicnext-dev/XenosRecomp), then runs on
 a native runtime that stands in for the console's kernel, graphics, audio,
 input and Kinect.
 
-**This project does not include any game code or assets. You need your own
-legally acquired copy of the game (the USA/Europe disc) to build and play it,
-and the code generated from it may not be redistributed.** Because of that
-there are no prebuilt releases: everyone builds the game from their own disc
-([Building](docs/building.md)).
+**This project does not include any game assets. You need your own legally
+acquired copy of the game (the USA/Europe disc) to play it:** the launcher
+installs the game's data from your disc image. Prebuilt versions are on the
+[Releases](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases)
+page; to build it yourself, see [Building](docs/building.md).
 
 > [!IMPORTANT]
 > This is a work in progress. The game boots, its menus work and races can be
@@ -26,7 +26,8 @@ there are no prebuilt releases: everyone builds the game from their own disc
 
 - [Status](#status)
 - [System Requirements](#system-requirements)
-- [How to Build and Install](#how-to-build-and-install)
+- [How to Install](#how-to-install)
+- [How to Build](#how-to-build)
 - [Controls](#controls)
 - [FAQ](#faq)
 - [Repository Layout](#repository-layout)
@@ -70,7 +71,17 @@ with [docs/progress.md](docs/progress.md).
   for the installed game.
 - Building needs the tools listed in [docs/building.md](docs/building.md).
 
-## How to Build and Install
+## How to Install
+
+1. Download the release for your system from
+   [Releases](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases):
+   the Windows zip, the Linux tarball, or the Android APK.
+2. Unpack it into a folder of its own (on Android, install the APK).
+3. Start `FreeRidersRecompiled` and choose your disc image (`.iso`) when the
+   launcher asks; it copies the game's data beside itself. Then press
+   **Start game**.
+
+## How to Build
 
 In short, on Windows:
 
@@ -126,9 +137,11 @@ with `python scripts/pack_shaders.py` after playing on Windows.
 **Can I use the No Kinect Patch or other mods?** No mod support exists. The
 Kinect emulation here is the project's own code (see [Credits](#credits)).
 
-**Will there be downloads?** Not of the game: its code is generated from your
-disc and cannot be shared. The workflow in `.github/workflows` only builds the
-parts that contain nothing from the game.
+**Why does the release need my disc?** The release holds the recompiled
+program, but none of the game's data (models, textures, sound, movies): that
+comes from your own disc image. The workflow in `.github/workflows` builds and
+tests only the parts that contain nothing from the game; releases are built
+from a disc on the maintainer's machine ([docs/releasing.md](docs/releasing.md)).
 
 ## Repository Layout
 
@@ -181,5 +194,5 @@ endorsed by SEGA or Microsoft.
 ## License
 
 The project's code is licensed under the GNU General Public License v3.0 or
-later ([COPYING](COPYING)). Code generated from your copy of the game is not
-covered by that grant and may not be redistributed.
+later ([COPYING](COPYING)). The game's own code and data remain SEGA's and are
+not covered by that grant.
