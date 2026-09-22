@@ -20,8 +20,8 @@ jobs:
     name: Windows
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Fetch the pinned dependencies
@@ -29,14 +29,13 @@ jobs:
       - name: Build tools, runtime tests and launcher
         shell: pwsh
         run: ./scripts/build_tools.ps1 -Jobs 4
+      # The graphics tests need a D3D12 GPU (WARP lacks the features); they run
+      # on Linux against software Vulkan.
       - name: Test
         run: ctest --test-dir out/build/host -j 4 --output-on-failure -E "^(native_graphics|native_shaders|native_presentation|native_raster_state|native_blend_control|guest_graphics|guest_render_state|guest_blend_request|guest_sampler_filter|guest_texture_binding)$"
-      - name: Test the graphics backend (runners have no GPU; WARP when available)
-        continue-on-error: true
-        run: ctest --test-dir out/build/host -j 1 --output-on-failure -R "^(native_graphics|native_shaders|native_presentation|native_raster_state|native_blend_control|guest_graphics|guest_render_state|guest_blend_request|guest_sampler_filter|guest_texture_binding)$"
       - name: Python tests (game-file tests skip)
         run: python -m unittest discover -s tests
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: launcher-windows
           path: out/build/host/FreeRidersRecompiled.exe
@@ -45,8 +44,8 @@ jobs:
     name: Linux
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Install packages
@@ -61,7 +60,7 @@ jobs:
         run: xvfb-run -a ctest --test-dir out/build/linux -j 4 --output-on-failure
       - name: Python tests (game-file tests skip)
         run: python -m unittest discover -s tests
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: launcher-linux
           path: out/build/linux/FreeRidersRecompiled
@@ -70,8 +69,8 @@ jobs:
     name: Android (launcher)
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Fetch the pinned dependencies
@@ -82,7 +81,7 @@ jobs:
         run: |
           export SFR_ANDROID_NDK="$ANDROID_NDK_LATEST_HOME"
           scripts/build_android.sh --launcher-only --abi arm64-v8a --abi x86_64
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: android-launcher-libraries
           path: android/app/src/main/jniLibs
