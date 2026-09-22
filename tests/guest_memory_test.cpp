@@ -161,6 +161,29 @@ static void reservation_increment() {
     require(memory.load<uint32_t>(0x10000) == 0x12345679, "failed conditional store preserves bytes");
 }
 
+// A lock-free pop reserves the list head (A), another thread pops A and B and
+// pushes A back (A to B to A): the stale conditional store must fail even
+// though the head holds A again.
+static void reservation_detects_a_b_a() {
+    sfr::GuestMemory memory;
+    memory.map(0x10000, 8);
+    memory.store<uint32_t>(0x10000, 0xA);
+    require(memory.load_reserved_word(0x10000) == 0xA, "first thread reserves the head");
+    std::thread other([&] {
+        for (const uint32_t next : {0xBu, 0xAu}) {
+            const auto head = memory.load_reserved_word(0x10000);
+            require(memory.store_conditional_word(0x10000, next), "other thread's conditional store succeeds");
+            (void)head;
+        }
+    });
+    other.join();
+    require(memory.load<uint32_t>(0x10000) == 0xA, "the head holds A again");
+    require(!memory.store_conditional_word(0x10000, 0xC), "stale conditional store fails after A to B to A");
+    require(memory.load<uint32_t>(0x10000) == 0xA, "failed store leaves the head");
+    require(memory.load_reserved_word(0x10000) == 0xA && memory.store_conditional_word(0x10000, 0xC),
+            "a fresh reservation stores");
+}
+
 static void reservation_replacement() {
     sfr::GuestMemory memory;
     memory.map(0x10000, 8);
@@ -1342,7 +1365,7 @@ int main() {
         require(rejects([&] { memory.reserve(0x50000, 0x1000); }), "map occupies rounded host page");
         unsigned failures = 0;
         for (auto test : {computed_reads, computed_writes, provider_registration, provider_failures,
-                          reservation_increment, reservation_replacement, reservation_validation,
+                          reservation_increment, reservation_detects_a_b_a, reservation_replacement, reservation_validation,
                           reservation_interference, reservation_changed_backing,
                           reservation_independent_instances_and_top_address, reservations_belong_to_threads,
                           concurrent_reader_checks_while_layout_changes,

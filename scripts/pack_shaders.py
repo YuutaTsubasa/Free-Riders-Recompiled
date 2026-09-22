@@ -17,10 +17,24 @@ sizes, followed by those bytes.
 """
 import argparse
 import struct
+import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MAGIC = b'SFRSHPK1'
+DXC = ROOT / 'tools/XenosRecomp/thirdparty/dxc-bin/bin/x64/dxc.exe'
+
+
+def compile_dxil(folder, stage, mask):
+    """DXIL for a shader a Vulkan run translated, exactly as the runtime
+    compiles it (runtime_shader_cache.cpp) with the same dxc-bin."""
+    profile = ['-T', 'lib_6_3'] if mask else ['-T', 'vs_6_0' if stage == 0 else 'ps_6_0', '-E', 'shaderMain']
+    result = subprocess.run([str(DXC), *profile, '-HV', '2021', '-all-resources-bound', '-Wno-ignored-attributes',
+                             '-Qstrip_reflect', '-Qstrip_debug', '-Fo', str(folder / 'shader.dxil'),
+                             str(folder / 'shader.hlsl')], capture_output=True, text=True)
+    (folder / 'compile.log').write_text(result.stdout + result.stderr)
+    return read(folder / 'shader.dxil') if result.returncode == 0 else b''
 
 
 def read(path):
@@ -31,7 +45,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--cache', type=Path, default=ROOT / 'out/shaders/runtime')
     parser.add_argument('--output', type=Path, default=ROOT / 'out/shaders/shaders.pack')
+    parser.add_argument('--compile-dxil', action='store_true',
+                        help='compile the DXIL a Vulkan-only run left out (Windows: the dxc.exe of dxc-bin)')
     args = parser.parse_args()
+    if args.compile_dxil and not DXC.exists():
+        sys.exit(f'--compile-dxil needs {DXC}')
     entries = []
     for folder in sorted(args.cache.glob('v6-*')):
         source = read(folder / 'original.bin')
@@ -42,6 +60,8 @@ def main():
         if not dxil and not spirv:
             continue
         stage = 0 if struct.unpack_from('>I', source, 0)[0] & 1 else 1
+        if not dxil and args.compile_dxil and (folder / 'shader.hlsl').exists():
+            dxil = compile_dxil(folder, stage, int(mask_text))
         entries.append((stage, int(mask_text), source, dxil, spirv))
     out = bytearray(MAGIC + struct.pack('<I', len(entries)))
     for stage, mask, source, dxil, spirv in entries:

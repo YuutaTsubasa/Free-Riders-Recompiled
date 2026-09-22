@@ -23,9 +23,11 @@ struct RuntimeStop : std::runtime_error {
 // console core has its own: guest threads running at once must not see
 // each other's. Active when owner is the id of the GuestMemory it was made
 // in (never 0; ids are not reused, unlike addresses of destroyed instances).
+// version is the reservation stripe's count of successful conditional stores
+// when the reservation was made (see guest_memory.cpp).
 struct GuestReservation {
     uint64_t owner = 0;
-    uint64_t address = 0, value = 0;
+    uint64_t address = 0, value = 0, version = 0;
     uint8_t size = 0;
 };
 inline thread_local GuestReservation guest_reservation;

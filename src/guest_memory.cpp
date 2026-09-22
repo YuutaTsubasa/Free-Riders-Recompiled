@@ -738,6 +738,36 @@ void GuestMemory::rebuild_fast_pages(uint64_t begin, uint64_t size) {
         if ((watched_pages_[page] & 1) && fast_pages_[page]) fast_pages_[page] |= fast_watched;
 }
 
+namespace {
+// A conditional store must fail if the reserved word was stored to since the
+// reserved load, even when it holds the same value again: lock-free lists
+// pop a node, free it and push it back (A to B to A), and a stale store that
+// only compares values then links a freed node (seen as R6025 pure virtual
+// calls when guest threads run in parallel). Reserved addresses hash to
+// stripes, each with a lock and a count of the conditional stores made
+// under it; a reservation remembers the count, and a conditional store
+// succeeds only while it is unchanged. Unrelated words sharing a stripe can
+// make a store fail spuriously, which PowerPC allows (the guest retries).
+constexpr size_t reservation_stripe_count = 1024;
+struct alignas(64) ReservationStripe {
+    std::atomic<bool> busy{false};
+    uint64_t version = 0;
+};
+ReservationStripe reservation_stripes[reservation_stripe_count];
+
+class StripeLock {
+public:
+    explicit StripeLock(uint64_t address) : stripe_(reservation_stripes[(address >> 3) % reservation_stripe_count]) {
+        while (stripe_.busy.exchange(true, std::memory_order_acquire))
+            while (stripe_.busy.load(std::memory_order_relaxed)) {}
+    }
+    ~StripeLock() { stripe_.busy.store(false, std::memory_order_release); }
+    uint64_t& version() { return stripe_.version; }
+private:
+    ReservationStripe& stripe_;
+};
+}
+
 uint32_t GuestMemory::load_reserved_word(uint64_t address) {
     if (address % 4)
         throw RuntimeStop("memory-alignment", address, "reserved word load requires four-byte alignment");
@@ -746,8 +776,9 @@ uint32_t GuestMemory::load_reserved_word(uint64_t address) {
     check_store_access(address, 4);
     if (intersects_write_combined(address, 4))
         throw RuntimeStop("memory-cache", address, "reserved word load does not support write-combined memory");
+    StripeLock lock(address);
     const auto value = load<uint32_t>(address);
-    guest_reservation = {reservation_owner_, address, value, 4};
+    guest_reservation = {reservation_owner_, address, value, lock.version(), 4};
     return value;
 }
 
@@ -765,13 +796,17 @@ bool GuestMemory::store_conditional_word(uint64_t address, uint32_t value) {
         throw RuntimeStop("reservation-width", address,
                           "conditional word store differs from reserved access width");
     reservation.owner = 0;
-    // Succeeds only if the word still holds what the reserved load read, as
-    // one atomic step: another host thread may be running guest code too.
-    // The access checks above already marked the page written.
+    // Succeeds only if no conditional store reached the stripe since the
+    // reserved load and the word still holds what it read (an ordinary store
+    // may have changed it), as one atomic step. The access checks above
+    // already marked the page written.
+    StripeLock lock(address);
+    if (lock.version() != reservation.version) return false;
     uint32_t expected = __builtin_bswap32(uint32_t(reservation.value));
     if (!std::atomic_ref<uint32_t>(*reinterpret_cast<uint32_t*>(base_ + address))
              .compare_exchange_strong(expected, __builtin_bswap32(value)))
         return false;
+    ++lock.version();
     return true;
 }
 
@@ -783,8 +818,9 @@ uint64_t GuestMemory::load_reserved_doubleword(uint64_t address) {
     if (intersects_write_combined(address, 8))
         throw RuntimeStop("memory-cache", address,
                           "reserved doubleword load does not support write-combined memory");
+    StripeLock lock(address);
     const auto value = load<uint64_t>(address);
-    guest_reservation = {reservation_owner_, address, value, 8};
+    guest_reservation = {reservation_owner_, address, value, lock.version(), 8};
     return value;
 }
 
@@ -805,10 +841,13 @@ bool GuestMemory::store_conditional_doubleword(uint64_t address, uint64_t value)
         throw RuntimeStop("reservation-width", address,
                           "conditional doubleword store differs from reserved access width");
     reservation.owner = 0;
+    StripeLock lock(address);
+    if (lock.version() != reservation.version) return false;
     uint64_t expected = __builtin_bswap64(reservation.value);
     if (!std::atomic_ref<uint64_t>(*reinterpret_cast<uint64_t*>(base_ + address))
              .compare_exchange_strong(expected, __builtin_bswap64(value)))
         return false;
+    ++lock.version();
     return true;
 }
 

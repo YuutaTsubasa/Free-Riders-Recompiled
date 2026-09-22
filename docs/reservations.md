@@ -2,6 +2,16 @@
 
 Historical word-only checkpoint. Current serialized 32/64-bit profile: [doubleword reservations](doubleword-reservations.md).
 
+> Update (2026-09-22): with guest threads running in parallel, a conditional
+> store that only compared values let lock-free lists succeed after an
+> A-to-B-to-A change and link freed nodes, which surfaced as R6025 "pure
+> virtual function call" aborts while Grand Prix loaded (`gp03`). Reserved
+> addresses now hash to 1024 stripes, each with a lock and a count of its
+> successful conditional stores; a reservation records the count and a
+> conditional store succeeds only while it is unchanged (and the word still
+> holds the reserved value). Unrelated words sharing a stripe can fail a store
+> spuriously, which PowerPC permits. See `src/guest_memory.cpp`.
+
 The diagnostic provides a bounded implementation of the `lwarx / stwcx.` pair. IBM's [lwarx reference](https://www.ibm.com/docs/en/aix/7.3.0?topic=set-lwarx-load-word-reserve-indexed-instruction) describes the indexed word load and reservation; [stwcx.](https://www.ibm.com/docs/en/aix/7.1.0?topic=set-stwcx-store-word-conditional-indexed-instruction) describes conditional storage, reservation clearing, alignment and CR0 effects. When RA is zero, the effective address uses RB alone; otherwise this diagnostic uses the32-bit sum. It validates the complete four-byte access.
 
 One reservation belongs to the one supported guest thread. A successful checked load records address and value; a later successful reserve replaces it. Failed loads leave the preceding reservation unchanged. Conditional store with no reservation returnsfalse; a matching live reservation is consumed and the new big-endian word is stored. An unexpected changed backing value consumes the reservation and returnsfalse. Mismatched reserved/store addresses stop with `reservation-address`. Invalid alignment, mapped-range or permission checks stop before changing bytes or reservation state. Computed read-only fields are never eligible and their providers are not sampled.

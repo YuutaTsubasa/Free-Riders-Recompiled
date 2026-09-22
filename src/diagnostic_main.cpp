@@ -3351,6 +3351,18 @@ int main(int argc, char** argv) {
                 context->r4.u64 = state.argument;
                 return [context, &memory, &execution, state](std::stop_token stop) -> uint32_t {
                     if (stop.stop_requested()) return 0;
+                    // A console thread starts some time after it is resumed.
+                    // The title relies on it: a loader job's base constructor
+                    // queues the job and resumes a worker (823B60C0) before
+                    // the derived constructor sets its vtable, and a worker
+                    // entering at once called the pure method (R6025) about
+                    // one Grand Prix load in four. SFR_THREAD_START_DELAY_US
+                    // (default 2000) sets the delay; 0 turns it off.
+                    static const auto start_delay = std::chrono::microseconds([] {
+                        const char* text = std::getenv("SFR_THREAD_START_DELAY_US");
+                        return text ? std::strtol(text, nullptr, 10) : 2000L;
+                    }());
+                    if (state.startup && start_delay.count() > 0) std::this_thread::sleep_for(start_delay);
                     std::unique_ptr<sfr::GuestExecution::Lease> permit;
                     try {
                         permit = execution.enter(state.id);
