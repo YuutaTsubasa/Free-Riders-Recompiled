@@ -364,6 +364,12 @@ if(WIN32 OR UNIX)
         set(SDL_VULKAN_ENABLED ON CACHE BOOL "" FORCE)  # Plume draws into an SDL window
     endif()
     add_subdirectory(tools/Plume)
+    if(APPLE)
+        # Plume's Apple glue asks IOKit for the GPU vendor and uses Metal and
+        # Cocoa objects; its own CMake leaves linking them to the user.
+        target_link_libraries(plume PUBLIC "-framework CoreFoundation" "-framework IOKit" "-framework Foundation"
+            "-framework Metal" "-framework QuartzCore" "-framework AppKit" objc)
+    endif()
     if(NOT WIN32 AND SDL2_VERSION VERSION_LESS 2.26)
         # Plume asks SDL for the drawable size by the name SDL 2.26 gave it;
         # older SDL2 has the same call as SDL_Vulkan_GetDrawableSize.
