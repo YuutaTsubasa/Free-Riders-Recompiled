@@ -56,7 +56,7 @@ class NativeBootTests(unittest.TestCase):
                          rf'offset=0x7ee0 handle={listener[1]}\n')
         for index in range(4):
             query = result.stderr.index(f'NATIVE_USER_SIGNIN index={index} state=0 lr=0x822344d8 '
-                                        'backend=unselected-game-users\n')
+                                        'backend=local-profile\n')
             reset = re.search(rf'ORIGINAL_UNSELECTED_USER index={index} record=0x[0-9a-f]+ '
                               r'state=0 selected=-1 names_cleared=1 profile_cleared=1 reset_virtual=0x82234ec0\n',
                               result.stderr)

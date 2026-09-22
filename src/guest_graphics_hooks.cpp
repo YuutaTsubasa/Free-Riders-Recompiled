@@ -419,6 +419,29 @@ SFR_HOOK(sub_824E65A0) {
         }
         std::cerr<<"MEMORY_DUMP present="<<sfr::present_count.load()<<'\n';
     }
+    // SFR_POKE=addr=value@present,... (testing): stores the big-endian word at
+    // the hex guest address when that present is reached, e.g. to fill a
+    // mission's ring counter so a scripted Grand Prix can go on.
+    struct Poke { uint32_t address, value, present; };
+    static const std::vector<Poke> pokes=[]{
+        std::vector<Poke> list;
+        if(const char* t=std::getenv("SFR_POKE"))
+            for(const char* p=t; *p; ) {
+                char* end;
+                Poke poke{};
+                poke.address=uint32_t(std::strtoul(p,&end,16)); if(*end!='=') break;
+                poke.value=uint32_t(std::strtoul(end+1,&end,10)); if(*end!='@') break;
+                poke.present=uint32_t(std::strtoul(end+1,&end,10));
+                list.push_back(poke);
+                p=*end?end+1:end;
+            }
+        return list;
+    }();
+    for(const auto& poke:pokes)
+        if(poke.present==sfr::present_count.load() && sfr::active_memory->readable(poke.address,4)) {
+            sfr::active_memory->store<uint32_t>(poke.address,poke.value);
+            std::cerr<<"POKE address=0x"<<std::hex<<poke.address<<std::dec<<" value="<<poke.value<<'\n';
+        }
     // SFR_PRESENT_LIMIT=N ends the run after N presents (debugging aid).
     static const uint32_t limit=[]{ const char* t=std::getenv("SFR_PRESENT_LIMIT"); return t?uint32_t(std::strtoul(t,nullptr,10)):0u; }();
     if(limit && sfr::present_count>=limit)

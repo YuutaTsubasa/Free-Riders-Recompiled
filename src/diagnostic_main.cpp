@@ -38,6 +38,9 @@
 #include "native_formats.h"
 #include "native_renderer.h"
 #include "runtime_shader_cache.h"
+#if defined(__SSSE3__)
+#include <immintrin.h>
+#endif
 #include "native_shaders.h"
 #include "asset_files.h"
 #include "guest_files.h"
@@ -533,8 +536,26 @@ void store_conditional_doubleword(PPCContext& ctx, uint64_t address, uint64_t va
         std::cerr << "STORE_CONDITIONAL_DOUBLEWORD address=0x" << std::hex << address << " value=0x" << value
                   << " success=" << std::dec << success << '\n';
 }
+// The sixteen bytes of an aligned vector reversed (the register holds byte 15
+// of memory in element 0), in one shuffle where SSSE3 exists.
+static inline void reverse_vector(const uint8_t* from, uint8_t* to) {
+#if defined(__SSSE3__)
+    const __m128i order = _mm_setr_epi8(15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0);
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(to),
+                     _mm_shuffle_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(from)), order));
+#else
+    for (unsigned i = 0; i < 16; ++i) to[i] = from[15 - i];
+#endif
+}
 void load_vector_memory(uint32_t address, uint8_t (&destination)[16]) {
     if (!active_memory) throw RuntimeStop("memory-context", address, "guest memory is not initialized");
+    // Common case inline: an aligned vector in one fast page.
+    if (const uint8_t* bytes = active_memory->fast_read(address & ~0xFu, 16)) {
+        reverse_vector(bytes, destination);
+        if (vector_loads < 4 && ++vector_loads)
+            std::cerr << "VECTOR_LOAD address=0x" << std::hex << (address & ~0xFu) << std::dec << '\n';
+        return;
+    }
     const auto value = load_vector_memory(*active_memory, address);
     std::copy(value.begin(), value.end(), destination);
     if (++vector_loads <= 4)
@@ -542,6 +563,12 @@ void load_vector_memory(uint32_t address, uint8_t (&destination)[16]) {
 }
 void store_vector_memory(uint32_t address, const uint8_t (&source)[16]) {
     if (!active_memory) throw RuntimeStop("memory-context", address, "guest memory is not initialized");
+    if (uint8_t* bytes = active_memory->fast_write(address & ~0xFu, 16)) {
+        reverse_vector(source, bytes);
+        if (vector_stores < 4 && ++vector_stores)
+            std::cerr << "VECTOR_STORE address=0x" << std::hex << (address & ~0xFu) << std::dec << '\n';
+        return;
+    }
     VectorBytes value;
     std::copy(std::begin(source), std::end(source), value.begin());
     store_vector_memory(*active_memory, address, value);
