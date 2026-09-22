@@ -8,9 +8,15 @@ import android.graphics.Paint;
 import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.net.Uri;
+import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
 import android.provider.OpenableColumns;
 import android.util.Log;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import org.libsdl.app.SDLActivity;
@@ -21,6 +27,50 @@ import org.libsdl.app.SDLActivity;
 // settings while its library loads.
 public class LauncherActivity extends SDLActivity {
     private static final int PICK_DOCUMENT = 1;
+
+    @Override
+    protected void onCreate(Bundle state) {
+        copyBundledShaderPack();
+        super.onCreate(state);
+    }
+
+    // A release APK carries shaders.pack (scripts/package_android.py --pack).
+    // It is copied beside the launcher's files when there is none, or when
+    // the one there came from an older APK; a pack the player chose stays.
+    private void copyBundledShaderPack() {
+        File directory = getExternalFilesDir(null);
+        if (directory == null) return;
+        File pack = new File(directory, "shaders.pack");
+        File marker = new File(directory, "shaders.pack.bundled");
+        String version;
+        try {
+            version = Long.toString(getPackageManager().getPackageInfo(getPackageName(), 0).lastUpdateTime);
+        } catch (Exception error) {
+            return;
+        }
+        String copied = "";
+        try (InputStream in = new FileInputStream(marker)) {
+            byte[] text = new byte[64];
+            int length = Math.max(in.read(text), 0);
+            copied = new String(text, 0, length, "UTF-8");
+        } catch (Exception missing) {
+            // no marker: the pack (if any) is the player's own
+        }
+        if (pack.exists() && (!marker.exists() || copied.equals(version))) return;
+        File partial = new File(directory, "shaders.pack.partial");
+        try (InputStream in = getAssets().open("shaders.pack"); OutputStream out = new FileOutputStream(partial)) {
+            byte[] buffer = new byte[1 << 16];
+            for (int read; (read = in.read(buffer)) > 0; ) out.write(buffer, 0, read);
+        } catch (Exception error) {
+            partial.delete();
+            return;  // an APK without a bundled pack
+        }
+        if (!partial.renameTo(pack)) return;
+        try (OutputStream out = new FileOutputStream(marker)) {
+            out.write(version.getBytes("UTF-8"));
+        } catch (Exception ignored) {
+        }
+    }
 
     @Override
     protected String[] getLibraries() {

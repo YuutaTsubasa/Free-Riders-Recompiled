@@ -6,7 +6,7 @@ Android SDK (build-tools, a platform) and a JDK are used, so nothing is
 downloaded. The APK is signed with the local debug key (~/.android/debug.keystore,
 created with the standard debug-key settings when missing).
 
-Usage: python scripts/package_android.py [--output out/android/FreeRidersRecompiled.apk] [--abi ABI]...
+Usage: python scripts/package_android.py [--output out/android/FreeRidersRecompiled.apk] [--abi ABI]... [--pack FILE]
 """
 import argparse
 import os
@@ -63,6 +63,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--output', default=str(ROOT / 'out' / 'android' / 'FreeRidersRecompiled.apk'))
     parser.add_argument('--abi', action='append', help='only these ABIs (default: every built one)')
+    parser.add_argument('--pack', help='a shaders.pack to carry as an asset (LauncherActivity copies it out)')
     args = parser.parse_args()
 
     sdk = sdk_root()
@@ -107,6 +108,8 @@ def main():
         for abi in abis:
             for library in sorted((libraries / abi).glob('*.so')):
                 apk.write(library, 'lib/%s/%s' % (abi, library.name), compress_type=zipfile.ZIP_STORED)
+        if args.pack:
+            apk.write(args.pack, 'assets/shaders.pack', compress_type=zipfile.ZIP_DEFLATED)
     aligned = work / 'aligned.apk'
     run(tool(build_tools, 'zipalign'), '-f', '-P', '16', '4', unsigned, aligned)
 

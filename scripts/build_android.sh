@@ -3,6 +3,7 @@
 # NDK, then packages the APK (scripts/package_android.py, offline). Run python
 # scripts/bootstrap.py first and generate the game code (README).
 # Usage: scripts/build_android.sh [--diagnostic DIR] [--abi x86_64|arm64-v8a]... [--no-apk] [--launcher-only]
+#        [--pack shaders.pack] (carried in the APK; the launcher copies it out)
 # --launcher-only builds the launcher and SDL without the game (no generated
 # code needed, no APK; what the CI does).
 # Environment: ANDROID_HOME (default ~/AppData/Local/Android/Sdk on Windows,
@@ -14,12 +15,14 @@ root="$(native "$(cd "$(dirname "$0")/.." && pwd)")"
 diagnostic="out/recomp/diagnostic"
 abis=()
 apk=1
+pack=""
 game=1
 while [ $# -gt 0 ]; do
     case "$1" in
         --diagnostic) diagnostic="$2"; shift 2 ;;
         --abi) abis+=("$2"); shift 2 ;;
         --no-apk) apk=0; shift ;;
+        --pack) pack="$(native "$(cd "$(dirname "$2")" && pwd)/$(basename "$2")")"; shift 2 ;;
         --launcher-only) game=0; apk=0; shift ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
@@ -58,5 +61,9 @@ for abi in "${abis[@]}"; do
     cp "$(ls -d "$ndk"/toolchains/llvm/prebuilt/*/sysroot/usr/lib/$triple/libc++_shared.so | head -1)" "$jni/$abi/"
 done
 if [ "$apk" = 1 ]; then
-    ANDROID_HOME="$ANDROID_HOME" python "$root/scripts/package_android.py"
+    # Only the ABIs built now (jniLibs may hold older ones).
+    abi_options=()
+    for abi in "${abis[@]}"; do abi_options+=(--abi "$abi"); done
+    [ -z "$pack" ] || abi_options+=(--pack "$pack")
+    ANDROID_HOME="$ANDROID_HOME" python "$root/scripts/package_android.py" "${abi_options[@]}"
 fi
