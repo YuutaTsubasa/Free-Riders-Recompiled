@@ -2124,6 +2124,21 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         // XGI app's user context and property writes (rich presence, used by
         // Live only) are accepted and dropped (xgi_app.cc).
         const uint32_t app = ctx.r3.u32, message = ctx.r4.u32, overlapped = ctx.r5.u32;
+        // 0x000B0008 is XUserWriteAchievements, sent once a player is signed
+        // in (after a race): {user, count, achievements*} with (user, id)
+        // pairs. There is no Live to award them to; they are logged.
+        if (app == 0xFB && message == 0x000B0008) {
+            const uint32_t buffer = ctx.r6.u32;
+            active_memory->check(buffer, 12);
+            const uint32_t count = active_memory->load<uint32_t>(uint64_t(buffer) + 4);
+            const uint32_t list = active_memory->load<uint32_t>(uint64_t(buffer) + 8);
+            std::cerr << "RESULT XUserWriteAchievements count=" << count;
+            for (uint32_t i = 0; i < count && i < 16; ++i)
+                std::cerr << " id=" << active_memory->load<uint32_t>(uint64_t(list) + 8 * i + 4);
+            std::cerr << " backend=no-live\n";
+            ctx.r3.u64 = overlapped ? complete_overlapped(overlapped, 0) : 0;
+            return;
+        }
         if (app != 0xFB || (message != 0x000B0006 && message != 0x000B0007))
             throw RuntimeStop("xmsg", message, "unsupported XAM asynchronous message");
         static uint32_t accepted = 0;
