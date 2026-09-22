@@ -151,7 +151,7 @@ exe 只關掉這個開關就順利通過，所以確定是它。現在是 `SFR_M
 
 現在無條件做的只有 `guest_checkpoint()`（客體執行緒排程的交接點，不能拿掉）和記下
 函式名稱與位址，其餘由 `SFR_DIAGNOSTIC_ENTRIES` 控制。**預設開啟**（測試與那些稽核
-都靠它），`scripts/play.ps1` 關掉；`SFR_PROFILE`／`SFR_HOST_PROFILE` 會強制開啟。
+都靠它），`scripts/play.ps1` 關掉；`SFR_SAMPLE_PROFILE`／`SFR_HOST_PROFILE` 會強制開啟。
 
 關掉之後同一段比賽畫面：**97 ms → 85 ms，10.3 fps → 11.7**。
 
@@ -351,7 +351,7 @@ upload-heap 緩衝區，之後沒被寫就直接用；一被寫就丟掉（緩�
 
 ## 量法
 
-`SFR_PROFILE=1` 每毫秒取樣「該執行緒最後進入的客體函式」，`SFR_HOST_PROFILE=1` 取樣
+`SFR_SAMPLE_PROFILE=1`（原名 `SFR_PROFILE`，後來改名，因為 `SFR_PROFILE` 成了登入帳號的開關）每毫秒取樣「該執行緒最後進入的客體函式」，`SFR_HOST_PROFILE=1` 取樣
 主執行緒的主機指令位址（用 `out/build/host/sfr_cpu_diagnostic.map` 解析）。
 
 客體側（290774 個樣本）最上面幾項：

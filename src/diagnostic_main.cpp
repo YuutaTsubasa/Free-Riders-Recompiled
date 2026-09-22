@@ -97,7 +97,7 @@ static const uint32_t profile_after = [] {
     const char* t = std::getenv("SFR_PROFILE_AFTER");
     return t ? uint32_t(std::strtoul(t, nullptr, 10)) : 0u;
 }();
-// SFR_PROFILE: the most recently entered guest function, sampled every millisecond.
+// SFR_SAMPLE_PROFILE: the most recently entered guest function, sampled every millisecond.
 static std::atomic<uint64_t> profile_address{0};  // guest thread id << 32 | address
 #ifdef _WIN32
 // SFR_HOST_PROFILE: host thread that last entered a guest function, sampled
@@ -2438,7 +2438,7 @@ static const bool allow_render_targets = [] {
 
 // See diagnostic_hooks.h.
 const bool diagnostic_entries = [] {
-    if (std::getenv("SFR_PROFILE") || std::getenv("SFR_HOST_PROFILE")) return true;
+    if (std::getenv("SFR_SAMPLE_PROFILE") || std::getenv("SFR_HOST_PROFILE")) return true;
     const char* const text = std::getenv("SFR_DIAGNOSTIC_ENTRIES");
     return !text || *text != '0';
 }();
@@ -3533,7 +3533,7 @@ int main(int argc, char** argv) {
             });
 #endif
             std::jthread profiler([](std::stop_token stop) {
-                if (!std::getenv("SFR_PROFILE")) return;
+                if (!std::getenv("SFR_SAMPLE_PROFILE")) return;
                 std::unordered_map<uint64_t, uint64_t> samples;
                 uint64_t total = 0;
                 while (!stop.stop_requested()) {

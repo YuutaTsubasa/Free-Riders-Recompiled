@@ -19,9 +19,9 @@ bool register_hook(const char* name);  // "sub_XXXXXXXX"
 bool is_hook(uint32_t address);
 // Whether a guest function entry does more than name itself and checkpoint.
 // Everything else it does is observation: the ORIGINAL_* audits, the entry
-// traces and dumps, the sampler's address for SFR_PROFILE. Playing turns it
+// traces and dumps, the sampler's address for SFR_SAMPLE_PROFILE. Playing turns it
 // off with SFR_DIAGNOSTIC_ENTRIES=0, which costs the run its LAST_FUNCTION
-// detail and those audits; SFR_PROFILE and SFR_HOST_PROFILE turn it back on
+// detail and those audits; SFR_SAMPLE_PROFILE and SFR_HOST_PROFILE turn it back on
 // because they read what it records.
 extern const bool diagnostic_entries;
 // Generated code checkpoints at every function entry and loop, millions of
