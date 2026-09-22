@@ -68,6 +68,12 @@ uint64_t filetime(const timespec& time) {
     return uint64_t(time.tv_sec) * 10000000ull + uint64_t(time.tv_nsec) / 100 + 116444736000000000ull;
 }
 
+#ifdef __APPLE__  // Darwin names the timestamps st_*timespec
+#define st_mtim st_mtimespec
+#define st_atim st_atimespec
+#define st_ctim st_ctimespec
+#endif
+
 AssetFiles::NetworkInformation information_of(const struct stat& info) {
     const bool directory = S_ISDIR(info.st_mode);
     return {filetime(info.st_mtim), filetime(info.st_atim), filetime(info.st_mtim), filetime(info.st_ctim),

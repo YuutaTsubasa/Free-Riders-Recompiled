@@ -77,13 +77,20 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install packages
-        run: brew install ninja sdl2
+        # Homebrew's LLVM: its libc++ has std::jthread and std::atomic_ref,
+        # which Apple's does not yet.
+        run: |
+          brew install ninja sdl2 llvm
+          llvm="$(brew --prefix llvm)"
+          echo "CC=$llvm/bin/clang" >> "$GITHUB_ENV"
+          echo "CXX=$llvm/bin/clang++" >> "$GITHUB_ENV"
+          echo "LDFLAGS=-L$llvm/lib/c++ -L$llvm/lib/unwind -lunwind -Wl,-rpath,$llvm/lib/c++" >> "$GITHUB_ENV"
       - name: Fetch the pinned dependencies
         run: python scripts/bootstrap.py
       - name: Build
         run: |
           # On failure, keep going once more to list every error, not just the first.
-          CC=clang CXX=clang++ SFR_LINUX_BUILD="$PWD/out/build/macos" scripts/build_linux.sh ||
+          SFR_LINUX_BUILD="$PWD/out/build/macos" scripts/build_linux.sh ||
             { ninja -C out/build/macos -k 0 2>&1 | grep -E "error:|undefined" | sort -u | head -80; exit 1; }
       - name: Test
         run: ctest --test-dir out/build/macos -j 4 --output-on-failure -E "^(native_graphics|native_shaders|native_presentation|native_raster_state|native_blend_control|guest_graphics|guest_render_state|guest_blend_request|guest_sampler_filter|guest_texture_binding)$"

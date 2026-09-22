@@ -4,8 +4,9 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 project(FreeRidersRecompiled LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-if(ANDROID)
-    # The NDK's libc++ still ships std::jthread and std::stop_token as experimental.
+if(ANDROID OR APPLE)
+    # libc++ (the NDK's, and LLVM's on macOS) still ships std::jthread and
+    # std::stop_token as experimental.
     add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fexperimental-library>)
     add_link_options(-fexperimental-library)
 endif()
