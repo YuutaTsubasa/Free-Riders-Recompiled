@@ -14,7 +14,9 @@
 #include <thread>
 #include <vector>
 #include "test_platform.h"
-#include <malloc.h>
+#ifdef _WIN32
+#include <malloc.h>  // _aligned_malloc (test_platform.h provides it elsewhere)
+#endif
 
 namespace admission_allocation_failure {
 thread_local int countdown = -1;

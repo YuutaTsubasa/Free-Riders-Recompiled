@@ -10,6 +10,11 @@ if(ANDROID OR APPLE)
     add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fexperimental-library>)
     add_link_options(-fexperimental-library)
 endif()
+if(APPLE)
+    # The pinned fmt uses malloc without including <cstdlib>, which newer
+    # libc++ no longer brings in on its own.
+    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include cstdlib>")
+endif()
 option(SFR_BUILD_DIAGNOSTIC "Build the game CPU diagnostic (requires generated code)" OFF)
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/XenonRecomp/CMakeLists.txt")
     message(FATAL_ERROR "Run scripts/bootstrap.py to obtain the pinned XenonRecomp tools.")
@@ -394,6 +399,10 @@ if(WIN32 OR UNIX)
     # runs on the build machine (an Android build uses the host's).
     if(CMAKE_HOST_WIN32)
         set(SFR_DXC "${CMAKE_CURRENT_SOURCE_DIR}/tools/XenosRecomp/thirdparty/dxc-bin/bin/x64/dxc.exe")
+    elseif(CMAKE_HOST_APPLE)
+        # dxc-macos (universal) loads libdxcompiler.dylib from dxc-bin's lib directory.
+        set(SFR_DXC ${CMAKE_COMMAND} -E env "DYLD_LIBRARY_PATH=${CMAKE_CURRENT_SOURCE_DIR}/tools/XenosRecomp/thirdparty/dxc-bin/lib/x64"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/XenosRecomp/thirdparty/dxc-bin/bin/x64/dxc-macos")
     else()
         # dxc-linux loads libdxcompiler.so from dxc-bin's lib directory.
         set(SFR_DXC ${CMAKE_COMMAND} -E env "LD_LIBRARY_PATH=${CMAKE_CURRENT_SOURCE_DIR}/tools/XenosRecomp/thirdparty/dxc-bin/lib/x64"
