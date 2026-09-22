@@ -60,6 +60,12 @@ std::filesystem::path default_asset_directory(const std::filesystem::path& launc
 // there is none.
 std::filesystem::path find_runtime_root(const std::filesystem::path& launcher_directory);
 
+// A release's own shader tools (scripts/package_release.py): shader-tools/
+// beside the launcher with the translator, the pinned shader_common.h and
+// dxc-bin's DXC. The environment that points the game at them and at a
+// shader-cache/ beside the launcher; empty when they are not all there.
+std::vector<std::pair<std::string, std::filesystem::path>> shader_tool_environment(const std::filesystem::path& launcher_directory);
+
 // Common window sizes offered in the list (the launcher adds the desktop's).
 struct WindowSize { uint32_t width, height; };
 std::vector<WindowSize> common_window_sizes();

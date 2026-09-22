@@ -848,7 +848,8 @@ struct Launcher {
     // The checkout's shader tools, or a shaders.pack beside the launcher.
     bool shaders_available() const {
         std::error_code error;
-        return !runtime_root.empty() || fs::is_regular_file(directory / "shaders.pack", error);
+        return !runtime_root.empty() || !sfr::shader_tool_environment(directory).empty() ||
+               fs::is_regular_file(directory / "shaders.pack", error);
     }
 
     bool files_ready() const {
@@ -1392,7 +1393,7 @@ struct Launcher {
         ImGui::Dummy(ImVec2(0, 4 * scale));
         if (small_button(tr(sfr::launcher::can_pick_folders() ? InstallFromDisc : InstallFromImage), scale)) open_install_page();
         // Without the checkout's shader tools the game needs a pack.
-        if (runtime_root.empty()) {
+        if (runtime_root.empty() && sfr::shader_tool_environment(directory).empty()) {
             ImGui::Dummy(ImVec2(0, 10 * scale));
             std::error_code error;
             const bool ready = fs::is_regular_file(directory / "shaders.pack", error);

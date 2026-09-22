@@ -102,6 +102,9 @@ void apply_environment(const LauncherSettings& settings, const fs::path& directo
     std::error_code error;
     if (!checkout && fs::is_regular_file(directory / "shaders.pack", error))
         setenv("SFR_SHADER_PACK", utf8(directory / "shaders.pack").c_str(), 1);
+    // A release translates the shaders the pack lacks with its own tools.
+    if (!checkout)
+        for (const auto& [name, value] : shader_tool_environment(directory)) setenv(name.c_str(), utf8(value).c_str(), 1);
 }
 
 class ChildGame final : public GameProcess {

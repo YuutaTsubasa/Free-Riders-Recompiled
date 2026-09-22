@@ -69,6 +69,10 @@ uint32_t tiled_block_index(uint32_t x, uint32_t y, uint32_t pitch_blocks, uint32
 std::vector<uint8_t> untile_texture(std::span<const uint8_t> tiled, const TextureLayout& layout);
 // Base-level layout of a linear 2D texture; empty when the format is unsupported.
 std::optional<TextureLayout> linear_texture_layout(const TextureFetch& fetch);
+// For GPUs without BC formats (most phones): decodes a BC1/BC2/BC3 base level
+// laid out as `layout` (after untiling) to R8G8B8A8 texels, rewriting the
+// layout to match. Other formats are left as they are.
+void decode_block_compression(std::vector<uint8_t>& bytes, TextureLayout& layout);
 
 // SFR_ALLOW_RENDER_TARGETS=1 (investigation): depth textures (format 23) are
 // laid out as four-byte texels so that a race which samples its shadow maps

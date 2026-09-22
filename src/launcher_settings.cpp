@@ -191,6 +191,30 @@ std::filesystem::path find_runtime_root(const std::filesystem::path& launcher_di
     return {};
 }
 
+std::vector<std::pair<std::string, std::filesystem::path>> shader_tool_environment(const std::filesystem::path& launcher_directory) {
+    const auto tools = launcher_directory / "shader-tools";
+#ifdef _WIN32
+    const char* translator = "shader_translate.exe";
+    const char* dxc = "dxc.exe";
+    const char* libraries[] = {"dxcompiler.dll", "dxil.dll"};
+#else
+    const char* translator = "shader_translate";
+    const char* dxc = "dxc-linux";
+    const char* libraries[] = {"libdxcompiler.so", "libdxil.so"};
+#endif
+    std::error_code error;
+    for (const char* name : {translator, dxc, "shader_common.h", libraries[0], libraries[1]})
+        if (!std::filesystem::is_regular_file(tools / name, error)) return {};
+    return {
+        {"SFR_SHADER_TRANSLATOR", tools / translator},
+        {"SFR_SHADER_COMMON", tools / "shader_common.h"},
+        {"SFR_DXC", tools / dxc},
+        {"SFR_DXC_SPIRV", tools / dxc},
+        {"SFR_DXC_LIBRARY", tools},
+        {"SFR_RUNTIME_SHADER_CACHE", launcher_directory / "shader-cache"},
+    };
+}
+
 std::vector<WindowSize> common_window_sizes() {
     return {{960, 540}, {1280, 720}, {1600, 900}, {1920, 1080}, {2560, 1440}, {3840, 2160}};
 }

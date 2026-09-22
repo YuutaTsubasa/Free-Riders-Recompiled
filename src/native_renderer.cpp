@@ -2,6 +2,7 @@
 #ifdef _WIN32
 #include "plume_d3d12.h"
 #endif
+#include "plume_vulkan.h"
 #include "vulkan_shader_source.h"
 #include "guest_memory.h"
 #include "native_formats.h"
@@ -61,15 +62,18 @@ uint64_t content_hash(const uint8_t* data, uint64_t size) {
 
 #ifdef _WIN32
 // Links XenosRecomp pixel-shader libraries with their specialization constants
-// using the Windows SDK DXC that built the shader cache.
+// using the DXC that built the shader cache: the Windows SDK's in a checkout,
+// a release's own in SFR_DXC_LIBRARY (the directory holding dxcompiler.dll).
 class DxcLinker {
 public:
     DxcLinker() {
-        const wchar_t* directory = L"C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.26100.0\\x64\\";
-        // dxcompiler loads dxil.dll by name for signing; load it first from the same SDK.
-        LoadLibraryW((std::wstring(directory) + L"dxil.dll").c_str());
-        module_ = LoadLibraryW((std::wstring(directory) + L"dxcompiler.dll").c_str());
-        if (!module_) unsupported(GetLastError(), "Windows SDK dxcompiler.dll is unavailable");
+        std::wstring directory = L"C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.26100.0\\x64\\";
+        if (const wchar_t* chosen = _wgetenv(L"SFR_DXC_LIBRARY"); chosen && *chosen)
+            directory = std::wstring(chosen) + L"\\";
+        // dxcompiler loads dxil.dll by name for signing; load it first from the same directory.
+        LoadLibraryW((directory + L"dxil.dll").c_str());
+        module_ = LoadLibraryW((directory + L"dxcompiler.dll").c_str());
+        if (!module_) unsupported(GetLastError(), "dxcompiler.dll is unavailable");
         auto create = reinterpret_cast<DxcCreateInstanceProc>(GetProcAddress(module_, "DxcCreateInstance"));
         if (!create || FAILED(create(CLSID_DxcCompiler, IID_PPV_ARGS(compiler_.GetAddressOf()))) ||
             FAILED(create(CLSID_DxcLinker, IID_PPV_ARGS(linker_.GetAddressOf()))) ||
@@ -117,6 +121,21 @@ private:
     uint32_t libraries_ = 0;
 };
 #endif
+
+// Most phone GPUs have no BC (DXT) formats; their textures are decoded to
+// RGBA8 on the CPU. SFR_DECODE_BC=1 forces that path where BC exists.
+bool block_compression_supported(NativeGraphics& graphics) {
+    static const bool supported = [&] {
+        if (const char* forced = std::getenv("SFR_DECODE_BC"); forced && *forced == '1') return false;
+        if (graphics.backend() != GraphicsBackend::vulkan) return true;
+        VkPhysicalDeviceFeatures features{};
+        vkGetPhysicalDeviceFeatures(static_cast<plume::VulkanDevice&>(graphics.device()).physicalDevice, &features);
+        return features.textureCompressionBC == VK_TRUE;
+    }();
+    static const bool reported = (std::cerr << "NATIVE_TEXTURE_BC supported=" << supported << '\n', true);
+    (void)reported;
+    return supported;
+}
 
 // A guest GPU physical address as a readable virtual address. Physical
 // allocations are mapped in the 0xE0000000 view (GPU address + 4 KiB) or the
@@ -571,7 +590,7 @@ uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
         if (!written && !(fetch.format == 2 && no_cache)) return found->second;
         invalidate(uint32_t(range.begin), uint32_t(range.end - range.begin));
     }
-    const auto layout = linear_texture_layout(fetch);
+    auto layout = linear_texture_layout(fetch);
     if (!layout && depth_texture_placeholder) {
         // Investigation mode: a format without a native layout is served as a
         // flat white texture, so that a race keeps rendering with the wrong
@@ -593,6 +612,7 @@ uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
     const uint64_t hash = content_hash(bytes.data(), bytes.size());
     swap_texture_bytes(bytes, fetch.endian);
     if (layout->tiled) bytes = untile_texture(bytes, *layout);
+    if (!block_compression_supported(impl_->graphics)) decode_block_compression(bytes, *layout);
     static const bool stats = std::getenv("SFR_TEXTURE_STATS") != nullptr;
     if (stats && fetch.format == 2) {
         uint64_t sum = 0, nonzero = 0;

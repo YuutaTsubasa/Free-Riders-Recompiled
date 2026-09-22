@@ -707,7 +707,15 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height) {
     if (impl_->swap_chain->needsResize()) {
         impl_->flush();
         impl_->blit_targets.clear();
-        if (!impl_->swap_chain->resize()) throw std::runtime_error("failed to resize the native swap chain");
+        if (!impl_->swap_chain->resize()) {
+#ifdef __ANDROID__
+            // The surface was lost (VK_ERROR_SURFACE_LOST_KHR on phones when
+            // the window changes): make it again from the window next frame.
+            impl_->rebuild_swap_chain = true;
+            return;
+#endif
+            throw std::runtime_error("failed to resize the native swap chain");
+        }
         if (impl_->blit_pipeline) impl_->build_blit_targets();
     }
     uint32_t texture_index = 0;
@@ -768,8 +776,10 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height) {
         impl_->command_list->setPipeline(impl_->blit_pipeline.get());
         impl_->command_list->setGraphicsDescriptorSet(impl_->blit_texture.get(), 0);
         impl_->command_list->setGraphicsDescriptorSet(impl_->blit_sampler.get(), 1);
-        std::array<float, 32> constants{float(area_width) / float(impl_->width),
-                                        float(area_height) / float(impl_->height)};
+        // The shown part of the framebuffer (all of it when the game names no
+        // area: 0 here would sample its corner texel over the whole window).
+        std::array<float, 32> constants{float(shown_width) / float(impl_->width),
+                                        float(shown_height) / float(impl_->height)};
         if (touch_controls_enabled()) {
             const TouchOverlay overlay = touch_overlay();
             constants[2] = overlay.knob[0];

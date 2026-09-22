@@ -113,6 +113,10 @@ std::unique_ptr<GameProcess> start_game(const LauncherSettings& settings, const 
     std::error_code missing;
     if (root.empty() && fs::is_regular_file(directory / L"shaders.pack", missing))
         SetEnvironmentVariableW(L"SFR_SHADER_PACK", (directory / L"shaders.pack").c_str());
+    // A release translates the shaders the pack lacks with its own tools.
+    if (root.empty())
+        for (const auto& [name, value] : shader_tool_environment(directory))
+            SetEnvironmentVariableW(std::wstring(name.begin(), name.end()).c_str(), value.c_str());
     const fs::path program = game_program(directory);
     std::wstring command = quoted(program.wstring());
     for (const auto& argument : game_arguments(settings)) command += L" " + quoted(argument);

@@ -247,6 +247,93 @@ std::optional<TextureLayout> linear_texture_layout(const TextureFetch& fetch) {
 }
 
 namespace {
+// The colour half of a BC block (all of BC1): four RGBA texels from two
+// RGB565 end points, written into out[16][4]. BC1's three-colour mode (first
+// end point not above the second) makes index 3 transparent black; BC2 and
+// BC3 always use four colours.
+void decode_color_block(const uint8_t* block, bool bc1, uint8_t out[16][4]) {
+    const uint16_t c0 = uint16_t(block[0] | block[1] << 8), c1 = uint16_t(block[2] | block[3] << 8);
+    uint8_t palette[4][4];
+    const auto expand = [](uint16_t c, uint8_t* rgb) {
+        rgb[0] = uint8_t((c >> 11 & 31) * 255 / 31);
+        rgb[1] = uint8_t((c >> 5 & 63) * 255 / 63);
+        rgb[2] = uint8_t((c & 31) * 255 / 31);
+    };
+    expand(c0, palette[0]);
+    expand(c1, palette[1]);
+    palette[0][3] = palette[1][3] = 255;
+    const bool four = !bc1 || c0 > c1;
+    for (int channel = 0; channel < 3; ++channel) {
+        const int a = palette[0][channel], b = palette[1][channel];
+        if (four) {
+            palette[2][channel] = uint8_t((2 * a + b + 1) / 3);
+            palette[3][channel] = uint8_t((a + 2 * b + 1) / 3);
+        } else {
+            palette[2][channel] = uint8_t((a + b) / 2);
+            palette[3][channel] = 0;
+        }
+    }
+    palette[2][3] = 255;
+    palette[3][3] = four ? 255 : 0;
+    const uint32_t indices = uint32_t(block[4]) | uint32_t(block[5]) << 8 | uint32_t(block[6]) << 16 | uint32_t(block[7]) << 24;
+    for (int texel = 0; texel < 16; ++texel) std::memcpy(out[texel], palette[indices >> (2 * texel) & 3], 4);
+}
+
+// BC3's alpha half: two end points and sixteen 3-bit indices.
+void decode_alpha_block(const uint8_t* block, uint8_t out[16][4]) {
+    const int a0 = block[0], a1 = block[1];
+    int palette[8] = {a0, a1};
+    if (a0 > a1) {
+        for (int i = 1; i < 7; ++i) palette[i + 1] = ((7 - i) * a0 + i * a1 + 3) / 7;
+    } else {
+        for (int i = 1; i < 5; ++i) palette[i + 1] = ((5 - i) * a0 + i * a1 + 2) / 5;
+        palette[6] = 0;
+        palette[7] = 255;
+    }
+    uint64_t indices = 0;
+    for (int i = 0; i < 6; ++i) indices |= uint64_t(block[2 + i]) << (8 * i);
+    for (int texel = 0; texel < 16; ++texel) out[texel][3] = uint8_t(palette[indices >> (3 * texel) & 7]);
+}
+}
+
+void decode_block_compression(std::vector<uint8_t>& bytes, TextureLayout& layout) {
+    const RenderFormat format = layout.format;
+    if (format != RenderFormat::BC1_UNORM && format != RenderFormat::BC2_UNORM && format != RenderFormat::BC3_UNORM) return;
+    const uint32_t width = layout.width, height = layout.height;
+    const uint32_t blocks_wide = (width + 3) / 4;
+    std::vector<uint8_t> texels(size_t(width) * height * 4);
+    uint8_t decoded[16][4];
+    for (uint32_t by = 0; by < layout.rows; ++by)
+        for (uint32_t bx = 0; bx < blocks_wide; ++bx) {
+            const size_t at = size_t(by) * layout.row_bytes + size_t(bx) * layout.block_bytes;
+            if (at + layout.block_bytes > bytes.size()) continue;
+            const uint8_t* block = bytes.data() + at;
+            if (format == RenderFormat::BC1_UNORM) {
+                decode_color_block(block, true, decoded);
+            } else {
+                decode_color_block(block + 8, false, decoded);
+                if (format == RenderFormat::BC2_UNORM) {
+                    for (int texel = 0; texel < 16; ++texel)
+                        decoded[texel][3] = uint8_t((block[texel / 2] >> (4 * (texel & 1)) & 15) * 17);
+                } else {
+                    decode_alpha_block(block, decoded);
+                }
+            }
+            for (uint32_t y = 0; y < 4 && by * 4 + y < height; ++y)
+                for (uint32_t x = 0; x < 4 && bx * 4 + x < width; ++x)
+                    std::memcpy(texels.data() + (size_t(by * 4 + y) * width + bx * 4 + x) * 4, decoded[y * 4 + x], 4);
+        }
+    bytes = std::move(texels);
+    layout.format = RenderFormat::R8G8B8A8_UNORM;
+    layout.block_width = 1;
+    layout.block_bytes = 4;
+    layout.row_bytes = width * 4;
+    layout.rows = height;
+    layout.guest_rows = height;
+    layout.tiled = false;
+}
+
+namespace {
 plume::RenderTextureAddressMode address_mode(uint32_t clamp) {
     using Mode = plume::RenderTextureAddressMode;
     switch (clamp) {

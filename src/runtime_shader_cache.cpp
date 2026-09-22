@@ -107,8 +107,10 @@ void run(const std::vector<fs::path>& arguments, const fs::path& log, const char
         for (const char c : text) out += c == '\'' ? std::string("'\\''") : std::string(1, c);
         return out + "'";
     };
-    // dxc-linux loads libdxcompiler.so from dxc-bin's lib directory.
-    std::string command = "LD_LIBRARY_PATH=tools/XenosRecomp/thirdparty/dxc-bin/lib/x64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} ";
+    // dxc-linux loads libdxcompiler.so from dxc-bin's lib directory (a
+    // release's own: SFR_DXC_LIBRARY).
+    const std::string libraries = setting("SFR_DXC_LIBRARY", "tools/XenosRecomp/thirdparty/dxc-bin/lib/x64").string();
+    std::string command = "LD_LIBRARY_PATH=" + quoted(libraries) + "${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} ";
     for (const auto& argument : arguments) command += quoted(argument.string()) + " ";
     command += "> " + quoted(log.string()) + " 2>&1";
     if (std::system(command.c_str()) != 0) {
