@@ -56,8 +56,9 @@ Known limits:
 - Much of the game has not been played through yet; stages and modes beyond
   those above may stop on something the runtime does not do yet.
 - Linux and Android use shaders translated beforehand on Windows
-  (`shaders.pack`); a shader missing from it stops the game there.
-- Android has run in the emulator only; real phones are untested.
+  (`shaders.pack`, included in the releases). The game creates all of its
+  468 shaders while it boots, so one run on Windows collects them all.
+- Android has been tried in the emulator and on one Adreno 750 handheld.
 
 Progress notes (mostly in Traditional Chinese) are in [docs/](docs/), starting
 with [docs/progress.md](docs/progress.md).
@@ -131,8 +132,10 @@ Player?" and create save data when offered.
 
 **Why does the game need `shaders.pack` on Linux and Android?** The Xbox
 shaders are translated with Windows tools while the game runs. The pack
-carries the ones translated so far to machines without those tools; make it
-with `python scripts/pack_shaders.py` after playing on Windows.
+carries them, already translated, to machines without those tools; the game
+creates every shader it has while it boots, so a pack made with
+`python scripts/pack_shaders.py` after starting the game once on Windows
+(under Vulkan too, for the SPIR-V) is complete. Releases include one.
 
 **Can I use the No Kinect Patch or other mods?** No mod support exists. The
 Kinect emulation here is the project's own code (see [Credits](#credits)).

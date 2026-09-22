@@ -34,8 +34,9 @@ Free Riders Recompiled 是以靜態重編譯製作的 Xbox 360 版《Sonic Free 
 
 - 只支援美版／歐版光碟。
 - 遊戲大部分內容尚未完整遊玩過；上述以外的關卡與模式可能停在執行期還沒做到的地方。
-- Linux 與 Android 使用事先在 Windows 上轉換好的著色器（`shaders.pack`）；包裡沒有的著色器
-  會讓遊戲在那裡停止。
+- Linux 與 Android 使用事先在 Windows 上轉換好的著色器（`shaders.pack`，發布版已附）。遊戲會
+  在開機時建立全部 468 個著色器，因此在 Windows 上執行一次就能收集完整。
+- Android 已在模擬器與一台 Adreno 750 掌機上試過。
 - Android 目前只在模擬器上執行過，尚未在實機上測試。
 
 開發紀錄在 [docs/](docs/)，從 [docs/progress.md](docs/progress.md) 開始。
@@ -102,8 +103,9 @@ Xbox 與 PlayStation 手把都能使用。Android 沒有連接手把時，畫面
 是否建立存檔。
 
 **為什麼 Linux 與 Android 需要 `shaders.pack`？** Xbox 著色器是在遊戲執行時用 Windows 的工具
-轉換的。包裡帶著目前轉換過的著色器，給沒有這些工具的機器使用；在 Windows 上遊玩後，用
-`python scripts/pack_shaders.py` 製作。
+轉換的。包裡帶著轉換好的著色器，給沒有這些工具的機器使用；遊戲在開機時就建立所有著色器，所以
+在 Windows 上（也用 Vulkan 跑一次，以產生 SPIR-V）啟動遊戲一次後，用
+`python scripts/pack_shaders.py` 做出的包就是完整的。發布版已附上。
 
 **能用 No Kinect Patch 或其他模組嗎？** 目前沒有模組支援。這裡的 Kinect 模擬是本專案自己的
 程式碼。
