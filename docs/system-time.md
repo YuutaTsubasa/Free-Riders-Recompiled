@@ -1,0 +1,11 @@
+# System time
+
+The diagnostic implements the exact `KeQuerySystemTime` import pair at `0x82ACB94C`. r3 supplies the output pointer. The import has a void ABI and does not change the PPC registers; it writes an eight-byte big-endian timestamp when the pointer is nonzero. A null pointer is a no-op, following pinned Xenia [xboxkrnl_threading.cc](https://github.com/xenia-project/xenia/blob/95a5c3ee250f80c3b9d139658649d9ffb6db3eec/src/xenia/kernel/xboxkrnl/xboxkrnl_threading.cc).
+
+The timestamp counts100ns intervals since 1601-01-01 UTC. This is a storage unit, not a promise of100ns physical clock resolution. The implementation samples `std::chrono::system_clock::now()`, floors its Unix duration to100ns ticks and adds the116444736000000000 epoch difference using checked unsigned arithmetic. Both pinned Marathon and Unleashed use this host wall-clock conversion. Xenia's [clock.cc](https://github.com/xenia-project/xenia/blob/95a5c3ee250f80c3b9d139658649d9ffb6db3eec/src/xenia/base/clock.cc) also supports an unscaled host system-time mode; its scaled guest-clock machinery is not implemented here.
+
+The conversion helper accepts signed64-bit Unix ticks. Values before1601 stop with `time-range`; INT64_MAX still produces a representable unsigned64-bit result. This API does not cover the entire unsigned FILETIME timeline. A nonzero output is written through one checked GuestMemory uint64 store, so missing, wrapping or guarded tails cannot leave partial timestamp bytes. The null case does not sample or validate an unused time value.
+
+Wall time can move backwards when the host clock is adjusted. Monotonic performance counters, clock scaling, pause/resume, waits and timer scheduling are separate work. No fixed timestamp or fabricated status replaces the real query.
+
+Native tests use injected timestamps for deterministic epoch, boundary and exact-byte checks, including2000-01-01 and values around1970. They also exercise unaligned and cross-page writes, preserved neighbors, failure atomicity and a real host-time query bounded by independent before/after samples. Boot integration checks the service trace and its next observed dependency without asserting an exact wall-clock timestamp.

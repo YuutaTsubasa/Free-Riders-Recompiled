@@ -1,0 +1,63 @@
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index 9103ca8..411eca0 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -69,12 +69,14 @@ namespace plume {
+     static const std::unordered_set<std::string> RequiredDeviceExtensions = {
+         VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+         VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME,
+-        VK_EXT_ROBUSTNESS_2_EXTENSION_NAME,
+         VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME,
+-        VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_EXTENSION_NAME,
+     };
+     
+     static const std::unordered_set<std::string> OptionalDeviceExtensions = {
++        // Without them: null descriptors use a placeholder buffer, and
++        // mirror-once addressing falls back to mirrored repeat.
++        VK_EXT_ROBUSTNESS_2_EXTENSION_NAME,
++        VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_EXTENSION_NAME,
+         VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
+         VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME,
+         VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME,
+@@ -542,6 +544,8 @@ namespace plume {
+         }
+     }
+ 
++    static bool mirrorClampToEdgeSupported = true;
++
+     static VkSamplerAddressMode toVk(RenderTextureAddressMode mode) {
+         switch (mode) {
+         case RenderTextureAddressMode::WRAP:
+@@ -553,7 +557,7 @@ namespace plume {
+         case RenderTextureAddressMode::BORDER:
+             return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+         case RenderTextureAddressMode::MIRROR_ONCE:
+-            return VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE;
++            return mirrorClampToEdgeSupported ? VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+         default:
+             assert(false && "Unknown texture address mode.");
+             return VK_SAMPLER_ADDRESS_MODE_MAX_ENUM;
+@@ -3818,8 +3822,11 @@ namespace plume {
+ 
+         VkPhysicalDeviceRobustness2FeaturesEXT robustnessFeatures = {};
+         robustnessFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT;
+-        robustnessFeatures.pNext = featuresChain;
+-        featuresChain = &robustnessFeatures;
++        if (supportedOptionalExtensions.count(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME)) {
++            robustnessFeatures.pNext = featuresChain;
++            featuresChain = &robustnessFeatures;
++        }
++        mirrorClampToEdgeSupported = supportedOptionalExtensions.count(VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_EXTENSION_NAME) != 0;
+ 
+         VkPhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddressFeatures = {};
+         bufferDeviceAddressFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
+@@ -4366,6 +4373,9 @@ namespace plume {
+     }
+ 
+     void VulkanDevice::release() {
++        // The placeholder for null descriptors needs the allocator.
++        nullBuffer.reset();
++
+         if (allocator != VK_NULL_HANDLE) {
+             vmaDestroyAllocator(allocator);
+             allocator = VK_NULL_HANDLE;

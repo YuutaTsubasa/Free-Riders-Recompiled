@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The project's own art: a sky-to-grass gradient. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <gradient android:angle="270" android:startColor="#FF1E5BD8" android:centerColor="#FF3FA9F5" android:endColor="#FF2FB35A" />
+</shape>

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.freeriders.recompiled"
+    android:installLocation="auto">
+
+    <uses-feature android:name="android.hardware.vulkan.version" android:version="0x401000" android:required="true" />
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <uses-feature android:name="android.hardware.gamepad" android:required="false" />
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
+    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
+    <uses-feature android:name="android.hardware.type.pc" android:required="false" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <application android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:allowBackup="false"
+        android:theme="@style/GameTheme"
+        android:hardwareAccelerated="true"
+        android:extractNativeLibs="false">
+        <!-- The launcher: settings and installing the game. -->
+        <activity android:name=".LauncherActivity"
+            android:label="@string/app_name"
+            android:alwaysRetainTaskState="true"
+            android:launchMode="singleTask"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="layoutDirection|locale|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <!-- The game, in a process of its own for each run (android_main.cpp). -->
+        <activity android:name=".GameActivity"
+            android:label="@string/app_name"
+            android:process=":game"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="layoutDirection|locale|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
+            android:preferMinimalPostProcessing="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

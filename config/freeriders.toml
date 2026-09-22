@@ -1,0 +1,51 @@
+# Source: default.xex SHA-256 3d58636bec9b92948f7dbe423c0aa96753349ba014194c4e62d2f809c14643a7.
+# Addresses found in this game's decoded .text; never copied from another game.
+[main]
+file_path = "../private/game/default.xex"
+out_directory_path = "../generated/ppc"
+switch_table_file_path = "../out/switches.toml"
+
+skip_lr = false
+skip_msr = false
+ctr_as_local = false
+xer_as_local = false
+reserved_as_local = false
+cr_as_local = false
+non_argument_as_local = false
+non_volatile_as_local = false
+
+restgprlr_14_address = 0x82A56080
+savegprlr_14_address = 0x82A56030
+restfpr_14_address = 0x82A5712C
+savefpr_14_address = 0x82A570E0
+restvmx_14_address = 0x82A58848
+savevmx_14_address = 0x82A585B0
+restvmx_64_address = 0x82A588DC
+savevmx_64_address = 0x82A58644
+
+# Words the linear code sweep must step over. Without these, the sweep decodes
+# them as instructions and splits .pdata functions into fragments.
+# - 0x00000000: padding between functions.
+# - 0x82A5C368 / 0x82ACB76C: the two C++ exception handlers stored, with one
+#   handler-data word, immediately before each exception-flagged .pdata
+#   function. Each word occurs in .text exactly as often as .pdata flags its
+#   handler (1557 and 77), so no executable instruction is skipped.
+invalid_instructions = [
+    { data = 0x00000000, size = 4 },
+    { data = 0x82A5C368, size = 8 },
+    { data = 0x82ACB76C, size = 8 },
+]
+
+# setjmp/longjmp and nonstandard switch patterns still require analysis.
+# No speculative function boundaries.
+
+# Functions without .pdata whose extent XenonRecomp misjudges. Each is
+# verified from the disassembly: contiguous code, every internal branch target
+# inside the range, the fragments referenced only from it.
+# - 0x82820BD8..0x82820E34 (then padding): HRESULT-to-code mapping. Its bdzf case chain at
+#   0x82820D58 and many compares branch to 0x82820D74..0x82820E2C, which the
+#   automatic sizing split into separate two-instruction "functions" and left
+#   0x82820DE0 as an unreachable label.
+functions = [
+    { address = 0x82820BD8, size = 0x25C },
+]

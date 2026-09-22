@@ -1,0 +1,13 @@
+# Windows native display query
+
+Goal: implement the observed XGetVideoMode import at82ACB23C from actual Windows current-display data. This advances genuine initialization, without a substitute UI or a rendering completion claim.
+
+The original sub_8249AEB0 calls with a48-byte stack buffer at70131530, then consumes is_hi_def at+16 and is_widescreen at+12 when configuring its original presentation parameters. Both reference projects hook XGetVideoMode to VdQueryVideoMode. Their shared XVIDEO_MODE ABI is12 big-endian words: width,height,interlaced,widescreen,high-definition,float refresh,standard,compatibility words4A/01,reserved[3]. Pinned Xenia xbox.h confirms48 bytes. Use the ABI and clearly identified compatibility words, not its fixed1280x720 display values.
+
+Design: query EnumDisplaySettingsW(NULL, ENUM_CURRENT_SETTINGS) on Windows, validating populated width/height/frequency/display-flags fields. No mode switch or visible window. Failure, unknown default refresh0/1, invalid dimensions, unsupported interlace, or non-Windows native query stops explicitly. Progressive display only initially. Width/height/refresh derive from OS; widescreen means aspect strictly wider than4:3, HD means height>=720. Video standard1 and words4A/01 are the reference-compatible native guest protocol profile, not detected host TV circuitry. Keep this distinction in docs and logs. Future presentation must select its target and retain consistent display-query semantics.
+
+API: DisplayMode{uint32_t width,height; float refresh_hz; bool interlaced;}; DisplayMode query_native_display_mode(); VideoMode(GuestMemory&,DisplayMode) validates dimensions1..16384,finite refresh>1..1000 and progressive mode. query(uint32_t) const writes48 bytes after full output preflight; null stops, no status return (void import). snapshot() const returns array<uint32_t,12>. Preserve all PPC registers including r3; only checked output is changed. Exact import/name dispatch remains after reservation guard. Query OS lazily when this import is reached, so invalid source inputs still reject without display dependency.
+
+- [x] Agent: src/video_mode.h/.cpp, src/native_display.cpp, tests/video_mode_test.cpp. Test actual byte layout, derived flags, float bit representation, invalid modes, output tails/read-only/import guard/reservation atomicity. Compile behavioral RED before implementation, then GREEN. Windows provider links user32; no UI or fallback display constants.
+- [x] Root: build wiring, exact runtime import, native probe test and real-entry regression. Capture actual display values and next stop; inspect original code consumption.
+- [x] Spec then quality review; full Python/CTest and dependencies, current evidence updates, local commit. Title/menu goal remains active.

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A hoverboard streaking through a ring, drawn for this project. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#00000000" android:strokeColor="#FFFFD23F" android:strokeWidth="5"
+        android:pathData="M54,30 a24,24 0 1,1 -0.1,0 z" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M30,60 L78,52 L80,57 L32,65 Z" />
+    <path android:fillColor="#FFE63946" android:pathData="M34,64 L76,57 L77,60 L35,67 Z" />
+    <path android:fillColor="#99FFFFFF" android:pathData="M22,62 L30,61 L30,63 L22,64 Z M18,57 L28,56 L28,58 L18,59 Z" />
+</vector>

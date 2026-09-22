@@ -1,0 +1,203 @@
+// NativeThread on POSIX hosts (native_thread.cpp is the Windows one): a
+// pthread with a 16 MiB stack that waits at a gate until resumed, whose exit
+// signals a portable thread-exit object (the handle guest waits use).
+#include "native_thread.h"
+
+#include "guest_memory.h"
+#include "portable_waitables.h"
+
+#include <pthread.h>
+#include <sched.h>
+
+#include <atomic>
+#include <cerrno>
+#include <condition_variable>
+#include <exception>
+#include <mutex>
+#include <string>
+#include <utility>
+
+namespace sfr {
+namespace {
+[[noreturn]] void throw_host_error(const char* operation, int error) {
+    throw RuntimeStop("thread-host", uint32_t(error),
+        std::string(operation) + " failed with error " + std::to_string(error));
+}
+
+uint64_t mask_of(const cpu_set_t& set) {
+    uint64_t mask = 0;
+    for (int cpu = 0; cpu < 64; ++cpu)
+        if (CPU_ISSET(cpu, &set)) mask |= uint64_t{1} << cpu;
+    return mask;
+}
+
+std::atomic<uint32_t> next_id{1};
+}
+
+// Bionic (Android) has no pthread_*affinity_np; a thread's kernel id works
+// with sched_*affinity there.
+static int set_thread_affinity(pthread_t thread, const cpu_set_t& set) {
+#ifdef __ANDROID__
+    return sched_setaffinity(pthread_gettid_np(thread), sizeof(set), &set) == 0 ? 0 : errno;
+#else
+    return pthread_setaffinity_np(thread, sizeof(set), &set);
+#endif
+}
+static int get_thread_affinity(pthread_t thread, cpu_set_t& set) {
+#ifdef __ANDROID__
+    return sched_getaffinity(pthread_gettid_np(thread), sizeof(set), &set) == 0 ? 0 : errno;
+#else
+    return pthread_getaffinity_np(thread, sizeof(set), &set);
+#endif
+}
+
+struct NativeThread::Impl {
+    Entry entry;
+    std::stop_source stop_source;
+    pthread_t thread{};
+    uint32_t id = 0;
+    std::atomic<bool> started = false;
+    std::atomic<bool> completed = false;
+    std::exception_ptr failure;
+    uint32_t exit_code = 0;
+    // The suspend count and the gate a new thread waits at until it is 0.
+    std::mutex gate_mutex;
+    std::condition_variable gate;
+    uint32_t suspend_count = 1;
+    bool joined = false;
+    int32_t priority = 0;
+    uint64_t allowed_affinity = 0;
+    portable::WaitablePtr exit = portable::make_thread_exit();
+
+    Impl(Entry callback, uint64_t allowed) : entry(std::move(callback)), allowed_affinity(allowed) {}
+
+    static void* trampoline(void* raw) noexcept {
+        auto& self = *static_cast<Impl*>(raw);
+        {
+            std::unique_lock lock(self.gate_mutex);
+            self.gate.wait(lock, [&] { return self.suspend_count == 0; });
+        }
+        uint32_t result = 0;
+        if (!self.stop_source.stop_requested()) {
+            self.started.store(true, std::memory_order_release);
+            try {
+                result = self.entry(self.stop_source.get_token());
+            } catch (...) {
+                self.failure = std::current_exception();
+            }
+        }
+        self.exit_code = result;
+        self.completed.store(true, std::memory_order_release);
+        portable::set_event(*self.exit);
+        return nullptr;
+    }
+};
+
+NativeThread::NativeThread(Entry entry) {
+    if (!entry) throw RuntimeStop("thread-host", 0, "native thread entry is empty");
+    cpu_set_t allowed;
+    CPU_ZERO(&allowed);
+    if (sched_getaffinity(0, sizeof(allowed), &allowed) != 0) throw_host_error("sched_getaffinity", errno);
+    const uint64_t process_mask = mask_of(allowed);
+    if (process_mask == 0) throw RuntimeStop("thread-host", 0, "process has no allowed processors");
+
+    auto state = std::make_unique<Impl>(std::move(entry), process_mask);
+    state->id = next_id.fetch_add(1);
+    pthread_attr_t attributes;
+    pthread_attr_init(&attributes);
+    pthread_attr_setstacksize(&attributes, 16u * 1024u * 1024u);
+    const int created = pthread_create(&state->thread, &attributes, &Impl::trampoline, state.get());
+    pthread_attr_destroy(&attributes);
+    if (created != 0) throw_host_error("pthread_create", created);
+    impl_ = std::move(state);
+}
+
+NativeThread::~NativeThread() noexcept {
+    if (!impl_) return;
+    cancel_and_join();
+}
+
+uint32_t NativeThread::native_id() const { return impl_->id; }
+bool NativeThread::entry_started() const { return impl_->started.load(std::memory_order_acquire); }
+bool NativeThread::suspended() const {
+    std::lock_guard lock(impl_->gate_mutex);
+    return impl_->suspend_count != 0;
+}
+void* NativeThread::native_handle() const { return impl_->exit.get(); }
+
+uint32_t NativeThread::resume() {
+    uint32_t previous;
+    {
+        std::lock_guard lock(impl_->gate_mutex);
+        previous = impl_->suspend_count;
+        if (impl_->suspend_count) --impl_->suspend_count;
+    }
+    if (previous == 1) impl_->gate.notify_all();
+    return previous;
+}
+
+uint32_t NativeThread::join() {
+    if (suspended())
+        throw RuntimeStop("thread-host", impl_->id, "cannot join a thread that has never been resumed");
+    if (!impl_->joined) {
+        const int result = pthread_join(impl_->thread, nullptr);
+        if (result != 0) throw_host_error("pthread_join", result);
+        if (!impl_->completed.load(std::memory_order_acquire))
+            throw RuntimeStop("thread-host", impl_->id, "thread exited without publishing completion");
+        impl_->joined = true;
+    }
+    if (impl_->failure) std::rethrow_exception(impl_->failure);
+    return impl_->exit_code;
+}
+
+void NativeThread::request_stop() noexcept { impl_->stop_source.request_stop(); }
+
+void NativeThread::cancel_and_join() noexcept {
+    request_stop();
+    if (impl_->joined) return;
+    {
+        std::lock_guard lock(impl_->gate_mutex);
+        impl_->suspend_count = 0;
+    }
+    impl_->gate.notify_all();
+    if (pthread_join(impl_->thread, nullptr) != 0) std::terminate();
+    if (!impl_->completed.load(std::memory_order_acquire)) std::terminate();
+    impl_->joined = true;
+}
+
+// Relative priorities are recorded but not applied: raising a thread above
+// normal needs privileges an ordinary Linux user lacks.
+int32_t NativeThread::priority() const { return impl_->priority; }
+
+int32_t NativeThread::set_priority(int32_t host_relative) {
+    if (host_relative < -2 || host_relative > 2)
+        throw RuntimeStop("thread-host", static_cast<uint32_t>(host_relative),
+            "thread priority must be one of -2, -1, 0, 1, or 2");
+    return std::exchange(impl_->priority, host_relative);
+}
+
+uint64_t NativeThread::set_guest_processor(uint32_t guest_cpu) {
+    if (guest_cpu >= 6) throw RuntimeStop("thread-host", guest_cpu, "guest processor index must be below 6");
+    uint32_t processor_count = 0;
+    for (uint64_t bits = impl_->allowed_affinity; bits; bits &= bits - 1) ++processor_count;
+    uint32_t selected_index = guest_cpu % processor_count;
+    int selected = -1;
+    for (int bit = 0; bit < 64; ++bit)
+        if ((impl_->allowed_affinity >> bit & 1) && selected_index-- == 0) { selected = bit; break; }
+    if (selected < 0) throw RuntimeStop("thread-host", guest_cpu, "could not select an allowed host processor");
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    CPU_SET(selected, &set);
+    const int result = set_thread_affinity(impl_->thread, set);
+    if (result != 0) throw_host_error("pthread_setaffinity_np", result);
+    return uint64_t{1} << selected;
+}
+
+uint64_t NativeThread::affinity_mask() const {
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    const int result = get_thread_affinity(impl_->thread, set);
+    if (result != 0) throw_host_error("pthread_getaffinity_np", result);
+    return mask_of(set);
+}
+}

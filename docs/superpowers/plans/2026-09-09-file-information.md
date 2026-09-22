@@ -1,0 +1,16 @@
+# Native file-information implementation plan
+
+> **For agentic workers:** Use superpowers:subagent-driven-development with independent spec and quality reviews.
+
+**Goal:** Continue original game file loading by answering its observed NtQueryInformationFile class34 from the retained native file object.
+
+**Architecture:** AssetFiles queries actual Windows FILE_BASIC_INFO and FILE_STANDARD_INFO from its retained HANDLE and exposes a host value object. GuestFiles encodes the verified 56-byte big-endian Xbox network-open information and eight-byte IO result. No invented timestamps or rounded allocation sizes.
+
+**Tech Stack:** C++20, Windows GetFileInformationByHandleEx, checked GuestMemory, real fixture/native-boot regression.
+
+Evidence: commit698e654, out/asset-open-boot.log stops import82ACB66C LR82A70838 calls1270. r3handle72000004,r4IO701312A0,r5output701312B0,r6length38,r7class22. Original82A70800 inppc_recomp.178.cpp requests56/class34 andafterstatus>=0 readsBE64output+40 to its caller. PinnedXenia95a5c3e xboxkrnl_io_info.cc52..143 defines5args,class34,sizeofnetworkinfo, IOstatus0/information56, invalidhandleC0000008 andshortlengthC0000004 beforewrites. Structure: fourBE64timestamps at0/8/16/24, allocation32, EOF40, BE32attributes48, reserved52..55zero. Microsoft FILE_NETWORK_OPEN_INFORMATION confirms fields and100ns-since1601 times. No file content has been read yet.
+
+- [x] Host agent owns src/asset_files.h/.cpp andtests/asset_files_test.cpp only. Add struct NetworkInformation { uint64_t creation_time,last_access_time,last_write_time,change_time,allocation_size,end_of_file; uint32_t attributes; }; std::optional<NetworkInformation> network_information(uint32_t handle)const. Unknown/closedhandle nullopt. Actual GetFileInformationByHandleEx FileBasicInfo andFileStandardInfo onretainedHANDLE; failures throw, negallocation/EOF reject. Preservetimestampbitpatterns; do notcopywrite_time intochange_time. Native tests compareallfields against independentWindowsqueries on samefixture, usechangesinrealfileafteropen withsharewrite toprovefreshmetadata, closed/invalidnullopt. Header+testsfirst, notifyTEST_READY forrootRED thenimplementSTABLE. Noagentbuilds/commits.
+- [x] Root GuestFiles query_information(handle,io,output,length,class). Onlyclass34implemented; otherclassesexplicitRuntimeStop unchangedoutputs. Shortlength<56returnsC0000004 beforewrites, length>56explicitunsupported pendingdefinedtailcontract. Exact56: outputnonnull, optionalIO, preflightfull56/8, rejectoverlap, thenhostquery. Invalidhandle returnsC0000008 unchangedoutputs. Encodeallfields andzeroreserved4; IOstatus0/information56, return0. Nativeerrors explicitRuntimeStop beforewrites. Tests independentactualmetadata/BEbytes/guards, nullIO, short/invalid/unsupported/unmapped/readonly/overlap preserveoutputs. Roottestsfirst thenRED thenimplementation.
+- [x] Root exactimport82ACB66C/__imp__NtQueryInformationFile, forwardsr3..r7 andreturnsstatus inr3. Logclass,length,actualEOF/allocation/result; originalbootREDrequireeventthenactualrunfindnextdependency. No guessesaboutnextread/eventcalls.
+- [x] Separatehost/guestspec+combinedquality, fullnative/Python/pins, docs+localcommit. User'scontinuousautonomy authorizes these necessarydependencychanges. Title/menugoal remainsactive untilactualacceptance.

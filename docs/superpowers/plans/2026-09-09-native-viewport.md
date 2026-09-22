@@ -1,0 +1,26 @@
+# Native viewport and scissor implementation plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development task-by-task, then separate spec and quality reviews.
+
+**Goal:** Continue the original Windows game through its observed viewport call with actual native raster state, preserving depth 1→0. The full original title/menu goal remains unchanged and incomplete.
+
+**Architecture:** A reusable native raster-state owner validates and retains viewport/scissor, queries actual D3D12 inverted-depth capability, and applies state to real command lists. NativePresentation retains it and reapplies it when starting graphics work. The guest adapter translates only verified viewport/scissor entry points and device fields; unknown graphics still stop. Higher-level D3D replacement follows the established reference approach; executing Xbox driver commands against native handles or accepting a no-op setter would not preserve the intended renderer behavior.
+
+**Tech Stack:** C++20, pinned Plume, system D3D12, Windows SDK; synthetic HLSL in tests only.
+
+## Evidence and constraints
+
+- Commit62a1b20 has clean19/19native and103Python tests. Actualboot stops824E96C8 after1251entries, LR8249B288; r4=70131500 contains six BE32words0,0,500,2D0,3F800000,0 (x/y0,width1280,height720,minDepth1,maxDepth0).
+- Rawppc_recomp.77.cpp824E96C8 reads four unsigned32 integers plus two float32, converts dimensions to float, calls824E9460. Lowerfunction selects RT0 or depth, clamps independently truncated x+width and y+height to attachment bounds; negative resulting extent sets both extentszero. It writes x/y, integer-clamped w/h, min/max, zero atdevice3218..3230, invokes scissor update824E8C70, writes scale/offset at2908..291C anddirtybits16|07E00000. Specialmodesdevice2ABCbits30 remainexplicitunsupported.
+- Scissor824E8C70 copies four signedRECT values to3234..3240, intersects with independently truncated viewport when2F00enabled, packs15bitcoordsat28C4/28C8 preservingbit15and31, then824E66B8 emitsdrivercommands. Native adaptation must retain rawguestRECT plus actual clippednative scissor andneveremitXboxcommands. Scissorenablesetter824E96B8 stores2F00thenupdates. No attachment = original lower viewport no-op.
+- Microsoft D3D12_OPTIONS13 reports InvertedViewportDepthFlipsZSupported. Bothdepthvaluesmustbein0..1; orderingmayreverseonlyifnativefeaturepresent. Queryfailure/unsupportedreverseexplicitlystops; no guessedcapability. Primarysources: https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ns-d3d12-d3d12_feature_data_d3d12_options13 and https://microsoft.github.io/DirectX-Specs/d3d/VulkanOn12.html#inverted-viewports .
+
+## Tasks
+
+- [x] Isolated implementer: src/native_raster_state.h/.cpp and tests/native_raster_state_test.cpp. API NativeRasterState(NativeGraphics&,uint32 target_width,uint32 target_height); set(const plume::RenderViewport&,const plume::RenderRect&); apply(plume::RenderCommandList&) const; constrefviewport()/scissor(); boolinverted_depth_supported()const noexcept. Constructor does not initialize NativeGraphics; validates dimensions1..8192 and sets fullviewport0..1/scissor. QueryfeaturefromactualnativeID3D12Device. set validates finite nonnegative viewport dimensions, hostviewportcoordinatebounds, depthvalues0..1, scissororderedincludingempty andwithinattachment; allvalidationbeforemutation. Reverseddepthacceptedonlyifsupported. apply callsrealsetViewports/setScissors. No window or fakegameUI.
+- [x] Agent tests first, root builds with correctVCenvironment. ActualoffscreenD3D12draw using small syntheticHLSL compiled in test only (D3DCompile/d3dcompiler acceptable), known triangle z0.25, verify colorcoverage viewport∩scissor and actualdepth0.75for1→0 versus0.25for0→1 viaGetCopyableFootprints. Different stateappliedinnewcommandlistprovesretention; invalidstatepreservesprevious. RootownsCMake/testtargets. Agent signalsSTABLEbeforebuild; no concurrentNinja.
+- [x] Root: CMake/buildscript, NativePresentation ownership/getter/setter andstateapplication; realnativecommandliststateupdate andretention. GuestGraphics methods implementverified integer viewport plusdirectfloatvariant asneeded, preserveguestscale/offset/scissorfieldswithcheckedbounds, validatedstatebeforemutation. Stronghook824E96C8 and exactwhitelist. Onlyadd824E9748/824E9460/824E8C70/824E96B8 whenimplementedcontractcomplete; unsupportedpathsremainexplicit.
+- [x] Root meaningful guesttests: observedreversedviewport, exactfields, clipping/integertruncation, nonempty andempty cases, depthrangevalidation/no mutation, optional scissor, actualGPUclearclipaftersetter. BootregressionRED againstoldexe, thenrealentry andexactnextstop evidence. Follow actualnextdependencyifboundedandverified, not phasecount.
+- [x] Nativecomponent spec thenquality; guestintegration spec thenquality. Requiredtargeted/fullnative/Python/pinverification, docs+localcommit; no push/privateassets. Do not markfullgoalcomplete until originaltitle→menuinputverified.
+
+Existing user authorization explicitly requests continuous autonomous progress on these necessary dependencies. Routine design/worktree approval checkpoints do not require asking again; use the current dedicated project branch and keep all source edits scoped to this dependency.

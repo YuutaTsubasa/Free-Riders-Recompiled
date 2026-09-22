@@ -1,0 +1,88 @@
+# Builds and tests everything that does not need the game: the recompiler
+# tools, the runtime and its tests, the launcher (Windows, Linux) and the
+# Android launcher libraries. The game itself is C++ generated from each
+# player's own default.xex (scripts/prepare_recomp.py), so no workflow can
+# build or ship it, and no game file is ever fetched here.
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Fetch the pinned dependencies
+        run: python scripts/bootstrap.py
+      - name: Build tools, runtime tests and launcher
+        shell: pwsh
+        run: ./scripts/build_tools.ps1 -Jobs 4
+      - name: Test
+        run: ctest --test-dir out/build/host -j 4 --output-on-failure -E "^(native_graphics|native_shaders|native_presentation|native_raster_state|native_blend_control|guest_graphics|guest_render_state|guest_blend_request|guest_sampler_filter|guest_texture_binding)$"
+      - name: Test the graphics backend (runners have no GPU; WARP when available)
+        continue-on-error: true
+        run: ctest --test-dir out/build/host -j 1 --output-on-failure -R "^(native_graphics|native_shaders|native_presentation|native_raster_state|native_blend_control|guest_graphics|guest_render_state|guest_blend_request|guest_sampler_filter|guest_texture_binding)$"
+      - name: Python tests (game-file tests skip)
+        run: python -m unittest discover -s tests
+      - uses: actions/upload-artifact@v4
+        with:
+          name: launcher-windows
+          path: out/build/host/FreeRidersRecompiled.exe
+
+  linux:
+    name: Linux
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-15 ninja-build pkg-config libsdl2-dev libx11-dev mesa-vulkan-drivers xvfb
+      - name: Fetch the pinned dependencies
+        run: python scripts/bootstrap.py
+      - name: Build
+        run: SFR_LINUX_BUILD="$PWD/out/build/linux" scripts/build_linux.sh
+      - name: Test (software Vulkan in a virtual display)
+        run: xvfb-run -a ctest --test-dir out/build/linux -j 4 --output-on-failure
+      - name: Python tests (game-file tests skip)
+        run: python -m unittest discover -s tests
+      - uses: actions/upload-artifact@v4
+        with:
+          name: launcher-linux
+          path: out/build/linux/FreeRidersRecompiled
+
+  android:
+    name: Android (launcher)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Fetch the pinned dependencies
+        run: python scripts/bootstrap.py
+      - name: Install Ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: Build the launcher and SDL for both ABIs
+        run: |
+          export SFR_ANDROID_NDK="$ANDROID_NDK_LATEST_HOME"
+          scripts/build_android.sh --launcher-only --abi arm64-v8a --abi x86_64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-launcher-libraries
+          path: android/app/src/main/jniLibs

@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "title": "Sonic Free Riders",
+  "source_filename": "Sonic Free Riders (USA, Europe) (En,Ja,Fr,De,Es,It).iso",
+  "iso_size": 7838695424,
+  "iso_sha256": "f15775c9a0eb1a09920794a169bb904ce5b0e38e05a06bc92b7c59707d964321",
+  "partition_offset": 265879552,
+  "title_id": "0x5345084D",
+  "default_xex": {
+    "path": "default.xex",
+    "sector": 1776975,
+    "size": 14241792,
+    "sha256": "3d58636bec9b92948f7dbe423c0aa96753349ba014194c4e62d2f809c14643a7",
+    "entry_point": "0x824D22F0",
+    "image_base": "0x82000000",
+    "pe_data_offset": "0x5000",
+    "security_info_offset": "0x98"
+  }
+}

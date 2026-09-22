@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "dependencies": [
+    {
+      "name": "XenonRecomp",
+      "url": "https://github.com/hedge-dev/XenonRecomp.git",
+      "commit": "ddd128bcca99fe8bfbb99bea583c972351fa6ace",
+      "path": "tools/XenonRecomp",
+      "license": "MIT",
+      "submodules": [
+        {
+          "path": "thirdparty/fmt",
+          "commit": "873670ba3f9e7bc77ec2c1c94b04f1f8bef77e9f"
+        },
+        {
+          "path": "thirdparty/libmspack",
+          "commit": "305907723a4e7ab2018e58040059ffb5e77db837"
+        },
+        {
+          "path": "thirdparty/simde",
+          "commit": "a532a12ca9bbdc5e6547eb602e6256b71a5377d4"
+        },
+        {
+          "path": "thirdparty/tiny-AES-c",
+          "commit": "23856752fbd139da0b8ca6e471a13d5bcc99a08d"
+        },
+        {
+          "path": "thirdparty/tomlplusplus",
+          "commit": "c4369ae1d8955cae20c4ab40b9813ef4b60e48be"
+        },
+        {
+          "path": "thirdparty/xxHash",
+          "commit": "2bf8313b934633b2a5b7e8fd239645b85e10c852"
+        }
+      ]
+    },
+    {
+      "name": "XenosRecomp",
+      "url": "https://github.com/sonicnext-dev/XenosRecomp.git",
+      "commit": "fb32631ee398e46f2a113d8f9103201dbaa000b4",
+      "path": "tools/XenosRecomp",
+      "license": "MIT",
+      "submodules": [
+        { "path": "thirdparty/dxc-bin", "commit": "737ac9f51c3d06f0cd1ee7e14dc065bafd52310d" }
+      ],
+      "rationale": "Translation-only build uses the already pinned XenonRecomp fmt headers. Its pinned dxc-bin submodule (prebuilt DXC with SPIR-V code generation, which the Windows SDK DXC lacks) compiles the Vulkan shaders; the other compiler and cache submodules are not needed."
+    },
+    {
+      "name": "Plume",
+      "url": "https://github.com/renderbag/plume.git",
+      "commit": "11926860e878e68626ea99ec88562ce2b8badc4f",
+      "path": "tools/Plume",
+      "license": "MIT",
+      "patches": ["patches/plume-optional-extensions.patch"],
+      "patch_rationale": "Makes VK_EXT_robustness2 and VK_KHR_sampler_mirror_clamp_to_edge optional (Plume already has fallbacks for null descriptors), as some Android Vulkan drivers, including the emulator's, lack them; and frees the null-descriptor placeholder buffer before the allocator it came from.",
+      "submodules": [
+        { "path": "contrib/D3D12MemoryAllocator", "commit": "9ef66bc14edd10dee0de3a545b98578363552f66" },
+        { "path": "contrib/Vulkan-Headers", "commit": "89268a6d17fc87003b209a1422c17ab288be99a0" },
+        { "path": "contrib/VulkanMemoryAllocator", "commit": "29b35ea4232688c0f42cdff0c10848290760a417" },
+        { "path": "contrib/volk", "commit": "be3dbd49bf77052665e96b6c7484af855e7e5f67" }
+      ]
+    },
+    {
+      "name": "imgui",
+      "url": "https://github.com/ocornut/imgui.git",
+      "commit": "f5befd2d29e66809cd1110a152e375a7f1981f06",
+      "path": "tools/imgui",
+      "license": "MIT",
+      "submodules": []
+    },
+    {
+      "name": "SDL",
+      "url": "https://github.com/libsdl-org/SDL.git",
+      "commit": "98d1f3a45aae568ccd6ed5fec179330f47d4d356",
+      "path": "tools/SDL",
+      "license": "Zlib",
+      "submodules": [],
+      "rationale": "SDL 2.32.8 (release-2.32.8), built from source for Android: its Java activity, window, input and audio. Desktop Linux uses the system SDL2."
+    }
+  ],
+  "references": [
+    {
+      "name": "Xenia-loader-ABI",
+      "commit": "95a5c3ee250f80c3b9d139658649d9ffb6db3eec",
+      "url": "https://github.com/xenia-project/xenia"
+    },
+    {
+      "name": "MarathonRecomp",
+      "commit": "bd9c0bbd8a99bcc2c0fabdf9521462e75e0ae7d8",
+      "url": "https://github.com/sonicnext-dev/MarathonRecomp"
+    },
+    {
+      "name": "UnleashedRecomp",
+      "commit": "cf829a9eca8fb680fba4b0409ddeb6ca92f22e3c",
+      "url": "https://github.com/hedge-dev/UnleashedRecomp"
+    },
+    {
+      "name": "Marathon-XenonRecomp",
+      "commit": "c3714b8d7d35d202df293c4965b52bd74ae9df02",
+      "url": "https://github.com/sonicnext-dev/XenonRecomp"
+    }
+  ]
+}
