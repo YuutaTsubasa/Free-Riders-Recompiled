@@ -156,6 +156,14 @@ uint32_t guest_view(GuestMemory& memory, uint32_t physical, uint64_t size) {
 }
 
 struct NativeRenderer::Impl {
+    // What the presentation's current command list has bound (its
+    // list_generation): the layout, sets and zero stream stay bound from draw
+    // to draw, so only the first draw of a list binds them, and the pipeline
+    // is set only when it changes. Rebinding them all for every draw cost
+    // more than a millisecond a race frame on D3D12 (a root signature
+    // change drops every root argument).
+    uint64_t bound_generation = ~0ull;
+    const plume::RenderPipeline* bound_pipeline = nullptr;
     NativeGraphics& graphics;
     NativePresentation& presentation;
     std::unique_ptr<plume::RenderPipelineLayout> layout;
@@ -820,8 +828,21 @@ void NativeRenderer::draw(const NativeDraw& draw) {
                    shared_offset = base_offset + shared_rel;
 
     impl_->presentation.record([&](plume::RenderCommandList& list) {
-        list.setGraphicsPipelineLayout(impl_->layout.get());
-        list.setPipeline(pipeline.get());
+        const bool fresh = impl_->bound_generation != impl_->presentation.list_generation();
+        if (fresh) {
+            impl_->bound_generation = impl_->presentation.list_generation();
+            list.setGraphicsPipelineLayout(impl_->layout.get());
+            for (uint32_t space = 0; space < 3; ++space) list.setGraphicsDescriptorSet(impl_->textures.get(), space);
+            list.setGraphicsDescriptorSet(impl_->samplers.get(), 3);
+            list.setGraphicsDescriptorSet(impl_->survey.get(), 4);
+            const plume::RenderVertexBufferView zeros(plume::RenderBufferReference(impl_->zero_buffer.get(), 0), 256);
+            list.setVertexBuffers(zero_slot, &zeros, 1, &slots[1]);
+            impl_->bound_pipeline = nullptr;
+        }
+        if (impl_->bound_pipeline != pipeline.get()) {
+            list.setPipeline(pipeline.get());
+            impl_->bound_pipeline = pipeline.get();
+        }
 #ifdef _WIN32
         // Plume's D3D12 backend sets the pipeline's stencil reference at each
         // draw but never stores RenderGraphicsPipelineDesc::stencilReference,
@@ -831,9 +852,6 @@ void NativeRenderer::draw(const NativeDraw& draw) {
         if (draw.stencil_enabled && !vulkan)
             static_cast<plume::D3D12CommandList&>(list).d3d->OMSetStencilRef(draw.stencil_reference);
 #endif
-        for (uint32_t space = 0; space < 3; ++space) list.setGraphicsDescriptorSet(impl_->textures.get(), space);
-        list.setGraphicsDescriptorSet(impl_->samplers.get(), 3);
-        list.setGraphicsDescriptorSet(impl_->survey.get(), 4);
         if (vulkan) {
             const uint64_t addresses[3] = {ring_address + vs_rel, ring_address + ps_rel, ring_address + shared_rel};
             list.setGraphicsPushConstants(0, addresses, 0, sizeof(addresses));
@@ -850,8 +868,6 @@ void NativeRenderer::draw(const NativeDraw& draw) {
                                : plume::RenderBufferReference(upload, base_offset),
             uint32_t(draw.vertex_buffer ? uint64_t(draw.vertex_count) * draw.stride : draw.vertices.size()));
         list.setVertexBuffers(0, &vertices, 1, &slots[0]);
-        const plume::RenderVertexBufferView zeros(plume::RenderBufferReference(impl_->zero_buffer.get(), 0), 256);
-        list.setVertexBuffers(zero_slot, &zeros, 1, &slots[1]);
         // An indexed draw selects its vertices from the uploaded block; the
         // base location puts that block back where the stream holds it.
         if (index_bytes) {

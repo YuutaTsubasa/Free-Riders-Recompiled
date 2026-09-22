@@ -399,9 +399,9 @@ SFR_HOOK(sub_824E65A0) {
     frame_constants_ms=frame_record_ms=frame_draw_ms=0;
     ++sfr::present_count;
     // SFR_MEMORY_DUMP=P1,P2,... (investigation): at those presents, every
-    // readable guest page from 0x40000000 to 0x90000000 (heaps, stacks, the
-    // image's data) goes to out/memdump-P.bin as (big-endian u32 address,
-    // 4096 bytes) records, for finding game state by comparing dumps.
+    // readable guest page from 0x40000000 up (heaps, stacks, the image's data,
+    // physical allocations) goes to out/memdump-P.bin as (big-endian u32
+    // address, 4096 bytes) records, for finding game state by comparing dumps.
     static const std::vector<uint32_t> dumps=[]{
         std::vector<uint32_t> at;
         if(const char* t=std::getenv("SFR_MEMORY_DUMP"))
@@ -411,7 +411,7 @@ SFR_HOOK(sub_824E65A0) {
     if(!dumps.empty() && std::find(dumps.begin(),dumps.end(),sfr::present_count.load())!=dumps.end()) {
         const auto& memory=*sfr::active_memory;
         std::ofstream out("out/memdump-"+std::to_string(sfr::present_count.load())+".bin",std::ios::binary);
-        for(uint64_t page=0x40000000; page<0x90000000; page+=4096) {
+        for(uint64_t page=0x40000000; page<0x100000000ull; page+=4096) {
             if(!memory.readable(page,4096)) continue;
             const uint8_t address[4]={uint8_t(page>>24),uint8_t(page>>16),uint8_t(page>>8),uint8_t(page)};
             out.write(reinterpret_cast<const char*>(address),4);

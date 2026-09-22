@@ -299,9 +299,16 @@ struct NativePresentation::Impl {
     // readback and explicit flushes submit it.
     bool open = false;
     std::vector<std::function<void(bool)>> after_flush;
+    // Counts begun command lists: what a list has bound (NativeRenderer
+    // skips rebinding its layout and sets) lasts until the next one begins.
+    uint64_t list_generation = 0;
+    void begin_list() {
+        command_list->begin();
+        ++list_generation;
+    }
     void ensure_open() {
         if (open) return;
-        command_list->begin();
+        begin_list();
         std::array<plume::RenderTextureBarrier, 2> barriers{
             plume::RenderTextureBarrier(color.get(), plume::RenderTextureLayout::COLOR_WRITE),
             plume::RenderTextureBarrier(depth.get(), plume::RenderTextureLayout::DEPTH_WRITE)};
@@ -576,6 +583,8 @@ void NativePresentation::record(const std::function<void(plume::RenderCommandLis
 
 void NativePresentation::flush() { impl_->flush(); }
 
+uint64_t NativePresentation::list_generation() const { return impl_->list_generation; }
+
 void NativePresentation::set_gpu_wait(std::function<void(const std::function<void()>&)> wait) {
     Impl::gpu_wait() = std::move(wait);
 }
@@ -605,7 +614,7 @@ std::vector<uint8_t> NativePresentation::readback_color() {
         auto buffer = impl_->graphics->device().createBuffer(plume::RenderBufferDesc::ReadbackBuffer(row_pitch * impl_->height));
         if (!buffer) unavailable("readback buffer");
         impl_->flush();
-        impl_->command_list->begin();
+        impl_->begin_list();
         impl_->command_list->barriers(plume::RenderBarrierStage::COPY,
             plume::RenderTextureBarrier(impl_->color.get(), plume::RenderTextureLayout::COPY_SOURCE));
         VkBufferImageCopy region{};
@@ -645,7 +654,7 @@ std::vector<uint8_t> NativePresentation::readback_color() {
     if (!buffer || !static_cast<plume::D3D12Buffer*>(buffer.get())->d3d) unavailable("readback buffer");
 
     impl_->flush();
-    impl_->command_list->begin();
+    impl_->begin_list();
     impl_->command_list->barriers(plume::RenderBarrierStage::COPY,
         plume::RenderTextureBarrier(impl_->color.get(), plume::RenderTextureLayout::COPY_SOURCE));
     D3D12_TEXTURE_COPY_LOCATION destination{};
@@ -766,7 +775,7 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height) {
     if (pipelined) impl_->ensure_open();
     else {
         impl_->flush();
-        impl_->command_list->begin();
+        impl_->begin_list();
     }
     if (stretch) {
         impl_->build_blit();
