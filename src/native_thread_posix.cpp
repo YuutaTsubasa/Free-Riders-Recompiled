@@ -8,6 +8,10 @@
 
 #include <pthread.h>
 #include <sched.h>
+#ifdef __APPLE__
+#include <unistd.h>
+#include <map>
+#endif
 
 #include <atomic>
 #include <cerrno>
@@ -16,6 +20,30 @@
 #include <mutex>
 #include <string>
 #include <utility>
+
+#ifdef __APPLE__
+// macOS cannot pin a thread to a processor. The processor a thread was given
+// is remembered (so it reads back as on Linux) but only guides the scheduler
+// as much as nothing does.
+struct cpu_set_t { uint64_t bits; };
+#define CPU_ZERO(set) ((set)->bits = 0)
+#define CPU_SET(cpu, set) ((set)->bits |= uint64_t{1} << (cpu))
+#define CPU_ISSET(cpu, set) (((set)->bits >> (cpu)) & 1)
+namespace {
+std::mutex apple_affinity_lock;
+std::map<pthread_t, cpu_set_t> apple_affinity;
+cpu_set_t all_processors() {
+    cpu_set_t set{};
+    const long count = sysconf(_SC_NPROCESSORS_ONLN);
+    for (long cpu = 0; cpu < count && cpu < 64; ++cpu) CPU_SET(cpu, &set);
+    return set;
+}
+int sched_getaffinity(int, size_t, cpu_set_t* set) {
+    *set = all_processors();
+    return 0;
+}
+}
+#endif
 
 namespace sfr {
 namespace {
@@ -37,14 +65,23 @@ std::atomic<uint32_t> next_id{1};
 // Bionic (Android) has no pthread_*affinity_np; a thread's kernel id works
 // with sched_*affinity there.
 static int set_thread_affinity(pthread_t thread, const cpu_set_t& set) {
-#ifdef __ANDROID__
+#if defined(__APPLE__)
+    std::lock_guard lock(apple_affinity_lock);
+    apple_affinity[thread] = set;
+    return 0;
+#elif defined(__ANDROID__)
     return sched_setaffinity(pthread_gettid_np(thread), sizeof(set), &set) == 0 ? 0 : errno;
 #else
     return pthread_setaffinity_np(thread, sizeof(set), &set);
 #endif
 }
 static int get_thread_affinity(pthread_t thread, cpu_set_t& set) {
-#ifdef __ANDROID__
+#if defined(__APPLE__)
+    std::lock_guard lock(apple_affinity_lock);
+    const auto found = apple_affinity.find(thread);
+    set = found != apple_affinity.end() ? found->second : all_processors();
+    return 0;
+#elif defined(__ANDROID__)
     return sched_getaffinity(pthread_gettid_np(thread), sizeof(set), &set) == 0 ? 0 : errno;
 #else
     return pthread_getaffinity_np(thread, sizeof(set), &set);

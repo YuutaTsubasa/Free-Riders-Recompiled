@@ -22,8 +22,10 @@ namespace plume {
 #if defined(_WIN32)
 std::unique_ptr<RenderInterface> CreateD3D12Interface();
 std::unique_ptr<RenderInterface> CreateVulkanInterface();
-#elif defined(__ANDROID__)
-std::unique_ptr<RenderInterface> CreateVulkanInterface();  // swap chains take an ANativeWindow
+#elif defined(__ANDROID__) || defined(__APPLE__)
+// Swap chains take an ANativeWindow (Android) or a Cocoa window and its
+// CAMetalLayer (macOS, through MoltenVK).
+std::unique_ptr<RenderInterface> CreateVulkanInterface();
 #else
 std::unique_ptr<RenderInterface> CreateVulkanInterface(RenderWindow sdlWindow);
 #endif
@@ -99,9 +101,13 @@ void NativeGraphics::initialize() {
     if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0)
         throw std::runtime_error(std::string("failed to start SDL video: ") + SDL_GetError());
     SDL_Window* window = SDL_CreateWindow("Sonic Free Riders", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 720,
+#ifdef __APPLE__
+                                          SDL_WINDOW_METAL | SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE);
+#else
                                           SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE);
+#endif
     if (!window) throw std::runtime_error(std::string("failed to create the SDL window: ") + SDL_GetError());
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(__APPLE__)
     auto render_interface = plume::CreateVulkanInterface();
 #else
     auto render_interface = plume::CreateVulkanInterface(window);

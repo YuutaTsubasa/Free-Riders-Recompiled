@@ -16,8 +16,11 @@
 #include <windows.h>
 #else
 #include <SDL.h>
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(__APPLE__)
 #include <SDL_syswm.h>
+#endif
+#ifdef __APPLE__
+#include <SDL_metal.h>
 #endif
 #endif
 
@@ -448,6 +451,14 @@ NativePresentation::NativePresentation(NativeGraphics& graphics, uint32_t width,
     SDL_VERSION(&system.version);
     if (!SDL_GetWindowWMInfo(implementation->window, &system) || !system.info.android.window) unavailable("native window");
     plume::RenderWindow render_window = system.info.android.window;
+#elif defined(__APPLE__)
+    // MoltenVK draws into a CAMetalLayer: SDL makes a Metal view for it.
+    SDL_SysWMinfo system{};
+    SDL_VERSION(&system.version);
+    if (!SDL_GetWindowWMInfo(implementation->window, &system)) unavailable("native window");
+    SDL_MetalView view = SDL_Metal_CreateView(implementation->window);
+    if (!view) unavailable("Metal view");
+    plume::RenderWindow render_window{(void*)system.info.cocoa.window, SDL_Metal_GetLayer(view)};
 #else
     plume::RenderWindow render_window = implementation->window;
 #endif

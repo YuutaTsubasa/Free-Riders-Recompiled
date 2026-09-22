@@ -35,7 +35,7 @@ jobs:
         run: ctest --test-dir out/build/host -j 4 --output-on-failure -E "^(native_graphics|native_shaders|native_presentation|native_raster_state|native_blend_control|guest_graphics|guest_render_state|guest_blend_request|guest_sampler_filter|guest_texture_binding)$"
       - name: Python tests (game-file tests skip)
         run: python -m unittest discover -s tests
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: launcher-windows
           path: out/build/host/FreeRidersRecompiled.exe
@@ -60,10 +60,33 @@ jobs:
         run: xvfb-run -a ctest --test-dir out/build/linux -j 4 --output-on-failure
       - name: Python tests (game-file tests skip)
         run: python -m unittest discover -s tests
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: launcher-linux
           path: out/build/linux/FreeRidersRecompiled
+
+  macos:
+    name: macOS (build check)
+    # Apple Silicon: 16 KiB pages and no Vulkan driver on the runner, so this
+    # only checks that the runtime and launcher build and their CPU-side tests
+    # pass; the game has not been run on a Mac.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install packages
+        run: brew install ninja sdl2
+      - name: Fetch the pinned dependencies
+        run: python scripts/bootstrap.py
+      - name: Build
+        run: |
+          # On failure, keep going once more to list every error, not just the first.
+          CC=clang CXX=clang++ SFR_LINUX_BUILD="$PWD/out/build/macos" scripts/build_linux.sh ||
+            { ninja -C out/build/macos -k 0 2>&1 | grep -E "error:|undefined" | sort -u | head -80; exit 1; }
+      - name: Test
+        run: ctest --test-dir out/build/macos -j 4 --output-on-failure -E "^(native_graphics|native_shaders|native_presentation|native_raster_state|native_blend_control|guest_graphics|guest_render_state|guest_blend_request|guest_sampler_filter|guest_texture_binding)$"
 
   android:
     name: Android (launcher)
@@ -81,7 +104,7 @@ jobs:
         run: |
           export SFR_ANDROID_NDK="$ANDROID_NDK_LATEST_HOME"
           scripts/build_android.sh --launcher-only --abi arm64-v8a --abi x86_64
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: android-launcher-libraries
           path: android/app/src/main/jniLibs
