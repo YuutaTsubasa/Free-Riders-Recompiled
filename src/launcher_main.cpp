@@ -69,6 +69,7 @@ enum Text {
     Sound, SoundHint, Volume,
     SkipMovies, SkipMoviesHint,
     Parallel, ParallelHint, VertexCache, VertexCacheHint, GpuPipeline, GpuPipelineHint, RaceEvery, RaceEveryHint,
+    CameraLabel, CameraHint, CameraOff, CameraPicture, CameraMotion,
     ImageDirectory, ImageDirectoryHint, AssetDirectory, AssetDirectoryHint, Browse, Found, Missing, FilesHint,
     StartGame, Quit, Defaults,
     MissingFiles, MissingGame, LaunchFailed, Ready,
@@ -122,6 +123,12 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Draw every Nth race frame", "比賽中每 N 格繪製一次"},
     {"Above 1, a slower computer keeps the race at full speed with fewer frames drawn.",
      "大於 1 時，較慢的電腦也能維持比賽速度，但畫面較不流暢。"},
+    {"Camera", "攝影機"},
+    {"The title shows the Kinect camera's picture, and Kinect is how it is played. A webcam can stand in: Picture gives it the image and leaves the pad in charge; Motion also tracks your body, which the pad cannot then do.",
+     "遊戲會顯示 Kinect 的攝影機畫面，而它本來就是體感操作的。可以用 webcam 代替：「畫面」只提供影像、操作仍由手把負責；「體感」還會追蹤你的身體，此時手把就不再驅動玩家。"},
+    {"Off", "關閉"},
+    {"Picture", "畫面"},
+    {"Motion", "體感"},
     {"Game code image", "遊戲程式映像"},
     {"The game's decoded code and data (complete.txt, image.bin).", "解碼後的遊戲程式與資料（complete.txt、image.bin）。"},
     {"Game data", "遊戲資料"},
@@ -1327,6 +1334,19 @@ struct Launcher {
         setting_row(tr(Parallel), tr(ParallelHint), switch_width, scale, [&] { toggle("##parallel", &settings.parallel); });
         setting_row(tr(VertexCache), tr(VertexCacheHint), switch_width, scale, [&] { toggle("##vertex", &settings.vertex_cache); });
         setting_row(tr(GpuPipeline), tr(GpuPipelineHint), switch_width, scale, [&] { toggle("##pipeline", &settings.gpu_pipeline); });
+        const float camera_width = 150 * scale;
+        setting_row(tr(CameraLabel), tr(CameraHint), camera_width, scale, [&] {
+            const char* const values[] = {"off", "picture", "motion"};
+            const Text labels[] = {CameraOff, CameraPicture, CameraMotion};
+            int chosen = 0;
+            for (int i = 0; i < 3; ++i) if (settings.camera == values[i]) chosen = i;
+            ImGui::SetNextItemWidth(camera_width);
+            if (ImGui::BeginCombo("##camera", tr(labels[chosen]))) {
+                for (int i = 0; i < 3; ++i)
+                    if (ImGui::Selectable(tr(labels[i]), chosen == i)) settings.camera = values[i];
+                ImGui::EndCombo();
+            }
+        });
 #ifdef _WIN32  // elsewhere the game always draws with Vulkan
         setting_row(tr(VulkanLabel), tr(VulkanHint), switch_width, scale, [&] { toggle("##vulkan", &settings.vulkan); });
 #endif

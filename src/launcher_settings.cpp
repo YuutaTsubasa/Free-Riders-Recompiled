@@ -58,6 +58,7 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         else if (key == "vulkan") read_flag(value, settings.vulkan);
         else if (key == "touch_controls") read_flag(value, settings.touch_controls);
         else if (key == "tilt") read_flag(value, settings.tilt);
+        else if (key == "camera" && (value == "off" || value == "picture" || value == "motion")) settings.camera = value;
         else if (key == "language" && (value == "auto" || value == "en" || value == "zh-TW")) settings.language = value;
         else if (key == "image_directory") settings.image_directory = utf8_path(value);
         else if (key == "asset_directory") settings.asset_directory = utf8_path(value);
@@ -83,6 +84,7 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "vulkan=" << s.vulkan << '\n'
         << "touch_controls=" << s.touch_controls << '\n'
         << "tilt=" << s.tilt << '\n'
+        << "camera=" << s.camera << '\n'
         << "language=" << s.language << '\n'
         << "image_directory=" << path_utf8(s.image_directory) << '\n'
         << "asset_directory=" << path_utf8(s.asset_directory) << '\n';
@@ -137,6 +139,9 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         {"SFR_FULLSCREEN", s.fullscreen ? "1" : "0"},
         {"SFR_VSYNC", s.vsync ? "1" : "0"},
         {"SFR_GRAPHICS", s.vulkan ? "vulkan" : ""},
+        // "off" leaves the camera alone; "picture" opens it for the image the
+        // title shows; "motion" also drives the Kinect player's body with it.
+        {"SFR_CAMERA", s.camera == "off" ? "" : s.camera},
 #ifdef __ANDROID__
         {"SFR_TOUCH_CONTROLS", s.touch_controls ? "1" : "0"},
         {"SFR_TILT", s.tilt ? "1" : "0"},

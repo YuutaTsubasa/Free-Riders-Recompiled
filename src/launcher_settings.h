@@ -24,6 +24,12 @@ struct LauncherSettings {
     bool vulkan = false;             // SFR_GRAPHICS=vulkan instead of Direct3D 12
     bool touch_controls = true;      // SFR_TOUCH_CONTROLS (Android)
     bool tilt = true;                // SFR_TILT: tilt to steer (Android)
+    // Where the Kinect player's body comes from, and whether the camera
+    // picture the title shows is a real one. "pad" is the emulated player the
+    // gamepad drives; "camera" tracks a real body with a webcam, which cannot
+    // share the pad's sticks, so the two are one choice. "picture" keeps the
+    // pad in charge and only gives the title a camera image.
+    std::string camera = "off";      // "off", "picture" or "motion"
     std::string language = "auto";   // the launcher's: "auto" (the system's), "en" or "zh-TW"
     std::filesystem::path image_directory, asset_directory;
 };

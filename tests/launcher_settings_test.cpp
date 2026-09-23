@@ -32,6 +32,7 @@ void settings_round_trip() {
     settings.race_render_every = 2;
     settings.ui_sounds = false;
     settings.vulkan = true;
+    settings.camera = "motion";
     settings.image_directory = std::filesystem::path(u8"C:/遊戲/image");
     settings.asset_directory = "D:/assets";
     const auto read = sfr::parse_launcher_settings(sfr::format_launcher_settings(settings));
@@ -39,6 +40,7 @@ void settings_round_trip() {
     require(read.fullscreen && read.vsync && !read.audio && read.volume == 35, "display and sound survive a round trip");
     require(read.skip_movies && !read.vertex_cache && !read.gpu_pipeline && !read.parallel && read.race_render_every == 2 && !read.ui_sounds && read.vulkan,
             "advanced settings survive a round trip");
+    require(read.camera == "motion", "the camera choice survives a round trip");
     require(read.image_directory == settings.image_directory && read.asset_directory == settings.asset_directory,
             "non-ASCII directories survive a round trip");
 }
@@ -46,8 +48,9 @@ void settings_round_trip() {
 void malformed_values_keep_defaults() {
     const auto read = sfr::parse_launcher_settings(
         "window_width=12\nwindow_height=abc\nvolume=101\nfullscreen=maybe\nrace_render_every=9\n"
-        "unknown=1\n# vsync=1\nno equals sign\n  audio = 0  \r\n");
+        "unknown=1\n# vsync=1\nno equals sign\n  audio = 0  \r\ncamera=webcam\n");
     const sfr::LauncherSettings defaults;
+    require(read.camera == defaults.camera, "an unknown camera choice keeps the default");
     require(read.window_width == defaults.window_width && read.window_height == defaults.window_height,
             "out-of-range or non-numeric sizes keep the default");
     require(read.volume == defaults.volume && read.fullscreen == defaults.fullscreen &&
