@@ -360,8 +360,13 @@ if(WIN32 OR UNIX)
     endif()
     set(PLUME_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(D3D12_AGILITY_SDK_ENABLED OFF CACHE BOOL "" FORCE)
-    if(NOT WIN32)
-        set(SDL_VULKAN_ENABLED ON CACHE BOOL "" FORCE)  # Plume draws into an SDL window
+    # Plume draws into an SDL window, except on Android, where it draws into
+    # the window's ANativeWindow (RenderWindow is one there). Its window-size
+    # query prefers the SDL branch whenever this is on, so with it on for
+    # Android it read the ANativeWindow as an SDL_Window: every swap chain was
+    # made (uint32)-19 wide, and the blit's viewport and scissor with it.
+    if(NOT WIN32 AND NOT ANDROID)
+        set(SDL_VULKAN_ENABLED ON CACHE BOOL "" FORCE)
     endif()
     add_subdirectory(tools/Plume)
     if(APPLE)
@@ -374,6 +379,13 @@ if(WIN32 OR UNIX)
         # Plume asks SDL for the drawable size by the name SDL 2.26 gave it;
         # older SDL2 has the same call as SDL_Vulkan_GetDrawableSize.
         target_compile_definitions(plume PRIVATE SDL_GetWindowSizeInPixels=SDL_Vulkan_GetDrawableSize)
+    endif()
+    # -DSFR_VULKAN_VALIDATION=ON asks Plume for the Khronos validation layer,
+    # for diagnosis only: the layer has to be beside the program (or in the
+    # APK's jniLibs on Android) and it costs a great deal of speed.
+    option(SFR_VULKAN_VALIDATION "Enable the Vulkan validation layer" OFF)
+    if(SFR_VULKAN_VALIDATION)
+        target_compile_definitions(plume PRIVATE VULKAN_VALIDATION_LAYER_ENABLED)
     endif()
     add_library(sfr_native_graphics STATIC src/native_graphics.cpp)
     target_include_directories(sfr_native_graphics PUBLIC src)

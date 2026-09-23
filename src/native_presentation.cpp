@@ -386,6 +386,11 @@ void NativePresentation::Impl::build_blit() {
     pipeline_desc.depthWriteEnabled = false;
     pipeline_desc.renderTargetCount = 1;
     pipeline_desc.renderTargetFormat[0] = swap_chain_format;
+    // A blend description of its own: the default one leaves every factor
+    // UNKNOWN, which reaches Vulkan as VK_BLEND_FACTOR_MAX_ENUM and is not a
+    // valid value even with blending off (the validation layer reports six of
+    // them for this pipeline). This one writes the source, as the blit wants.
+    pipeline_desc.renderTargetBlend[0] = plume::RenderBlendDesc::Copy();
     blit_pipeline = device.createGraphicsPipeline(pipeline_desc);
     if (!blit_pipeline) unavailable("blit pipeline");
 
