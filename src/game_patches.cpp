@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
+#include <sstream>
 #include <thread>
 #include <unordered_map>
 
@@ -64,6 +65,33 @@ SFR_HOOK(sub_82817B48) {
     __imp__sub_82817B48(ctx,base);
 }
 
+// How many of the dispatcher's helper threads (823B60C0) may still be inside
+// a job's callback: set when a helper takes a job, cleared when it sets its
+// done event at 823B614C, which it does only once the queue is empty and its
+// last callback has returned. A helper that takes another job after that
+// (the loop after its self-suspend) counts again, which is exactly the case
+// the dispatcher must not reset jobs under.
+namespace {
+std::atomic<uint32_t> helpers_in_jobs{0};
+thread_local bool helper_in_job=false;
+
+void helper_leaves_job() {
+    if(!helper_in_job) return;
+    helper_in_job=false;
+    helpers_in_jobs.fetch_sub(1,std::memory_order_acq_rel);
+}
+}
+
+PPC_FUNC_IMPL(__imp__sub_824D0B18);
+
+// SetEvent. The helper's own (return address 823B6150) says it has finished
+// the jobs it took.
+SFR_CONCURRENT_HOOK(sub_824D0B18) {
+    sfr::enter_function(ctx,"sub_824D0B18",0x824D0B18);
+    if(ctx.lr==0x823B6150) helper_leaves_job();
+    __imp__sub_824D0B18(ctx,base);
+}
+
 PPC_FUNC_IMPL(__imp__sub_824D0B10);
 
 // Work-sharing job 823B5D40 (run by the job system each race frame) queues
@@ -93,6 +121,27 @@ SFR_CONCURRENT_HOOK(sub_824D0B10) {
     if(work_share && ctx.r3.u32==0x102) {
         static std::atomic<uint32_t> timeouts{0};
         if(timeouts++<16) std::cerr << "GAME_PATCH work_share_wait_timeout count=" << timeouts << '\n';
+    }
+    // The three done events say the helpers found the queue empty, but not
+    // that they are out of the job they took last: the caller resets and
+    // reuses every job as soon as this returns, and a helper still inside one
+    // then reads a job whose 176..496 have been zeroed (a null dereference in
+    // the callback) or, next time round, a function word that is the base
+    // class's pure slot. Hold the reset back until they are out.
+    if(work_share && helpers_in_jobs.load(std::memory_order_acquire)) {
+        static const uint32_t wait_ms=[]{
+            const char* text=std::getenv("SFR_JOB_DRAIN_WAIT_MS");
+            const long value=text?std::strtol(text,nullptr,10):20;
+            return uint32_t(value>=0?value:20);
+        }();
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::milliseconds(wait_ms);
+        while(helpers_in_jobs.load(std::memory_order_acquire) && std::chrono::steady_clock::now()<deadline)
+            sfr::wait_without_permit([](void*){ std::this_thread::sleep_for(std::chrono::microseconds(50)); },nullptr);
+        static std::atomic<uint32_t> waits{0}, left{0};
+        const uint32_t count=++waits;
+        if(helpers_in_jobs.load(std::memory_order_acquire)) ++left;
+        if(count<=8 || count%256==0)
+            std::cerr << "GAME_PATCH job_drain_wait count=" << count << " still_running=" << left << '\n';
     }
 }
 
@@ -134,12 +183,51 @@ SFR_HOOK(sub_82A53BC0) {
         }
         static std::atomic<uint32_t> late{0}, skipped{0};
         const uint32_t count=call?++late:++skipped;
-        if(count<=8)
-            std::cerr << "GAME_PATCH " << (call?"job_filled_in_late":"job_skipped_after_reset")
-                      << " job=0x" << std::hex << job << " call=0x" << call << " lr=0x" << ctx.lr
-                      << std::dec << " count=" << count << '\n';
+        if(count<=8) {
+            std::ostringstream text;
+            text << "GAME_PATCH " << (call?"job_filled_in_late":"job_skipped_after_reset")
+                 << " job=0x" << std::hex << job << " call=0x" << call << " lr=0x" << ctx.lr << " words=";
+            try {
+                for(uint32_t offset : {160u,164u,168u,172u,176u,180u,184u,492u,496u,516u,520u})
+                    text << std::dec << offset << ':' << std::hex
+                         << sfr::active_memory->load<uint32_t>(uint64_t(job)+offset) << ' ';
+            } catch(...) { text << "unreadable"; }
+            std::cerr << text.str() << std::dec << " count=" << count << '\n';
+        }
         if(call) ctx.ctr.u64=call, PPC_CALL_INDIRECT_FUNC(call);
         return;
     }
     __imp__sub_82A53BC0(ctx,base);
+}
+
+PPC_FUNC_IMPL(__imp__sub_82750C40);
+
+// The lock-free queue's take. Many owners share it; only the dispatcher's own
+// take (return address 823B5E58) and its helpers' (823B6114) are about jobs.
+// SFR_JOB_TRACE=1 prints what a caller then tests.
+SFR_CONCURRENT_HOOK(sub_82750C40) {
+    sfr::enter_function(ctx,"sub_82750C40",0x82750C40);
+    static const bool trace=[]{ const char* t=std::getenv("SFR_JOB_TRACE"); return t && *t=='1'; }();
+    const uint32_t slot=ctx.r4.u32, caller=uint32_t(ctx.lr);
+    __imp__sub_82750C40(ctx,base);
+    if(!sfr::active_memory || !slot || (caller!=0x823B5E58 && caller!=0x823B6114)) return;
+    uint32_t job=0;
+    try { job=sfr::active_memory->load<uint32_t>(slot); } catch(...) { return; }
+    if(caller==0x823B6114 && job!=0 && !helper_in_job) {
+        helper_in_job=true;
+        helpers_in_jobs.fetch_add(1,std::memory_order_acq_rel);
+    } else if(caller==0x823B6114 && job==0) {
+        helper_leaves_job();
+    }
+    if(!trace || !job) return;
+    static std::atomic<uint32_t> traced{0};
+    if(traced>=64) return;
+    ++traced;
+    try {
+        std::ostringstream text;
+        text << "JOB_TAKE lr=0x" << std::hex << caller << " job=0x" << job << " words=";
+        for(uint32_t offset : {160u,164u,168u,172u,176u,180u,184u,492u,496u,516u,520u})
+            text << offset << ':' << sfr::active_memory->load<uint32_t>(uint64_t(job)+offset) << ' ';
+        std::cerr << text.str() << std::dec << '\n';
+    } catch(...) {}
 }
