@@ -26,6 +26,11 @@
 
 namespace {
 sfr::NuiSkeletonEmulation skeleton;
+// A second Kinect player, driven by the second pad. The frame carries six
+// skeleton slots and the title reads them all, so a player appears simply by
+// filling another one; it is identified separately (tracking id 2).
+sfr::NuiSkeletonEmulation second_skeleton;
+bool second_present = false;
 sfr::NuiPadEdges edges;
 uint16_t pressed=0;  // buttons newly pressed at the last input update
 uint32_t frame_number = 0;
@@ -111,8 +116,17 @@ SFR_HOOK(sub_827707B0) {
     const bool racing=sfr::active_memory->load<uint32_t>(0x83E52F8C) != 0;
     sfr::set_touch_racing(racing);
     skeleton.update(sfr::nui_gamepad(), racing);
+    const auto second=sfr::nui_second_gamepad();
+    if(second) second_skeleton.update(*second, racing);
     const auto elapsed=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-started);
-    skeleton.write(*sfr::active_memory,frame,++frame_number,uint64_t(elapsed.count()));
+    auto& memory=*sfr::active_memory;
+    sfr::NuiSkeletonEmulation::write_header(memory,frame,++frame_number,uint64_t(elapsed.count()));
+    skeleton.write_slot(memory,frame,0,1);
+    if(second) second_skeleton.write_slot(memory,frame,1,2);
+    if(second.has_value()!=second_present) {
+        second_present=second.has_value();
+        std::cerr << "NUI_SECOND_PLAYER present=" << second_present << '\n';
+    }
     if(frame_number%300==1) {
         const auto hand=skeleton.hand(true);
         std::cerr << "NUI_SKELETON_FRAME number=" << frame_number << " right_hand=" << hand[0] << ',' << hand[1]
@@ -138,10 +152,12 @@ SFR_HOOK(sub_82764620) {
     for(uint32_t offset=0;offset<32;offset+=4) memory.store<uint32_t>(uint64_t(message)+offset,0);
     memory.store<uint32_t>(message,1);                         // identity operation complete
     memory.store<uint32_t>(uint64_t(message)+4,tracking_id);
-    const bool profile=sfr::profile_for(0)!=nullptr;
+    // Only the first player is the signed-in profile; a second one joins as
+    // an unenrolled guest, as a friend standing beside the sensor would.
+    const bool profile=tracking_id<=1 && sfr::profile_for(0)!=nullptr;
     const uint32_t enrollment=profile?0u:sfr::NuiSkeletonEmulation::guest;
     memory.store<uint32_t>(uint64_t(message)+12,enrollment);
-    skeleton.identify(enrollment);
+    (tracking_id>=2?second_skeleton:skeleton).identify(enrollment);
     std::cerr << "NUI_IDENTITY_IDENTIFY tracking_id=" << tracking_id << " callback=0x" << std::hex << callback
               << " context=0x" << context << std::dec << " result=" << (profile?"profile":"guest") << '\n';
     if(callback) {

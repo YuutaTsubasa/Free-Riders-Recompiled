@@ -40,6 +40,22 @@ int main() {
         require(memory.load<uint8_t>(frame + sfr::nui_skeleton_frame_size) == 0xa5,
                 "nothing is written past the frame");
 
+        // A frame carrying two players: the header clears the slots, then
+        // each player writes its own with a tracking id of its own.
+        sfr::NuiSkeletonEmulation second;
+        sfr::NuiSkeletonEmulation::write_header(memory, frame, 9, 4321);
+        skeleton.write_slot(memory, frame, 0, 1);
+        second.write_slot(memory, frame, 1, 2);
+        require(memory.load<uint32_t>(data) == sfr::nui_tracked &&
+                    memory.load<uint32_t>(data + 4) == 1, "the first player keeps slot 0 and tracking id 1");
+        const uint32_t slot1 = data + sfr::nui_skeleton_data_size;
+        require(memory.load<uint32_t>(slot1) == sfr::nui_tracked &&
+                    memory.load<uint32_t>(slot1 + 4) == 2, "the second player is tracked in slot 1 as id 2");
+        for (uint32_t slot = 2; slot < 6; ++slot)
+            require(memory.load<uint32_t>(data + slot * sfr::nui_skeleton_data_size) == 0,
+                    "no other slot is tracked with two players");
+        require(memory.load<uint32_t>(frame + 8) == 9, "the header carries the frame number");
+
         // The first stick input raises the right hand for a second (so the
         // title starts its cursor), then centres it; the stick then moves it.
         sfr::GamepadState pad;

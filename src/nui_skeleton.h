@@ -40,8 +40,15 @@ public:
     // reaches: left or right holds that arm out to its side (for the rings
     // beside the board), up raises both.
     void update(const GamepadState& pad, bool racing = false);
-    // Writes the complete frame (every other skeleton slot not tracked).
+    // Writes the complete frame for this player alone: the header, this
+    // skeleton in slot 0 with tracking id 1, and no other slot tracked.
     void write(GuestMemory& memory, uint32_t address, uint32_t frame_number, uint64_t timestamp_ms) const;
+    // The same in two parts, for a frame that carries more than one player:
+    // the header (which clears every slot), then a slot each. A slot's
+    // tracking id is what NuiIdentityIdentify is called with, so the players
+    // need different ones.
+    static void write_header(GuestMemory& memory, uint32_t address, uint32_t frame_number, uint64_t timestamp_ms);
+    void write_slot(GuestMemory& memory, uint32_t address, uint32_t slot, uint32_t tracking_id) const;
     std::array<float, 3> hand(bool right) const { return right ? right_ : left_; }
     // After NuiIdentityIdentify completes the skeleton carries that result
     // instead of "not yet identified": the enrollment of the signed-in

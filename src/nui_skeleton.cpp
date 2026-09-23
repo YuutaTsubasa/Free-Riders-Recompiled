@@ -81,8 +81,8 @@ void NuiSkeletonEmulation::update(const GamepadState& pad, bool racing) {
     move(left_, axis(pad.thumb_lx), axis(pad.thumb_ly), false, (pad.buttons & gamepad_button::left_shoulder) != 0, rest);
 }
 
-void NuiSkeletonEmulation::write(GuestMemory& memory, uint32_t address, uint32_t frame_number,
-                                 uint64_t timestamp_ms) const {
+void NuiSkeletonEmulation::write_header(GuestMemory& memory, uint32_t address, uint32_t frame_number,
+                                       uint64_t timestamp_ms) {
     memory.check_write(address, nui_skeleton_frame_size);
     for (uint32_t offset = 0; offset < nui_skeleton_frame_size; offset += 4)
         memory.store<uint32_t>(uint64_t(address) + offset, 0);
@@ -91,7 +91,16 @@ void NuiSkeletonEmulation::write(GuestMemory& memory, uint32_t address, uint32_t
     // Floor 1 m below the sensor; gravity straight down.
     store_vector(memory, uint64_t(address) + 16, {0.0f, 1.0f, 0.0f}, 1.0f);
     store_vector(memory, uint64_t(address) + 32, {0.0f, 1.0f, 0.0f}, 0.0f);
+}
 
+void NuiSkeletonEmulation::write(GuestMemory& memory, uint32_t address, uint32_t frame_number,
+                                 uint64_t timestamp_ms) const {
+    write_header(memory, address, frame_number, timestamp_ms);
+    write_slot(memory, address, 0, 1);
+}
+
+void NuiSkeletonEmulation::write_slot(GuestMemory& memory, uint32_t address, uint32_t slot,
+                                      uint32_t tracking_id) const {
     std::array<Vector, nui_joint_count> joints{};
     using namespace nui_joint;
     constexpr float z = 2.5f;
@@ -119,9 +128,9 @@ void NuiSkeletonEmulation::write(GuestMemory& memory, uint32_t address, uint32_t
     joints[foot_left] = {-0.12f, -0.97f, z - 0.08f};
     joints[foot_right] = {0.12f, -0.97f, z - 0.08f};
 
-    const uint64_t data = uint64_t(address) + nui_skeleton_data_offset;  // slot 0 only
+    const uint64_t data = uint64_t(address) + nui_skeleton_data_offset + uint64_t(slot) * nui_skeleton_data_size;
     memory.store<uint32_t>(data, nui_tracked);
-    memory.store<uint32_t>(data + 4, 1);  // tracking id
+    memory.store<uint32_t>(data + 4, tracking_id);
     // Until identified (-1) the title runs NuiIdentityIdentify on it before
     // it may join; afterwards the guest result.
     memory.store<uint32_t>(data + 8, enrollment_);
