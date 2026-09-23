@@ -7,7 +7,7 @@
 namespace sfr {
 std::vector<std::string> CameraCapture::devices() { return {}; }
 
-std::unique_ptr<CameraCapture> CameraCapture::open(uint32_t, uint32_t) {
+std::unique_ptr<CameraCapture> CameraCapture::open(uint32_t, uint32_t, const std::string&) {
     static bool reported = false;
     if (!reported) {
         reported = true;

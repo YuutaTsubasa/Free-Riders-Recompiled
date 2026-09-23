@@ -14,6 +14,7 @@
 #include <cstring>
 #include <iostream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace sfr {
@@ -68,11 +69,13 @@ private:
 };
 }
 
-std::vector<std::string> CameraCapture::devices() {
-    // /dev/video0 upwards, keeping the ones that can capture: the numbers a
-    // driver gives out are not always consecutive, and some of them are
-    // metadata nodes rather than cameras.
-    std::vector<std::string> names;
+namespace {
+// /dev/video0 upwards, keeping the ones that can capture: the numbers a
+// driver gives out are not always consecutive, and some of them are metadata
+// nodes rather than cameras. The path is part of the name, so a player who
+// knows which node they want can write that down instead.
+std::vector<std::pair<std::string, std::string>> capture_nodes() {
+    std::vector<std::pair<std::string, std::string>> found;
     for (int index = 0; index < 16; ++index) {
         const std::string path = "/dev/video" + std::to_string(index);
         const int descriptor = ::open(path.c_str(), O_RDWR | O_NONBLOCK);
@@ -80,16 +83,31 @@ std::vector<std::string> CameraCapture::devices() {
         v4l2_capability capability{};
         if (retry_ioctl(descriptor, VIDIOC_QUERYCAP, &capability) == 0 &&
             (capability.capabilities & V4L2_CAP_VIDEO_CAPTURE) && (capability.capabilities & V4L2_CAP_STREAMING))
-            names.push_back(path + " (" + reinterpret_cast<const char*>(capability.card) + ")");
+            found.emplace_back(path, path + " (" + reinterpret_cast<const char*>(capability.card) + ")");
         close(descriptor);
     }
+    return found;
+}
+}
+
+std::vector<std::string> CameraCapture::devices() {
+    std::vector<std::string> names;
+    for (const auto& node : capture_nodes()) names.push_back(node.second);
     return names;
 }
 
-std::unique_ptr<CameraCapture> CameraCapture::open(uint32_t width, uint32_t height) {
-    // SFR_CAMERA_DEVICE=N reads /dev/videoN instead of /dev/video0.
-    std::string path = "/dev/video0";
-    if (const char* text = std::getenv("SFR_CAMERA_DEVICE"); text && *text) path = "/dev/video" + std::string(text);
+std::unique_ptr<CameraCapture> CameraCapture::open(uint32_t width, uint32_t height, const std::string& wanted_device) {
+    // SFR_CAMERA_DEVICE names one of the cameras the launcher lists. The
+    // nodes are looked up again here rather than trusted to still be numbered
+    // as they were, since a camera unplugged in between renumbers the rest.
+    const auto nodes = capture_nodes();
+    if (nodes.empty()) {
+        std::cerr << "NATIVE_CAMERA unavailable=no-device" << std::endl;
+        return nullptr;
+    }
+    std::vector<std::string> names;
+    for (const auto& node : nodes) names.push_back(node.second);
+    const std::string path = nodes[chosen_camera_device(names, wanted_device)].first;
     const int descriptor = ::open(path.c_str(), O_RDWR | O_NONBLOCK);
     if (descriptor == -1) {
         std::cerr << "NATIVE_CAMERA unavailable=no-device path=" << path << '\n';

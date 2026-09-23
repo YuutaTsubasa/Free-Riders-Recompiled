@@ -148,42 +148,33 @@ std::vector<std::string> CameraCapture::devices() {
     return names;
 }
 
-std::unique_ptr<CameraCapture> CameraCapture::open(uint32_t width, uint32_t height) {
+std::unique_ptr<CameraCapture> CameraCapture::open(uint32_t width, uint32_t height, const std::string& wanted_device) {
     static MediaFoundation media;
     if (!media.ready) {
         std::cerr << "NATIVE_CAMERA unavailable=media-foundation\n";
         return nullptr;
     }
-    ComPtr<IMFAttributes> attributes;
-    if (FAILED(MFCreateAttributes(attributes.GetAddressOf(), 1)) ||
-        FAILED(attributes->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
-                                   MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID)))
-        return nullptr;
-    IMFActivate** devices = nullptr;
-    UINT32 count = 0;
-    if (FAILED(MFEnumDeviceSources(attributes.Get(), &devices, &count)) || !count) {
-        if (devices) CoTaskMemFree(devices);
-        std::cerr << "NATIVE_CAMERA unavailable=no-device\n";
+    // SFR_CAMERA_DEVICE names the camera to open, out of the same list the
+    // launcher shows. The list is walked once here, so the name that matches
+    // belongs to the activator that is opened, however Media Foundation
+    // happened to order them this time.
+    std::vector<std::string> names;
+    std::vector<ComPtr<IMFActivate>> activators;
+    for_each_device([&](uint32_t, IMFActivate& device, const std::wstring& listed) {
+        names.push_back(narrow(listed));
+        activators.emplace_back(&device);
+    });
+    if (activators.empty()) {
+        std::cerr << "NATIVE_CAMERA unavailable=no-device" << std::endl;
         return nullptr;
     }
-    // SFR_CAMERA_DEVICE=N picks another of the cameras the host lists.
-    uint32_t wanted = 0;
-    if (const char* text = std::getenv("SFR_CAMERA_DEVICE"); text && *text) wanted = uint32_t(std::strtoul(text, nullptr, 10));
-    if (wanted >= count) wanted = 0;
+    const size_t wanted = chosen_camera_device(names, wanted_device);
+    const std::string chosen = names[wanted];
     ComPtr<IMFMediaSource> source;
-    const HRESULT activated = devices[wanted]->ActivateObject(IID_PPV_ARGS(source.GetAddressOf()));
-    std::wstring name;
-    {
-        WCHAR* friendly = nullptr;
-        UINT32 length = 0;
-        if (SUCCEEDED(devices[wanted]->GetAllocatedString(MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, &friendly, &length))) {
-            name.assign(friendly, length);
-            CoTaskMemFree(friendly);
-        }
+    if (FAILED(activators[wanted]->ActivateObject(IID_PPV_ARGS(source.GetAddressOf())))) {
+        std::cerr << "NATIVE_CAMERA unavailable=busy device=" << chosen << std::endl;
+        return nullptr;
     }
-    for (UINT32 i = 0; i < count; ++i) devices[i]->Release();
-    CoTaskMemFree(devices);
-    if (FAILED(activated)) return nullptr;
 
     ComPtr<IMFAttributes> reader_attributes;
     if (FAILED(MFCreateAttributes(reader_attributes.GetAddressOf(), 1)) ||
@@ -221,7 +212,7 @@ std::unique_ptr<CameraCapture> CameraCapture::open(uint32_t width, uint32_t heig
         std::cerr << "NATIVE_CAMERA unavailable=bottom-up\n";
         return nullptr;
     }
-    std::wcerr << L"NATIVE_CAMERA device=\"" << name << L"\"";
+    std::cerr << "NATIVE_CAMERA device=" << chosen << " of " << names.size();
     std::cerr << " size=" << actual_width << 'x' << actual_height << " format="
               << (format == CameraPixels::bgra ? "bgra" : format == CameraPixels::yuy2 ? "yuy2" : "nv12")
               << " stride=" << stride << '\n';

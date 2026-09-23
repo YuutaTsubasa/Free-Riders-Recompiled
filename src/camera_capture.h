@@ -33,13 +33,27 @@ public:
     // The newest picture, if one has arrived since the last call. False
     // leaves the frame alone, so a caller can keep showing the last one.
     virtual bool next(CameraFrame& frame) = 0;
-    // The first camera the host offers, asked for about this size (the
-    // nearest it offers is used). Null when there is none, when the platform
-    // has no capture support, or when the player has not allowed it.
-    static std::unique_ptr<CameraCapture> open(uint32_t width, uint32_t height);
-    // The cameras the host offers, in the order open() numbers them
-    // (SFR_CAMERA_DEVICE picks one). Empty where there is no capture stack.
+    // One of the host's cameras, asked for about this size (the nearest it
+    // offers is used). The camera is the one named, or the one
+    // SFR_CAMERA_DEVICE names when nothing is passed. Null when there is
+    // none, when the platform has no capture support, or when the player has
+    // not allowed it.
+    static std::unique_ptr<CameraCapture> open(uint32_t width, uint32_t height, const std::string& wanted = {});
+    // The cameras the host offers, by name, in the order open() lists them.
+    // SFR_CAMERA_DEVICE picks one of these names. Empty where there is no
+    // capture stack.
     static std::vector<std::string> devices();
 };
+
+// Which of the listed cameras SFR_CAMERA_DEVICE asks for. A name is matched
+// whole, then as a part of one (so a saved name still finds its camera when
+// the host renames it slightly); a plain number is a place in the list, for
+// the days before the cameras had names here. Anything unknown, or nothing
+// asked for, is the first camera: hosts list their built-in one first.
+// A list that changes while the game is away -- a phone camera closed, a
+// capture card unplugged -- is the reason a number alone will not do.
+size_t camera_device_index(const std::vector<std::string>& names, const std::string& wanted);
+// The same, falling back to SFR_CAMERA_DEVICE when nothing is asked for.
+size_t chosen_camera_device(const std::vector<std::string>& names, const std::string& wanted = {});
 
 }

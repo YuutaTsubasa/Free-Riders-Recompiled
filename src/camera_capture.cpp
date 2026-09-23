@@ -1,6 +1,8 @@
 #include "camera_capture.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <cstring>
 
 namespace sfr {
@@ -64,4 +66,26 @@ bool convert_camera_pixels(CameraPixels format, std::span<const uint8_t> source,
 }
 
 CameraCapture::~CameraCapture() = default;
+
+size_t camera_device_index(const std::vector<std::string>& names, const std::string& wanted) {
+    if (names.empty() || wanted.empty()) return 0;
+    // Digits are a place in the list and nothing else: a name carries them
+    // too ("Live Gamer Portable 2"), and an old setting of 2 meant the third
+    // camera, not that one.
+    if (std::all_of(wanted.begin(), wanted.end(), [](unsigned char c) { return std::isdigit(c) != 0; })) {
+        const unsigned long place = std::strtoul(wanted.c_str(), nullptr, 10);
+        return place < names.size() ? size_t(place) : 0;
+    }
+    for (size_t i = 0; i < names.size(); ++i)
+        if (names[i] == wanted) return i;
+    for (size_t i = 0; i < names.size(); ++i)
+        if (names[i].find(wanted) != std::string::npos) return i;
+    return 0;
+}
+
+size_t chosen_camera_device(const std::vector<std::string>& names, const std::string& wanted) {
+    if (!wanted.empty()) return camera_device_index(names, wanted);
+    const char* const text = std::getenv("SFR_CAMERA_DEVICE");
+    return camera_device_index(names, text ? text : "");
+}
 }

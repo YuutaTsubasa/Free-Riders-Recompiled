@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace {
@@ -63,6 +64,18 @@ void sizes_that_cannot_hold_a_picture_are_refused() {
     require(!sfr::convert_camera_pixels(sfr::CameraPixels::yuy2, small, 3, 2, 0, frame), "an odd width is refused");
     require(!sfr::convert_camera_pixels(sfr::CameraPixels::bgra, small, 0, 2, 0, frame), "an empty picture is refused");
 }
+
+void a_camera_is_found_by_its_name() {
+    const std::vector<std::string> cameras = {"Live Gamer Portable 2", "e2eSoft iVCam #2", "Integrated Webcam"};
+    require(sfr::camera_device_index(cameras, "e2eSoft iVCam #2") == 1, "a name is found");
+    require(sfr::camera_device_index(cameras, "Integrated") == 2, "part of a name is enough");
+    require(sfr::camera_device_index(cameras, "DroidCam") == 0, "a camera that has gone falls back to the first");
+    require(sfr::camera_device_index(cameras, "") == 0, "asking for nothing takes the first");
+    require(sfr::camera_device_index({}, "Integrated Webcam") == 0, "no cameras, nothing to choose");
+    // Digits are a place in the list, even where a name also holds them.
+    require(sfr::camera_device_index(cameras, "2") == 2, "an old numbered setting still means the third camera");
+    require(sfr::camera_device_index(cameras, "7") == 0, "a place the host does not have falls back to the first");
+}
 }
 
 int main() {
@@ -70,6 +83,7 @@ int main() {
         bgra_is_copied_with_opaque_alpha();
         yuy2_and_nv12_become_colours();
         sizes_that_cannot_hold_a_picture_are_refused();
+        a_camera_is_found_by_its_name();
         std::cout << "Camera capture checks passed\n";
         return 0;
     } catch (const std::exception& error) {

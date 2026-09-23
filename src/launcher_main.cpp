@@ -71,6 +71,7 @@ enum Text {
     SkipMovies, SkipMoviesHint,
     Parallel, ParallelHint, VertexCache, VertexCacheHint, GpuPipeline, GpuPipelineHint, RaceEvery, RaceEveryHint,
     CameraLabel, CameraHint, CameraOff, CameraPicture, CameraMotion, CameraDevice, CameraDeviceHint, CameraNone,
+    CameraTest, CameraTesting, CameraWorks, CameraSilent, CameraClosed,
     ImageDirectory, ImageDirectoryHint, AssetDirectory, AssetDirectoryHint, Browse, Found, Missing, FilesHint,
     StartGame, Quit, Defaults,
     MissingFiles, MissingGame, LaunchFailed, Ready,
@@ -133,6 +134,11 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Which camera", "使用哪一台"},
     {"The camera to read, when the host has more than one.", "當電腦上有多台攝影機時，要讀取哪一台。"},
     {"No camera found", "找不到攝影機"},
+    {"Test", "測試"},
+    {"Looking...", "確認中..."},
+    {"Pictures are arriving", "有畫面"},
+    {"Opened, but no picture arrives", "開得起來，但沒有畫面"},
+    {"This camera will not open", "這台攝影機打不開"},
     {"Game code image", "遊戲程式映像"},
     {"The game's decoded code and data (complete.txt, image.bin).", "解碼後的遊戲程式與資料（complete.txt、image.bin）。"},
     {"Game data", "遊戲資料"},
@@ -833,6 +839,13 @@ struct Launcher {
     // The host's cameras, listed while the camera setting is on.
     std::vector<std::string> cameras;
     std::string cameras_listed_for = "off";
+    // Trying the chosen camera: a camera that opens does not always send
+    // anything (a phone camera whose phone is elsewhere, a capture card with
+    // nothing plugged in), and the game can only stand there looking puzzled.
+    // The answer takes seconds, so it is found on a thread of its own.
+    enum class CameraTrial { none, looking, pictures, silent, closed };
+    std::atomic<CameraTrial> camera_trial{CameraTrial::none};
+    std::jthread camera_trial_worker;
     // The launcher slides in (appear rises to 1) and out before the game
     // starts (leaving, appear falls to 0).
     float appear = 0.0f, page_fade = 0.0f;
@@ -1361,17 +1374,39 @@ struct Launcher {
                 cameras = sfr::CameraCapture::devices();
                 cameras_listed_for = settings.camera;
             }
-            const float device_width = 260 * scale;
+            const float test_width = ImGui::CalcTextSize(tr(CameraTesting)).x + ImGui::GetStyle().FramePadding.x * 4;
+            const float device_width = 230 * scale + test_width;
+            // The camera is remembered by name, so the row shows the saved
+            // name even when that camera is not here today.
+            const char* current = settings.camera_device.empty()
+                                      ? (cameras.empty() ? tr(CameraNone) : cameras.front().c_str())
+                                      : settings.camera_device.c_str();
+            const Text trial[] = {CameraTest, CameraTesting, CameraWorks, CameraSilent, CameraClosed};
             setting_row(tr(CameraDevice), tr(CameraDeviceHint), device_width, scale, [&] {
-                if (settings.camera_device >= cameras.size()) settings.camera_device = 0;
-                const char* current = cameras.empty() ? tr(CameraNone) : cameras[settings.camera_device].c_str();
-                ImGui::SetNextItemWidth(device_width);
+                ImGui::SetNextItemWidth(device_width - test_width - ImGui::GetStyle().ItemSpacing.x);
                 if (ImGui::BeginCombo("##camera_device", current)) {
-                    for (uint32_t i = 0; i < cameras.size(); ++i)
-                        if (ImGui::Selectable(cameras[i].c_str(), settings.camera_device == i))
-                            settings.camera_device = i;
+                    for (const auto& camera : cameras)
+                        if (ImGui::Selectable(camera.c_str(), camera == settings.camera_device)) {
+                            settings.camera_device = camera;
+                            camera_trial.store(CameraTrial::none);
+                        }
                     ImGui::EndCombo();
                 }
+                ImGui::SameLine();
+                const auto state = camera_trial.load();
+                ImGui::BeginDisabled(cameras.empty() || state == CameraTrial::looking);
+                if (ImGui::Button(tr(trial[int(state)]), ImVec2(test_width, 0))) {
+                    camera_trial.store(CameraTrial::looking);
+                    camera_trial_worker = std::jthread([this, wanted = std::string(current)] {
+                        auto camera = sfr::CameraCapture::open(640, 480, wanted);
+                        if (!camera) { camera_trial.store(CameraTrial::closed); return; }
+                        sfr::CameraFrame frame;
+                        for (int attempt = 0; attempt < 300 && !frame.number; ++attempt)
+                            if (!camera->next(frame)) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                        camera_trial.store(frame.number ? CameraTrial::pictures : CameraTrial::silent);
+                    });
+                }
+                ImGui::EndDisabled();
             });
         }
 #ifdef _WIN32  // elsewhere the game always draws with Vulkan

@@ -59,7 +59,7 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         else if (key == "touch_controls") read_flag(value, settings.touch_controls);
         else if (key == "tilt") read_flag(value, settings.tilt);
         else if (key == "camera" && (value == "off" || value == "picture" || value == "motion")) settings.camera = value;
-        else if (key == "camera_device") read_number(value, 0, 15, settings.camera_device);
+        else if (key == "camera_device" && value.size() <= 128) settings.camera_device = value;
         else if (key == "language" && (value == "auto" || value == "en" || value == "zh-TW")) settings.language = value;
         else if (key == "image_directory") settings.image_directory = utf8_path(value);
         else if (key == "asset_directory") settings.asset_directory = utf8_path(value);
@@ -144,7 +144,7 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         // "off" leaves the camera alone; "picture" opens it for the image the
         // title shows; "motion" also drives the Kinect player's body with it.
         {"SFR_CAMERA", s.camera == "off" ? "" : s.camera},
-        {"SFR_CAMERA_DEVICE", std::to_string(s.camera_device)},
+        {"SFR_CAMERA_DEVICE", s.camera_device},
 #ifdef __ANDROID__
         {"SFR_TOUCH_CONTROLS", s.touch_controls ? "1" : "0"},
         {"SFR_TILT", s.tilt ? "1" : "0"},
