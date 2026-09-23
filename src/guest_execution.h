@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <stop_token>
 #include <thread>
+#include <vector>
 
 namespace sfr {
 
@@ -103,6 +104,8 @@ public:
     std::unique_ptr<Lease> enter_completion();
     // Called by the current owner after resuming guest_id; returns once that target is queued.
     void wait_until_ready(uint32_t guest_id);
+    // How often that wait ran out instead of seeing the target queue.
+    static uint64_t resume_wait_timeouts() noexcept;
     // follower stops whenever this execution stops or fails (a console
     // core's permit following the global one).
     void add_follower(GuestExecution& follower);
@@ -118,6 +121,11 @@ public:
     // constructor), and on a console it finishes long before the new thread
     // starts. Our permit could hand over in between.
     static uint64_t blocking_waits(uint32_t guest_id);
+
+    // Who holds this permit and who is queued for it, for a hang report: the
+    // owner's guest id (0 when nobody holds it) and the ids in the queue.
+    struct Standing { uint64_t owner = 0; std::vector<uint64_t> ready, blocked; };
+    Standing standing() const;
     static void wait_for_block(uint32_t guest_id, uint64_t after, std::chrono::milliseconds limit,
                                std::stop_token stop);
     void fail(std::exception_ptr failure) noexcept;

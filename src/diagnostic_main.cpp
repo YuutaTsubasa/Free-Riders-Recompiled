@@ -3794,6 +3794,23 @@ int main(int argc, char** argv) {
                     reported = true;
                     std::lock_guard guard(sfr::activity_lock);
                     std::cerr << "HANG_REPORT presents=" << seen << " threads=" << sfr::activities.size() << '\n';
+                    // Who holds each permit and who is queued for it: a hang
+                    // where every thread waits is usually a cycle through
+                    // these, not through the title's own objects.
+                    const auto report_permit = [](const char* scope, const sfr::GuestExecution::Standing& standing) {
+                        if (!standing.owner && standing.ready.empty() && standing.blocked.empty()) return;
+                        std::cerr << "HANG_PERMIT scope=" << scope << " owner=" << standing.owner << " ready=";
+                        for (const uint64_t id : standing.ready) std::cerr << id << ',';
+                        std::cerr << " blocked=";
+                        for (const uint64_t id : standing.blocked) std::cerr << id << ',';
+                        std::cerr << '\n';
+                    };
+                    std::cerr << "HANG_RESUME_WAIT_TIMEOUTS " << sfr::GuestExecution::resume_wait_timeouts() << '\n';
+                    if (sfr::execution) report_permit("global", sfr::execution->standing());
+                    for (uint32_t core = 0; core < sfr::guest_processors; ++core)
+                        if (sfr::core_executions[core])
+                            report_permit(("core" + std::to_string(core)).c_str(),
+                                          sfr::core_executions[core]->standing());
                     for (const auto* record : sfr::activities) {
                         if (record->finished.load(std::memory_order_relaxed)) continue;
                         const char* doing = record->doing.load(std::memory_order_relaxed);

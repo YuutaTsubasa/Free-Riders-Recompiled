@@ -260,9 +260,16 @@ struct NativeRenderer::Impl {
     // rotate: a list is only recorded again once the submission that used it
     // has finished. Four is more than a frame's uploads have ever needed.
     static constexpr uint32_t upload_lists = 4;
-    std::array<std::unique_ptr<plume::RenderCommandList>, upload_lists> upload_list;
-    std::array<std::unique_ptr<plume::RenderCommandFence>, upload_lists> upload_fence;
-    std::array<bool, upload_lists> upload_in_flight{};
+    struct Upload {
+        std::unique_ptr<plume::RenderCommandList> list;
+        std::unique_ptr<plume::RenderCommandFence> fence;
+        bool in_flight = false;
+        // The staging buffers of the submission this slot last made: freed
+        // when the slot is waited for, which is the only moment the GPU is
+        // known to have finished reading them.
+        std::vector<std::unique_ptr<plume::RenderBuffer>> staging;
+    };
+    std::array<Upload, upload_lists> uploads;
     uint32_t upload_slot = 0;
     std::vector<std::unique_ptr<plume::RenderBuffer>> retired;
 #ifdef _WIN32
@@ -300,9 +307,6 @@ struct NativeRenderer::Impl {
     };
     std::unordered_map<VertexKey, VertexEntry, VertexKeyHash> vertex_entries;
     std::vector<std::pair<uint64_t, std::unique_ptr<plume::RenderBuffer>>> retired_vertex_buffers;
-    // Staging buffers of texture uploads whose copy the GPU may not have run
-    // yet, kept the same two frames, since the upload is no longer waited for.
-    std::vector<std::pair<uint64_t, std::unique_ptr<plume::RenderBuffer>>> upload_staging;
     uint64_t cached_vertex_bytes = 0;
     void retire_vertices(VertexEntry& entry) {
         if (!entry.buffer) return;
@@ -394,9 +398,9 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
     std::memset(impl_->zero_buffer->map(), 0, 256);
     impl_->zero_buffer->unmap();
 
-    for (uint32_t i = 0; i < Impl::upload_lists; ++i) {
-        impl_->upload_list[i] = graphics.queue().createCommandList();
-        impl_->upload_fence[i] = device.createCommandFence();
+    for (auto& upload : impl_->uploads) {
+        upload.list = graphics.queue().createCommandList();
+        upload.fence = device.createCommandFence();
     }
 
     for (int i = 0; i < 2; ++i) {
@@ -425,7 +429,6 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
         state->released_texture_indices.clear();
         // Dropped vertex buffers outlive the frame in flight that may read them.
         std::erase_if(state->retired_vertex_buffers, [&](const auto& retired) { return retired.first + 2 < state->frame; });
-        std::erase_if(state->upload_staging, [&](const auto& retired) { return retired.first + 2 < state->frame; });
         // Ranges not drawn for ten seconds or so are forgotten.
         if (state->frame % 600 == 0)
             std::erase_if(state->vertex_entries, [&](auto& item) {
@@ -541,8 +544,13 @@ uint32_t NativeRenderer::placeholder_texture() {
     auto* mapped = static_cast<uint8_t*>(staging->map());
     std::memset(mapped, 0xFF, 4);
     staging->unmap();
-    auto& list = *impl_->upload_list[0];
-    if (impl_->upload_in_flight[0]) impl_->graphics.queue().waitForCommandFence(impl_->upload_fence[0].get());
+    auto& slot0 = impl_->uploads[0];
+    auto& list = *slot0.list;
+    if (slot0.in_flight) {
+        impl_->graphics.queue().waitForCommandFence(slot0.fence.get());
+        slot0.in_flight = false;
+        slot0.staging.clear();
+    }
     list.begin();
     list.barriers(plume::RenderBarrierStage::COPY,
                   plume::RenderTextureBarrier(texture.get(), plume::RenderTextureLayout::COPY_DEST));
@@ -551,8 +559,8 @@ uint32_t NativeRenderer::placeholder_texture() {
     list.barriers(plume::RenderBarrierStage::GRAPHICS,
                   plume::RenderTextureBarrier(texture.get(), plume::RenderTextureLayout::SHADER_READ));
     list.end();
-    impl_->graphics.queue().executeCommandLists(&list, impl_->upload_fence[0].get());
-    impl_->graphics.queue().waitForCommandFence(impl_->upload_fence[0].get());
+    impl_->graphics.queue().executeCommandLists(&list, slot0.fence.get());
+    impl_->graphics.queue().waitForCommandFence(slot0.fence.get());
     uint32_t index;
     if (!impl_->free_texture_indices.empty()) {
         index = impl_->free_texture_indices.back();
@@ -730,11 +738,22 @@ uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
     staging->unmap();
     auto texture = device.createTexture(plume::RenderTextureDesc::Texture2D(layout->width, layout->height, 1, layout->format));
     if (!texture) unsupported(fetch.format, "native texture creation failed");
-    const uint32_t upload_slot = impl_->upload_slot;
+    // SFR_TEXTURE_UPLOAD_WAIT=1 restores the old behaviour, waiting for each
+    // upload before the draw that asked for it: a way to tell whether a hang
+    // is this path's doing.
+    static const bool wait_for_uploads = [] {
+        const char* text = std::getenv("SFR_TEXTURE_UPLOAD_WAIT");
+        return text && *text == '1';
+    }();
+    const uint32_t upload_slot = wait_for_uploads ? 0 : impl_->upload_slot;
     impl_->upload_slot = (upload_slot + 1) % Impl::upload_lists;
-    if (impl_->upload_in_flight[upload_slot])
-        impl_->graphics.queue().waitForCommandFence(impl_->upload_fence[upload_slot].get());
-    auto& list = *impl_->upload_list[upload_slot];
+    auto& upload = impl_->uploads[upload_slot];
+    if (upload.in_flight) {
+        impl_->graphics.queue().waitForCommandFence(upload.fence.get());
+        upload.in_flight = false;
+        upload.staging.clear();  // the GPU has finished with them
+    }
+    auto& list = *upload.list;
     list.begin();
     list.barriers(plume::RenderBarrierStage::COPY, plume::RenderTextureBarrier(texture.get(), plume::RenderTextureLayout::COPY_DEST));
     list.copyTextureRegion(plume::RenderTextureCopyLocation::Subresource(texture.get()),
@@ -749,9 +768,14 @@ uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
     // about 1.3 ms each, and nearly half of the slowest race frames. The
     // staging buffer has to outlive the copy, so it is kept as long as a
     // retired vertex buffer is.
-    impl_->graphics.queue().executeCommandLists(&list, impl_->upload_fence[upload_slot].get());
-    impl_->upload_in_flight[upload_slot] = true;
-    impl_->upload_staging.emplace_back(impl_->frame, std::move(staging));
+    impl_->graphics.queue().executeCommandLists(&list, upload.fence.get());
+    upload.in_flight = true;
+    upload.staging.push_back(std::move(staging));
+    if (wait_for_uploads) {
+        impl_->graphics.queue().waitForCommandFence(upload.fence.get());
+        upload.in_flight = false;
+        upload.staging.clear();
+    }
 
     // Every draw waits for its command list, so a released slot is unused.
     uint32_t index;
