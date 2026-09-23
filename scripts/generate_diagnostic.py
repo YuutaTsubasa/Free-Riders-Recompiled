@@ -33,6 +33,7 @@ TIME_BASE = re.compile(r'^(\t// mftb r(?P<register>[0-9]|[12][0-9]|3[01])\r?\n)'
 REGISTER = r'(?:[0-9]|[12][0-9]|3[01])'
 RESERVATION = re.compile(r'^\t// (?P<op>lwarx|stwcx\.|ldarx|stdcx\.) r(?P<reg>' + REGISTER +
                          r'),(?P<ra>0|r' + REGISTER + r'),r(?P<rb>' + REGISTER + r')\r?\n', re.MULTILINE)
+BARRIER = re.compile(r'^\t// (?P<op>sync|lwsync|eieio) ?\r?\n', re.MULTILINE)
 VECTOR_MEMORY = re.compile(r'^\t// (?P<op>lvx128|stvx128|lvx|stvx) v(?P<reg>[0-9]+),'
                            r'(?P<ra>0|r' + REGISTER + r'),r(?P<rb>' + REGISTER + r')\r?\n', re.MULTILINE)
 VECTOR_WORD_STORE = re.compile(r'^\t// (?P<op>stvewx128|stvewx) v(?P<reg>[0-9]+),'
@@ -166,6 +167,29 @@ def rewrite_reservations(body):
         stores += not is_load
     chunks.append(body[cursor:])
     return ''.join(chunks), loads, stores
+
+
+def rewrite_barriers(body):
+    """Give sync/lwsync/eieio a fence; the upstream emits nothing for them.
+
+    Dropping them is harmless on x86-64, whose stores are already ordered, but
+    not on ARM: the game's lock-free queues publish a node and then its
+    contents, and a reader on another core could see them in the other order.
+    """
+    chunks, cursor, count = [], 0, 0
+    for instruction in BARRIER.finditer(body):
+        newline = '\r\n' if instruction[0].endswith('\r\n') else '\n'
+        # Only an instruction the upstream translated to nothing at all.
+        following = body[instruction.end():]
+        if not re.match(r'\s*(?:\t// |loc_[0-9A-Fa-f]+:|\Z)', following):
+            continue
+        order = 'seq_cst' if instruction['op'] == 'sync' else 'acq_rel'
+        chunks.append(body[cursor:instruction.end()])
+        chunks.append(f'\tstd::atomic_thread_fence(std::memory_order_{order});' + newline)
+        cursor = instruction.end()
+        count += 1
+    chunks.append(body[cursor:])
+    return ''.join(chunks), count
 
 
 def rewrite_vector_memory(body):
@@ -1273,6 +1297,7 @@ def inspect_body(body, address, symbols, events, jump_tables=None):
         details['invalid_supplemental_addresses'] = [f'0x{item:08X}' for item in invalid_supplemental]
     clock_body, clock_reads = rewrite_time_base(branch_body)
     rewritten, reservation_loads, conditional_stores = rewrite_reservations(clock_body)
+    rewritten, barriers = rewrite_barriers(rewritten)
     rewritten, vector_loads, vector_stores = rewrite_vector_memory(rewritten)
     rewritten, vector_word_stores = rewrite_vector_word_stores(rewritten)
     rewritten, vector_partial_loads, invalid_partial_loads = rewrite_vector_partial_loads(rewritten, address)
@@ -1322,6 +1347,12 @@ def inspect_body(body, address, symbols, events, jump_tables=None):
                 for load, store in (('lwarx', r'stwcx\.'), ('ldarx', r'stdcx\.'))) or
             re.search(r'ctx\.reserved\b|\b__sync_bool_compare_and_swap\b', rewritten)):
         reasons.append('unsupported_reservation')
+    barrier_instructions = sum(bool(re.match(r'(?:sync|lwsync|eieio)(?:\s|$)', item[1].strip()))
+                               for item in instructions)
+    if barrier_instructions != barriers:
+        reasons.append('unsupported_barrier')
+    if barriers:
+        details['barriers'] = barriers
     if reservation_loads:
         details['reservation_loads'] = reservation_loads
     if conditional_stores:
@@ -1486,6 +1517,7 @@ def generate(input_dir, log_path, output_dir, jump_table_path=None):
     implemented, reason_counts, covered = set(), Counter(), set()
     time_base_reads = native_resource_coherency_blocks = country_ctr_branches = format_ctr_branches = 0
     reservation_loads = conditional_stores = retained_supplemental = 0
+    barriers = 0
     vector_loads = vector_stores = 0
     vector_partial_stores = vector_partial_loads = cache_line_zeroes = 0
     vector_word_stores = retained_eqv = retained_addc = retained_addme = retained_subfze = retained_sthu = retained_stfsu = retained_lhzu = retained_bdzf = cache_block_zeroes = 0
@@ -1515,6 +1547,7 @@ def generate(input_dir, log_path, output_dir, jump_table_path=None):
                     if body.count('PPC_FUNC_PROLOGUE();') != 1:
                         raise ValueError(f'Missing or duplicate function prologue: {name}')
                     time_base_reads += details.get('time_base_reads', 0)
+                    barriers += details.get('barriers', 0)
                     reservation_loads += details.get('reservation_loads', 0)
                     conditional_stores += details.get('conditional_stores', 0)
                     vector_loads += details.get('vector_loads', 0)
@@ -1551,7 +1584,8 @@ def generate(input_dir, log_path, output_dir, jump_table_path=None):
                     rewritten_body = rewrite_missing_comparisons(rewritten_body, addresses[name], events)[0]
                     rewritten_body = rewrite_supplemental(rewritten_body, addresses[name], events)[0]
                     retained_supplemental += details.get('retained_supplemental', 0)
-                    rewritten_body = rewrite_vector_memory(rewrite_reservations(rewrite_time_base(rewritten_body)[0])[0])[0]
+                    rewritten_body = rewrite_barriers(
+                        rewrite_vector_memory(rewrite_reservations(rewrite_time_base(rewritten_body)[0])[0])[0])[0]
                     rewritten_body = rewrite_vector_word_stores(rewritten_body)[0]
                     rewritten_body = rewrite_vector_partial_loads(rewritten_body, addresses[name])[0]
                     rewritten_body = rewrite_vector_partial_stores(rewritten_body, addresses[name])[0]
@@ -1594,6 +1628,7 @@ def generate(input_dir, log_path, output_dir, jump_table_path=None):
                             'retained_functions': len(implemented) - len(report['rejected_functions']),
                             'rejected_functions': len(report['rejected_functions']),
                             'time_base_reads': time_base_reads,
+                            'barriers': barriers,
                             'reservation_loads': reservation_loads,
                             'conditional_stores': conditional_stores,
                             'vector_loads': vector_loads,

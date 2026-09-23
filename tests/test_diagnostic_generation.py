@@ -461,6 +461,24 @@ class DiagnosticGenerationTests(unittest.TestCase):
         _, report = self.run_generation()
         self.assertEqual(report['counts']['retained_functions'], 0)
 
+    def test_barriers_become_fences_and_keep_their_comments(self):
+        body = ('\t// lwsync \n\t// sync \n\t// eieio \n'
+                '\t// addi r3,r3,1\n\tctx.r3.s64 = ctx.r3.s64 + 1;\n\t// blr \n\treturn;')
+        self.prepare([('entry', 0x1000, body)])
+        output, report = self.run_generation()
+        self.assertEqual(report['counts']['retained_functions'], 1)
+        self.assertEqual(report['counts']['barriers'], 3)
+        self.assertIn('\t// lwsync \n\tstd::atomic_thread_fence(std::memory_order_acq_rel);', output)
+        self.assertIn('\t// sync \n\tstd::atomic_thread_fence(std::memory_order_seq_cst);', output)
+        self.assertIn('\t// eieio \n\tstd::atomic_thread_fence(std::memory_order_acq_rel);', output)
+
+    def test_barrier_with_an_emission_of_its_own_is_rejected(self):
+        body = '\t// sync \n\tsome_other_emission();\n\t// blr \n\treturn;'
+        self.prepare([('entry', 0x1000, body)])
+        _, report = self.run_generation()
+        self.assertEqual(report['counts']['retained_functions'], 0)
+        self.assertIn('unsupported_barrier', report['rejected_functions'][0]['reasons'])
+
     def test_dcbzl_rewrites_exact_128_byte_blocks(self):
         body = '\t// dcbzl r4,r31\n\tmemset(base + ((ctx.r4.u32 + ctx.r31.u32) & ~127), 0, 128);\n\t// blr \n\treturn;'
         self.prepare([('entry', 0x1000, body)])
