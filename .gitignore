@@ -12,6 +12,8 @@ __pycache__/
 /.venv/
 /tools/imgui/
 /tools/SDL/
+# ONNX Runtime and the RTMPose model, fetched by scripts/fetch_pose_model.py
+/tools/onnx/
 /android/app/src/main/jniLibs/
 /android/.gradle/
 /android/build/
