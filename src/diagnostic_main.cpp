@@ -3805,7 +3805,6 @@ int main(int argc, char** argv) {
                         for (const uint64_t id : standing.blocked) std::cerr << id << ',';
                         std::cerr << '\n';
                     };
-                    std::cerr << "HANG_RESUME_WAIT_TIMEOUTS " << sfr::GuestExecution::resume_wait_timeouts() << '\n';
                     if (sfr::execution) report_permit("global", sfr::execution->standing());
                     for (uint32_t core = 0; core < sfr::guest_processors; ++core)
                         if (sfr::core_executions[core])

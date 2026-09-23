@@ -456,13 +456,6 @@ std::unique_ptr<GuestExecution::Lease> GuestExecution::enter_identity(uint64_t g
     return lease;
 }
 
-// How long an owner waits for a thread it resumed, and how often that ran
-// out (reported by the hang report; a healthy run never does).
-constexpr auto ready_wait_limit = std::chrono::milliseconds(50);
-std::atomic<uint64_t> ready_wait_timeouts{0};
-
-uint64_t GuestExecution::resume_wait_timeouts() noexcept { return ready_wait_timeouts.load(std::memory_order_relaxed); }
-
 void GuestExecution::wait_until_ready(uint32_t guest_id) {
     if (!guest_id) throw std::logic_error("ready guest ID must be nonzero");
     std::unique_lock lock(state_->mutex);
@@ -472,10 +465,10 @@ void GuestExecution::wait_until_ready(uint32_t guest_id) {
         throw std::logic_error("ready wait target must differ from the current owner");
     if (state_->stopping) throw GuestExecutionCancelled();
     // A target already inside a wait of its own queues when that wait ends,
-    // which may be work this owner has yet to do: waiting for it here, with
-    // the permit held, is a cycle. It deadlocked a race at the same frame two
-    // runs in three with the thread start delay off. The bounded wait is the
-    // backstop for any other way the target never queues.
+    // which may be work this owner has yet to do: waiting for it here, while
+    // holding the permit, would be a cycle. A target that has not started
+    // waiting is still waited for, which is what this is for: a thread just
+    // resumed runs before its resumer carries on, as it would on a console.
     const auto queued_or_waiting = [&] {
         return state_->stopping ||
                std::any_of(state_->ready.begin(), state_->ready.end(),
@@ -483,7 +476,7 @@ void GuestExecution::wait_until_ready(uint32_t guest_id) {
                std::any_of(state_->blocked.begin(), state_->blocked.end(),
                            [&](const auto& waiter) { return waiter.guest_id == guest_id; });
     };
-    if (!state_->changed.wait_for(lock, ready_wait_limit, queued_or_waiting)) ++ready_wait_timeouts;
+    state_->changed.wait(lock, queued_or_waiting);
     if (state_->stopping) throw GuestExecutionCancelled();
 }
 

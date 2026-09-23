@@ -1,6 +1,7 @@
 #include "ppc_recomp_shared.h"
 #include "diagnostic_hooks.h"
 #include "guest_memory.h"
+#include "camera_player.h"
 #include "nui_skeleton.h"
 #include "nui_speech.h"
 #include "local_profile.h"
@@ -26,6 +27,13 @@
 
 namespace {
 sfr::NuiSkeletonEmulation skeleton;
+// SFR_CAMERA=motion: the first player's body comes from a webcam instead of
+// the pad. Started at the first frame the title asks for, because the camera
+// takes a moment to open and nothing should wait for it.
+std::unique_ptr<sfr::CameraPlayer> camera_player;
+bool camera_started = false;
+sfr::SkeletonJoints camera_joints{};
+bool camera_has_joints = false;
 // A second Kinect player, driven by the second pad. The frame carries six
 // skeleton slots and the title reads them all, so a player appears simply by
 // filling another one; it is identified separately (tracking id 2).
@@ -115,13 +123,18 @@ SFR_HOOK(sub_827707B0) {
     // [83E52F8C] is the race flag: the hands leave the menu cursor pose.
     const bool racing=sfr::active_memory->load<uint32_t>(0x83E52F8C) != 0;
     sfr::set_touch_racing(racing);
+    if(!camera_started) { camera_started=true; camera_player=sfr::CameraPlayer::start(); }
+    if(camera_player && camera_player->joints(camera_joints)) camera_has_joints=true;
     skeleton.update(sfr::nui_gamepad(), racing);
     const auto second=sfr::nui_second_gamepad();
     if(second) second_skeleton.update(*second, racing);
     const auto elapsed=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-started);
     auto& memory=*sfr::active_memory;
     sfr::NuiSkeletonEmulation::write_header(memory,frame,++frame_number,uint64_t(elapsed.count()));
-    skeleton.write_slot(memory,frame,0,1);
+    // The camera's body takes the first player's place once it has found
+    // one; until then the pad's emulated player stands in.
+    if(camera_has_joints) skeleton.write_joints(memory,frame,0,1,camera_joints);
+    else skeleton.write_slot(memory,frame,0,1);
     if(second) second_skeleton.write_slot(memory,frame,1,2);
     if(second.has_value()!=second_present) {
         second_present=second.has_value();

@@ -128,13 +128,18 @@ void NuiSkeletonEmulation::write_slot(GuestMemory& memory, uint32_t address, uin
     joints[foot_left] = {-0.12f, -0.97f, z - 0.08f};
     joints[foot_right] = {0.12f, -0.97f, z - 0.08f};
 
+    write_joints(memory, address, slot, tracking_id, joints);
+}
+
+void NuiSkeletonEmulation::write_joints(GuestMemory& memory, uint32_t address, uint32_t slot, uint32_t tracking_id,
+                                        const std::array<Vector, nui_joint_count>& joints) const {
     const uint64_t data = uint64_t(address) + nui_skeleton_data_offset + uint64_t(slot) * nui_skeleton_data_size;
     memory.store<uint32_t>(data, nui_tracked);
     memory.store<uint32_t>(data + 4, tracking_id);
     // Until identified (-1) the title runs NuiIdentityIdentify on it before
     // it may join; afterwards the guest result.
     memory.store<uint32_t>(data + 8, enrollment_);
-    store_vector(memory, data + 16, joints[hip_center], 1.0f);
+    store_vector(memory, data + 16, joints[nui_joint::hip_center], 1.0f);
     for (uint32_t j = 0; j < nui_joint_count; ++j) {
         store_vector(memory, data + 32 + j * 16, joints[j], 1.0f);
         memory.store<uint32_t>(data + 352 + j * 4, nui_tracked);

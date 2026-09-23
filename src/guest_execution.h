@@ -104,8 +104,6 @@ public:
     std::unique_ptr<Lease> enter_completion();
     // Called by the current owner after resuming guest_id; returns once that target is queued.
     void wait_until_ready(uint32_t guest_id);
-    // How often that wait ran out instead of seeing the target queue.
-    static uint64_t resume_wait_timeouts() noexcept;
     // follower stops whenever this execution stops or fails (a console
     // core's permit following the global one).
     void add_follower(GuestExecution& follower);

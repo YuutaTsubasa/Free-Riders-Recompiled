@@ -49,6 +49,10 @@ public:
     // need different ones.
     static void write_header(GuestMemory& memory, uint32_t address, uint32_t frame_number, uint64_t timestamp_ms);
     void write_slot(GuestMemory& memory, uint32_t address, uint32_t slot, uint32_t tracking_id) const;
+    // A slot written from joints worked out elsewhere (a camera's pose), in
+    // camera space and in the order nui_joint numbers them.
+    void write_joints(GuestMemory& memory, uint32_t address, uint32_t slot, uint32_t tracking_id,
+                      const std::array<std::array<float, 3>, nui_joint_count>& joints) const;
     std::array<float, 3> hand(bool right) const { return right ? right_ : left_; }
     // After NuiIdentityIdentify completes the skeleton carries that result
     // instead of "not yet identified": the enrollment of the signed-in
