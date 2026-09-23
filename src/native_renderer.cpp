@@ -125,6 +125,8 @@ private:
 };
 #endif
 
+void report_vulkan_formats(NativeGraphics& graphics);
+
 // Most phone GPUs have no BC (DXT) formats; their textures are decoded to
 // RGBA8 on the CPU. SFR_DECODE_BC=1 forces that path where BC exists.
 bool block_compression_supported(NativeGraphics& graphics) {
@@ -135,9 +137,51 @@ bool block_compression_supported(NativeGraphics& graphics) {
         vkGetPhysicalDeviceFeatures(static_cast<plume::VulkanDevice&>(graphics.device()).physicalDevice, &features);
         return features.textureCompressionBC == VK_TRUE;
     }();
-    static const bool reported = (std::cerr << "NATIVE_TEXTURE_BC supported=" << supported << '\n', true);
+    static const bool reported = [&] {
+        std::cerr << "NATIVE_TEXTURE_BC supported=" << supported << '\n';
+        report_vulkan_formats(graphics);
+        return true;
+    }();
     (void)reported;
     return supported;
+}
+
+// What the Vulkan driver supports of the formats the game needs, logged once.
+// A format a driver cannot sample or fetch shows up as wrong colours or
+// missing geometry, so a report from an unfamiliar device says in one line
+// whether that is the cause. (An Adreno 750 supports all of them.)
+void report_vulkan_formats(NativeGraphics& graphics) {
+    if (graphics.backend() != GraphicsBackend::vulkan) return;
+    const VkPhysicalDevice physical = static_cast<plume::VulkanDevice&>(graphics.device()).physicalDevice;
+    struct Entry { const char* name; VkFormat format; VkFormatFeatureFlags needed; };
+    static const Entry entries[] = {
+        {"BC1", VK_FORMAT_BC1_RGBA_UNORM_BLOCK, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT},
+        {"BC2", VK_FORMAT_BC2_UNORM_BLOCK, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT},
+        {"BC3", VK_FORMAT_BC3_UNORM_BLOCK, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT},
+        {"RGBA8", VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT},
+        {"BGRA8", VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT},
+        {"BGRA8 target", VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT},
+        {"R8", VK_FORMAT_R8_UNORM, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT},
+        {"RGBA16F", VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT},
+        {"D32S8 target", VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT},
+        {"vertex SHORT4N", VK_FORMAT_R16G16B16A16_SNORM, VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT},
+        {"vertex SHORT2N", VK_FORMAT_R16G16_SNORM, VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT},
+        {"vertex USHORT4N", VK_FORMAT_R16G16B16A16_UNORM, VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT},
+        {"vertex USHORT2N", VK_FORMAT_R16G16_UNORM, VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT},
+        {"vertex UBYTE4", VK_FORMAT_R8G8B8A8_UINT, VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT},
+        {"vertex SHORT4", VK_FORMAT_R16G16B16A16_SINT, VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT},
+        {"vertex FLOAT16_4", VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT},
+        {"vertex FLOAT3", VK_FORMAT_R32G32B32_SFLOAT, VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT},
+    };
+    std::string missing;
+    for (const auto& entry : entries) {
+        VkFormatProperties properties{};
+        vkGetPhysicalDeviceFormatProperties(physical, entry.format, &properties);
+        const VkFormatFeatureFlags features = (entry.needed & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT)
+            ? properties.bufferFeatures : properties.optimalTilingFeatures;
+        if (!(features & entry.needed)) missing += std::string(missing.empty() ? "" : ", ") + entry.name;
+    }
+    std::cerr << "NATIVE_FORMATS missing=" << (missing.empty() ? "none" : missing) << '\n';
 }
 
 // A guest GPU physical address as a readable virtual address. Physical

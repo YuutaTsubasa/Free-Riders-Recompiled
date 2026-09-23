@@ -2,8 +2,11 @@
 #include "diagnostic_hooks.h"
 #include "guest_memory.h"
 #include "native_input.h"
+#include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <iostream>
+#include <thread>
 #include <unordered_map>
 
 // Compatibility patches for latent bugs in the original game code. Each one
@@ -91,4 +94,52 @@ SFR_CONCURRENT_HOOK(sub_824D0B10) {
         static std::atomic<uint32_t> timeouts{0};
         if(timeouts++<16) std::cerr << "GAME_PATCH work_share_wait_timeout count=" << timeouts << '\n';
     }
+}
+
+PPC_FUNC_IMPL(__imp__sub_82A53BC0);
+
+// The CRT's pure virtual call handler (R6025), which the title turns into a
+// KeBugCheck. The job dispatcher 823B5D40 and its helper 823B60C0 pop a job
+// from the queue and call the function word at job+168 (with job+64 and the
+// word at job+520). Both test that word against zero first, so reaching the
+// pure handler means the word held the base class's pure slot: the job was
+// being built, or - what a run with SFR_THREAD_START_DELAY_US=0 shows - had
+// already been taken apart, since 500 ms later the word is zero. The
+// dispatcher resets and reuses its jobs once its wait elapses whether or not
+// the helpers have finished (see the 824D0B10 patch above), and a helper
+// resumed late is still draining the queue then.
+//
+// So: wait briefly in case the job is only half built (without holding the
+// execution permit, so the builder can finish), and otherwise skip the job
+// the way its owner already assumes it is finished, instead of stopping the
+// whole game. This is what stopped about one Grand Prix load in four; the
+// 2 ms SFR_THREAD_START_DELAY_US hid it on this machine, but no fixed delay
+// can be right for every host, and a phone is much slower.
+SFR_HOOK(sub_82A53BC0) {
+    sfr::enter_function(ctx,"sub_82A53BC0",0x82A53BC0);
+    // Only the two job-dispatch call sites; any other pure call is a real one.
+    if((ctx.lr==0x823B5E88 || ctx.lr==0x823B6144) && sfr::active_memory) {
+        static const uint32_t wait_ms=[]{
+            const char* text=std::getenv("SFR_JOB_READY_WAIT_MS");
+            const long value=text?std::strtol(text,nullptr,10):20;
+            return uint32_t(value>0?value:20);
+        }();
+        const uint32_t job=ctx.r3.u32;
+        uint32_t call=0;
+        for(uint32_t attempt=0;attempt<wait_ms*10;++attempt) {
+            call=sfr::active_memory->load<uint32_t>(uint64_t(job)+168);
+            if(call && call!=0x82A53BC0) break;
+            call=0;
+            sfr::wait_without_permit([](void*){ std::this_thread::sleep_for(std::chrono::microseconds(100)); },nullptr);
+        }
+        static std::atomic<uint32_t> late{0}, skipped{0};
+        const uint32_t count=call?++late:++skipped;
+        if(count<=8)
+            std::cerr << "GAME_PATCH " << (call?"job_filled_in_late":"job_skipped_after_reset")
+                      << " job=0x" << std::hex << job << " call=0x" << call << " lr=0x" << ctx.lr
+                      << std::dec << " count=" << count << '\n';
+        if(call) ctx.ctr.u64=call, PPC_CALL_INDIRECT_FUNC(call);
+        return;
+    }
+    __imp__sub_82A53BC0(ctx,base);
 }
