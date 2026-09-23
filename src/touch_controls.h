@@ -65,4 +65,8 @@ void set_touch_racing(bool racing);
 bool touch_racing();
 // SFR_TOUCH_CONTROLS: 1 on Android by default, 0 elsewhere.
 bool touch_controls_enabled();
+// A controller answered for player 1 (native_input): the on-screen buttons
+// are not drawn or read while one is connected.
+void note_controller(bool present);
+bool touch_controls_active();
 }

@@ -800,7 +800,7 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height) {
         // area: 0 here would sample its corner texel over the whole window).
         std::array<float, 32> constants{float(shown_width) / float(impl_->width),
                                         float(shown_height) / float(impl_->height)};
-        if (touch_controls_enabled()) {
+        if (touch_controls_active()) {
             const TouchOverlay overlay = touch_overlay();
             constants[2] = overlay.knob[0];
             constants[3] = overlay.knob[1];
@@ -879,7 +879,7 @@ void NativePresentation::pump_events() {
         if (event.type == SDL_KEYUP && event.key.keysym.scancode == SDL_SCANCODE_AC_BACK) impl_->back_down_ms = 0;
 #endif
     }
-    if (touch_controls_enabled()) impl_->read_touch_controls();
+    if (touch_controls_active()) impl_->read_touch_controls();
 #ifdef __ANDROID__
     if (impl_->back_down_ms && SDL_GetTicks() - impl_->back_down_ms >= 1000) {
         impl_->back_down_ms = 0;

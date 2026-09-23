@@ -124,6 +124,14 @@ TouchOverlay touch_overlay() {
     return published_overlay;
 }
 
+namespace { std::atomic<bool> controller_present{false}; }
+
+void note_controller(bool present) { controller_present.store(present, std::memory_order_relaxed); }
+
+bool touch_controls_active() {
+    return touch_controls_enabled() && !controller_present.load(std::memory_order_relaxed);
+}
+
 bool touch_controls_enabled() {
     static const bool enabled = [] {
         const char* text = std::getenv("SFR_TOUCH_CONTROLS");

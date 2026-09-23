@@ -259,12 +259,13 @@ NativeInput NativeInput::sdl(std::function<void*()> focus_window, std::function<
         if (!controllers) return std::nullopt;
         std::lock_guard lock(pads->mutex);
         SDL_GameController* controller = pads->get(user);
+        if (user == 0) note_controller(controller != nullptr);
         if (!controller) return std::nullopt;
         return read_sdl_pad(controller);
     };
     auto keyboard = [focus_window = std::move(focus_window)]() {
         // The on-screen touch controls (touch_controls.h) count as the keyboard.
-        const GamepadState touch = touch_controls_enabled() ? touch_gamepad() : GamepadState{};
+        const GamepadState touch = touch_controls_active() ? touch_gamepad() : GamepadState{};
         void* window = focus_window ? focus_window() : nullptr;
         if (!window || SDL_GetKeyboardFocus() != static_cast<SDL_Window*>(window)) return touch;
         const Uint8* keys = SDL_GetKeyboardState(nullptr);
