@@ -1413,9 +1413,14 @@ struct Launcher {
             ImGui::TextWrapped("%s", tr(ShaderPackHint));
             ImGui::PopStyleColor();
             if (small_button(tr(ChoosePack), scale)) {
-                if (auto chosen = sfr::launcher::pick_path(directory, false))
-                    ::play(sfr::launcher::copy_picked_file(*chosen, directory / "shaders.pack") ? sfr::UiSound::confirm
-                                                                                                 : sfr::UiSound::error);
+                if (auto chosen = sfr::launcher::pick_path(directory, false)) {
+                    const bool copied = sfr::launcher::copy_picked_file(*chosen, directory / "shaders.pack");
+                    // This pack is the player's: the marker tells the Android
+                    // activity to leave it alone, instead of replacing it with
+                    // the APK's own at the next update.
+                    if (copied) std::ofstream(directory / "shaders.pack.bundled", std::ios::trunc) << "chosen";
+                    ::play(copied ? sfr::UiSound::confirm : sfr::UiSound::error);
+                }
             }
         }
     }

@@ -19,7 +19,7 @@ const std::string header =
 void defines_the_screen_scale() {
     const auto text = sfr::vulkan_shader_source(header + "float2 s = g_ScreenSpaceScale;\n");
     require(text.has_value(), "the header's SPIR-V branch is found");
-    require(text->find("#define g_ScreenSpaceScale vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 320)") !=
+    require(text->find("#define g_ScreenSpaceScale vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 320, 8)") !=
                 std::string::npos, "the screen scale reads shared constant bytes 320");
     require(text->find("#define g_ScreenSpaceScale") < text->find("#else"), "only the SPIR-V branch gains it");
     require(!sfr::vulkan_shader_source("float4 x;\n"), "text without the header is refused");
@@ -41,10 +41,10 @@ void reads_the_palette_and_loop_constants_through_addresses() {
     require(text.has_value(), "a shader with both buffers converts");
     require(text->find("cbuffer VertexPalette") == std::string::npos && text->find("cbuffer LoopConstants") == std::string::npos,
             "the root constant buffers are gone");
-    require(text->find("return vk::RawBufferLoad<float4>(vk::RawBufferLoad<uint64_t>(g_PushConstants.SharedConstants + 328)"
+    require(text->find("return vk::RawBufferLoad<float4>(vk::RawBufferLoad<uint64_t>(g_PushConstants.SharedConstants + 328, 8)"
                        " + uint64_t(uint(index) & 1023u) * 16, 0x10);") != std::string::npos,
             "a palette read loads from the palette address");
-    require(text->find("int4 i3 = vk::RawBufferLoad<int4>(vk::RawBufferLoad<uint64_t>(g_PushConstants.SharedConstants + 336)"
+    require(text->find("int4 i3 = vk::RawBufferLoad<int4>(vk::RawBufferLoad<uint64_t>(g_PushConstants.SharedConstants + 336, 8)"
                        " + uint64_t(3) * 16, 0x10);") != std::string::npos,
             "a loop constant loads from the loop address");
     require(text->find("my_g_LoopConstants[1]") != std::string::npos, "a longer name is left alone");

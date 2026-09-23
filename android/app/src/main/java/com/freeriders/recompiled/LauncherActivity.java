@@ -54,9 +54,12 @@ public class LauncherActivity extends SDLActivity {
             int length = Math.max(in.read(text), 0);
             copied = new String(text, 0, length, "UTF-8");
         } catch (Exception missing) {
-            // no marker: the pack (if any) is the player's own
+            // No marker: the pack came from a version that wrote none, so it
+            // is one of ours from an older APK and may be out of date.
         }
-        if (pack.exists() && (!marker.exists() || copied.equals(version))) return;
+        // "chosen" is the player's own pack (the launcher's Choose shaders.pack
+        // writes it); otherwise the marker names the install it was copied for.
+        if (pack.exists() && (copied.equals("chosen") || copied.equals(version))) return;
         File partial = new File(directory, "shaders.pack.partial");
         try (InputStream in = getAssets().open("shaders.pack"); OutputStream out = new FileOutputStream(partial)) {
             byte[] buffer = new byte[1 << 16];

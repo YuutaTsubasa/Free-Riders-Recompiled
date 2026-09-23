@@ -49,19 +49,24 @@ std::optional<std::string> vulkan_shader_source(const std::string& hlsl) {
     const std::string anchor = "#define g_conditionalRenderingIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 316)\n";
     const size_t at = text.find(anchor);
     if (at == std::string::npos) return std::nullopt;
+    // The alignments are explicit: vk::RawBufferLoad assumes four bytes, which
+    // under-aligns a 64-bit load. A desktop driver ignores that; one that
+    // honours it reads the palette and loop addresses wrongly, and with them
+    // every skinned character and every loop-driven fetch.
     const std::string address = "vk::RawBufferLoad<uint64_t>(g_PushConstants.SharedConstants + ";
+    const std::string aligned = ", 8)";
     text.insert(at + anchor.size(),
-                "#define g_ScreenSpaceScale vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 320)\n");
+                "#define g_ScreenSpaceScale vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 320, 8)\n");
 
     remove_cbuffer(text, "VertexPalette");
     replace_indexing(text, "g_VertexPalette", [&](const std::string& index) {
-        return "vk::RawBufferLoad<float4>(" + address + std::to_string(vulkan_palette_address_offset) + ") + uint64_t(" +
-               index + ") * 16, 0x10)";
+        return "vk::RawBufferLoad<float4>(" + address + std::to_string(vulkan_palette_address_offset) + aligned +
+               " + uint64_t(" + index + ") * 16, 0x10)";
     });
     remove_cbuffer(text, "LoopConstants");
     replace_indexing(text, "g_LoopConstants", [&](const std::string& index) {
-        return "vk::RawBufferLoad<int4>(" + address + std::to_string(vulkan_loop_address_offset) + ") + uint64_t(" +
-               index + ") * 16, 0x10)";
+        return "vk::RawBufferLoad<int4>(" + address + std::to_string(vulkan_loop_address_offset) + aligned +
+               " + uint64_t(" + index + ") * 16, 0x10)";
     });
     return text;
 }
