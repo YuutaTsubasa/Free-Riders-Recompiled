@@ -1,4 +1,5 @@
 #include "native_input.h"
+#include "pad_assignment.h"
 #include "sony_gamepad.h"
 #include "touch_controls.h"
 #include "guest_memory.h"
@@ -6,7 +7,10 @@
 #include <chrono>
 #include <cstdlib>
 #include <iterator>
+#include <memory>
+#include <mutex>
 #include <string>
+#include <vector>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -14,8 +18,6 @@
 #include <Xinput.h>
 #else
 #include <SDL.h>
-#include <mutex>
-#include <vector>
 #endif
 
 namespace sfr {
@@ -129,6 +131,8 @@ std::optional<GamepadState> NativeInput::current(uint32_t user) const {
     return state;
 }
 
+std::optional<GamepadState> NativeInput::controller(uint32_t user) const { return pad_(user); }
+
 uint32_t NativeInput::get_state(GuestMemory& memory, uint32_t user, uint32_t output) {
     if (user > 3) throw RuntimeStop("native-input", user, "unsupported XamInputGetState user index");
     const std::optional<GamepadState> state = current(user);
@@ -149,16 +153,64 @@ uint32_t NativeInput::set_vibration(uint32_t user, uint16_t left_motor, uint16_t
 }
 
 #ifdef _WIN32
-NativeInput NativeInput::windows(std::function<void*()> focus_window, std::function<double()> script_clock) {
-    auto pad = [](uint32_t user) -> std::optional<GamepadState> {
+namespace {
+// The host's controllers, each keeping the player number it was given
+// (pad_assignment.h). A PlayStation pad is a controller of its own here
+// rather than a stand-in for player one, which is what let a second pad take
+// player one away from it.
+struct WindowsPads {
+    static constexpr uint64_t sony_pad = 100;
+    std::mutex mutex;
+    PadAssignment assignment;
+    std::chrono::steady_clock::time_point looked{};
+    bool ever_looked = false;
+
+    // Which controllers are here. XInput answers slowly for a slot with
+    // nothing in it, so the four are only counted a few times a second; the
+    // controller a player is already on is read every time it is asked for.
+    void look() {
+        const auto now = std::chrono::steady_clock::now();
+        if (ever_looked && now - looked < std::chrono::milliseconds(250)) return;
+        looked = now;
+        ever_looked = true;
+        std::vector<uint64_t> connected;
+        for (uint32_t slot = 0; slot < PadAssignment::players; ++slot) {
+            XINPUT_STATE native{};
+            if (XInputGetState(slot, &native) == ERROR_SUCCESS) connected.push_back(slot);
+        }
+        if (sony::latest()) connected.push_back(sony_pad);
+        assignment.update(connected);
+    }
+
+    std::optional<GamepadState> read(uint32_t player) {
+        std::lock_guard guard(mutex);
+        look();
+        const uint64_t pad = assignment.pad_of(player);
+        if (pad == PadAssignment::no_pad) return std::nullopt;
+        if (pad == sony_pad) return sony::latest();
         XINPUT_STATE native{};
-        if (XInputGetState(user, &native) != ERROR_SUCCESS)
-            // No XInput pad: a PlayStation controller, if one is connected, is user 0.
-            return user == 0 ? sony::latest() : std::nullopt;
+        if (XInputGetState(uint32_t(pad), &native) != ERROR_SUCCESS) return std::nullopt;
         const auto& g = native.Gamepad;
         return GamepadState{g.wButtons, g.bLeftTrigger, g.bRightTrigger,
                             g.sThumbLX, g.sThumbLY, g.sThumbRX, g.sThumbRY};
-    };
+    }
+
+    // Only the XInput pads rumble; the PlayStation ones are read over HID and
+    // nothing is written back to them.
+    bool vibrate(uint32_t player, uint16_t left, uint16_t right) {
+        std::lock_guard guard(mutex);
+        look();
+        const uint64_t pad = assignment.pad_of(player);
+        if (pad == PadAssignment::no_pad || pad == sony_pad) return false;
+        XINPUT_VIBRATION vibration{left, right};
+        return XInputSetState(uint32_t(pad), &vibration) == ERROR_SUCCESS;
+    }
+};
+}
+
+NativeInput NativeInput::windows(std::function<void*()> focus_window, std::function<double()> script_clock) {
+    const auto pads = std::make_shared<WindowsPads>();
+    auto pad = [pads](uint32_t user) -> std::optional<GamepadState> { return pads->read(user); };
     auto keyboard = [focus_window = std::move(focus_window)]() {
         void* window = focus_window ? focus_window() : nullptr;
         if (!window || GetForegroundWindow() != static_cast<HWND>(window)) return GamepadState{};
@@ -166,9 +218,8 @@ NativeInput NativeInput::windows(std::function<void*()> focus_window, std::funct
     };
     NativeInput input(pad, keyboard);
     input.attach_script(std::move(script_clock));
-    input.vibrate_ = [](uint32_t user, uint16_t left, uint16_t right) {
-        XINPUT_VIBRATION vibration{left, right};
-        return XInputSetState(user, &vibration) == ERROR_SUCCESS;
+    input.vibrate_ = [pads](uint32_t user, uint16_t left, uint16_t right) {
+        return pads->vibrate(user, left, right);
     };
     return input;
 }
@@ -178,27 +229,51 @@ NativeInput NativeInput::host(std::function<void*()> focus_window, std::function
 }
 #else
 namespace {
-// Open game controllers in connection order: the first is user 0.
+// The host's controllers, each keeping the player number it was given
+// (pad_assignment.h). SDL names a controller by an instance id that lasts as
+// long as it is plugged in, so a controller that arrives or leaves does not
+// move the others: the list is by joystick index, and those do move.
 struct SdlPads {
     std::mutex mutex;
-    std::vector<SDL_GameController*> pads;
+    std::vector<std::pair<SDL_JoystickID, SDL_GameController*>> open;
+    PadAssignment assignment;
     int joysticks = -1;
-    // Reopens the list when a controller comes or goes (caller holds mutex).
+
+    // Opens what is new, closes what has gone (caller holds the mutex).
     void refresh() {
         const int count = SDL_NumJoysticks();
-        const bool detached = std::any_of(pads.begin(), pads.end(),
-                                          [](SDL_GameController* pad) { return !SDL_GameControllerGetAttached(pad); });
+        const bool detached = std::any_of(open.begin(), open.end(),
+                                          [](const auto& pad) { return !SDL_GameControllerGetAttached(pad.second); });
         if (count == joysticks && !detached) return;
-        for (SDL_GameController* pad : pads) SDL_GameControllerClose(pad);
-        pads.clear();
         joysticks = count;
-        for (int i = 0; i < count && pads.size() < 4; ++i)
-            if (SDL_IsGameController(i))
-                if (SDL_GameController* pad = SDL_GameControllerOpen(i)) pads.push_back(pad);
+        for (auto& pad : open)
+            if (!SDL_GameControllerGetAttached(pad.second)) {
+                SDL_GameControllerClose(pad.second);
+                pad.second = nullptr;
+            }
+        std::erase_if(open, [](const auto& pad) { return !pad.second; });
+        std::vector<uint64_t> connected;
+        for (int index = 0; index < count; ++index) {
+            if (!SDL_IsGameController(index)) continue;
+            const SDL_JoystickID id = SDL_JoystickGetDeviceInstanceID(index);
+            const auto found = std::find_if(open.begin(), open.end(), [&](const auto& pad) { return pad.first == id; });
+            if (found == open.end()) {
+                SDL_GameController* const pad = SDL_GameControllerOpen(index);
+                if (!pad) continue;
+                open.emplace_back(id, pad);
+            }
+            connected.push_back(uint64_t(id));
+        }
+        assignment.update(connected);
     }
+
     SDL_GameController* get(uint32_t user) {
         refresh();
-        return user < pads.size() ? pads[user] : nullptr;
+        const uint64_t id = assignment.pad_of(user);
+        if (id == PadAssignment::no_pad) return nullptr;
+        const auto found = std::find_if(open.begin(), open.end(),
+                                        [&](const auto& pad) { return uint64_t(pad.first) == id; });
+        return found == open.end() ? nullptr : found->second;
     }
 };
 

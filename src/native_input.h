@@ -54,6 +54,10 @@ public:
     // The merged state of user 0 (pad, keyboard, script) or a host pad; null
     // when that user has no controller.
     std::optional<GamepadState> current(uint32_t user) const;
+    // The controller alone, with nothing merged into it: null when that
+    // player is not holding one. User 0's current() is keyboard-backed and so
+    // never null, which says nothing about whether anybody is there.
+    std::optional<GamepadState> controller(uint32_t user) const;
     // XamInputSetState: forward rumble motor speeds to a host pad when present.
     // User 0 is always connected (keyboard-backed), so it always succeeds.
     uint32_t set_vibration(uint32_t user, uint16_t left_motor, uint16_t right_motor);

@@ -505,13 +505,15 @@ GamepadState nui_gamepad() {
 }
 
 // SFR_TWO_PLAYERS=0 keeps the title to one Kinect player whatever is plugged in.
-std::optional<GamepadState> nui_second_gamepad() {
+std::optional<GamepadState> nui_second_gamepad(uint32_t user) {
     static const bool allowed = [] {
         const char* const text = std::getenv("SFR_TWO_PLAYERS");
         return !text || *text != '0';
     }();
     if (!allowed) return std::nullopt;
-    return input().current(1);
+    // The controller itself: a second player is somebody holding a pad, and
+    // user 0's current() is backed by the keyboard whether or not one is.
+    return input().controller(user);
 }
 
 static std::jthread nui_events;

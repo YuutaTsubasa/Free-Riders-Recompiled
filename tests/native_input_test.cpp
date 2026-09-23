@@ -114,6 +114,12 @@ void run() {
             memory.load<uint16_t>(0x10000034) == button::b && memory.load<uint32_t>(0x10000030) == 1,
             "host pad for user 1 with its own packet count");
     stops([&] { input.get_state(memory, 4, 0x10000030); }, "user 4 must stop");
+    // A second Kinect player is somebody holding a pad, so the keyboard
+    // behind user 0 must not look like one (nui_hooks hands user 0 to the
+    // second player when a camera has taken the first player's body).
+    held = {0x0D};
+    require(input.current(0) && !input.controller(0), "the keyboard backs user 0 but is not a controller");
+    require(input.controller(1) == pad1, "a controller is itself, whoever is holding it");
     playstation_reports();
 }
 }

@@ -98,6 +98,11 @@ ONNX Runtime 與 RTMPose 都是 release 產物而不是 repository，所以由
 沒有這些檔案時 `SFR_POSE_AVAILABLE` 為 OFF，「畫面」仍然可用，「體感」則會印
 `NATIVE_CAMERA_PLAYER motion=0 reason=no-pose-model` 並退回手把。
 
+## 兩位玩家
+
+體感開著時第一位玩家是攝影機，這時**第一支手把**就是第二位玩家。
+詳見 [兩位玩家](two-players.md)。
+
 ## 還沒做的
 
 - 攝影機的畫面還沒接到遊戲自己的 NUI 影像串流（`82768C40`），所以「畫面」
