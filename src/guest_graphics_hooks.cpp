@@ -547,6 +547,20 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
             element_offset=stride+8*uint32_t(dec3n_offsets.size());
             dec3n_offsets.push_back(offset);
         }
+        // Vulkan wants an attribute's offset aligned to its component size.
+        // Desktop drivers fetch an under-aligned one anyway; an Adreno need
+        // not, which would draw some meshes as scattered triangles. Reported
+        // once per (type, offset) so a device's log says whether that is it.
+        if(const uint32_t component=sfr::format_component_bytes(format->format);
+           component>1 && element_offset%component) {
+            static std::set<std::pair<uint32_t,uint32_t>> misaligned;
+            static std::mutex misaligned_lock;
+            std::lock_guard guard(misaligned_lock);
+            if(misaligned.size()<32 && misaligned.insert({type,element_offset}).second)
+                std::cerr << "NATIVE_VERTEX_MISALIGNED type=0x" << std::hex << type << " offset=" << std::dec
+                          << element_offset << " component=" << component << " stride=" << stride
+                          << " semantic=" << semantic << input.index << '\n';
+        }
         draw.elements.emplace_back(semantic,input.index,location,format->format,0,element_offset);
         if(format->swapped_pairs && input.usage<8 && swapped[input.usage]) *swapped[input.usage]|=1u<<input.index;
     }

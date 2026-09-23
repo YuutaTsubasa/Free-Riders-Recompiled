@@ -57,10 +57,25 @@ public class GameActivity extends SDLActivity {
                 line = line.trim();
                 int equals = line.indexOf('=');
                 if (line.isEmpty() || line.startsWith("#") || equals <= 0) continue;
-                setenv(line.substring(0, equals), line.substring(equals + 1), true);
+                String name = line.substring(0, equals), value = line.substring(equals + 1);
+                // An empty value means unset, as it does for the launcher on
+                // the desktop. Setting it to "" instead made the runtime read
+                // the variable as present: an empty SFR_SKIP_MOVIES (the
+                // setting turned off) cut every movie short, and the title
+                // waits on a white screen for a movie that ended too early.
+                if (value.isEmpty()) unsetenv(name);
+                else setenv(name, value, true);
             }
         } catch (IOException error) {
             Log.w("FreeRiders", "cannot read " + file.getName(), error);
+        }
+    }
+
+    private static void unsetenv(String name) {
+        try {
+            Os.unsetenv(name);
+        } catch (ErrnoException error) {
+            Log.w("FreeRiders", "cannot unset " + name, error);
         }
     }
 

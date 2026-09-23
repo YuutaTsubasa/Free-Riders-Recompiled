@@ -52,6 +52,24 @@ std::optional<DeclarationFormat> declaration_format(uint32_t type) {
     }
 }
 
+// The size of one component of a vertex format, which Vulkan wants an
+// attribute's offset aligned to.
+uint32_t format_component_bytes(RenderFormat format) {
+    switch (format) {
+    case RenderFormat::R32_FLOAT: case RenderFormat::R32G32_FLOAT:
+    case RenderFormat::R32G32B32_FLOAT: case RenderFormat::R32G32B32A32_FLOAT:
+    case RenderFormat::R32_UINT:
+        return 4;
+    case RenderFormat::R16G16_SINT: case RenderFormat::R16G16B16A16_SINT:
+    case RenderFormat::R16G16_SNORM: case RenderFormat::R16G16B16A16_SNORM:
+    case RenderFormat::R16G16_UNORM: case RenderFormat::R16G16B16A16_UNORM:
+    case RenderFormat::R16G16_FLOAT: case RenderFormat::R16G16B16A16_FLOAT:
+        return 2;
+    default:
+        return 1;
+    }
+}
+
 // Sixteen bytes a step with one shuffle: a race frame swaps twenty-odd
 // megabytes of vertex data, and the byte-at-a-time loop was seven percent of
 // its main thread (docs/performance.md). Every x86-64 host this runs on has

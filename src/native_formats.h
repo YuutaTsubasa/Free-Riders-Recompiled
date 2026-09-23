@@ -32,6 +32,7 @@ struct DeclarationFormat {
 std::optional<DeclarationFormat> declaration_format(uint32_t type);
 
 // Guest vertex data is big-endian 32-bit words; the host reads little-endian.
+uint32_t format_component_bytes(plume::RenderFormat format);
 void swap_words(std::span<uint8_t> bytes);
 // swap_words from one buffer into another of the same size: one pass where a
 // copy and an in-place swap took two. The destination may be write-combined

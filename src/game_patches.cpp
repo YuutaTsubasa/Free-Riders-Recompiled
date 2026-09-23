@@ -50,19 +50,41 @@ SFR_HOOK(sub_82817B48) {
     sfr::enter_function(ctx,"sub_82817B48",0x82817B48);
     // A movie ended before its first frames leaves the title waiting on a
     // white screen, so SFR_SKIP_MOVIES lets each player show 30 frames.
-    static const bool skip_all=std::getenv("SFR_SKIP_MOVIES")!=nullptr;
-    static std::unordered_map<uint32_t,uint32_t> frames;
-    const bool started=++frames[ctx.r3.u32]>30;
+    // An empty value is off, like every other switch: the launcher writes the
+    // name with no value when the setting is turned off, and a host that keeps
+    // it in the environment that way (Android) must not read it as on.
+    static const bool skip_all=[]{ const char* t=std::getenv("SFR_SKIP_MOVIES"); return t && *t && *t!='0'; }();
+    // Thirty frames the player really rendered, not thirty calls: on a phone
+    // the decoder can answer every call with nothing for a while, and ending
+    // the movie then left the title on the white screen this allowance is
+    // meant to avoid. A player that renders nothing at all still has to end,
+    // so a wall-clock allowance runs beside it.
+    struct Progress { uint32_t rendered=0; std::chrono::steady_clock::time_point first{}; };
+    static std::unordered_map<uint32_t,Progress> players;
+    const uint32_t player=ctx.r3.u32;
+    auto& progress=players[player];
+    const auto now=std::chrono::steady_clock::now();
+    if(progress.first==std::chrono::steady_clock::time_point{}) progress.first=now;
+    static const uint32_t allowance_ms=[]{
+        const char* t=std::getenv("SFR_MOVIE_ALLOWANCE_MS");
+        const long value=t?std::strtol(t,nullptr,10):10000;
+        return uint32_t(value>0?value:10000);
+    }();
+    const bool started=progress.rendered>30 ||
+        now-progress.first>std::chrono::milliseconds(allowance_ms);
     constexpr uint16_t skip_buttons=sfr::gamepad_button::a|sfr::gamepad_button::b|sfr::gamepad_button::start|
                                     sfr::gamepad_button::back;
     if(started && (skip_all || (sfr::nui_gamepad().buttons & skip_buttons))) {
         static uint32_t skipped=0;
-        if(skipped++<8) std::cerr << "GAME_PATCH movie_skip player=0x" << std::hex << ctx.r3.u32 << std::dec << '\n';
+        if(skipped++<8)
+            std::cerr << "GAME_PATCH movie_skip player=0x" << std::hex << player << std::dec
+                      << " rendered=" << progress.rendered << '\n';
         ctx.r3.u64=0x16660026u;  // XMV_ENDOFFILE
         return;
     }
     ctx.r4.u32&=~1u;
     __imp__sub_82817B48(ctx,base);
+    if(ctx.r3.u32==0) ++progress.rendered;  // a frame the player really drew
 }
 
 // How many of the dispatcher's helper threads (823B60C0) may still be inside
