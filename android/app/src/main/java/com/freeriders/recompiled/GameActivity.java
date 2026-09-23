@@ -40,22 +40,28 @@ public class GameActivity extends SDLActivity {
     public void loadLibraries() {
         File directory = getExternalFilesDir(null);
         if (directory != null) {
-            File settings = new File(directory, "settings.env");
-            if (settings.isFile()) {
-                try (BufferedReader reader = new BufferedReader(new FileReader(settings))) {
-                    for (String line; (line = reader.readLine()) != null;) {
-                        line = line.trim();
-                        int equals = line.indexOf('=');
-                        if (line.isEmpty() || line.startsWith("#") || equals <= 0) continue;
-                        setenv(line.substring(0, equals), line.substring(equals + 1), true);
-                    }
-                } catch (IOException error) {
-                    Log.w("FreeRiders", "cannot read settings.env", error);
-                }
-            }
+            // debug.env comes second so it can override a setting for one run.
+            // The launcher never writes it; it is there for diagnosis on a
+            // device, where nothing else can put a variable in the
+            // environment (GameActivity is not exported).
+            for (String name : new String[] { "settings.env", "debug.env" }) readEnvironment(new File(directory, name));
         }
         for (String[] setting : DEFAULTS) setenv(setting[0], setting[1], false);
         super.loadLibraries();
+    }
+
+    private static void readEnvironment(File file) {
+        if (!file.isFile()) return;
+        try (BufferedReader reader = new BufferedReader(new FileReader(file))) {
+            for (String line; (line = reader.readLine()) != null;) {
+                line = line.trim();
+                int equals = line.indexOf('=');
+                if (line.isEmpty() || line.startsWith("#") || equals <= 0) continue;
+                setenv(line.substring(0, equals), line.substring(equals + 1), true);
+            }
+        } catch (IOException error) {
+            Log.w("FreeRiders", "cannot read " + file.getName(), error);
+        }
     }
 
     private static void setenv(String name, String value, boolean overwrite) {

@@ -369,6 +369,7 @@ SFR_HOOK(sub_824E65A0) {
         sfr::call_indirect(ctx,base,routine);
         ctx=saved;
     }
+    // One line a frame: the per-frame timings a profile run reads.
     std::cerr << "NATIVE_PRESENT source=0x824e65a0 device=0x" << std::hex << ctx.r3.u32
               << " lr=0x" << ctx.lr << std::dec << " draws=" << frame_draws
               << " textured=" << frame_textured_draws << " foreign=" << foreign_draws
@@ -1074,7 +1075,7 @@ SFR_HOOK(sub_824F6DC8) {
     const bool submitted=foreign && sfr::GuestGraphics::foreign_render_targets && skip_foreign ? false
         : graphics().clear(ctx.r3.u32,ctx.r4.u32,ctx.r5.u32,ctx.r6.u32,
                            ctx.r7.u32,float(ctx.f1.f64),ctx.r9.u32);
-    std::cerr << "NATIVE_CLEAR source=0x824f6dc8 device=0x" << std::hex << ctx.r3.u32
+    if(sfr::graphics_trace()) std::cerr << "NATIVE_CLEAR source=0x824f6dc8 device=0x" << std::hex << ctx.r3.u32
               << " flags=0x" << ctx.r6.u32 << " argb=0x" << ctx.r7.u32
               << " target=0x" << target << std::dec
               << " depth=" << ctx.f1.f64 << " stencil=" << ctx.r9.u32

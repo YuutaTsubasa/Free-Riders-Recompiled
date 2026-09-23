@@ -13,13 +13,16 @@
 #include <map>
 #endif
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
+#include <fstream>
 #include <condition_variable>
 #include <exception>
 #include <mutex>
 #include <string>
 #include <utility>
+#include <vector>
 
 #ifdef __APPLE__
 // macOS cannot pin a thread to a processor. The processor a thread was given
@@ -213,14 +216,49 @@ int32_t NativeThread::set_priority(int32_t host_relative) {
     return std::exchange(impl_->priority, host_relative);
 }
 
+namespace {
+// The allowed processors, fastest first. A phone's cores are not alike: on
+// this Snapdragon, CPU 0 and 1 run at 2.27 GHz and CPU 7 at 3.30 GHz, and
+// taking them in index order put the guest's processor 0 - the title's main
+// thread - on the slowest core of the eight. Where every core reports the
+// same clock (or none reports one, as on a desktop Linux without cpufreq)
+// the order is the index order, as it was.
+std::vector<int> processors_by_speed(uint64_t allowed) {
+    std::vector<int> order;
+    for (int bit = 0; bit < 64; ++bit)
+        if (allowed >> bit & 1) order.push_back(bit);
+    std::vector<long> speed(order.size(), 0);
+    for (size_t i = 0; i < order.size(); ++i) {
+        std::ifstream file("/sys/devices/system/cpu/cpu" + std::to_string(order[i]) +
+                           "/cpufreq/cpuinfo_max_freq");
+        if (file) file >> speed[i];
+    }
+    std::vector<size_t> index(order.size());
+    for (size_t i = 0; i < index.size(); ++i) index[i] = i;
+    std::stable_sort(index.begin(), index.end(),
+                     [&](size_t a, size_t b) { return speed[a] > speed[b]; });
+    std::vector<int> sorted;
+    sorted.reserve(index.size());
+    for (const size_t i : index) sorted.push_back(order[i]);
+    return sorted;
+}
+}
+
 uint64_t NativeThread::set_guest_processor(uint32_t guest_cpu) {
     if (guest_cpu >= 6) throw RuntimeStop("thread-host", guest_cpu, "guest processor index must be below 6");
-    uint32_t processor_count = 0;
-    for (uint64_t bits = impl_->allowed_affinity; bits; bits &= bits - 1) ++processor_count;
-    uint32_t selected_index = guest_cpu % processor_count;
-    int selected = -1;
-    for (int bit = 0; bit < 64; ++bit)
-        if ((impl_->allowed_affinity >> bit & 1) && selected_index-- == 0) { selected = bit; break; }
+    static std::mutex order_lock;
+    static uint64_t ordered_for = 0;
+    static std::vector<int> ordered;
+    std::vector<int> processors;
+    {
+        std::lock_guard guard(order_lock);
+        if (ordered.empty() || ordered_for != impl_->allowed_affinity) {
+            ordered = processors_by_speed(impl_->allowed_affinity);
+            ordered_for = impl_->allowed_affinity;
+        }
+        processors = ordered;
+    }
+    const int selected = processors.empty() ? -1 : processors[guest_cpu % processors.size()];
     if (selected < 0) throw RuntimeStop("thread-host", guest_cpu, "could not select an allowed host processor");
     cpu_set_t set;
     CPU_ZERO(&set);

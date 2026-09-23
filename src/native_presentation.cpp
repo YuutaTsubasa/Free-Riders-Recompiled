@@ -785,8 +785,14 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height) {
         impl_->command_list->barriers(plume::RenderBarrierStage::GRAPHICS, draw_barriers.data(), 2);
         impl_->command_list->setFramebuffer(impl_->blit_targets[texture_index].get());
         impl_->command_list->clearColor(0, plume::RenderColor(0.0f, 0.0f, 0.0f, 1.0f));
-        const float scale = (std::min)(float(out_width) / float(shown_width), float(out_height) / float(shown_height));
-        const float view_width = float(shown_width) * scale, view_height = float(shown_height) * scale;
+        // The window keeps the framebuffer's shape, not the shown part's: a
+        // console stretches the title's back buffer over the whole display,
+        // so the 880x720 the loading screens set fills the same 16:9 area the
+        // rest of the game does. Keeping its own shape made the loading
+        // screens narrower than the game, very visibly so on a 20:9 phone.
+        const float scale = (std::min)(float(out_width) / float(impl_->width),
+                                       float(out_height) / float(impl_->height));
+        const float view_width = float(impl_->width) * scale, view_height = float(impl_->height) * scale;
         const plume::RenderViewport viewport((float(out_width) - view_width) * 0.5f, (float(out_height) - view_height) * 0.5f,
                                              view_width, view_height);
         const plume::RenderRect scissor(0, 0, int32_t(out_width), int32_t(out_height));

@@ -40,6 +40,8 @@
 #include "runtime_shader_cache.h"
 #if defined(__SSSE3__)
 #include <immintrin.h>
+#elif defined(__ARM_NEON)
+#include <arm_neon.h>
 #endif
 #include "native_shaders.h"
 #include "asset_files.h"
@@ -515,7 +517,7 @@ void synchronize_resource_memory(PPCContext& ctx) {
                                                                       : request.address & 0x1FFFFFFFu;
     active_guest_graphics->renderer().invalidate(physical_address, request.size);
     if (texture_transfer.active) texture_transfer.resource = request.resource;
-    std::cerr << "NATIVE_RESOURCE_COHERENCY resource=0x" << std::hex << request.resource
+    if(graphics_trace()) std::cerr << "NATIVE_RESOURCE_COHERENCY resource=0x" << std::hex << request.resource
               << " address=0x" << request.address << " size=0x" << request.size
               << " mask=0x" << request.mask << " caller=0x" << request.caller << std::dec << " operation=" << request.operation
               << " ownership=cpu-only queue_completed=1\n";
@@ -543,6 +545,10 @@ static inline void reverse_vector(const uint8_t* from, uint8_t* to) {
     const __m128i order = _mm_setr_epi8(15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0);
     _mm_storeu_si128(reinterpret_cast<__m128i*>(to),
                      _mm_shuffle_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(from)), order));
+#elif defined(__ARM_NEON)
+    // Reverse the bytes of each half, then exchange the halves.
+    const uint8x16_t halves = vrev64q_u8(vld1q_u8(from));
+    vst1q_u8(to, vextq_u8(halves, halves, 8));
 #else
     for (unsigned i = 0; i < 16; ++i) to[i] = from[15 - i];
 #endif
@@ -866,13 +872,15 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         const uint32_t id_output = ctx.r5.u32, parameter_output = ctx.r6.u32;
         const bool found = native_notifications->get_next(handle, match, id_output, parameter_output);
         ctx.r3.u64 = found;
-        std::cerr << "NATIVE_NOTIFICATION_NEXT handle=0x" << std::hex << handle << " match=0x" << match
-                  << " id_output=0x" << id_output << " parameter_output=0x" << parameter_output
-                  << " found=" << found << " lr=0x" << ctx.lr;
-        if (found)
-            std::cerr << " id=0x" << active_memory->load<uint32_t>(id_output)
-                      << " parameter=0x" << (parameter_output ? active_memory->load<uint32_t>(parameter_output) : 0);
-        std::cerr << std::dec << " backend=native-notification-queue\n";
+        if (trace_imports) {
+            std::cerr << "NATIVE_NOTIFICATION_NEXT handle=0x" << std::hex << handle << " match=0x" << match
+                      << " id_output=0x" << id_output << " parameter_output=0x" << parameter_output
+                      << " found=" << found << " lr=0x" << ctx.lr;
+            if (found)
+                std::cerr << " id=0x" << active_memory->load<uint32_t>(id_output)
+                          << " parameter=0x" << (parameter_output ? active_memory->load<uint32_t>(parameter_output) : 0);
+            std::cerr << std::dec << " backend=native-notification-queue\n";
+        }
         return;
     }
     if (address == 0x82ACBD5C && std::string_view(name) == "__imp__NetDll_WSAStartup" && native_winsock) {
@@ -1386,10 +1394,11 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         if (enter_section) {
             auto pending = critical_sections->enter(section, current_thread);
             if (pending) {
-                std::cerr << "ORIGINAL_CRITICAL_WAIT_REQUEST guest_id=" << current_id
-                          << " address=0x" << std::hex << section
-                          << " owner=0x" << active_memory->load<uint32_t>(uint64_t(section) + 24)
-                          << " contender=0x" << current_thread << std::dec << '\n';
+                if (trace_imports)
+                    std::cerr << "ORIGINAL_CRITICAL_WAIT_REQUEST guest_id=" << current_id
+                              << " address=0x" << std::hex << section
+                              << " owner=0x" << active_memory->load<uint32_t>(uint64_t(section) + 24)
+                              << " contender=0x" << current_thread << std::dec << '\n';
                 bool ready = false;
                 if (execution_permit->detached()) {
                     execution_permit->attach();
@@ -2099,7 +2108,7 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
     if (address == 0x82ACB7BC && std::string_view(name) == "__imp__NtReadFile" && active_memory && guest_files) {
         const GuestFiles::ReadRequest request{ctx.r3.u32,ctx.r4.u32,ctx.r5.u32,ctx.r6.u32,
             ctx.r7.u32,ctx.r8.u32,ctx.r9.u32,ctx.r10.u32};
-        std::cerr << "FILE_READ_ABI guest_id=" << current_id << " lr=0x" << std::hex << ctx.lr
+        if (trace_imports) std::cerr << "FILE_READ_ABI guest_id=" << current_id << " lr=0x" << std::hex << ctx.lr
                   << " handle=0x" << request.handle << " event=0x" << request.event
                   << " apc=0x" << request.apc << " context=0x" << request.context
                   << " io=0x" << request.io_output << " buffer=0x" << request.buffer
@@ -3313,7 +3322,7 @@ int main(int argc, char** argv) {
                     const auto cell = sfr::video_globals->device_cell_for_shared_surface(
                         ctx.r31.u32, sfr::current_address, static_cast<uint32_t>(ctx.lr), caller);
                     sfr::shared_surface_release = {ctx.r31.u32, 0, false};
-                    std::cerr << "VIDEO_GLOBAL_READ cell=0x" << std::hex << cell
+                    if (sfr::trace_imports) std::cerr << "VIDEO_GLOBAL_READ cell=0x" << std::hex << cell
                               << " value=0x" << sfr::active_memory->load<uint32_t>(cell)
                               << " resource=0x" << ctx.r31.u32 << " caller=0x" << caller << std::dec << '\n';
                     return cell;
@@ -3616,7 +3625,7 @@ int main(int argc, char** argv) {
             sfr::guest_files = files.get();
             async_files=std::make_unique<sfr::GuestAsyncFiles>(memory,*assets,sync_objects,execution,
                 [&memory](const sfr::GuestFiles::ReadRequest& request,const sfr::GuestFiles::ReadResult& result){
-                    std::cerr << "NATIVE_ASYNC_FILE_DATA handle=0x" << std::hex << request.handle
+                    if (sfr::trace_imports) std::cerr << "NATIVE_ASYNC_FILE_DATA handle=0x" << std::hex << request.handle
                               << " event=0x" << request.event << " io=0x" << request.io_output
                               << " buffer=0x" << request.buffer << std::dec << " offset=" << result.offset
                               << " requested=" << request.length << " transferred=" << result.transferred

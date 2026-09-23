@@ -77,6 +77,36 @@ public class LauncherActivity extends SDLActivity {
         return new String[] { "c++_shared", "SDL2", "launcher" };
     }
 
+    // The launcher reads its settings while liblauncher.so loads, so debug.env
+    // (the same NAME=VALUE lines GameActivity reads) is in the environment
+    // first. Only diagnosis writes that file; SFR_LAUNCHER_AUTOPLAY=1 there
+    // makes an unattended run possible, since this activity cannot be started
+    // with an environment of its own.
+    @Override
+    public void loadLibraries() {
+        File directory = getExternalFilesDir(null);
+        if (directory != null) {
+            File debug = new File(directory, "debug.env");
+            if (debug.isFile()) {
+                try (java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.FileReader(debug))) {
+                    for (String line; (line = reader.readLine()) != null;) {
+                        line = line.trim();
+                        int equals = line.indexOf('=');
+                        if (line.isEmpty() || line.startsWith("#") || equals <= 0) continue;
+                        try {
+                            android.system.Os.setenv(line.substring(0, equals), line.substring(equals + 1), true);
+                        } catch (android.system.ErrnoException error) {
+                            Log.w("FreeRiders", "cannot set " + line, error);
+                        }
+                    }
+                } catch (java.io.IOException error) {
+                    Log.w("FreeRiders", "cannot read debug.env", error);
+                }
+            }
+        }
+        super.loadLibraries();
+    }
+
     // Called from the launcher's thread: shows the system's document picker;
     // the result arrives through nativeDocumentPicked.
     public void pickDocument() {

@@ -512,6 +512,11 @@ if(SFR_BUILD_DIAGNOSTIC)
         set_target_properties(sfr_cpu_diagnostic PROPERTIES OUTPUT_NAME main)
         set_source_files_properties(src/diagnostic_main.cpp PROPERTIES COMPILE_DEFINITIONS main=sfr_game_main)
         target_link_libraries(sfr_cpu_diagnostic PRIVATE android log)
+        # The NDK hardens every translation unit by default. The guest code is
+        # thirty thousand generated functions with large frames that only ever
+        # touch the checked guest memory, so the canaries and the fortified
+        # library calls buy nothing here and are paid for in every one of them.
+        target_compile_options(sfr_cpu_diagnostic PRIVATE -fno-stack-protector -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
     else()
         add_executable(sfr_cpu_diagnostic)
     endif()
