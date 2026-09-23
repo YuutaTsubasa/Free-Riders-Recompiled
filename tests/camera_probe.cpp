@@ -9,6 +9,7 @@
 #include <fstream>
 #include <iostream>
 #include <thread>
+#include <string>
 #include <vector>
 
 namespace {
@@ -34,6 +35,14 @@ bool write_bmp(const char* path, const sfr::CameraFrame& frame) {
 }
 
 int main(int argc, char** argv) {
+    // --list names the cameras the host offers, in the order SFR_CAMERA_DEVICE
+    // numbers them (the launcher's camera setting lists the same).
+    if (argc > 1 && std::string(argv[1]) == "--list") {
+        const auto cameras = sfr::CameraCapture::devices();
+        std::cout << cameras.size() << " camera(s)\n";
+        for (size_t i = 0; i < cameras.size(); ++i) std::cout << "  " << i << ' ' << cameras[i] << '\n';
+        return cameras.empty() ? 1 : 0;
+    }
     const char* path = argc > 1 ? argv[1] : "camera.bmp";
     const uint32_t width = argc > 2 ? uint32_t(std::strtoul(argv[2], nullptr, 10)) : 640;
     const uint32_t height = argc > 3 ? uint32_t(std::strtoul(argv[3], nullptr, 10)) : 480;

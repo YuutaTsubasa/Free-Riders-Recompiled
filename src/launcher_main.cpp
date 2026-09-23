@@ -30,6 +30,7 @@
 #include "installer.h"
 #include "launcher_art.h"
 #include "launcher_platform.h"
+#include "camera_capture.h"
 #include "launcher_settings.h"
 #include "launcher_sound.h"
 #include "sony_gamepad.h"
@@ -69,7 +70,7 @@ enum Text {
     Sound, SoundHint, Volume,
     SkipMovies, SkipMoviesHint,
     Parallel, ParallelHint, VertexCache, VertexCacheHint, GpuPipeline, GpuPipelineHint, RaceEvery, RaceEveryHint,
-    CameraLabel, CameraHint, CameraOff, CameraPicture, CameraMotion,
+    CameraLabel, CameraHint, CameraOff, CameraPicture, CameraMotion, CameraDevice, CameraDeviceHint, CameraNone,
     ImageDirectory, ImageDirectoryHint, AssetDirectory, AssetDirectoryHint, Browse, Found, Missing, FilesHint,
     StartGame, Quit, Defaults,
     MissingFiles, MissingGame, LaunchFailed, Ready,
@@ -129,6 +130,9 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Off", "關閉"},
     {"Picture", "畫面"},
     {"Motion", "體感"},
+    {"Which camera", "使用哪一台"},
+    {"The camera to read, when the host has more than one.", "當電腦上有多台攝影機時，要讀取哪一台。"},
+    {"No camera found", "找不到攝影機"},
     {"Game code image", "遊戲程式映像"},
     {"The game's decoded code and data (complete.txt, image.bin).", "解碼後的遊戲程式與資料（complete.txt、image.bin）。"},
     {"Game data", "遊戲資料"},
@@ -826,6 +830,9 @@ struct Launcher {
     Page page = Page::Settings;
     int tab = DisplayTab;
     float tab_fade = 1.0f;
+    // The host's cameras, listed while the camera setting is on.
+    std::vector<std::string> cameras;
+    std::string cameras_listed_for = "off";
     // The launcher slides in (appear rises to 1) and out before the game
     // starts (leaving, appear falls to 0).
     float appear = 0.0f, page_fade = 0.0f;
@@ -1347,6 +1354,26 @@ struct Launcher {
                 ImGui::EndCombo();
             }
         });
+        // Which camera: the hosts's list, read once and again whenever the
+        // camera is turned on, since one may have been plugged in since.
+        if (settings.camera != "off") {
+            if (cameras_listed_for != settings.camera) {
+                cameras = sfr::CameraCapture::devices();
+                cameras_listed_for = settings.camera;
+            }
+            const float device_width = 260 * scale;
+            setting_row(tr(CameraDevice), tr(CameraDeviceHint), device_width, scale, [&] {
+                if (settings.camera_device >= cameras.size()) settings.camera_device = 0;
+                const char* current = cameras.empty() ? tr(CameraNone) : cameras[settings.camera_device].c_str();
+                ImGui::SetNextItemWidth(device_width);
+                if (ImGui::BeginCombo("##camera_device", current)) {
+                    for (uint32_t i = 0; i < cameras.size(); ++i)
+                        if (ImGui::Selectable(cameras[i].c_str(), settings.camera_device == i))
+                            settings.camera_device = i;
+                    ImGui::EndCombo();
+                }
+            });
+        }
 #ifdef _WIN32  // elsewhere the game always draws with Vulkan
         setting_row(tr(VulkanLabel), tr(VulkanHint), switch_width, scale, [&] { toggle("##vulkan", &settings.vulkan); });
 #endif
@@ -1466,10 +1493,14 @@ struct Launcher {
                                           color(cyan, 0.8f), color(cyan, 0.0f), color(cyan, 0.0f), color(cyan, 0.8f));
         }
         const float pad_x = 30 * scale, pad_y = 24 * scale;
-        content_width = panel_size.x - pad_x * 2;
+        // The rows scroll inside the panel: a tab with more of them than fit
+        // used to draw straight through its rounded edge.
+        const ImVec2 inside(panel_size.x - pad_x * 2, panel_size.y - pad_y * 2);
         ImGui::SetCursorPos(ImVec2(panel_at.x + pad_x + (1.0f - tab_fade) * 24 * scale, panel_at.y + pad_y));
         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * tab_fade);
-        ImGui::BeginGroup();
+        ImGui::BeginChild("settings", inside, false, ImGuiWindowFlags_NoBackground);
+        // A scrollbar, when one appears, takes its width from the rows.
+        content_width = inside.x - (ImGui::GetCurrentWindow()->ScrollbarY ? ImGui::GetStyle().ScrollbarSize : 0.0f);
         ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + content_width);
         switch (tab) {
         case DisplayTab: display_settings(); break;
@@ -1479,7 +1510,7 @@ struct Launcher {
         case FilesTab: file_settings(); break;
         }
         ImGui::PopTextWrapPos();
-        ImGui::EndGroup();
+        ImGui::EndChild();
         ImGui::PopStyleVar();
 
         if (note) {

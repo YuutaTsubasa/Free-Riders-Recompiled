@@ -267,7 +267,9 @@ add_test(NAME installer COMMAND sfr_installer_test)
 # Direct3D 11 on Windows, SDL's renderer on Linux and Android.
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui/imgui.cpp")
     set(SFR_IMGUI "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui")
+    # The launcher lists the host's cameras for its camera setting.
     set(SFR_LAUNCHER_SOURCES src/launcher_main.cpp src/launcher_settings.cpp src/launcher_sound.cpp src/launcher_art.cpp src/sony_gamepad.cpp
+        ${SFR_CAMERA_CAPTURE}
         ${SFR_IMGUI}/imgui.cpp ${SFR_IMGUI}/imgui_draw.cpp ${SFR_IMGUI}/imgui_tables.cpp ${SFR_IMGUI}/imgui_widgets.cpp)
     if(WIN32)
         add_executable(sfr_launcher WIN32 ${SFR_LAUNCHER_SOURCES} src/launcher_platform_win32.cpp

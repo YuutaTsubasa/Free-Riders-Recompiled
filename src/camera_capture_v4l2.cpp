@@ -68,6 +68,24 @@ private:
 };
 }
 
+std::vector<std::string> CameraCapture::devices() {
+    // /dev/video0 upwards, keeping the ones that can capture: the numbers a
+    // driver gives out are not always consecutive, and some of them are
+    // metadata nodes rather than cameras.
+    std::vector<std::string> names;
+    for (int index = 0; index < 16; ++index) {
+        const std::string path = "/dev/video" + std::to_string(index);
+        const int descriptor = ::open(path.c_str(), O_RDWR | O_NONBLOCK);
+        if (descriptor == -1) continue;
+        v4l2_capability capability{};
+        if (retry_ioctl(descriptor, VIDIOC_QUERYCAP, &capability) == 0 &&
+            (capability.capabilities & V4L2_CAP_VIDEO_CAPTURE) && (capability.capabilities & V4L2_CAP_STREAMING))
+            names.push_back(path + " (" + reinterpret_cast<const char*>(capability.card) + ")");
+        close(descriptor);
+    }
+    return names;
+}
+
 std::unique_ptr<CameraCapture> CameraCapture::open(uint32_t width, uint32_t height) {
     // SFR_CAMERA_DEVICE=N reads /dev/videoN instead of /dev/video0.
     std::string path = "/dev/video0";

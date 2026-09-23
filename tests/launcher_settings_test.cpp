@@ -33,6 +33,7 @@ void settings_round_trip() {
     settings.ui_sounds = false;
     settings.vulkan = true;
     settings.camera = "motion";
+    settings.camera_device = 2;
     settings.image_directory = std::filesystem::path(u8"C:/遊戲/image");
     settings.asset_directory = "D:/assets";
     const auto read = sfr::parse_launcher_settings(sfr::format_launcher_settings(settings));
@@ -40,7 +41,7 @@ void settings_round_trip() {
     require(read.fullscreen && read.vsync && !read.audio && read.volume == 35, "display and sound survive a round trip");
     require(read.skip_movies && !read.vertex_cache && !read.gpu_pipeline && !read.parallel && read.race_render_every == 2 && !read.ui_sounds && read.vulkan,
             "advanced settings survive a round trip");
-    require(read.camera == "motion", "the camera choice survives a round trip");
+    require(read.camera == "motion" && read.camera_device == 2, "the camera choice and device survive a round trip");
     require(read.image_directory == settings.image_directory && read.asset_directory == settings.asset_directory,
             "non-ASCII directories survive a round trip");
 }
@@ -51,6 +52,8 @@ void malformed_values_keep_defaults() {
         "unknown=1\n# vsync=1\nno equals sign\n  audio = 0  \r\ncamera=webcam\n");
     const sfr::LauncherSettings defaults;
     require(read.camera == defaults.camera, "an unknown camera choice keeps the default");
+    require(sfr::parse_launcher_settings("camera_device=99\n").camera_device == defaults.camera_device,
+            "a camera number the host cannot have keeps the default");
     require(read.window_width == defaults.window_width && read.window_height == defaults.window_height,
             "out-of-range or non-numeric sizes keep the default");
     require(read.volume == defaults.volume && read.fullscreen == defaults.fullscreen &&
@@ -65,6 +68,7 @@ void environment_follows_settings() {
     require(value_of(settings, "SFR_PARALLEL_WORKER") == "cores", "parallel guest cores by default");
     require(value_of(settings, "SFR_SKIP_MOVIES").empty(), "movies play by default");
     require(value_of(settings, "SFR_GRAPHICS").empty(), "Direct3D 12 by default");
+    require(value_of(settings, "SFR_CAMERA").empty(), "the camera is left alone by default");
     require(value_of(settings, "SFR_PROFILE") == "1", "the player is signed in so the game saves");
     require(value_of(settings, "SFR_GPU_PIPELINE") == "1", "the graphics card works a frame behind by default");
     {

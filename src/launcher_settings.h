@@ -30,6 +30,7 @@ struct LauncherSettings {
     // share the pad's sticks, so the two are one choice. "picture" keeps the
     // pad in charge and only gives the title a camera image.
     std::string camera = "off";      // "off", "picture" or "motion"
+    uint32_t camera_device = 0;      // SFR_CAMERA_DEVICE: which of the host's cameras
     std::string language = "auto";   // the launcher's: "auto" (the system's), "en" or "zh-TW"
     std::filesystem::path image_directory, asset_directory;
 };

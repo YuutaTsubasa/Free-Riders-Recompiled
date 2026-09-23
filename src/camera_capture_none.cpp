@@ -5,6 +5,8 @@
 #include <iostream>
 
 namespace sfr {
+std::vector<std::string> CameraCapture::devices() { return {}; }
+
 std::unique_ptr<CameraCapture> CameraCapture::open(uint32_t, uint32_t) {
     static bool reported = false;
     if (!reported) {

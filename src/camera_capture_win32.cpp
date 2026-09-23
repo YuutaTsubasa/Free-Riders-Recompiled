@@ -18,7 +18,9 @@
 #include <iostream>
 #include <mutex>
 #include <string>
+#include <functional>
 #include <thread>
+#include <vector>
 
 #pragma comment(lib, "mfplat.lib")
 #pragma comment(lib, "mf.lib")
@@ -97,6 +99,53 @@ bool pixels_of(const GUID& subtype, CameraPixels& format) {
     else return false;
     return true;
 }
+}
+
+namespace {
+// The capture devices Media Foundation lists, with their friendly names.
+// The caller releases nothing: the activators are freed here.
+bool for_each_device(const std::function<void(uint32_t, IMFActivate&, const std::wstring&)>& visit) {
+    ComPtr<IMFAttributes> attributes;
+    if (FAILED(MFCreateAttributes(attributes.GetAddressOf(), 1)) ||
+        FAILED(attributes->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
+                                   MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID)))
+        return false;
+    IMFActivate** devices = nullptr;
+    UINT32 count = 0;
+    if (FAILED(MFEnumDeviceSources(attributes.Get(), &devices, &count)) || !count) {
+        if (devices) CoTaskMemFree(devices);
+        return false;
+    }
+    for (UINT32 i = 0; i < count; ++i) {
+        std::wstring name;
+        WCHAR* friendly = nullptr;
+        UINT32 length = 0;
+        if (SUCCEEDED(devices[i]->GetAllocatedString(MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, &friendly, &length))) {
+            name.assign(friendly, length);
+            CoTaskMemFree(friendly);
+        }
+        visit(i, *devices[i], name);
+    }
+    for (UINT32 i = 0; i < count; ++i) devices[i]->Release();
+    CoTaskMemFree(devices);
+    return true;
+}
+
+std::string narrow(const std::wstring& text) {
+    if (text.empty()) return {};
+    const int length = WideCharToMultiByte(CP_UTF8, 0, text.data(), int(text.size()), nullptr, 0, nullptr, nullptr);
+    std::string result(size_t(length), 0);
+    WideCharToMultiByte(CP_UTF8, 0, text.data(), int(text.size()), result.data(), length, nullptr, nullptr);
+    return result;
+}
+}
+
+std::vector<std::string> CameraCapture::devices() {
+    static MediaFoundation media;
+    std::vector<std::string> names;
+    if (!media.ready) return names;
+    for_each_device([&](uint32_t, IMFActivate&, const std::wstring& name) { names.push_back(narrow(name)); });
+    return names;
 }
 
 std::unique_ptr<CameraCapture> CameraCapture::open(uint32_t width, uint32_t height) {

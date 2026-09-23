@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace sfr {
@@ -36,6 +37,9 @@ public:
     // nearest it offers is used). Null when there is none, when the platform
     // has no capture support, or when the player has not allowed it.
     static std::unique_ptr<CameraCapture> open(uint32_t width, uint32_t height);
+    // The cameras the host offers, in the order open() numbers them
+    // (SFR_CAMERA_DEVICE picks one). Empty where there is no capture stack.
+    static std::vector<std::string> devices();
 };
 
 }
