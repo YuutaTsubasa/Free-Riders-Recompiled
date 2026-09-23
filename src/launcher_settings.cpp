@@ -51,6 +51,7 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         else if (key == "volume") read_number(value, 0, 100, settings.volume);
         else if (key == "skip_movies") read_flag(value, settings.skip_movies);
         else if (key == "vertex_cache") read_flag(value, settings.vertex_cache);
+        else if (key == "gpu_pipeline") read_flag(value, settings.gpu_pipeline);
         else if (key == "parallel") read_flag(value, settings.parallel);
         else if (key == "race_render_every") read_number(value, 1, 4, settings.race_render_every);
         else if (key == "ui_sounds") read_flag(value, settings.ui_sounds);
@@ -75,6 +76,7 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "volume=" << s.volume << '\n'
         << "skip_movies=" << s.skip_movies << '\n'
         << "vertex_cache=" << s.vertex_cache << '\n'
+        << "gpu_pipeline=" << s.gpu_pipeline << '\n'
         << "parallel=" << s.parallel << '\n'
         << "race_render_every=" << s.race_render_every << '\n'
         << "ui_sounds=" << s.ui_sounds << '\n'
@@ -124,6 +126,7 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         {"SFR_RENDER_EVERY", std::to_string(s.race_render_every)},
         {"SFR_PARALLEL_WORKER", s.parallel ? "cores" : "0"},
         {"SFR_VERTEX_CACHE", s.vertex_cache ? "1" : "0"},
+        {"SFR_GPU_PIPELINE", s.gpu_pipeline ? "1" : "0"},
         {"SFR_AUDIO", s.audio ? "1" : "0"},
         // The player is signed in, so the game keeps records (docs/saves.md).
         {"SFR_PROFILE", "1"},

@@ -27,6 +27,7 @@ void settings_round_trip() {
     settings.volume = 35;
     settings.skip_movies = true;
     settings.vertex_cache = false;
+    settings.gpu_pipeline = false;
     settings.parallel = false;
     settings.race_render_every = 2;
     settings.ui_sounds = false;
@@ -36,7 +37,7 @@ void settings_round_trip() {
     const auto read = sfr::parse_launcher_settings(sfr::format_launcher_settings(settings));
     require(read.window_width == 1920 && read.window_height == 1080, "window size survives a round trip");
     require(read.fullscreen && read.vsync && !read.audio && read.volume == 35, "display and sound survive a round trip");
-    require(read.skip_movies && !read.vertex_cache && !read.parallel && read.race_render_every == 2 && !read.ui_sounds && read.vulkan,
+    require(read.skip_movies && !read.vertex_cache && !read.gpu_pipeline && !read.parallel && read.race_render_every == 2 && !read.ui_sounds && read.vulkan,
             "advanced settings survive a round trip");
     require(read.image_directory == settings.image_directory && read.asset_directory == settings.asset_directory,
             "non-ASCII directories survive a round trip");
@@ -62,6 +63,7 @@ void environment_follows_settings() {
     require(value_of(settings, "SFR_SKIP_MOVIES").empty(), "movies play by default");
     require(value_of(settings, "SFR_GRAPHICS").empty(), "Direct3D 12 by default");
     require(value_of(settings, "SFR_PROFILE") == "1", "the player is signed in so the game saves");
+    require(value_of(settings, "SFR_GPU_PIPELINE") == "1", "the graphics card works a frame behind by default");
     {
         sfr::LauncherSettings touch;
         touch.touch_controls = false;

@@ -68,7 +68,7 @@ enum Text {
     WindowSize, DesktopSize, Fullscreen, FullscreenHint, VSync, VSyncHint, RenderResolution, RenderResolutionValue,
     Sound, SoundHint, Volume,
     SkipMovies, SkipMoviesHint,
-    Parallel, ParallelHint, VertexCache, VertexCacheHint, RaceEvery, RaceEveryHint,
+    Parallel, ParallelHint, VertexCache, VertexCacheHint, GpuPipeline, GpuPipelineHint, RaceEvery, RaceEveryHint,
     ImageDirectory, ImageDirectoryHint, AssetDirectory, AssetDirectoryHint, Browse, Found, Missing, FilesHint,
     StartGame, Quit, Defaults,
     MissingFiles, MissingGame, LaunchFailed, Ready,
@@ -116,6 +116,9 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Vertex cache", "頂點快取"},
     {"Keeps geometry that does not change on the GPU. Turn it off if models look out of date.",
      "將沒有變動的幾何資料保留在 GPU 上。若模型顯示不正確，可以關閉。"},
+    {"Frame ahead", "提前一格"},
+    {"Lets the graphics card work one frame behind the game. Turn it off if the picture flickers or looks wrong.",
+     "讓顯示卡比遊戲晚一格工作。若畫面閃爍或顯示不正確，可以關閉。"},
     {"Draw every Nth race frame", "比賽中每 N 格繪製一次"},
     {"Above 1, a slower computer keeps the race at full speed with fewer frames drawn.",
      "大於 1 時，較慢的電腦也能維持比賽速度，但畫面較不流暢。"},
@@ -1323,6 +1326,7 @@ struct Launcher {
         const float switch_width = ImGui::GetFrameHeight() * 1.9f;
         setting_row(tr(Parallel), tr(ParallelHint), switch_width, scale, [&] { toggle("##parallel", &settings.parallel); });
         setting_row(tr(VertexCache), tr(VertexCacheHint), switch_width, scale, [&] { toggle("##vertex", &settings.vertex_cache); });
+        setting_row(tr(GpuPipeline), tr(GpuPipelineHint), switch_width, scale, [&] { toggle("##pipeline", &settings.gpu_pipeline); });
 #ifdef _WIN32  // elsewhere the game always draws with Vulkan
         setting_row(tr(VulkanLabel), tr(VulkanHint), switch_width, scale, [&] { toggle("##vulkan", &settings.vulkan); });
 #endif
