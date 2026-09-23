@@ -60,6 +60,7 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         else if (key == "tilt") read_flag(value, settings.tilt);
         else if (key == "camera" && (value == "off" || value == "picture" || value == "motion")) settings.camera = value;
         else if (key == "camera_device" && value.size() <= 128) settings.camera_device = value;
+        else if (key == "camera_mirror") read_flag(value, settings.camera_mirror);
         else if (key == "language" && (value == "auto" || value == "en" || value == "zh-TW")) settings.language = value;
         else if (key == "image_directory") settings.image_directory = utf8_path(value);
         else if (key == "asset_directory") settings.asset_directory = utf8_path(value);
@@ -87,6 +88,7 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "tilt=" << s.tilt << '\n'
         << "camera=" << s.camera << '\n'
         << "camera_device=" << s.camera_device << '\n'
+        << "camera_mirror=" << s.camera_mirror << '\n'
         << "language=" << s.language << '\n'
         << "image_directory=" << path_utf8(s.image_directory) << '\n'
         << "asset_directory=" << path_utf8(s.asset_directory) << '\n';
@@ -145,6 +147,7 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         // title shows; "motion" also drives the Kinect player's body with it.
         {"SFR_CAMERA", s.camera == "off" ? "" : s.camera},
         {"SFR_CAMERA_DEVICE", s.camera_device},
+        {"SFR_CAMERA_MIRROR", s.camera_mirror ? "1" : "0"},
 #ifdef __ANDROID__
         {"SFR_TOUCH_CONTROLS", s.touch_controls ? "1" : "0"},
         {"SFR_TILT", s.tilt ? "1" : "0"},

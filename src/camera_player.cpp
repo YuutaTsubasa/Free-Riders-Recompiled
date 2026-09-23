@@ -2,6 +2,7 @@
 
 #include "camera_capture.h"
 #include "pose_estimator.h"
+#include "pose_smoothing.h"
 
 #include <atomic>
 #include <chrono>
@@ -16,6 +17,8 @@ namespace sfr {
 struct CameraPlayer::Impl {
     std::unique_ptr<CameraCapture> camera;
     std::unique_ptr<PoseEstimator> estimator;
+    PoseSmoothing smoothing = PoseSmoothing::from_environment();
+    bool mirrored = false;
     std::mutex lock;
     SkeletonJoints joints{};
     uint64_t found = 0, taken = 0;
@@ -28,6 +31,7 @@ struct CameraPlayer::Impl {
         SkeletonJoints mapped{};
         uint64_t estimates = 0;
         auto reported = std::chrono::steady_clock::now();
+        auto last_picture = reported;
         double spent = 0;
         while (!stop.stop_requested()) {
             if (!camera->next(frame)) {
@@ -36,8 +40,17 @@ struct CameraPlayer::Impl {
             }
             if (!estimator) continue;  // a picture for the title, no body
             const auto started = std::chrono::steady_clock::now();
-            const bool body = estimator->estimate(frame, landmarks) &&
-                              pose_to_joints(landmarks, frame.width, frame.height, mapped);
+            const double interval = std::chrono::duration<double>(started - last_picture).count();
+            last_picture = started;
+            bool body = estimator->estimate(frame, landmarks);
+            if (body) {
+                // Smoothed where the model read them, before the picture
+                // becomes metres: the wandering is a picture's wandering.
+                smoothing.smooth(landmarks, interval);
+                body = pose_to_joints(landmarks, frame.width, frame.height, mapped, mirrored);
+            } else {
+                smoothing.forget();
+            }
             spent += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
             ++estimates;
             if (body) {
@@ -78,9 +91,12 @@ std::unique_ptr<CameraPlayer> CameraPlayer::start() {
             return nullptr;
         }
     }
+    // SFR_CAMERA_MIRROR=1 for a camera that hands over a mirrored picture,
+    // which the phone-as-webcam apps tend to do by default.
+    if (const char* text = std::getenv("SFR_CAMERA_MIRROR"); text && *text && *text != '0') impl->mirrored = true;
     Impl* const raw = impl.get();
     impl->worker = std::jthread([raw](std::stop_token stop) { raw->run(stop); });
-    std::cerr << "NATIVE_CAMERA_PLAYER started motion=" << motion << '\n';
+    std::cerr << "NATIVE_CAMERA_PLAYER started motion=" << motion << " mirrored=" << raw->mirrored << '\n';
     return std::unique_ptr<CameraPlayer>(new CameraPlayer(std::move(impl)));
 }
 

@@ -27,16 +27,39 @@ launcher 的「攝影機」（`SFR_CAMERA`）有三種：
    取峰值得到 17 個 COCO 關節點。單執行緒，這台機器上一次約 7.5 ms。
    兩肩與兩髖之中最低的分數低於 `SFR_POSE_CONFIDENCE`（預設 0.3）時視為沒看到人——
    只有半個人入鏡比完全沒人更糟。
-3. [`pose_skeleton`](../src/pose_skeleton.h)：17 點換成 NUI 的 20 個關節，
-   左右鏡像（玩家看到的是鏡子），以肩寬 `pose_shoulder_half_width` 為尺度、
-   放在 `pose_distance` 公尺處，補出 NUI 有而 COCO 沒有的脊椎與髖中心。
-4. [`camera_player`](../src/camera_player.h)：上面三步跑在自己的執行緒上，
+3. [`pose_smoothing`](../src/pose_smoothing.h)：模型是一張一張獨立讀的，
+   站著不動的點在每張之間仍會飄一兩個像素。用 1 Euro filter（Casiez et al., 2012）
+   壓掉：靜止時截止頻率低、壓得重，手一動截止頻率立刻拉高、不會延遲。
+   `SFR_POSE_SMOOTHING`（靜止時的截止頻率，預設 1 Hz，0 為關閉）與
+   `SFR_POSE_SMOOTHING_BETA`（速度的影響，預設 0.05）可調。
+4. [`pose_skeleton`](../src/pose_skeleton.h)：17 點換成 NUI 的 20 個關節，
+   以肩寬 `pose_shoulder_half_width` 為尺度、放在 `pose_distance` 公尺處，
+   補出 NUI 有而 COCO 沒有的脊椎與髖中心。
+5. [`camera_player`](../src/camera_player.h)：上面幾步跑在自己的執行緒上，
    遊戲那格要骨架時只拿最新一份。找到人之後，第一位玩家的骨架就由攝影機寫入
    （[`nui_hooks`](../src/nui_hooks.cpp) 的 `sub_827707B0`）；還沒找到人以前，
    仍由手把的模擬骨架頂著，所以攝影機開著也不會讓遊戲不能動。
 
 每五秒會印一行 `NATIVE_CAMERA_PLAYER estimates=… tracked=… average_ms=…`，
 可以看出模型是不是跟得上，以及有沒有真的看到人。
+
+## 左右與鏡像
+
+攝影機面對玩家，所以**玩家的右手出現在畫面的左半邊**，而那一側正是感測器的
++x——[`nui_skeleton`](../src/nui_skeleton.cpp) 的模擬玩家右肩在 +0.18，選單游標
+的中心就在它旁邊（右手 x=0.175 為畫面正中央）。所以模型的右就是 NUI 的右，
+名稱直接對過去；`place()` 的 `centre - x` 已經把畫面座標翻成感測器座標了。
+
+（這裡本來多翻了一次：相機骨架的右肩落在 −0.18，和模擬玩家差了 0.36 公尺。
+選單游標橫向約 2600 px/m，等於偏左約 975 px，1280 寬的畫面上就是「游標一直
+跑到最左邊」。）
+
+有些相機送出來的畫面本身就是鏡像的（手機當視訊鏡頭的 app 多半預設如此）。
+一張人的照片**無法**判斷是否鏡像——鏡像的人看起來就是一個人——所以這是一個
+設定而不是猜測：launcher 的「攝影機畫面左右相反」（`SFR_CAMERA_MIRROR`）。
+設反了的話，舉左手會動到右手，游標也會往反方向跑。開啟時會先把畫面翻回來
+再開始量測（座標左右對調，左右標籤也跟著互換，因為模型看到鏡像的人也會把
+他的右手叫成左手）。
 
 ## 要哪一台相機
 

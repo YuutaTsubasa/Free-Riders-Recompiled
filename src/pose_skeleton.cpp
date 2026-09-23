@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace sfr {
 namespace {
@@ -17,10 +18,21 @@ Point between(const Point& from, const Point& to, float part) {
 }
 }
 
-bool pose_to_joints(const PoseLandmarks& landmarks, uint32_t picture_width, uint32_t picture_height,
-                    SkeletonJoints& joints) {
+bool pose_to_joints(const PoseLandmarks& given, uint32_t picture_width, uint32_t picture_height,
+                    SkeletonJoints& joints, bool picture_is_mirrored) {
     if (!picture_width || !picture_height) return false;
     using namespace pose_point;
+    // A mirrored picture is turned back first: every point moves to the other
+    // side, and the two sides change places, since a model shown a mirrored
+    // person calls their right hand their left -- it has no way to know.
+    PoseLandmarks landmarks = given;
+    if (picture_is_mirrored) {
+        for (auto& point : landmarks) point.x = float(picture_width) - point.x;
+        for (const auto& pair : {std::pair{shoulder_left, shoulder_right}, {elbow_left, elbow_right},
+                                 {wrist_left, wrist_right}, {hip_left, hip_right}, {knee_left, knee_right},
+                                 {ankle_left, ankle_right}, {eye_left, eye_right}, {ear_left, ear_right}})
+            std::swap(landmarks[pair.first], landmarks[pair.second]);
+    }
     // The torso decides whether there is a body at all: the limbs are often
     // guessed at the edge of the picture, but these four are not.
     const float torso = (std::min)((std::min)(landmarks[shoulder_left].score, landmarks[shoulder_right].score),
@@ -42,20 +54,24 @@ bool pose_to_joints(const PoseLandmarks& landmarks, uint32_t picture_width, uint
                 pose_distance};
     };
 
-    // The model's left is the picture's left, which is the player's right.
+    // The player's right is the sensor's +x, which is where the mirroring in
+    // place() has already put the picture's left half. The model names the
+    // sides from the body, not from the picture, so the names carry straight
+    // across: right to right (nui_skeleton.cpp's emulated player has its right
+    // shoulder at +0.18 too, and the title's cursor centre sits beside it).
     namespace joint = nui_joint;
-    joints[joint::shoulder_right] = place(pose_point::shoulder_left);
-    joints[joint::shoulder_left] = place(pose_point::shoulder_right);
-    joints[joint::elbow_right] = place(pose_point::elbow_left);
-    joints[joint::elbow_left] = place(pose_point::elbow_right);
-    joints[joint::hand_right] = place(pose_point::wrist_left);
-    joints[joint::hand_left] = place(pose_point::wrist_right);
-    joints[joint::hip_right] = place(pose_point::hip_left);
-    joints[joint::hip_left] = place(pose_point::hip_right);
-    joints[joint::knee_right] = place(pose_point::knee_left);
-    joints[joint::knee_left] = place(pose_point::knee_right);
-    joints[joint::ankle_right] = place(pose_point::ankle_left);
-    joints[joint::ankle_left] = place(pose_point::ankle_right);
+    joints[joint::shoulder_right] = place(pose_point::shoulder_right);
+    joints[joint::shoulder_left] = place(pose_point::shoulder_left);
+    joints[joint::elbow_right] = place(pose_point::elbow_right);
+    joints[joint::elbow_left] = place(pose_point::elbow_left);
+    joints[joint::hand_right] = place(pose_point::wrist_right);
+    joints[joint::hand_left] = place(pose_point::wrist_left);
+    joints[joint::hip_right] = place(pose_point::hip_right);
+    joints[joint::hip_left] = place(pose_point::hip_left);
+    joints[joint::knee_right] = place(pose_point::knee_right);
+    joints[joint::knee_left] = place(pose_point::knee_left);
+    joints[joint::ankle_right] = place(pose_point::ankle_right);
+    joints[joint::ankle_left] = place(pose_point::ankle_left);
     joints[joint::head] = place(nose);
 
     // The joints a NUI skeleton has and the model does not: the wrists sit

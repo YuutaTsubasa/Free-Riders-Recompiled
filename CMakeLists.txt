@@ -223,6 +223,10 @@ add_test(NAME pose_estimator COMMAND sfr_pose_estimator_test)
 add_executable(sfr_pose_skeleton_test tests/pose_skeleton_test.cpp src/pose_skeleton.cpp)
 target_include_directories(sfr_pose_skeleton_test PRIVATE src)
 add_test(NAME pose_skeleton COMMAND sfr_pose_skeleton_test)
+# Steadying the points the model reads afresh from every picture.
+add_executable(sfr_pose_smoothing_test tests/pose_smoothing_test.cpp src/pose_smoothing.cpp)
+target_include_directories(sfr_pose_smoothing_test PRIVATE src)
+add_test(NAME pose_smoothing COMMAND sfr_pose_smoothing_test)
 if(SFR_POSE_AVAILABLE)
     # Running the model over a camera picture, or a BMP, without the game.
     add_executable(sfr_pose_probe tests/pose_probe.cpp ${SFR_POSE_SOURCES} ${SFR_CAMERA_CAPTURE})
@@ -585,7 +589,7 @@ if(SFR_BUILD_DIAGNOSTIC)
     target_sources(sfr_cpu_diagnostic PRIVATE src/video_mode.cpp src/native_display.cpp src/physical_memory.cpp src/ansi_string.cpp src/store_halfword_update.cpp src/store_float_single_update.cpp src/load_halfword_update.cpp src/debug_monitor.cpp src/image_protection.cpp src/resource_coherency.cpp src/video_globals.cpp src/native_language.cpp src/system_config.cpp)
     target_sources(sfr_cpu_diagnostic PRIVATE src/game_region.cpp)
     # The webcam standing in for the sensor, and the body it finds.
-    target_sources(sfr_cpu_diagnostic PRIVATE src/camera_player.cpp src/pose_skeleton.cpp
+    target_sources(sfr_cpu_diagnostic PRIVATE src/camera_player.cpp src/pose_skeleton.cpp src/pose_smoothing.cpp
                    ${SFR_CAMERA_CAPTURE} ${SFR_POSE_SOURCES})
     if(SFR_POSE_AVAILABLE)
         target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_onnxruntime)

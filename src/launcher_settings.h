@@ -34,6 +34,11 @@ struct LauncherSettings {
     // A name and not a number, because the list changes: a phone camera or a
     // capture card comes and goes, and the number then means another camera.
     std::string camera_device;
+    // Some cameras hand over a mirrored picture (phone-as-webcam apps
+    // usually do). Nothing in a picture of a person says which it is, so
+    // it is a setting: with it wrong, left and right are the wrong way
+    // round and the cursor runs off the side of the screen.
+    bool camera_mirror = false;   // SFR_CAMERA_MIRROR
     std::string language = "auto";   // the launcher's: "auto" (the system's), "en" or "zh-TW"
     std::filesystem::path image_directory, asset_directory;
 };

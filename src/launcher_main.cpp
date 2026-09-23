@@ -71,7 +71,7 @@ enum Text {
     SkipMovies, SkipMoviesHint,
     Parallel, ParallelHint, VertexCache, VertexCacheHint, GpuPipeline, GpuPipelineHint, RaceEvery, RaceEveryHint,
     CameraLabel, CameraHint, CameraOff, CameraPicture, CameraMotion, CameraDevice, CameraDeviceHint, CameraNone,
-    CameraTest, CameraTesting, CameraWorks, CameraSilent, CameraClosed,
+    CameraTest, CameraTesting, CameraWorks, CameraSilent, CameraClosed, CameraMirror, CameraMirrorHint,
     ImageDirectory, ImageDirectoryHint, AssetDirectory, AssetDirectoryHint, Browse, Found, Missing, FilesHint,
     StartGame, Quit, Defaults,
     MissingFiles, MissingGame, LaunchFailed, Ready,
@@ -139,6 +139,9 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Pictures are arriving", "有畫面"},
     {"Opened, but no picture arrives", "開得起來，但沒有畫面"},
     {"This camera will not open", "這台攝影機打不開"},
+    {"Mirrored camera", "攝影機畫面左右相反"},
+    {"Turn this on when the camera shows you as a mirror does. With it wrong, raising one hand moves the other, and the cursor runs off the side of the screen.",
+     "若攝影機畫面像照鏡子一樣左右相反，請開啟此項。設定相反時，舉起一隻手會動到另一隻，游標也會跑到畫面邊緣。"},
     {"Game code image", "遊戲程式映像"},
     {"The game's decoded code and data (complete.txt, image.bin).", "解碼後的遊戲程式與資料（complete.txt、image.bin）。"},
     {"Game data", "遊戲資料"},
@@ -1408,6 +1411,9 @@ struct Launcher {
                 }
                 ImGui::EndDisabled();
             });
+            if (settings.camera == "motion")
+                setting_row(tr(CameraMirror), tr(CameraMirrorHint), switch_width, scale,
+                            [&] { toggle("##camera_mirror", &settings.camera_mirror); });
         }
 #ifdef _WIN32  // elsewhere the game always draws with Vulkan
         setting_row(tr(VulkanLabel), tr(VulkanHint), switch_width, scale, [&] { toggle("##vulkan", &settings.vulkan); });
