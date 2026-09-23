@@ -188,6 +188,8 @@ add_test(NAME touch_controls COMMAND sfr_touch_controls_test)
 # nothing yet elsewhere (the setting then has no effect).
 if(WIN32)
     set(SFR_CAMERA_CAPTURE src/camera_capture.cpp src/camera_capture_win32.cpp)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(SFR_CAMERA_CAPTURE src/camera_capture.cpp src/camera_capture_v4l2.cpp)
 else()
     set(SFR_CAMERA_CAPTURE src/camera_capture.cpp src/camera_capture_none.cpp)
 endif()
