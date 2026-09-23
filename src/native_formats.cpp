@@ -4,6 +4,8 @@
 #include <utility>
 #if defined(_M_X64) || defined(__x86_64__)
 #include <immintrin.h>
+#elif defined(__ARM_NEON)
+#include <arm_neon.h>
 #endif
 
 namespace sfr {
@@ -74,7 +76,9 @@ uint32_t format_component_bytes(RenderFormat format) {
 // megabytes of vertex data, and the byte-at-a-time loop was seven percent of
 // its main thread (docs/performance.md). Every x86-64 host this runs on has
 // SSSE3; this library is not built with it enabled, so the function asks.
-#if defined(__clang__) || defined(__GNUC__)
+// ARM has the swap as one instruction and needs no such request, and the
+// attribute is x86-only anyway: clang warns and drops it on aarch64.
+#if (defined(__clang__) || defined(__GNUC__)) && (defined(_M_X64) || defined(__x86_64__))
 __attribute__((target("ssse3")))
 #endif
 void swap_words(std::span<uint8_t> bytes) {
@@ -85,6 +89,12 @@ void swap_words(std::span<uint8_t> bytes) {
         auto* const at = reinterpret_cast<__m128i*>(bytes.data() + i);
         _mm_storeu_si128(at, _mm_shuffle_epi8(_mm_loadu_si128(at), order));
     }
+#elif defined(__ARM_NEON)
+    // vrev32q_u8 reverses the bytes of each word, which is the whole swap.
+    for (; i + 16 <= bytes.size(); i += 16) {
+        uint8_t* const at = bytes.data() + i;
+        vst1q_u8(at, vrev32q_u8(vld1q_u8(at)));
+    }
 #endif
     for (; i + 4 <= bytes.size(); i += 4) {
         std::swap(bytes[i], bytes[i + 3]);
@@ -92,7 +102,7 @@ void swap_words(std::span<uint8_t> bytes) {
     }
 }
 
-#if defined(__clang__) || defined(__GNUC__)
+#if (defined(__clang__) || defined(__GNUC__)) && (defined(_M_X64) || defined(__x86_64__))
 __attribute__((target("ssse3")))
 #endif
 void swap_words_into(std::span<uint8_t> to, std::span<const uint8_t> from) {
@@ -103,6 +113,9 @@ void swap_words_into(std::span<uint8_t> to, std::span<const uint8_t> from) {
     for (; i + 16 <= size; i += 16)
         _mm_storeu_si128(reinterpret_cast<__m128i*>(to.data() + i),
                          _mm_shuffle_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(from.data() + i)), order));
+#elif defined(__ARM_NEON)
+    for (; i + 16 <= size; i += 16)
+        vst1q_u8(to.data() + i, vrev32q_u8(vld1q_u8(from.data() + i)));
 #endif
     for (; i + 4 <= size; i += 4) {
         to[i] = from[i + 3];
@@ -116,7 +129,7 @@ void swap_words_into(std::span<uint8_t> to, std::span<const uint8_t> from) {
 // Eight or four indices a step: a race frame decodes three quarters of a
 // million, and the one-at-a-time loop was about a millisecond of its main
 // thread (docs/performance.md).
-#if defined(__clang__) || defined(__GNUC__)
+#if (defined(__clang__) || defined(__GNUC__)) && (defined(_M_X64) || defined(__x86_64__))
 __attribute__((target("sse4.1")))
 #endif
 IndexScan decode_indices(const uint8_t* bytes, uint32_t count, bool wide, uint32_t base,

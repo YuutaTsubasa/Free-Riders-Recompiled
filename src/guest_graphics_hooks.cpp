@@ -370,6 +370,7 @@ SFR_HOOK(sub_824E65A0) {
         ctx=saved;
     }
     // One line a frame: the per-frame timings a profile run reads.
+    const auto pipeline_work=graphics().renderer().take_pipeline_work();
     std::cerr << "NATIVE_PRESENT source=0x824e65a0 device=0x" << std::hex << ctx.r3.u32
               << " lr=0x" << ctx.lr << std::dec << " draws=" << frame_draws
               << " textured=" << frame_textured_draws << " foreign=" << foreign_draws
@@ -379,6 +380,9 @@ SFR_HOOK(sub_824E65A0) {
               << " indices=" << frame_indices << " index_ms=" << frame_index_ms << " cut_ms=" << frame_cut_ms
               << " gather_ms=" << frame_gather_ms << " constants_ms=" << frame_constants_ms
               << " record_ms=" << frame_record_ms << " draw_ms=" << frame_draw_ms
+              << " pipelines=" << pipeline_work.created << " pipeline_ms=" << pipeline_work.milliseconds
+              << " ring_flushes=" << pipeline_work.ring_flushes
+              << " textures=" << pipeline_work.textures << " texture_ms=" << pipeline_work.texture_milliseconds
               << " present_ms=" << present_ms << " main_queued_ms="
               << double(sfr::GuestExecution::main_thread_ready_wait_ns.exchange(0,std::memory_order_relaxed))/1e6
               << " main_blocked_ms="

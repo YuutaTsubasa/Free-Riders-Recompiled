@@ -41,12 +41,12 @@ void reads_the_palette_and_loop_constants_through_addresses() {
     require(text.has_value(), "a shader with both buffers converts");
     require(text->find("cbuffer VertexPalette") == std::string::npos && text->find("cbuffer LoopConstants") == std::string::npos,
             "the root constant buffers are gone");
-    require(text->find("return vk::RawBufferLoad<float4>(vk::RawBufferLoad<uint64_t>(g_PushConstants.SharedConstants + 328, 8)"
+    require(text->find("return vk::RawBufferLoad<float4>(g_PushConstants.VertexPalette"
                        " + uint64_t(uint(index) & 1023u) * 16, 0x10);") != std::string::npos,
-            "a palette read loads from the palette address");
-    require(text->find("int4 i3 = vk::RawBufferLoad<int4>(vk::RawBufferLoad<uint64_t>(g_PushConstants.SharedConstants + 336, 8)"
+            "a palette read loads from the palette push constant");
+    require(text->find("int4 i3 = vk::RawBufferLoad<int4>(g_PushConstants.LoopConstants"
                        " + uint64_t(3) * 16, 0x10);") != std::string::npos,
-            "a loop constant loads from the loop address");
+            "a loop constant loads from the loop push constant");
     require(text->find("my_g_LoopConstants[1]") != std::string::npos, "a longer name is left alone");
 }
 }

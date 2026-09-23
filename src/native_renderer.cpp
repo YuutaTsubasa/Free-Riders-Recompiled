@@ -11,7 +11,9 @@
 #include <plume_render_interface.h>
 #include <plume_render_interface_builders.h>
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -254,13 +256,23 @@ struct NativeRenderer::Impl {
         }
     };
     std::unordered_map<std::vector<uint8_t>, std::unique_ptr<plume::RenderPipeline>, KeyHash> pipelines;
-    std::unique_ptr<plume::RenderCommandList> upload_list;
-    std::unique_ptr<plume::RenderCommandFence> upload_fence;
+    // Texture uploads are submitted without waiting, so their command lists
+    // rotate: a list is only recorded again once the submission that used it
+    // has finished. Four is more than a frame's uploads have ever needed.
+    static constexpr uint32_t upload_lists = 4;
+    std::array<std::unique_ptr<plume::RenderCommandList>, upload_lists> upload_list;
+    std::array<std::unique_ptr<plume::RenderCommandFence>, upload_lists> upload_fence;
+    std::array<bool, upload_lists> upload_in_flight{};
+    uint32_t upload_slot = 0;
     std::vector<std::unique_ptr<plume::RenderBuffer>> retired;
 #ifdef _WIN32
     std::unique_ptr<DxcLinker> dxc;
 #endif
     uint32_t draws = 0;
+    uint32_t pipelines_created = 0;
+    double pipeline_ms = 0;
+    uint32_t ring_flushes = 0, textures_uploaded = 0;
+    double texture_ms = 0;
     // Two upload rings: while the GPU renders one frame from one, the next
     // frame fills the other (NativePresentation::after_flush).
     std::unique_ptr<plume::RenderBuffer> rings[2];
@@ -288,6 +300,9 @@ struct NativeRenderer::Impl {
     };
     std::unordered_map<VertexKey, VertexEntry, VertexKeyHash> vertex_entries;
     std::vector<std::pair<uint64_t, std::unique_ptr<plume::RenderBuffer>>> retired_vertex_buffers;
+    // Staging buffers of texture uploads whose copy the GPU may not have run
+    // yet, kept the same two frames, since the upload is no longer waited for.
+    std::vector<std::pair<uint64_t, std::unique_ptr<plume::RenderBuffer>>> upload_staging;
     uint64_t cached_vertex_bytes = 0;
     void retire_vertices(VertexEntry& entry) {
         if (!entry.buffer) return;
@@ -330,10 +345,13 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
     impl_->survey = survey.create(&device);
     layout.addDescriptorSet(survey);
     if (graphics.backend() == GraphicsBackend::vulkan) {
-        // XenosRecomp's SPIR-V reads its constants through three buffer
-        // addresses in push constants (vertex, pixel, shared); the palette
-        // and loop constants are addressed from the shared constants.
-        layout.addPushConstant(0, 0, 3 * sizeof(uint64_t),
+        // XenosRecomp's SPIR-V reads its constants through buffer addresses
+        // in push constants: vertex, pixel and shared, and the two this
+        // project adds for the skinning palette and the loop constants. Those
+        // two were read out of the shared constants with a 64-bit
+        // vk::RawBufferLoad, an indirection every skinned draw paid for and
+        // an under-aligned load a strict driver need not perform as meant.
+        layout.addPushConstant(0, 0, 5 * sizeof(uint64_t),
                                plume::RenderShaderStageFlag::VERTEX | plume::RenderShaderStageFlag::PIXEL);
     } else {
         // b0..b2 are the shader constants, b3 the skinning palette a vertex
@@ -376,8 +394,10 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
     std::memset(impl_->zero_buffer->map(), 0, 256);
     impl_->zero_buffer->unmap();
 
-    impl_->upload_list = graphics.queue().createCommandList();
-    impl_->upload_fence = device.createCommandFence();
+    for (uint32_t i = 0; i < Impl::upload_lists; ++i) {
+        impl_->upload_list[i] = graphics.queue().createCommandList();
+        impl_->upload_fence[i] = device.createCommandFence();
+    }
 
     for (int i = 0; i < 2; ++i) {
         impl_->rings[i] = device.createBuffer(plume::RenderBufferDesc::UploadBuffer(
@@ -405,6 +425,7 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
         state->released_texture_indices.clear();
         // Dropped vertex buffers outlive the frame in flight that may read them.
         std::erase_if(state->retired_vertex_buffers, [&](const auto& retired) { return retired.first + 2 < state->frame; });
+        std::erase_if(state->upload_staging, [&](const auto& retired) { return retired.first + 2 < state->frame; });
         // Ranges not drawn for ten seconds or so are forgotten.
         if (state->frame % 600 == 0)
             std::erase_if(state->vertex_entries, [&](auto& item) {
@@ -421,6 +442,17 @@ NativeRenderer::~NativeRenderer() {
     impl_->presentation.clear_after_flush();
 }
 uint32_t NativeRenderer::draws() const noexcept { return impl_->draws; }
+
+NativeRenderer::PipelineWork NativeRenderer::take_pipeline_work() noexcept {
+    const PipelineWork work{impl_->pipelines_created, impl_->pipeline_ms,
+                            impl_->ring_flushes, impl_->textures_uploaded, impl_->texture_ms};
+    impl_->pipelines_created = 0;
+    impl_->pipeline_ms = 0;
+    impl_->ring_flushes = 0;
+    impl_->textures_uploaded = 0;
+    impl_->texture_ms = 0;
+    return work;
+}
 
 NativeRenderer::CachedVertices NativeRenderer::vertex_cache(GuestMemory& memory, uint32_t physical,
                                                             uint64_t bytes, uint64_t host_bytes, uint64_t layout) {
@@ -474,7 +506,7 @@ std::span<uint8_t> NativeRenderer::vertex_space(uint64_t bytes, uint64_t index_b
     const uint64_t worst = align(bytes, 256) + 4096 + 4096 + 512 + palette_bytes + 512 + index_bytes;
     impl_->reserved = nullptr;
     if (!bytes || worst > ring_size) return {};
-    if (impl_->ring_offset + worst > ring_size) impl_->presentation.flush();  // resets the ring
+    if (impl_->ring_offset + worst > ring_size) { ++impl_->ring_flushes; impl_->presentation.flush(); }  // resets the ring
     uint8_t* const at = impl_->rings_mapped[impl_->ring_index] + impl_->ring_offset;
     impl_->reserved = at;
     impl_->reserved_offset = impl_->ring_offset;
@@ -509,7 +541,8 @@ uint32_t NativeRenderer::placeholder_texture() {
     auto* mapped = static_cast<uint8_t*>(staging->map());
     std::memset(mapped, 0xFF, 4);
     staging->unmap();
-    auto& list = *impl_->upload_list;
+    auto& list = *impl_->upload_list[0];
+    if (impl_->upload_in_flight[0]) impl_->graphics.queue().waitForCommandFence(impl_->upload_fence[0].get());
     list.begin();
     list.barriers(plume::RenderBarrierStage::COPY,
                   plume::RenderTextureBarrier(texture.get(), plume::RenderTextureLayout::COPY_DEST));
@@ -518,8 +551,8 @@ uint32_t NativeRenderer::placeholder_texture() {
     list.barriers(plume::RenderBarrierStage::GRAPHICS,
                   plume::RenderTextureBarrier(texture.get(), plume::RenderTextureLayout::SHADER_READ));
     list.end();
-    impl_->graphics.queue().executeCommandLists(&list, impl_->upload_fence.get());
-    impl_->graphics.queue().waitForCommandFence(impl_->upload_fence.get());
+    impl_->graphics.queue().executeCommandLists(&list, impl_->upload_fence[0].get());
+    impl_->graphics.queue().waitForCommandFence(impl_->upload_fence[0].get());
     uint32_t index;
     if (!impl_->free_texture_indices.empty()) {
         index = impl_->free_texture_indices.back();
@@ -589,6 +622,16 @@ uint32_t NativeRenderer::adopt_resolved_target(uint32_t physical) {
 }
 
 uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
+    // Timed as a whole: the lookup, the content hash that decides whether the
+    // guest changed it, and the upload when it did.
+    const auto texture_start = std::chrono::steady_clock::now();
+    struct TextureTimer {
+        Impl& impl; std::chrono::steady_clock::time_point start;
+        ~TextureTimer() {
+            impl.texture_ms += std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - start).count();
+        }
+    } texture_timer{*impl_, texture_start};
     const auto fetch = decode_texture_fetch(words);
     if (!fetch.base_address) return null_2d;
     // What the title resolved out of the framebuffer is served from the copy
@@ -687,7 +730,11 @@ uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
     staging->unmap();
     auto texture = device.createTexture(plume::RenderTextureDesc::Texture2D(layout->width, layout->height, 1, layout->format));
     if (!texture) unsupported(fetch.format, "native texture creation failed");
-    auto& list = *impl_->upload_list;
+    const uint32_t upload_slot = impl_->upload_slot;
+    impl_->upload_slot = (upload_slot + 1) % Impl::upload_lists;
+    if (impl_->upload_in_flight[upload_slot])
+        impl_->graphics.queue().waitForCommandFence(impl_->upload_fence[upload_slot].get());
+    auto& list = *impl_->upload_list[upload_slot];
     list.begin();
     list.barriers(plume::RenderBarrierStage::COPY, plume::RenderTextureBarrier(texture.get(), plume::RenderTextureLayout::COPY_DEST));
     list.copyTextureRegion(plume::RenderTextureCopyLocation::Subresource(texture.get()),
@@ -696,8 +743,15 @@ uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
     list.barriers(plume::RenderBarrierStage::GRAPHICS,
                   plume::RenderTextureBarrier(texture.get(), plume::RenderTextureLayout::SHADER_READ));
     list.end();
-    impl_->graphics.queue().executeCommandLists(&list, impl_->upload_fence.get());
-    impl_->graphics.queue().waitForCommandFence(impl_->upload_fence.get());
+    // Submitted without waiting: a queue runs its submissions in order, so
+    // this copy is done before the frame that samples the texture, which is
+    // submitted after it. Waiting here cost a GPU round trip per texture -
+    // about 1.3 ms each, and nearly half of the slowest race frames. The
+    // staging buffer has to outlive the copy, so it is kept as long as a
+    // retired vertex buffer is.
+    impl_->graphics.queue().executeCommandLists(&list, impl_->upload_fence[upload_slot].get());
+    impl_->upload_in_flight[upload_slot] = true;
+    impl_->upload_staging.emplace_back(impl_->frame, std::move(staging));
 
     // Every draw waits for its command list, so a released slot is unused.
     uint32_t index;
@@ -725,6 +779,7 @@ uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
         memory.watch_writes(view, guest_size);
         memory.take_written(view, guest_size);
     });
+    ++impl_->textures_uploaded;
     static uint64_t uploads = 0;
     if (uploads++ < 256)
     std::cerr << "NATIVE_TEXTURE_UPLOAD index=" << index << " format=" << fetch.format << " size=" << layout->width
@@ -794,6 +849,7 @@ void NativeRenderer::draw(const NativeDraw& draw) {
     const std::array<plume::RenderInputSlot, 2> slots{plume::RenderInputSlot(0, draw.stride),
                                                        plume::RenderInputSlot(zero_slot, 0)};
     if (!pipeline) {
+        const auto pipeline_start = std::chrono::steady_clock::now();
         plume::RenderGraphicsPipelineDesc desc;
         desc.pipelineLayout = impl_->layout.get();
         desc.vertexShader = draw.vertex_shader;
@@ -826,6 +882,9 @@ void NativeRenderer::draw(const NativeDraw& draw) {
         desc.inputElementsCount = uint32_t(draw.elements.size());
         pipeline = device.createGraphicsPipeline(desc);
         if (!pipeline) unsupported(0, "native graphics pipeline creation failed");
+        ++impl_->pipelines_created;
+        impl_->pipeline_ms += std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - pipeline_start).count();
     }
 
     // Per-draw upload: vertices, then the three constant buffers (256-aligned).
@@ -843,7 +902,7 @@ void NativeRenderer::draw(const NativeDraw& draw) {
     const bool in_place = vertex_bytes && draw.vertices.data() == impl_->reserved &&
         impl_->reserved_ring == impl_->ring_index && impl_->reserved_offset == impl_->ring_offset;
     impl_->reserved = nullptr;
-    if (!in_place && impl_->ring_offset + total > ring_size) impl_->presentation.flush();  // resets the ring
+    if (!in_place && impl_->ring_offset + total > ring_size) { ++impl_->ring_flushes; impl_->presentation.flush(); }
     const uint64_t base_offset = impl_->ring_offset;
     impl_->ring_offset = align(base_offset + total, 256);
     auto* upload = impl_->rings[impl_->ring_index].get();
@@ -854,11 +913,6 @@ void NativeRenderer::draw(const NativeDraw& draw) {
     std::memcpy(mapped + shared_rel, &draw.shared, sizeof(draw.shared));
     const bool vulkan = impl_->graphics.backend() == GraphicsBackend::vulkan;
     const uint64_t ring_address = vulkan ? upload->getDeviceAddress() + base_offset : 0;
-    if (vulkan) {
-        auto* shared = reinterpret_cast<SharedConstants*>(mapped + shared_rel);
-        shared->palette_address = draw.palette.empty() ? 0 : ring_address + palette_rel;
-        shared->loop_address = ring_address + loop_rel;
-    }
     // Only the entries the palette holds are written. The rest of the
     // allocation keeps whatever an earlier draw left, which a clamped index
     // may read but never reaches past the ring; zeroing sixteen kilobytes for
@@ -897,7 +951,9 @@ void NativeRenderer::draw(const NativeDraw& draw) {
             static_cast<plume::D3D12CommandList&>(list).d3d->OMSetStencilRef(draw.stencil_reference);
 #endif
         if (vulkan) {
-            const uint64_t addresses[3] = {ring_address + vs_rel, ring_address + ps_rel, ring_address + shared_rel};
+            const uint64_t addresses[5] = {ring_address + vs_rel, ring_address + ps_rel, ring_address + shared_rel,
+                                           draw.palette.empty() ? 0 : ring_address + palette_rel,
+                                           ring_address + loop_rel};
             list.setGraphicsPushConstants(0, addresses, 0, sizeof(addresses));
         } else {
             list.setGraphicsRootDescriptor(plume::RenderBufferReference(upload, vs_offset), 0);

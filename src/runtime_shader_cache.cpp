@@ -138,6 +138,14 @@ fs::path extended_common_header() {
     const auto at = text.find(anchor);
     if (at == std::string::npos) failed("pinned shader_common.h lacks the shared constant block");
     text.replace(at, anchor.size(), anchor.substr(0, anchor.size() - 1) + "; \\\n    float2 g_ScreenSpaceScale : packoffset(c20.x);");
+    // Two more push-constant addresses, for SPIR-V: the skinning palette and
+    // the loop constants. They used to be read out of the shared constants
+    // with a 64-bit vk::RawBufferLoad of their own, which is an indirection
+    // in every skinned draw and an under-aligned load besides.
+    const std::string push = "    uint64_t SharedConstants;";
+    const auto push_at = text.find(push);
+    if (push_at == std::string::npos) failed("pinned shader_common.h lacks the push constant block");
+    text.replace(push_at, push.size(), push + "\n    uint64_t VertexPalette;\n    uint64_t LoopConstants;");
     std::ofstream(extended, std::ios::binary) << text;
     return extended;
 }
@@ -274,8 +282,11 @@ const ShaderCacheEntry& runtime_shader(ShaderStage stage, std::span<const uint8_
     // skinning palette fetches the vertex declaration leaves out and the
     // loop constants the title sets at draw time; "v5" renames TEXCOORD8-12
     // as well and drops repeated declarations of one input; "v6" compiles the
-    // DXIL with dxc-bin (not the Windows SDK's DXC), whose linker the game uses.
-    std::snprintf(name, sizeof name, "v6-%016llx-%zu", static_cast<unsigned long long>(hash), source.size());
+    // DXIL with dxc-bin (not the Windows SDK's DXC), whose linker the game
+    // uses; "v7" inlines a header that declares the palette and loop constant
+    // push constants, which the SPIR-V reads instead of addresses kept in the
+    // shared constants (docs/vulkan-push-constants.md).
+    std::snprintf(name, sizeof name, "v7-%016llx-%zu", static_cast<unsigned long long>(hash), source.size());
     const fs::path folder = setting("SFR_RUNTIME_SHADER_CACHE", "out/shaders/runtime") / name;
     const fs::path original = folder / "original.bin", hlsl = folder / "shader.hlsl",
                    dxil = folder / "shader.dxil", mask_file = folder / "specialization_mask.txt",

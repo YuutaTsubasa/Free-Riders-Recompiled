@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pack the runtime shader cache into one file the game reads without tools.
 
-Every entry of out/shaders/runtime (the current "v6-" key) that has been
+Every entry of out/shaders/runtime (the current "v7-" key) that has been
 compiled is written with its original container, specialization mask and
 whichever bytecode exists: DXIL (built by a D3D12 run) and SPIR-V (built by a
 Vulkan run, SFR_GRAPHICS=vulkan). The game consults the pack (SFR_SHADER_PACK,
@@ -51,7 +51,7 @@ def main():
     if args.compile_dxil and not DXC.exists():
         sys.exit(f'--compile-dxil needs {DXC}')
     entries = []
-    for folder in sorted(args.cache.glob('v6-*')):
+    for folder in sorted(args.cache.glob('v7-*')):
         source = read(folder / 'original.bin')
         mask_text = read(folder / 'specialization_mask.txt').strip()
         if not source or not mask_text or (folder / 'untranslatable.txt').exists():

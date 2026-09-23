@@ -34,14 +34,10 @@ struct SharedConstants {
     // shader outputs pixel coordinates, mapped to clip space by
     // xy * scale + (-w, w). Zero leaves positions unchanged.
     float screen_space_scale[2];
-    // Vulkan only (vulkan_shader_source.h): the device addresses of the
-    // skinning palette and the loop constants, which D3D12 binds as b3/b4.
-    uint64_t palette_address, loop_address;
     uint64_t reserved;
 };
-static_assert(sizeof(SharedConstants) == 352);
-static_assert(offsetof(SharedConstants, screen_space_scale) == 320 && offsetof(SharedConstants, palette_address) == 328 &&
-              offsetof(SharedConstants, loop_address) == 336);
+static_assert(sizeof(SharedConstants) == 336);
+static_assert(offsetof(SharedConstants, screen_space_scale) == 320);
 
 struct NativeDraw {
     plume::RenderPrimitiveTopology topology = plume::RenderPrimitiveTopology::TRIANGLE_LIST;
@@ -140,6 +136,18 @@ public:
     CachedVertices vertex_cache(GuestMemory& memory, uint32_t physical, uint64_t bytes, uint64_t host_bytes,
                                 uint64_t layout);
     uint32_t draws() const noexcept;
+    // Pipelines created since the last call, and the milliseconds spent
+    // creating them: a draw that meets a state combination for the first time
+    // compiles its pipeline there and then, which is what a frame that takes
+    // twice as long as its neighbours is usually doing.
+    struct PipelineWork {
+        uint32_t created; double milliseconds;
+        // Ring flushes: the upload ring filled mid-frame, which submits what
+        // is recorded and waits for the GPU. Texture work: the uploads a
+        // draw makes before it can bind what it fetches.
+        uint32_t ring_flushes, textures; double texture_milliseconds;
+    };
+    PipelineWork take_pipeline_work() noexcept;
     // Unchanged while texture() and sampler() would answer the same fetch
     // words the same way, so a caller may keep their answers until it moves.
     uint64_t texture_generation() const noexcept;
