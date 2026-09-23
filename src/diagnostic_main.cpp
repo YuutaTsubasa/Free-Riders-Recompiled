@@ -203,6 +203,9 @@ std::atomic<uint32_t> watch_word{[] {
     return t ? uint32_t(std::strtoul(t, nullptr, 16)) : 0u;
 }()};
 static const uint64_t watchdog_seconds = limit_from_environment("SFR_WATCHDOG_SECONDS", 10);
+// SFR_HANG_SECONDS=N: report every guest thread's wait when no frame has been
+// presented for N seconds (0, the default, never reports).
+static const uint64_t hang_seconds = limit_from_environment("SFR_HANG_SECONDS", 0);
 static XexModule* executable_module = nullptr;
 static NativeModules* native_modules = nullptr;
 static SystemConfig* system_config = nullptr;
@@ -308,6 +311,41 @@ static thread_local GuestExecution::Lease* execution_permit = nullptr;
 static thread_local const PPCContext* current_context = nullptr;
 static thread_local uint32_t current_pcr = diagnostic_pcr, current_thread = diagnostic_thread, current_id = 1;
 static thread_local uint32_t current_tls = ThreadLocalStorage::static_address, current_tls_dynamic = 0;
+
+// What each guest thread is doing when nothing moves any more. A hang leaves
+// every thread in a wait, so nothing reaches a checkpoint and the stack dump
+// the watchdog asks for never prints; this is recorded at the few places a
+// thread can stop at instead. SFR_HANG_SECONDS=N reports it when no frame has
+// been presented for N seconds.
+struct GuestActivity {
+    uint32_t id = 0;
+    std::atomic<const char*> doing{nullptr};  // a literal: the import it is in
+    std::atomic<uint32_t> detail{0};          // that import's address
+    std::atomic<bool> blocked{false};         // inside a native wait
+    std::atomic<bool> finished{false};        // the thread has ended
+    std::atomic<uint32_t> function{0};        // the last guest function entered
+};
+static std::mutex activity_lock;
+static std::vector<GuestActivity*> activities;
+static GuestActivity& own_activity() {
+    static thread_local GuestActivity* mine = [] {
+        auto* record = new GuestActivity{};
+        std::lock_guard guard(activity_lock);
+        activities.push_back(record);
+        return record;
+    }();
+    mine->id = current_id;
+    return *mine;
+}
+static void note_activity(const char* what, uint32_t detail = 0) {
+    GuestActivity& mine = own_activity();
+    mine.doing.store(what, std::memory_order_relaxed);
+    mine.detail.store(detail, std::memory_order_relaxed);
+}
+// The guest function a thread last entered, recorded only while a hang report
+// is asked for, so the ordinary entry path pays a branch and nothing else.
+static void note_function(uint32_t address) { own_activity().function.store(address, std::memory_order_relaxed); }
+static void note_finished() { own_activity().finished.store(true, std::memory_order_relaxed); }
 
 // SFR_PARALLEL_WORKER=1: the title's job worker (thread entry 0x8222E008)
 // runs its guest code beside the permit's owner, as it would on a console
@@ -677,6 +715,12 @@ static void wait_graph_wait(uint32_t object, std::chrono::steady_clock::time_poi
 // releasing only the core it holds, so a detached guest waits without first
 // queueing for the permit.
 template<class Operation> static void block_guest(Operation&& operation) {
+    // Marks this thread as inside a native wait, leaving what it is waiting
+    // for (the import's name and address) as the import dispatch recorded it.
+    struct Blocked {
+        Blocked() { own_activity().blocked.store(true, std::memory_order_relaxed); }
+        ~Blocked() { own_activity().blocked.store(false, std::memory_order_relaxed); }
+    } blocked_note;
     if (!execution_permit->detached()) {
         execution_permit->run_blocking(std::forward<Operation>(operation));
         return;
@@ -807,6 +851,11 @@ static uint32_t complete_overlapped(uint32_t overlapped, uint32_t result, uint32
 }
 
 static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t address) {
+    // Cleared on the way out, so a report names what a thread is inside.
+    struct InImport {
+        ~InImport() { note_activity(nullptr); }
+    } in_import;
+    note_activity(name, address);
     guest_checkpoint();
     if (guest_reach && current_id != 1) {
         static thread_local std::unordered_set<uint32_t> reached;
@@ -3596,6 +3645,7 @@ int main(int argc, char** argv) {
                         // ExTerminateThread: the guest stack unwinds and the host
                         // thread ends, signaling waiters on the thread handle.
                         std::cerr << "ORIGINAL_WORKER_EXIT guest_id=" << state.id << " code=" << exit.code << '\n';
+                        sfr::note_finished();
                         permit.reset();
                         sfr::execution_permit = nullptr;
                         sfr::core_permit.reset();
@@ -3720,6 +3770,41 @@ int main(int argc, char** argv) {
                 for (size_t i = 0; i < ranked.size() && i < 60; ++i)
                     std::cerr << "PROFILE thread=" << (ranked[i].second >> 32) << " 0x" << std::hex
                               << uint32_t(ranked[i].second) << std::dec << ' ' << ranked[i].first << '\n';
+            });
+            // SFR_HANG_SECONDS=N: when no frame has been presented for N
+            // seconds, what every guest thread is waiting for. A hang leaves
+            // them all in native waits, where the watchdog's stack dump never
+            // prints because nothing reaches a checkpoint again.
+            std::jthread hang_report([](std::stop_token stop) {
+                if (!sfr::hang_seconds) return;
+                uint32_t seen = sfr::present_count.load();
+                auto moved = std::chrono::steady_clock::now();
+                bool reported = false;
+                while (!stop.stop_requested()) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                    const uint32_t now_count = sfr::present_count.load();
+                    if (now_count != seen) {
+                        seen = now_count;
+                        moved = std::chrono::steady_clock::now();
+                        reported = false;
+                        continue;
+                    }
+                    if (reported || std::chrono::steady_clock::now() - moved <
+                                        std::chrono::seconds(sfr::hang_seconds)) continue;
+                    reported = true;
+                    std::lock_guard guard(sfr::activity_lock);
+                    std::cerr << "HANG_REPORT presents=" << seen << " threads=" << sfr::activities.size() << '\n';
+                    for (const auto* record : sfr::activities) {
+                        if (record->finished.load(std::memory_order_relaxed)) continue;
+                        const char* doing = record->doing.load(std::memory_order_relaxed);
+                        std::cerr << "HANG_THREAD guest_id=" << record->id
+                                  << " blocked=" << record->blocked.load(std::memory_order_relaxed)
+                                  << " in=" << (doing ? doing : "guest code")
+                                  << " address=0x" << std::hex << record->detail.load(std::memory_order_relaxed)
+                                  << " function=0x" << record->function.load(std::memory_order_relaxed)
+                                  << std::dec << '\n';
+                    }
+                }
             });
             std::jthread watchdog([&execution](std::stop_token stop) {
                 for (uint64_t i = 0; i < sfr::watchdog_seconds * 10 && !stop.stop_requested(); ++i) {
