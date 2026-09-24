@@ -17,7 +17,22 @@ void dispatch_import(PPCContext&, const char*, uint32_t);
 // Our replacements of original functions (SFR_HOOK) reach host state, so a
 // guest running beside the main thread must hold the permit inside them.
 bool register_hook(const char* name);  // "sub_XXXXXXXX"
-bool is_hook(uint32_t address);
+// The hooked guest functions, a bit each over the guest image. is_hook()
+// answers at every entry of a guest running beside the permit, and the hash
+// lookup it used to be was 3.7% of a race on the phone (and a call through
+// the PLT besides). Half a megabyte of .bss answers it in a load and a test.
+// Anything outside the image -- which no hook has ever been, every one of
+// them naming a function of the title -- still goes to the registry.
+constexpr uint32_t hook_base = 0x82000000, hook_limit = 0x83000000;
+inline uint64_t hook_bits[(hook_limit - hook_base) / 4 / 64];
+bool is_hook_outside_the_image(uint32_t address);
+inline bool is_hook(uint32_t address) {
+    const uint32_t offset = address - hook_base;
+    if (offset >= hook_limit - hook_base) [[unlikely]] return is_hook_outside_the_image(address);
+    if (address & 3) return false;  // a function begins on a word
+    const uint32_t index = offset / 4;
+    return (hook_bits[index / 64] >> (index % 64)) & 1;
+}
 // Whether a guest function entry does more than name itself and checkpoint.
 // Everything else it does is observation: the ORIGINAL_* audits, the entry
 // traces and dumps, the sampler's address for SFR_SAMPLE_PROFILE. Playing turns it
@@ -29,32 +44,58 @@ extern const bool diagnostic_entries;
 // times a second; the permit needs one of every few dozen to hand off on
 // time and to notice cancellation, so the rest return here, inline.
 void guest_checkpoint_permit();
-inline thread_local uint32_t checkpoint_countdown = 0;
+
+// What a guest function entry reads and writes, in one object.
+//
+// These were separate thread_local variables, which is the same thing on a
+// desktop and not on Android: there a thread_local lives in a dynamically
+// loaded module's TLS block, and each *variable* costs a call to the
+// linker's tlsdesc resolver. An entry touched seven of them, several million
+// times a second, and that resolver was 9.5% of a race on the phone. One
+// object is one resolution; the fields are offsets from it.
+struct GuestEntryState {
+    // The permit needs one checkpoint in every few dozen (guest_checkpoint).
+    uint32_t checkpoint_countdown = 0;
+    // The function this thread entered last (named when it stops).
+    const char* current_function = "";
+    uint32_t current_address = 0;
+    // Whether this thread's entries do more than checkpoint and name
+    // themselves: a guest running beside the permit, an audit in progress,
+    // the entry diagnostics. Until a thread sets it from what applies, every
+    // entry takes the full path.
+    bool observed = true;
+    // Whether anything beyond the permit wants to see every entry: the entry
+    // diagnostics, a reach log, an audit. A guest playing beside the permit
+    // is observed without being watched, and leaves early -- which keeps the
+    // thread_locals those three read out of every entry of a race.
+    bool watched = true;
+    // A guest running beside the permit rather than holding it, and how it
+    // follows a hooked call (diagnostic_main.cpp's parallel_function_entry).
+    bool parallel = false;
+    bool detach_at_entry = false;
+    uint32_t hook_stack_pointer = 0;
+};
+inline thread_local GuestEntryState guest_entry;
+
 inline void guest_checkpoint() {
-    if (checkpoint_countdown) [[likely]] {
-        --checkpoint_countdown;
+    if (guest_entry.checkpoint_countdown) [[likely]] {
+        --guest_entry.checkpoint_countdown;
         return;
     }
     guest_checkpoint_permit();
 }
-// The function each thread entered last (named when it stops).
-inline thread_local const char* current_function = "";
-inline thread_local uint32_t current_address = 0;
-// Whether this thread's function entries do more than checkpoint and name
-// themselves: a guest running beside the permit, an audit in progress, the
-// entry diagnostics. Until a thread sets it from what applies, every entry
-// takes the full path.
-inline thread_local bool entry_observed = true;
 void enter_function_observed(PPCContext&, const char*, uint32_t);
 // Every guest function entry; inline, as it runs millions of times a second.
 inline void enter_function(PPCContext& ctx, const char* name, uint32_t address) {
-    if (entry_observed) [[unlikely]] {
+    GuestEntryState& entry = guest_entry;
+    if (entry.observed) [[unlikely]] {
         enter_function_observed(ctx, name, address);
         return;
     }
-    guest_checkpoint();
-    current_function = name;
-    current_address = address;
+    if (entry.checkpoint_countdown) [[likely]] --entry.checkpoint_countdown;
+    else guest_checkpoint_permit();
+    entry.current_function = name;
+    entry.current_address = address;
 }
 void call_indirect(PPCContext&, uint8_t*, uint32_t);
 uint64_t read_time_base();

@@ -376,12 +376,16 @@ static std::array<std::unique_ptr<GuestExecution>, guest_processors> core_execut
 static thread_local std::unique_ptr<GuestExecution::Lease> core_permit;
 static thread_local unsigned core_index = 0;
 static constexpr uint32_t parallel_worker_entry = 0x8222E008;
-static thread_local bool parallel_guest = false;
-// Attached inside a hook: the guest stack pointer at the outermost hook's
-// entry. The hook has returned once a function is entered above it.
-static thread_local uint32_t parallel_hook_sp = 0;
-// Attached for a slow memory check: detach at the next function entry.
-static thread_local bool parallel_detach_at_entry = false;
+// A parallel guest's three flags live in guest_entry (diagnostic_hooks.h)
+// beside the rest of what a function entry reads, so that an entry resolves
+// one thread_local rather than seven:
+//   parallel            -- running beside the permit rather than holding it
+//   hook_stack_pointer  -- attached inside a hook: the guest stack pointer at
+//                          the outermost hook's entry. The hook has returned
+//                          once a function is entered above it.
+//   detach_at_entry     -- attached for a slow memory check: detach at the
+//                          next function entry.
+static void refresh_entry_observation();
 static std::atomic<uint64_t> parallel_attaches[3]{};  // import, hook, memory
 static void parallel_attached(int reason) {
     parallel_attaches[reason].fetch_add(1, std::memory_order_relaxed);
@@ -399,11 +403,11 @@ static void parallel_slow_access(uint64_t address) {
         const uint64_t count = ++pages[uint32_t(address >> 12)];
         if ((count & (count - 1)) == 0 && count >= 256)
             std::cerr << "PARALLEL_SLOW page=0x" << std::hex << (address >> 12) << "000 address=0x" << address
-                      << std::dec << " count=" << count << " function=" << current_function << char(10);
+                      << std::dec << " count=" << count << " function=" << guest_entry.current_function << char(10);
     }
     execution_permit->attach();
     parallel_attached(2);
-    parallel_detach_at_entry = true;
+    guest_entry.detach_at_entry = true;
 }
 
 static void parallel_function_entry(const PPCContext& ctx, uint32_t address) {
@@ -411,29 +415,38 @@ static void parallel_function_entry(const PPCContext& ctx, uint32_t address) {
         if (!is_hook(address)) return;
         execution_permit->attach();
         parallel_attached(1);
-        parallel_hook_sp = ctx.r1.u32;
-    } else if (parallel_hook_sp) {
-        if (is_hook(address)) parallel_hook_sp = (std::max)(parallel_hook_sp, ctx.r1.u32);
-        else if (ctx.r1.u32 > parallel_hook_sp) {
-            parallel_hook_sp = 0;
+        guest_entry.hook_stack_pointer = ctx.r1.u32;
+    } else if (guest_entry.hook_stack_pointer) {
+        if (is_hook(address)) guest_entry.hook_stack_pointer = (std::max)(guest_entry.hook_stack_pointer, ctx.r1.u32);
+        else if (ctx.r1.u32 > guest_entry.hook_stack_pointer) {
+            guest_entry.hook_stack_pointer = 0;
             execution_permit->detach();
         }
-    } else if (parallel_detach_at_entry) {
-        parallel_detach_at_entry = false;
-        if (is_hook(address)) parallel_hook_sp = ctx.r1.u32;
+    } else if (guest_entry.detach_at_entry) {
+        guest_entry.detach_at_entry = false;
+        if (is_hook(address)) guest_entry.hook_stack_pointer = ctx.r1.u32;
         else execution_permit->detach();
     }
 }
 
+// The registry every hook is entered in. The bits in diagnostic_hooks.h are
+// what the hot path reads; this stays as the record of what was registered,
+// and answers for anything the bits do not cover.
 static std::unordered_set<uint32_t>& hooks() {
     static std::unordered_set<uint32_t> set;
     return set;
 }
 bool register_hook(const char* name) {
-    hooks().insert(uint32_t(std::strtoul(name + 4, nullptr, 16)));
+    const uint32_t address = uint32_t(std::strtoul(name + 4, nullptr, 16));
+    hooks().insert(address);
+    const uint32_t offset = address - hook_base;
+    if (offset < hook_limit - hook_base && !(address & 3)) {
+        const uint32_t index = offset / 4;
+        hook_bits[index / 64] |= uint64_t(1) << (index % 64);
+    }
     return true;
 }
-bool is_hook(uint32_t address) { return hooks().contains(address); }
+bool is_hook_outside_the_image(uint32_t address) { return hooks().contains(address); }
 
 // The guest call chain from a stack pointer: each frame's first word links
 // to the caller's frame, and the saved LR sits 8 bytes below that frame.
@@ -452,7 +465,7 @@ static std::string guest_back_chain(uint32_t frame) {
 }
 
 void guest_checkpoint_permit() {
-    checkpoint_countdown = 31;
+    guest_entry.checkpoint_countdown = 31;
     if (!execution_permit) throw std::logic_error("guest instruction without execution permit");
     // Validates ownership and cancellation before shared memory access, and
     // hands off only outside a reservation.
@@ -798,7 +811,7 @@ void dispatch_import(PPCContext& ctx, const char* name, uint32_t address) {
         }
         return;
     }
-    if (!parallel_guest || !execution_permit->detached()) return dispatch_import_owned(ctx, name, address);
+    if (!guest_entry.parallel || !execution_permit->detached()) return dispatch_import_owned(ctx, name, address);
     // Imports a detached guest runs as it is: critical sections keep their
     // own lock (only a contended enter attaches, to wait), a TLS value lives
     // in the calling thread's own bank, and the process type is a constant.
@@ -835,7 +848,7 @@ void dispatch_import(PPCContext& ctx, const char* name, uint32_t address) {
         }
     }
     dispatch_import_owned(ctx, name, address);
-    if (!execution_permit->detached() && !parallel_hook_sp && !parallel_detach_at_entry) execution_permit->detach();
+    if (!execution_permit->detached() && !guest_entry.hook_stack_pointer && !guest_entry.detach_at_entry) execution_permit->detach();
 }
 // Completes an XOVERLAPPED at once: InternalLow = result, InternalHigh =
 // length, extended error 0, then its event (if any) is set. Returns
@@ -1031,7 +1044,7 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         ctx.r3.u64 = profile_signin_state(index);
         if (ctx.lr == 0x822344D8 && ctx.r3.u32 == 0) {
             unselected_user = {true, false, false, index, ctx.r30.u32, ctx.r31.u32, 0};
-            entry_observed = true;
+            refresh_entry_observation();
         }
         std::cerr << "NATIVE_USER_SIGNIN index=" << index << " state=" << ctx.r3.u32
                   << " lr=0x" << std::hex << ctx.lr << std::dec << " backend=local-profile\n";
@@ -2615,17 +2628,22 @@ const bool diagnostic_entries = [] {
 }();
 
 // What makes a thread's entries take enter_function_observed.
-static bool needs_entry_observation() {
-    return parallel_guest || diagnostic_entries || guest_reach || unselected_user.active;
+// Recomputed whenever one of the things it reads changes.
+static void refresh_entry_observation() {
+    guest_entry.watched = diagnostic_entries || guest_reach || unselected_user.active;
+    guest_entry.observed = guest_entry.parallel || guest_entry.watched;
 }
 
 void enter_function_observed(PPCContext& ctx, const char* name, uint32_t address) {
-    if (parallel_guest) parallel_function_entry(ctx, address);
+    if (guest_entry.parallel) parallel_function_entry(ctx, address);
     guest_checkpoint();
     // Cheap enough to keep either way: a stop still names the function it
     // happened in.
-    current_function = name;
-    current_address = address;
+    guest_entry.current_function = name;
+    guest_entry.current_address = address;
+    // A guest playing beside the permit is here for parallel_function_entry
+    // and nothing below.
+    if (!guest_entry.watched) [[likely]] return;
     if (guest_reach && current_id != 1) {
         static thread_local std::unordered_set<uint32_t> reached;
         if (reached.insert(address).second)
@@ -2643,7 +2661,7 @@ void enter_function_observed(PPCContext& ctx, const char* name, uint32_t address
         std::cerr << "ORIGINAL_USER_NAME_CONVERSION_RETURN index=" << unselected_user.index
                   << " characters=1 lr=0x822345ec\n";
         unselected_user.active = false;
-        entry_observed = needs_entry_observation();
+        refresh_entry_observation();
     }
     if (!diagnostic_entries) return;
     if (sampler_inline_mip_pending) {
@@ -3229,7 +3247,7 @@ void call_indirect(PPCContext& ctx, uint8_t* base, uint32_t address) {
     const auto found = functions.find(address);
     if (found == functions.end()) throw RuntimeStop("indirect-call", address, "no verified function mapping");
     const bool user_reset = unselected_user.active && unselected_user.reset_entered &&
-        current_address == 0x82232598 && ctx.lr == 0x82232A30 && ctx.r3.u32 == unselected_user.record + 32;
+        guest_entry.current_address == 0x82232598 && ctx.lr == 0x82232A30 && ctx.r3.u32 == unselected_user.record + 32;
     found->second(ctx, base);
     if (user_reset) unselected_user.reset_virtual = address;
 }
@@ -3374,14 +3392,14 @@ int main(int argc, char** argv) {
                         throw sfr::RuntimeStop("video-global", 0x82000664, "video global context is unavailable");
                     const auto& ctx = *sfr::current_context;
                     sfr::check_reservation_context(ctx);
-                    if (sfr::current_address != 0x824F19E8 || ctx.lr != 0x824F1A04) {
+                    if (sfr::guest_entry.current_address != 0x824F19E8 || ctx.lr != 0x824F1A04) {
                         std::cerr << "VIDEO_GLOBAL_UNSUPPORTED_CONTEXT function=0x" << std::hex
-                                  << sfr::current_address << " lr=0x" << ctx.lr << std::dec << '\n';
+                                  << sfr::guest_entry.current_address << " lr=0x" << ctx.lr << std::dec << '\n';
                         throw sfr::RuntimeStop("video-global", 0x82000664, "unaudited original device-global consumer");
                     }
                     const auto caller = sfr::active_memory->load<uint32_t>(uint64_t(ctx.r1.u32) + 104);
                     const auto cell = sfr::video_globals->device_cell_for_shared_surface(
-                        ctx.r31.u32, sfr::current_address, static_cast<uint32_t>(ctx.lr), caller);
+                        ctx.r31.u32, sfr::guest_entry.current_address, static_cast<uint32_t>(ctx.lr), caller);
                     sfr::shared_surface_release = {ctx.r31.u32, 0, false};
                     if (sfr::trace_imports) std::cerr << "VIDEO_GLOBAL_READ cell=0x" << std::hex << cell
                               << " value=0x" << sfr::active_memory->load<uint32_t>(cell)
@@ -3570,7 +3588,7 @@ int main(int argc, char** argv) {
                                 (sfr::parallel_worker == sfr::ParallelGuests::job_worker &&
                                  state.worker == sfr::parallel_worker_entry))) {
                             std::cerr << "PARALLEL_WORKER guest_id=" << state.id << " processor=" << processor << '\n';
-                            sfr::parallel_guest = true;
+                            sfr::guest_entry.parallel = true;
                             sfr::GuestMemory::concurrent_reader = true;
                             sfr::GuestMemory::slow_access_hook = sfr::parallel_slow_access;
                             permit->detach();
@@ -3595,7 +3613,7 @@ int main(int argc, char** argv) {
                                 });
                             }
                         }
-                        sfr::entry_observed = sfr::needs_entry_observation();
+                        sfr::refresh_entry_observation();
                         context->fpscr.loadFromHost();
                         if (!state.startup) {
                             // Audio render driver: like the console's audio
@@ -3660,8 +3678,8 @@ int main(int argc, char** argv) {
                         const auto cause = std::current_exception();
                         try {
                             std::ostringstream trace;
-                            trace << error.detail << " [guest_id=" << state.id << " function=" << sfr::current_function
-                                  << " address=0x" << std::hex << sfr::current_address << " LR=0x" << context->lr
+                            trace << error.detail << " [guest_id=" << state.id << " function=" << sfr::guest_entry.current_function
+                                  << " address=0x" << std::hex << sfr::guest_entry.current_address << " LR=0x" << context->lr
                                   << " r1=0x" << context->r1.u32 << " r3=0x" << context->r3.u32
                                   << " r10=0x" << context->r10.u32 << " r11=0x" << context->r11.u32
                                   << " r29=0x" << context->r29.u32 << " r31=0x" << context->r31.u32
@@ -3838,7 +3856,7 @@ int main(int argc, char** argv) {
             auto permit = execution.enter(1);
             sfr::execution_permit = permit.get();
             sfr::current_context = &ctx;
-            sfr::entry_observed = sfr::needs_entry_observation();
+            sfr::refresh_entry_observation();
 #ifdef _WIN32
             sfr::guest_host_threads[1] = sfr::own_thread_handle();
 #endif
@@ -3859,7 +3877,7 @@ int main(int argc, char** argv) {
         return 4;
     } catch (const sfr::RuntimeStop& error) {
         std::cerr << "STOP " << error.category << " @0x" << std::hex << error.address << ": " << error.detail
-                  << "\nLAST_FUNCTION " << sfr::current_function << " @0x" << sfr::current_address
+                  << "\nLAST_FUNCTION " << sfr::guest_entry.current_function << " @0x" << sfr::guest_entry.current_address
                   << " LR=0x" << ctx.lr << std::dec << " calls=" << sfr::calls << '\n';
         return 3;
     } catch (const std::exception& error) {
