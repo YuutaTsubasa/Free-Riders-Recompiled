@@ -286,7 +286,9 @@ const ShaderCacheEntry& runtime_shader(ShaderStage stage, std::span<const uint8_
     // uses; "v7" inlines a header that declares the palette and loop constant
     // push constants, which the SPIR-V reads instead of addresses kept in the
     // shared constants (docs/vulkan-push-constants.md).
-    std::snprintf(name, sizeof name, "v7-%016llx-%zu", static_cast<unsigned long long>(hash), source.size());
+    // "v8" loads push constant addresses as uint2 for Adreno and explicitly
+    // targets Vulkan 1.2 for PhysicalStorageBuffer64.
+    std::snprintf(name, sizeof name, "v8-%016llx-%zu", static_cast<unsigned long long>(hash), source.size());
     const fs::path folder = setting("SFR_RUNTIME_SHADER_CACHE", "out/shaders/runtime") / name;
     const fs::path original = folder / "original.bin", hlsl = folder / "shader.hlsl",
                    dxil = folder / "shader.dxil", mask_file = folder / "specialization_mask.txt",
@@ -378,7 +380,8 @@ const ShaderCacheEntry& runtime_shader(ShaderStage stage, std::span<const uint8_
             write_file(vulkan_hlsl, std::span(reinterpret_cast<const uint8_t*>(text->data()), text->size()));
             std::vector<fs::path> compile{setting("SFR_DXC_SPIRV", default_dxc),
                                           "-T", stage == ShaderStage::vertex ? "vs_6_0" : "ps_6_0", "-E", "shaderMain",
-                                          "-HV", "2021", "-all-resources-bound", "-spirv", "-fvk-use-dx-layout"};
+                                          "-HV", "2021", "-all-resources-bound", "-spirv", "-fvk-use-dx-layout",
+                                          "-fspv-target-env=vulkan1.2"};
             if (stage == ShaderStage::vertex) compile.push_back("-fvk-invert-y");  // D3D clip space to Vulkan's
             compile.insert(compile.end(), {"-Qstrip_debug", "-Fo", spirv, vulkan_hlsl});
             run(compile, folder / "compile_spirv.log", "SPIR-V compilation");

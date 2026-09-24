@@ -120,7 +120,11 @@ public:
     // Accesses to fast pages need neither.
     static inline thread_local bool concurrent_reader = false;
     static inline thread_local void (*slow_access_hook)(uint64_t address) = nullptr;
-    void add_read_only_word(uint32_t address, std::function<uint32_t()> provider);
+    // Concurrent providers must be safe to invoke without exclusive guest
+    // execution. The default retains serialization for host-state callbacks.
+    enum class ProviderAccess { exclusive, concurrent };
+    void add_read_only_word(uint32_t address, std::function<uint32_t()> provider,
+                            ProviderAccess access = ProviderAccess::exclusive);
     void add_import_variable(uint32_t address, std::string name);
     // Write watches: stores to watched pages take the checked path and mark
     // the page dirty. Used to notice CPU rewrites of data with native copies.
@@ -242,7 +246,12 @@ private:
     // The lowest reservation overlapping [address, end) in whole pages, or null.
     const Region* first_conflict(uint64_t address, uint64_t end) const;
     struct Variable { uint32_t address; std::string name; };
-    struct ReadOnlyWord { uint32_t address; std::function<uint32_t()> provider; };
+    struct ReadOnlyWord {
+        uint32_t address;
+        std::function<uint32_t()> provider;
+        ProviderAccess access;
+    };
+    static constexpr size_t read_only_word_limit = 16;
     void check_store_access(uint64_t address, uint64_t size, const PendingWrite* owner = nullptr) const;
     void check_pending_writes(uint64_t address, uint64_t size, const PendingWrite* owner = nullptr) const;
     void commit_impl(uint64_t address, uint64_t size, bool write_combined);

@@ -26,7 +26,18 @@ int main() {
         rejects([&] { memory.load<uint32_t>(0); });
         rejects([&] { sfr::AbsentDebugMonitor duplicate(memory); });
         require(memory.load<uint32_t>(cell) == 0, "rejected writes and duplicate binding preserve absence");
+        // A worker querying a permanently absent monitor must not acquire the
+        // global guest permit and serialize otherwise independent game work.
+        sfr::GuestMemory::concurrent_reader = true;
+        sfr::GuestMemory::slow_access_hook = [](uint64_t) {
+            throw std::runtime_error("absent monitor read unnecessarily requests exclusive execution");
+        };
+        require(memory.load<uint32_t>(cell) == 0, "detached workers observe the same absent monitor");
+        sfr::GuestMemory::slow_access_hook = nullptr;
+        sfr::GuestMemory::concurrent_reader = false;
     } catch (const std::exception& error) {
+        sfr::GuestMemory::slow_access_hook = nullptr;
+        sfr::GuestMemory::concurrent_reader = false;
         std::cerr << error.what() << '\n';
         return 1;
     }

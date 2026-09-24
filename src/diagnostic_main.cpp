@@ -3392,7 +3392,8 @@ int main(int argc, char** argv) {
                           << std::dec << " scope=shared-surface-destruction\n";
             }
             else if (name == "__imp__KeDebugMonitorData" && value == 0x820007D4 && ordinal == "89") {
-                memory.add_read_only_word(static_cast<uint32_t>(value), [] { return sfr::AbsentDebugMonitor::address; });
+                memory.add_read_only_word(static_cast<uint32_t>(value), [] { return sfr::AbsentDebugMonitor::address; },
+                                         sfr::GuestMemory::ProviderAccess::concurrent);
                 std::cerr << "BIND KeDebugMonitorData cell=0x" << std::hex << sfr::AbsentDebugMonitor::address
                           << std::dec << " monitor=0x0 profile=absent-xbox-monitor\n";
             }

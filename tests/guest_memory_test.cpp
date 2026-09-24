@@ -26,6 +26,47 @@ template<typename F> static void require_stop(F operation, const char* category,
     throw std::runtime_error(message);
 }
 
+static thread_local unsigned provider_permit_requests = 0;
+
+static void provider_execution_policy() {
+    sfr::GuestMemory memory;
+    memory.map(0x90000, 0x1000);
+    using Access = sfr::GuestMemory::ProviderAccess;
+    memory.add_read_only_word(0x90000, [] { return 0x11223344u; }, Access::concurrent);
+    memory.add_read_only_word(0x90004, [] { return 0x55667788u; });
+    memory.add_read_only_word(0x90008, [] { return 0x99aabbccu; }, Access::concurrent);
+    memory.add_read_only_word(0x9000c, [count = 0u]() mutable { return ++count; });
+    struct Reset {
+        ~Reset() {
+            sfr::GuestMemory::slow_access_hook = nullptr;
+            sfr::GuestMemory::concurrent_reader = false;
+        }
+    } reset;
+    sfr::GuestMemory::concurrent_reader = true;
+    sfr::GuestMemory::slow_access_hook = [](uint64_t) { ++provider_permit_requests; };
+    provider_permit_requests = 0;
+    require(memory.load<uint16_t>(0x90001) == 0x2233 && provider_permit_requests == 0,
+            "concurrent provider preserves partial reads without exclusive execution");
+    require(memory.load<uint64_t>(0x90002) == 0x33445566778899aaull && provider_permit_requests == 1,
+            "three-word read only requests execution for the default exclusive provider");
+    require_stop([&] { memory.store<uint32_t>(0x90000, 0); }, "memory-readonly",
+                 "concurrent providers remain read-only");
+    require(memory.load<uint32_t>(0x9000c) == 1 && memory.load<uint32_t>(0x9000c) == 2,
+            "provider snapshots retain the original mutable callable state");
+    require(provider_permit_requests == 3, "default providers continue to acquire exclusive execution");
+
+    // A callback may change the registry. It must run outside the layout lock,
+    // and any other providers in this scalar's snapshot must remain valid.
+    memory.add_read_only_word(0x90010, [&] {
+        for (uint32_t i = 0; i < 8; ++i)
+            memory.add_read_only_word(0x90040 + 4 * i, [] { return 7u; });
+        return 0xdeadbeefu;
+    });
+    memory.add_read_only_word(0x90014, [] { return 0xcafef00du; });
+    require(memory.load<uint64_t>(0x90010) == 0xdeadbeefcafef00dull,
+            "registering a provider inside another callback preserves the scalar snapshot");
+}
+
 static void computed_reads() {
     sfr::GuestMemory memory;
     memory.map(0x10000, 32);
@@ -1364,7 +1405,7 @@ int main() {
         memory.map(0x50000, 1);
         require(rejects([&] { memory.reserve(0x50000, 0x1000); }), "map occupies rounded host page");
         unsigned failures = 0;
-        for (auto test : {computed_reads, computed_writes, provider_registration, provider_failures,
+        for (auto test : {provider_execution_policy, computed_reads, computed_writes, provider_registration, provider_failures,
                           reservation_increment, reservation_detects_a_b_a, reservation_replacement, reservation_validation,
                           reservation_interference, reservation_changed_backing,
                           reservation_independent_instances_and_top_address, reservations_belong_to_threads,

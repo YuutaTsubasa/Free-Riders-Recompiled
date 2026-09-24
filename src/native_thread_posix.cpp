@@ -8,8 +8,8 @@
 
 #include <pthread.h>
 #include <sched.h>
-#ifdef __APPLE__
 #include <unistd.h>
+#ifdef __APPLE__
 #include <map>
 #endif
 
@@ -137,7 +137,11 @@ NativeThread::NativeThread(Entry entry) {
     if (!entry) throw RuntimeStop("thread-host", 0, "native thread entry is empty");
     cpu_set_t allowed;
     CPU_ZERO(&allowed);
-    if (sched_getaffinity(0, sizeof(allowed), &allowed) != 0) throw_host_error("sched_getaffinity", errno);
+    // Guest workers are pinned individually and can create workers for other
+    // guest processors. pid 0 would read the calling worker's single-core mask,
+    // permanently preventing its children from moving to those processors.
+    // The process leader retains the application's allowed host CPU set.
+    if (sched_getaffinity(getpid(), sizeof(allowed), &allowed) != 0) throw_host_error("sched_getaffinity", errno);
     const uint64_t process_mask = mask_of(allowed);
     if (process_mask == 0) throw RuntimeStop("thread-host", 0, "process has no allowed processors");
 

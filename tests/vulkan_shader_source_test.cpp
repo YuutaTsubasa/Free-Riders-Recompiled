@@ -49,12 +49,40 @@ void reads_the_palette_and_loop_constants_through_addresses() {
             "a loop constant loads from the loop push constant");
     require(text->find("my_g_LoopConstants[1]") != std::string::npos, "a longer name is left alone");
 }
+
+void loads_push_constant_addresses_as_32_bit_pairs() {
+    const std::string push =
+        "struct PushConstants {\n"
+        "    uint64_t VertexShaderConstants;\n"
+        "    uint64_t PixelShaderConstants;\n"
+        "    uint64_t SharedConstants;\n"
+        "    uint64_t VertexPalette;\n"
+        "    uint64_t LoopConstants;\n};\n"
+        "[[vk::push_constant]] ConstantBuffer<PushConstants> g_PushConstants;\n";
+    const auto text = sfr::vulkan_shader_source(push + header +
+        "float4 c = vk::RawBufferLoad<float4>(g_PushConstants.PixelShaderConstants + uint64_t(i) * 16, 16);\n");
+    require(text.has_value(), "the complete push constant header converts");
+    for (const char* field : {"VertexShaderConstants", "PixelShaderConstants", "SharedConstants",
+                              "VertexPalette", "LoopConstants"}) {
+        require(text->find(std::string("uint2 ") + field + ";") != std::string::npos,
+                "each push constant address is loaded as two 32-bit words");
+        require(text->find(std::string("uint64_t ") + field + ";") == std::string::npos,
+                "no 64-bit push constant load remains");
+    }
+    require(text->find("uint64_t(address.x) | (uint64_t(address.y) << 32)") != std::string::npos,
+            "both halves of the GPU address are preserved");
+    require(text->find("sfrBufferAddress(g_PushConstants.PixelShaderConstants) + uint64_t(i) * 16") != std::string::npos,
+            "address arithmetic uses the reconstructed 64-bit address");
+    require(text->find("sfrBufferAddress(g_PushConstants.SharedConstants) + 320, 8") != std::string::npos,
+            "generated scale loads also reconstruct the address");
+}
 }
 
 int main() {
     try {
         defines_the_screen_scale();
         reads_the_palette_and_loop_constants_through_addresses();
+        loads_push_constant_addresses_as_32_bit_pairs();
         std::cout << "Vulkan shader source checks passed\n";
         return 0;
     } catch (const std::exception& e) {

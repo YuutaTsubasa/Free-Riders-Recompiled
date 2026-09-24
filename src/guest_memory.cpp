@@ -1,5 +1,6 @@
 #include "guest_memory.h"
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <mutex>
 #include <cstdlib>
@@ -956,8 +957,8 @@ void GuestMemory::complete_store(uint64_t address, uint64_t size) const {
 #endif
 }
 
-void GuestMemory::add_read_only_word(uint32_t address, std::function<uint32_t()> provider) {
-    if (address % 4 || !provider || read_only_words_.size() >= 16)
+void GuestMemory::add_read_only_word(uint32_t address, std::function<uint32_t()> provider, ProviderAccess access) {
+    if (address % 4 || !provider || read_only_words_.size() >= read_only_word_limit)
         throw RuntimeStop("memory-provider", address, "invalid read-only word alignment, provider, or quota");
     try {
         check(address, 4);
@@ -969,7 +970,10 @@ void GuestMemory::add_read_only_word(uint32_t address, std::function<uint32_t()>
             throw RuntimeStop("memory-provider", address, "overlapping read-only word");
     check_pending_writes(address,4);
     std::unique_lock layout(layout_mutex_);
-    read_only_words_.push_back({address, std::move(provider)});
+    // Providers are never removed. Reserve the bounded registry before its
+    // first publication so readers can keep a stable pointer after unlocking.
+    if (read_only_words_.empty()) read_only_words_.reserve(read_only_word_limit);
+    read_only_words_.push_back({address, std::move(provider), access});
     special_words_.push_back(address);
     rebuild_fast_pages();
 }
@@ -980,11 +984,23 @@ uint64_t GuestMemory::read_scalar(uint64_t address, uint64_t size) const {
     uint64_t result = 0;
     for (uint64_t i = 0; i < size; ++i)
         result = (result << 8) | base_[address + i];
-    for (const auto& word : read_only_words_) {
+    // At most three aligned words intersect an unaligned eight-byte scalar.
+    // Release the layout lock before acquiring execution or calling a provider
+    // (a callback may itself read guest memory or change the layout).
+    std::array<const ReadOnlyWord*, 3> providers{};
+    size_t provider_count = 0;
+    {
+        auto layout = read_layout();
+        for (const auto& word : read_only_words_)
+            if (address < uint64_t(word.address) + 4 && word.address < address + size)
+                providers[provider_count++] = &word;
+    }
+    for (size_t i = 0; i < provider_count; ++i) {
+        const auto& word = *providers[i];
         const uint64_t begin = std::max(address, uint64_t(word.address));
         const uint64_t end = std::min(address + size, uint64_t(word.address) + 4);
         if (begin >= end) continue;
-        if (slow_access_hook) slow_access_hook(address);  // providers read host state
+        if (word.access == ProviderAccess::exclusive && slow_access_hook) slow_access_hook(address);
         const uint32_t value = word.provider();
         for (uint64_t byte = begin; byte < end; ++byte) {
             const auto source_shift = (3 - (byte - word.address)) * 8;

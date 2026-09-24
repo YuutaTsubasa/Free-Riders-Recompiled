@@ -67,6 +67,31 @@ std::optional<std::string> vulkan_shader_source(const std::string& hlsl) {
     replace_indexing(text, "g_LoopConstants", [](const std::string& index) {
         return "vk::RawBufferLoad<int4>(g_PushConstants.LoopConstants + uint64_t(" + index + ") * 16, 0x10)";
     });
+
+    // Adreno 750's Qualcomm driver can misload 64-bit push constant members
+    // in fragment shaders. Keep the 40-byte CPU ABI, but load each address
+    // as two 32-bit words before doing 64-bit address arithmetic. The same
+    // representation in both stages also avoids stage-specific layouts.
+    const std::string push = "[[vk::push_constant]] ConstantBuffer<PushConstants> g_PushConstants;";
+    if (const size_t push_at = text.find(push); push_at != std::string::npos) {
+        text.insert(push_at + push.size(),
+            "\nuint64_t sfrBufferAddress(uint2 address) {\n"
+            "    return uint64_t(address.x) | (uint64_t(address.y) << 32);\n}\n");
+        for (const std::string field : {"VertexShaderConstants", "PixelShaderConstants", "SharedConstants",
+                                        "VertexPalette", "LoopConstants"}) {
+            const std::string declaration = "uint64_t " + field + ";";
+            const size_t member = text.find(declaration);
+            if (member == std::string::npos) return std::nullopt;
+            text.replace(member, declaration.size(), "uint2 " + field + ";");
+            const std::string access = "g_PushConstants." + field;
+            const std::string decoded = "sfrBufferAddress(" + access + ")";
+            size_t use = 0;
+            while ((use = text.find(access, use)) != std::string::npos) {
+                text.replace(use, access.size(), decoded);
+                use += decoded.size();
+            }
+        }
+    }
     return text;
 }
 }

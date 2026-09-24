@@ -64,7 +64,11 @@ def main():
     parser.add_argument('--output', default=str(ROOT / 'out' / 'android' / 'FreeRidersRecompiled.apk'))
     parser.add_argument('--abi', action='append', help='only these ABIs (default: every built one)')
     parser.add_argument('--pack', help='a shaders.pack to carry as an asset (LauncherActivity copies it out)')
+    parser.add_argument('--min-sdk', type=int, default=MIN_SDK,
+                        help='minimum API level, matching the native build (default: 28)')
     args = parser.parse_args()
+    if args.min_sdk < MIN_SDK:
+        parser.error('--min-sdk must be at least 28')
 
     sdk = sdk_root()
     build_tools = max((sdk / 'build-tools').iterdir(), key=version_key)
@@ -88,7 +92,7 @@ def main():
     aapt2 = tool(build_tools, 'aapt2')
     run(aapt2, 'compile', '--dir', PROJECT / 'res', '-o', work / 'resources.zip')
     run(aapt2, 'link', '-o', work / 'base.apk', '-I', android_jar, '--manifest', PROJECT / 'AndroidManifest.xml',
-        '--java', work / 'gen', '--min-sdk-version', MIN_SDK, '--target-sdk-version', TARGET_SDK,
+        '--java', work / 'gen', '--min-sdk-version', args.min_sdk, '--target-sdk-version', TARGET_SDK,
         '--version-code', VERSION_CODE, '--version-name', VERSION_NAME,
         '--auto-add-overlay', work / 'resources.zip')
 
@@ -97,7 +101,7 @@ def main():
     run(jdk_tool('javac'), '-nowarn', '-Xlint:-options', '-source', '11', '-target', '11', '-encoding', 'UTF-8',
         '-classpath', android_jar, '-d', work / 'classes', *sources)
     classes = [str(p) for p in (work / 'classes').rglob('*.class')]
-    run(tool(build_tools, 'd8'), '--release', '--min-api', MIN_SDK, '--lib', android_jar,
+    run(tool(build_tools, 'd8'), '--release', '--min-api', args.min_sdk, '--lib', android_jar,
         '--output', work / 'dex', *classes)
 
     unsigned = work / 'unsigned.apk'

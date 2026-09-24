@@ -8,6 +8,8 @@
 # code needed, no APK; what the CI does).
 # Environment: ANDROID_HOME (default ~/AppData/Local/Android/Sdk on Windows,
 # ~/Android/Sdk elsewhere), SFR_ANDROID_NDK (default: newest NDK there).
+# SFR_ANDROID_API (default 28): use 29 or newer for native ELF thread-local
+# storage. This also raises the APK's minimum Android version accordingly.
 set -euo pipefail
 # Native paths for a Windows CMake under Git Bash/MSYS.
 native() { if command -v cygpath >/dev/null; then cygpath -m "$1"; else echo "$1"; fi; }
@@ -18,6 +20,8 @@ apk=1
 pack=""
 game=1
 validation=OFF
+api="${SFR_ANDROID_API:-28}"
+[[ "$api" =~ ^[0-9]+$ ]] && [ "$api" -ge 28 ] || { echo "SFR_ANDROID_API must be at least 28" >&2; exit 2; }
 while [ $# -gt 0 ]; do
     case "$1" in
         --diagnostic) diagnostic="$2"; shift 2 ;;
@@ -50,7 +54,7 @@ for abi in "${abis[@]}"; do
     build="$root/out/build/android-$abi"
     cmake -S "$root" -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_TOOLCHAIN_FILE="$ndk/build/cmake/android.toolchain.cmake" \
-        -DANDROID_ABI="$abi" -DANDROID_PLATFORM=android-28 -DANDROID_STL=c++_shared \
+        -DANDROID_ABI="$abi" -DANDROID_PLATFORM="android-$api" -DANDROID_STL=c++_shared \
         -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DBUILD_TESTING=OFF -DSFR_VULKAN_VALIDATION="${validation:-OFF}" "${game_options[@]}"
     cmake --build "$build" --target "${targets[@]}"
     mkdir -p "$jni/$abi"
@@ -67,5 +71,5 @@ if [ "$apk" = 1 ]; then
     abi_options=()
     for abi in "${abis[@]}"; do abi_options+=(--abi "$abi"); done
     [ -z "$pack" ] || abi_options+=(--pack "$pack")
-    ANDROID_HOME="$ANDROID_HOME" python "$root/scripts/package_android.py" "${abi_options[@]}"
+    ANDROID_HOME="$ANDROID_HOME" python "$root/scripts/package_android.py" --min-sdk "$api" "${abi_options[@]}"
 fi

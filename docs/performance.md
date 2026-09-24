@@ -466,3 +466,148 @@ upload-heap 緩衝區，之後沒被寫就直接用；一被寫就丟掉（緩�
 顯示是在等客體 7、8、9 這三條遊戲自己的工作執行緒）。那 13 ms 裡渲染器只佔約 5.8 ms
 （繪製 3.3、錄製 1.5、索引與常數約 1.0），其餘是遊戲自己的程式碼。也就是說**渲染器
 已經不是主要成本**，再往下要動的是重編譯程式碼本身或排程。
+
+
+## 2026-09-24：Android 核心分配與執行緒資料存取
+
+裝置為 AYANEO Pocket S2 Pro（Android 14、Adreno 750）。圖形已使用
+`v8` shader cache 的 push-constant 位址修正；以下測試保留相同 shader pack。
+
+### 子執行緒被父執行緒的 CPU affinity 困住
+
+POSIX `NativeThread` 建構時用 `sched_getaffinity(0, ...)` 作為可用 CPU
+清單。這裡的 0 指呼叫執行緒：遊戲先把父工作執行緒釘到 CPU 6，再從它
+建立子執行緒時，子執行緒只得到 CPU 6。後續即使遊戲要求不同客體核心，
+`set_guest_processor()` 仍只能選 CPU 6。
+
+修正為讀取程序主執行緒的 affinity（`getpid()`）；本程式的程序主執行緒
+不參與客體核心綁定。核心速度排序與個別執行緒綁定保持原有行為。
+
+回歸測試 `native_thread_posix` 先取得六個客體核心的預期映射，再從已綁定
+的父執行緒建立子執行緒，驗證子執行緒仍能選擇相同映射。實機修正前：
+`guest_cpu=0 expected=128 actual=64`；修正後六個映射全部通過，依序為
+`128, 4, 8, 16, 32, 64`。遊戲紀錄也確認客體 29 的 affinity 從錯誤的
+`0x40` 變成 `0x20`。
+
+Free Race 的末段 101 格樣本，先前 `SFR_PARALLEL_WORKER=1` 約 6.53 FPS；
+修正 affinity 並使用 `cores` 後約 8.2–10.4 FPS。後一趟末段中位數：
+主執行緒排隊 23.38 ms、繪製 10.58 ms、GPU 等待 0.16 ms。
+這些是同一賽道的不同時間片段，不能當成完全相同畫面的嚴格 A/B。
+`cores` 的開場停住曾經重現，修正後的成功啟動也不足以證明所有時序問題消失。
+
+### Android API 28 建置使用 emulated TLS
+
+NDK simpleperf 實機比賽取樣 15 秒、11252 筆樣本，沒有遺失：
+`__emutls_get_address` 14.89%，`pthread_getspecific` 6.79%。
+這是 CPU 執行樣本占比，不是整格牆鐘時間占比。
+
+[Android 官方說明](https://android.googlesource.com/platform/bionic/+/HEAD/android-changes-for-ndk-developers.md#elf-tls-available-for-api-level-29)
+指出 API 29 起支援 ELF TLS，NDK r26 起會依最低 API 自動選用。預設
+Android 9 支援仍保留；可用 `SFR_ANDROID_API=29 scripts/build_android.sh ...`
+建立 Android 10 以上版本。腳本同時把 API 傳給原生編譯和 APK 包裝，
+避免套件聲稱支援無法載入其原生函式庫的舊 Android。
+手動包裝時須指定與原生建置相符的 `--min-sdk 29`。
+
+取樣用 APK 暫時加入 `<profileable android:shell="true" />`，正式 manifest
+沒有保留此變更。原始資料與報告存於 `out/android-performance/`。
+
+
+### API 29 實機結果與交付版本
+
+同一賽道，依 `NATIVE_PRESENT draws>600` 篩出比賽格並對齊序號；各段取
+101 筆呈現時間，以 100 個間隔計算 FPS：
+
+| 比賽樣本索引（從 0 起） | 原版 worker=1 / API 28 | affinity 修正、cores / API 28 | 再加 API 29 原生 TLS |
+| --- | ---: | ---: | ---: |
+| 100–200 | 7.35 | 10.19 | 11.67 |
+| 200–300 | 6.54 | 8.53 | 9.42 |
+
+兩段三個版本的繪製次數中位數分別都是 796、793。這比比較任意末段更接近
+相同遊戲進度，但仍沒有固定錄影重播或控制裝置溫度，應視為約 44–59% 的
+本次測量改善，不是普遍保證。API 29 最後 101 格樣本為 11.90 FPS。
+
+API 29 比賽取樣 11062 筆、無遺失；主要 TLS 成本改為
+`[linker]tlsdesc_resolver_dynamic`（11.37%）。原生 TLS 仍有成本，不能把
+原本約 22% 當成全部消除。下一批 CPU 熱點包含 hook 查詢、函式進入檢查、
+記憶體存取與排程；目前尚未達到流暢的 30/60 FPS。
+
+交付 `out/android/FreeRidersRecompiled-adreno-performance.apk`（arm64-v8a，
+minSdkVersion 29）。已安裝在裝置，移除取樣 manifest、暫時的 watchdog
+與自動啟動設定。實測取樣 APK 與交付 APK 的 `libmain.so` SHA-256 相同：
+`008e4105dd740e5eecf66752eb9e5ef26eff33b65c051c0295d38ea006d94267`。
+shader pack 維持原圖形修正版，SHA-256 為
+`d430c0c0bff5f7b9937a16d67dd3b5059bc9165296a440a73b32a9201fd93b4a`。
+
+驗證：Android API 28 / 29 的子執行緒核心映射測試通過；Windows 的
+`guest_execution`、`native_thread`、`vulkan_shader_source` 三項回歸測試
+通過。新版本在裝置通過開場、選單、校正與比賽，截圖為
+`out/android-performance/tls-race.png`。保留 `SFR_SKIP_MOVIES=1`、
+`SFR_MOVIE_ALLOWANCE_MS=1`，並將 `SFR_PARALLEL_WORKER` 設為 `cores`。
+
+
+## 2026-09-24：固定的除錯監視器查詢不再取得全域執行權
+
+`SFR_PARALLEL_TRACE=1` 顯示背景執行緒頻繁讀取 `0x820007D4`
+（`KeDebugMonitorData`），單一執行緒累積超過 131072 次。在此移植環境，
+它永遠指向 `AbsentDebugMonitor::address`，而該位址永遠回傳零。
+先前這兩個固定值仍被視為任意主機 callback，每次讀取都可能將背景
+執行緒重新接回全域執行許可，直到下一個函式進入點才釋放。
+
+`GuestMemory::ProviderAccess::concurrent` 現在讓經確認可並行的 provider
+明確選擇免除該次執行許可取得；預設仍是 `exclusive`。只將上述兩個固定
+provider 標成 concurrent，時鐘與裝置狀態等其他 provider 保留原有行為。
+記憶體界限、唯讀保護與 byte-order 規則沒有放寬。
+
+為避免在 callback 或取得全域執行權時持有記憶體版面鎖，讀取先於版面
+共享鎖內擷取相交 provider 的位址，再解鎖並呼叫。最多八位元組的純量
+讀取會跨三個對齊 word。註冊表預留既有的 16 個名額，且 provider 在
+`GuestMemory` 存活期間不移除，因此指標不會因追加註冊失效，mutable
+callback 的狀態也不會因複製而遺失。
+
+回歸測試先重現 absent-monitor 查詢不必要地要求獨占執行而失敗，修正後
+通過。另驗證三個 word 的混合存取、預設仍需執行許可、partial read、
+寫入拒絕、mutable callback 狀態，以及 callback 中追加多個註冊項目。
+Windows 的 `guest_memory`、`debug_monitor`、`timestamp_bundle`、
+`guest_execution` 四項通過；Android API 28 編譯的 memory / monitor
+測試也在裝置通過，這項最佳化本身不需要提高 Android 版本。
+
+新版本沿用先前的 1 ms 影片跳過設定時，兩次在第一段影片結束後停止
+呈現；恢復原本的 10000 ms allowance（同時仍可在呈現 31 格後跳過）
+後曾通過開場並進入比賽，但正式套件再次重啟仍在呈現 31 格後停住
+（`restart-stall.log`）。因此不能將 1 ms 判定為唯一原因，也不能將恢復
+10000 ms 當成開場問題的修復。裝置交付設定會移除 1 ms override。
+
+本輪原始紀錄保存在 `out/android-performance-round2/`，比賽量測方式
+沿用前一輪的 `draws>600` 樣本序號，`measure.py` 可重算結果。
+
+### 第二輪比賽量測
+
+同一台裝置、同一賽道，兩版均使用 API 29、`cores` 與平行追蹤。
+本輪重新取得的前版紀錄為 `baseline-trace.log`，新版為 `after-trace.log`。
+各段同樣取 101 筆時間戳、100 個間隔；排隊時間為該段中位數。
+
+| 比賽樣本索引 | 前版 FPS | 新版 FPS | 改善 | 前版主執行緒排隊 | 新版主執行緒排隊 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 100–200 | 10.71 | 13.80 | 28.8% | 34.82 ms | 18.34 ms |
+| 200–300 | 9.43 | 10.53 | 11.6% | 29.00 ms | 19.19 ms |
+
+繪製次數中位數分別為前版 796 / 793、新版 796 / 794。這是相近比賽進度
+的樣本，沒有固定輸入重播或控制溫度，不能保證所有場景都有相同比例的提升。
+新版截圖 `race.png` 確認角色、對手、賽道及 HUD 正常，仍未達到 30/60 FPS。
+追蹤中不再出現兩個除錯監視器位址的慢速存取，仍可看到需要保護的時鐘讀取。
+
+新版 15 秒 CPU 取樣共 11519 筆、沒有遺失；主要可見成本仍包括動態 TLS
+解析 9.47%、hook 查詢 3.66%、函式進入檢查 2.69%。這些是 CPU 樣本占比，
+不是整格時間占比；取樣跨過比賽起始，不直接與前一輪比例比較。
+
+正式套件為 `out/android/FreeRidersRecompiled-adreno-performance2.apk`，
+沿用 minSdkVersion 29，沒有取樣用的 profileable manifest。其 `libmain.so`
+與實測取樣套件 SHA-256 相同：
+`d5aa6ee79be059db122151fcb9596d21253af7ab3b828ddde91ab6a937f2639e`。
+shader pack 仍為上述圖形修正版，雜湊相同。
+
+正式套件已安裝到裝置。最後改用 `SFR_SKIP_MOVIES=0`，保留 `cores`，
+讓第一段影片正常播放結束；本次啟動通過開場、標題及 Offline Mode 選單
+（`no-skip.log`、`final-menu.png`）。這是暫時避開自動提早結束影片的設定，
+不是對影片終止問題的程式修復，也尚未做大量重啟穩定性測試。
+已移除 debug.env 的自動啟動、平行追蹤及影片等待 override，裝置停在選單。
