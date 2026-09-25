@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <cstdlib>
 
 namespace sfr {
 namespace {
@@ -48,6 +49,14 @@ void store_vector(GuestMemory& memory, uint64_t address, const Vector& v, float 
     for (uint32_t i = 0; i < 3; ++i) store_float(memory, address + i * 4, v[i]);
     store_float(memory, address + 12, w);
 }
+}
+
+bool NuiSkeletonEmulation::hand_starts_centred() {
+    static const bool centred = [] {
+        const char* const text = std::getenv("SFR_NUI_HAND_CENTRED");
+        return text && *text && *text != '0';
+    }();
+    return centred;
 }
 
 void NuiSkeletonEmulation::update(const GamepadState& pad, bool racing) {

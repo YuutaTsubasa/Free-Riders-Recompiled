@@ -39,6 +39,52 @@ float frame_count() {
 
 bool pad_racing() { return swapped; }
 
+// The body record the title itself would read for the player a detector is
+// being asked about. Every original detector begins the same way (822C9050
+// and the rest): the source holds an object, and the second entry of that
+// object's vtable returns that player's record.
+//
+//   lwz r3,0(r4)   ; the player object behind the source
+//   lwz r11,0(r3)  ; its vtable
+//   lwz r10,4(r11) ; vtable[1]
+//   bctrl          ; -> the record, in r3
+//
+// This is the only way a second player's record can be reached: the Kinect
+// manager holds exactly one record pointer (+0x78) whatever the number of
+// players, as a dump of all 8208 of its bytes shows.
+uint32_t body_of_source(PPCContext& ctx, uint8_t* base, uint32_t source) {
+    if (!source) return 0;
+    auto& m = memory();
+    const uint32_t object = m.load<uint32_t>(source);
+    if (!object) return 0;
+    const uint32_t vtable = m.load<uint32_t>(object);
+    if (!vtable) return 0;
+    const uint32_t method = m.load<uint32_t>(uint64_t(vtable) + 4);
+    if (!method) return 0;
+    PPCContext saved = ctx;
+    ctx.r3.u64 = object;
+    sfr::call_indirect(ctx, base, method);
+    const uint32_t record = ctx.r3.u32;
+    ctx = saved;
+    return record;
+}
+
+// SFR_RACE_BODY_SOURCES=1: the distinct records the detectors are asked
+// about, and whether each is the one we put in the manager. With one player
+// there should be one; a second player is the whole point of asking.
+void note_detector_source(PPCContext& ctx, uint8_t* base, uint32_t address, uint32_t source) {
+    static const bool wanted = [] { const char* t = std::getenv("SFR_RACE_BODY_SOURCES");
+                                    return t && *t != '0'; }();
+    if (!wanted) return;
+    static std::unordered_map<uint32_t, uint64_t> seen;
+    const uint32_t record = body_of_source(ctx, base, source);
+    const uint64_t count = ++seen[record];
+    if (count == 1 || (count & (count - 1)) == 0)
+        std::cerr << "RACE_BODY_SOURCE detector=0x" << std::hex << address << " source=0x" << source
+                  << " record=0x" << record << " ours=0x" << body_address << " original=0x" << original_body
+                  << std::dec << " count=" << count << " distinct=" << seen.size() << char(10);
+}
+
 // Result entry the detector writes: [results] + [results+8 (or +12)] * 84.
 uint32_t entry(uint32_t results, uint32_t index_offset = 8) {
     return memory().load<uint32_t>(results) + memory().load<uint32_t>(results + index_offset) * 84;
@@ -117,6 +163,7 @@ SFR_HOOK(sub_82438930) {
         if (!pad_racing()) { __imp__sub_##address(ctx, base); return; }        \
         const uint32_t detector = ctx.r3.u32, source = ctx.r4.u32, results = ctx.r5.u32; \
         (void)detector; (void)source; (void)results;                           \
+        note_detector_source(ctx, base, 0x##address, source);                  \
         const sfr::RaceBody& b = body();                                       \
         uint32_t result = 0;                                                   \
         __VA_ARGS__                                                            \

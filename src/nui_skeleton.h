@@ -60,8 +60,14 @@ public:
     static constexpr uint32_t unidentified = 0xFFFFFFFFu, guest = 0xFFFFFFFEu;
     void identify(uint32_t enrollment = guest) {
         enrollment_ = enrollment;
-        if (engage_ == 0) { engage_ = 1; park_ = true; }
+        if (engage_ == 0) { engage_ = 1; park_ = !hand_starts_centred(); }
     }
+    // SFR_NUI_HAND_CENTRED=1 raises the hand to the middle of the screen
+    // instead of parking it in the corner. A player wants it parked -- a
+    // cursor sitting on a button presses it by waiting -- but an unattended
+    // run has to steer it out of that corner with stick taps before it can
+    // press anything, and the timing of that is what makes those runs flaky.
+    static bool hand_starts_centred();
 private:
     std::array<float, 3> right_{0.25f, -0.15f, 2.45f};
     uint32_t engage_ = 0;  // 0 at rest, 1-30 raising, 31 tracking
