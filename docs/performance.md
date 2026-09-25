@@ -686,3 +686,64 @@ shader pack 保持 `d430c0c0bff5f7b9937a16d67dd3b5059bc9165296a440a73b32a9201fd9
 `delivery.png` / `delivery.log`；這一輪沒有提交 Git commit。
 
 
+## 2026-09-25：一次填入 pipeline key，保留逐 byte 相同的查詢資料
+
+接續 round6，先處理 CPU 取樣中 byte-vector insertion 占主執行緒 1.70% 的
+具體路徑。原本 NativeRenderer::draw 對每個欄位呼叫 vector::insert，20 個 input
+元素會超過 100 次；現在先算完整長度、resize 一次，再以固定大小 memcpy 填入。
+新舊 serializer 在 native_pipeline_key.h；map lookup、pipeline creation、常數／
+頂點上傳與 command recording 的程式碼保持相同。沒有快取前一次 NativeDraw，
+也沒有把 guest declaration 指標相同當成內容相同。
+
+保留舊 key 的欄位順序、寬度、semanticName 指標識別、blend 物件 padding、
+stencil 開關與條件欄位；沒有順便更改 pipeline identity。SFR_PIPELINE_KEY_BULK=0
+可切回原方式，預設使用新方式；SFR_PIPELINE_KEY_VERIFY=1 同時計算並逐 byte
+比較兩者，不一致即停止。實機計時時驗證開關為 0。
+
+回歸先以空實作確認 byte identity 測試失敗，再實作通過。測試涵蓋空／1／20／36
+個元素、重用 buffer 時縮小與增長、stencil 開關、depth/blend/spec mask、shader
+與各 input 欄位變動、不同 blend padding，以及每 draw 常數／count 不影響 key。
+Windows 重編後的 native_pipeline_key、guest_graphics、guest_render_state、
+guest_blend_request 四項通過；Android arm64 也通過。Android 測試第一次直接
+執行缺 libc++_shared.so，補上套件內的 runtime 並設 LD_LIBRARY_PATH 後才成功，
+該次 loader failure 不列為測試通過。
+
+手機局部 microbenchmark：50 萬個 20-element、stencil-enabled key，順序舊／新／
+新／舊，耗時 339.737 / 11.513 / 11.535 / 312.595 ms。它只是 serializer 自身的
+診斷量測，不能當成 FPS 加速倍數；按 800 draw 粗估是每格約 0.5 ms 的尺度，
+也不是已量到的 frame-time 差值。實際遊戲另跑雙路比對，包含 456 個比賽格，
+累計超過 140 萬次 key 一致，無 mismatch、RUNTIME_STOP、HANG_REPORT。
+verify-race.png 可辨識角色與場景，未做像素相同的 replay 比較；驗證趟不計入 A/B。
+
+四趟計時都使用同一份正常、無 profileable APK，同一 Free Race / Sonic / 初始
+賽道及裝備，開始後無輸入，原／新／新／原順序。每次載入同一個 2,781,269-byte
+暖快取；電池溫度起迄均 36°C，所有視窗 frame 連續，實際開關均符合預期。
+
+| 模式 | 100–200 FPS | 200–300 FPS | draws 中位數 | draw_ms 平均（兩段） | record_ms 平均（兩段） |
+| --- | ---: | ---: | --- | --- | --- |
+| legacy-a | 14.83 | 14.51 | 796 / 792 | 9.902 / 11.749 | 4.818 / 4.998 |
+| bulk-a | 15.83 | 14.65 | 796 / 792.5 | 8.844 / 10.206 | 4.010 / 4.205 |
+| bulk-b | 16.32 | 15.22 | 796 / 793 | 8.370 / 9.900 | 3.837 / 4.268 |
+| legacy-b | 15.60 | 13.86 | 796 / 793 | 9.185 / 10.912 | 4.440 / 4.893 |
+
+各模式合併 400 個 interval，FPS = 400 / 總秒數：原方式 14.67、新方式 15.48，
+這組樣本約增加 5.5%。兩趟新版的兩段 FPS 都高於對應的兩趟原方式，draw_ms 也較低；
+切回原方式後 draw_ms 回升。平均 draw_ms 原 10.437、新 9.330，差約 1.107 ms。
+這支持保留一次填入的修改，但只有每模式兩趟，沒有固定 gameplay replay、SoC
+頻率鎖定或 SoC 溫控；draws 第二段 792 / 792.5 / 793 / 793 也顯示不是逐格一致。
+不能把 5.5% 當成所有賽道的保證，也沒有達成 30 FPS。
+
+record_ms 包含在 draw_ms 內，不能再加一次；新舊 record_ms 也有差異，而 key
+建立在呼叫 record() 之前，表示排程／量測波動等因素亦有影響，不把所有 wall-time
+差值都視為 serializer 的直接 CPU 節省。首段 pipeline_ms 均為 0；第二段依序
+0.092 / 0.054 / 0.102 / 0.067 ms，沒有前幾輪數百毫秒的新管線編譯混雜。
+四趟各取得 436 / 442 / 440 / 425 個比賽格，均無 RUNTIME_STOP / HANG_REPORT。
+
+原始紀錄、截圖、比較程式與結果在 out/android-pipeline-key-round7/。
+套件 pipeline-key.apk 的 libmain.so SHA-256 是
+3146937aa0ae158293975a19a87834e18169c08a60a1a57ece4e53c1e9465c17；shader pack
+保持 d430c0c0bff5f7b9937a16d67dd3b5059bc9165296a440a73b32a9201fd93b4a。
+
+交付：上述同一 APK 已留在手機上，原 debug.env 已逐 byte 還原（skip_movies=0、
+cores）；正常啟動紀錄確認 bulk=1、verify=0，暖快取載入 2,781,269 bytes，
+畫面已回到標題頁。delivery.log / delivery.png 保存最後驗證。沒有提交 commit。

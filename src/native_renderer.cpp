@@ -1,4 +1,5 @@
 #include "native_renderer.h"
+#include "native_pipeline_key.h"
 #ifdef _WIN32
 #include "plume_d3d12.h"
 #endif
@@ -844,30 +845,27 @@ uint32_t NativeRenderer::sampler(const FetchWords& words) {
 
 void NativeRenderer::draw(const NativeDraw& draw) {
     auto& device = impl_->graphics.device();
-    // Pipeline key: shaders, inputs, stride, topology and fixed-function state.
-    // Built in a buffer that keeps its capacity: a key allocated for every
-    // draw showed up in a race frame's profile beside the map lookup itself.
+    static const bool bulk_key = [] {
+        const char* value = std::getenv("SFR_PIPELINE_KEY_BULK");
+        return !value || *value != '0';
+    }();
+    static const bool verify_key = [] {
+        const char* value = std::getenv("SFR_PIPELINE_KEY_VERIFY");
+        const bool verify = value && *value != '0';
+        std::cerr << "NATIVE_PIPELINE_KEY bulk=" << bulk_key << " verify=" << verify << '\n';
+        return verify;
+    }();
     static thread_local std::vector<uint8_t> key;
-    key.clear();
-    const auto put = [&](const void* data, size_t size) {
-        key.insert(key.end(), static_cast<const uint8_t*>(data), static_cast<const uint8_t*>(data) + size);
-    };
-    put(&draw.vertex_shader, sizeof(void*));
-    put(&draw.pixel_shader, sizeof(void*));
-    put(&draw.pixel_spec_constants, 4);
-    for (const auto& e : draw.elements) {
-        put(&e.semanticIndex, 4); put(&e.format, sizeof(e.format)); put(&e.slotIndex, 4); put(&e.alignedByteOffset, 4);
-        // The name by its address: every one comes from declaration_semantic's
-        // static table, so the pointer identifies it without a strlen a draw.
-        put(&e.semanticName, sizeof(e.semanticName));
-    }
-    put(&draw.stride, 4); put(&draw.topology, sizeof(draw.topology)); put(&draw.blend, sizeof(draw.blend));
-    put(&draw.write_mask, 1); put(&draw.depth_enabled, 1); put(&draw.depth_write, 1);
-    put(&draw.depth_function, sizeof(draw.depth_function)); put(&draw.cull, sizeof(draw.cull));
-    put(&draw.stencil_enabled, 1);
-    if (draw.stencil_enabled) {
-        put(&draw.stencil_reference, 1); put(&draw.stencil_read_mask, 1); put(&draw.stencil_write_mask, 1);
-        put(&draw.stencil_front, sizeof(draw.stencil_front)); put(&draw.stencil_back, sizeof(draw.stencil_back));
+    if (bulk_key) native_pipeline_key_bulk(draw, key);
+    else native_pipeline_key_legacy(draw, key);
+    if (verify_key) {
+        static thread_local std::vector<uint8_t> reference;
+        if (bulk_key) native_pipeline_key_legacy(draw, reference);
+        else native_pipeline_key_bulk(draw, reference);
+        if (key != reference) unsupported(0, "pipeline key serializer mismatch");
+        static thread_local uint64_t verified = 0;
+        if (++verified == 1 || verified % 100000 == 0)
+            std::cerr << "NATIVE_PIPELINE_KEY verified=" << verified << '\n';
     }
     auto& pipeline = impl_->pipelines[key];  // copies the key only when inserting
     const std::array<plume::RenderInputSlot, 2> slots{plume::RenderInputSlot(0, draw.stride),
