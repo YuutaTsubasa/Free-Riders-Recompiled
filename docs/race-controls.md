@@ -113,19 +113,59 @@ RACE_BODY_SOURCE detector=0x822c9050 source=0x... record=0x... ours=0x71730000
                  original=0x... count=1 distinct=1
 ```
 
-**還沒回答的問題**：換掉 `+0x78` 之後，偵測器從 `source` 拿到的是我們的
-record 還是原本的？是我們的，表示兩條路其實是同一條，2P 只要把第二位玩家
-接上；是原本的，表示是兩條獨立的路，兩邊都要做。跑一場比賽並打開上面那個
-環境變數就知道。
+### 答案：每位玩家自己有一個欄位，只是都被填成同一份
 
-### 無人看管的執行進不了選單（工具問題，不是遊戲問題）
+`reader=` 印出來的虛擬函式是 `82918418`，它整個只有兩行：
 
-`SFR_NUI_HAND_CENTRED=1`：玩家被辨識之後，模擬的手會舉到**畫面中央**而不是
-停在左上角。平常停在角落是對的——游標壓在按鈕上停久了就等於按下去——但無人
-看管的執行得先用搖桿把它從角落移出來，而那個時機正是這類執行不穩定的原因。
+```asm
+lwz r3,4(r3)   ; return object->field_4
+blr
+```
 
-即使如此，[pad-menus.md](pad-menus.md) 記的那組腳本
-（`start@3+0.2,b@21+0.2,...`）**現在已經過不了標題畫面**：語音詞確實送出去了
-（記錄裡有 `NUI_SPEECH word=start`），手也舉到中央讓 START 亮起來，但畫面不會
-前進，跑到 12000 格都還停在標題。手動遊玩不受影響。在有人重新找出正確的
-choreography 之前，任何需要進到比賽的實驗都得由人手動操作。
+也就是說**record 的指標存在每個玩家物件自己的 `+4`**，不是去讀 manager 的
+`+0x78`。所以每位玩家**可以**有各自的身體——遊戲只是把它們全部填成
+`+0x78` 那一份，而我們又把那一份換成了自己的，於是所有玩家都讀到同一個。
+
+證據：即使是單人 Free Race，偵測器也被問了**兩個**玩家物件
+（`0xff65bb40`、`0xfef28910`），兩個的 `+4` 都等於我們的 `0x71730000`。
+加上 `SFR_TWO_PLAYERS=force-racing` 之後一樣是兩個物件、同一份 record。
+
+**所以 2P 的比賽操作是做得出來的**，做法是：
+
+1. 每位玩家一份 `RaceInput`，各自從自己的手把更新
+2. 各自一份 body record（像 `body_address` 那樣自己映射一頁就好，
+   不必去找遊戲原本替第二位玩家準備的那份）
+3. 每格把每位玩家物件的 `+4` 指向他自己那一份——玩家物件可以從偵測器的
+   `source` 取得（`object = [source]`）
+4. 偵測器的覆寫照 `source` 回答，而不是現在的單一全域 `pad_racing()`
+
+比賽中真正被問的偵測器只有六個：`822c9050`（跳）、`822c9180`（飛行技）、
+`822c9938`、`822c9a80`（加速）、`822cd068`、`822cd3f0`，不是全部 25 個。
+
+### 無人看管地從開機跑到比賽
+
+`SFR_NUI_HAND_CENTRED=1` 加上 `SFR_SAY`，整條路都不需要人：
+
+```bash
+SFR_NUI_HAND_CENTRED=1 SFR_SKIP_MOVIES=1 SFR_PROFILE=1 SFR_ALLOW_RENDER_TARGETS=1 SFR_SAY="ok@2200,ok@2600,ok@3000,start@3400,ok@3800,right@4600,right@5000,right@5400,right@5800,right@6200,ok@6600,ok@7400,ok@8200,ok@9000,ok@9800,ok@10600,ok@11400" out/build/host/sfr_cpu_diagnostic.exe out/recomp/image-loader private/assets --game-region=ntsc-us
+```
+
+三件先前不知道的事：
+
+- **標題畫面要的是 `ok`，不是 `start`**，而且要說好幾次才過（前幾次落在
+  畫面還沒準備好的時候）。
+- **手必須在畫面中央**，游標才會停在 START 上。`identify()` 刻意把手停在
+  左上角（游標壓在按鈕上等久了就等於按下去），所以無人看管的執行需要
+  `SFR_NUI_HAND_CENTRED=1`。
+- **十字鍵在選單裡沒有作用**，環是靠語音詞 `right`／`left` 轉的。
+
+主選單環有六項，`right` 一次轉一格：World Grand Prix → Time Attack →
+Tutorial → 2 Player Team → Tag Race → **Free Race** → 繞回。Free Race 之後
+是規則（Normal Race）、賽道（Dolphin Resort）、角色、裝備，各按一次 `ok`；
+上面那串到 present 約 12000 時比賽已經在跑。
+
+### 為什麼舊的腳本不行了
+
+[pad-menus.md](pad-menus.md) 記的那組（`start@3+0.2,b@21+0.2,...`）過不了
+標題畫面：它說的是 `start`，而標題要的是 `ok`；而且它靠十字鍵轉環，那在
+選單裡沒有作用。上面那串取代它。

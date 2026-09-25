@@ -129,7 +129,7 @@ SFR_HOOK(sub_827707B0) {
     // A camera playing as the first player leaves the first pad free, so the
     // player beside them holds that one rather than having to plug into the
     // second socket.
-    const auto second=sfr::nui_second_gamepad(camera_has_joints?0u:1u);
+    const auto second=sfr::nui_second_gamepad(camera_has_joints?0u:1u, racing);
     if(second) second_skeleton.update(*second, racing);
     const auto elapsed=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-started);
     auto& memory=*sfr::active_memory;

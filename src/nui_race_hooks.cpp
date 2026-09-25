@@ -52,7 +52,7 @@ bool pad_racing() { return swapped; }
 // This is the only way a second player's record can be reached: the Kinect
 // manager holds exactly one record pointer (+0x78) whatever the number of
 // players, as a dump of all 8208 of its bytes shows.
-uint32_t body_of_source(PPCContext& ctx, uint8_t* base, uint32_t source) {
+uint32_t body_of_source(PPCContext& ctx, uint8_t* base, uint32_t source, uint32_t* which = nullptr) {
     if (!source) return 0;
     auto& m = memory();
     const uint32_t object = m.load<uint32_t>(source);
@@ -61,6 +61,7 @@ uint32_t body_of_source(PPCContext& ctx, uint8_t* base, uint32_t source) {
     if (!vtable) return 0;
     const uint32_t method = m.load<uint32_t>(uint64_t(vtable) + 4);
     if (!method) return 0;
+    if (which) *which = method;
     PPCContext saved = ctx;
     ctx.r3.u64 = object;
     sfr::call_indirect(ctx, base, method);
@@ -76,13 +77,19 @@ void note_detector_source(PPCContext& ctx, uint8_t* base, uint32_t address, uint
     static const bool wanted = [] { const char* t = std::getenv("SFR_RACE_BODY_SOURCES");
                                     return t && *t != '0'; }();
     if (!wanted) return;
+    // Keyed by the source, not the record: two players' objects have both
+    // answered with the same record, so the record alone hides how many
+    // players are being asked about.
     static std::unordered_map<uint32_t, uint64_t> seen;
-    const uint32_t record = body_of_source(ctx, base, source);
-    const uint64_t count = ++seen[record];
+    uint32_t method = 0;
+    const uint32_t record = body_of_source(ctx, base, source, &method);
+    const uint64_t count = ++seen[source];
     if (count == 1 || (count & (count - 1)) == 0)
         std::cerr << "RACE_BODY_SOURCE detector=0x" << std::hex << address << " source=0x" << source
+                  << " object=0x" << memory().load<uint32_t>(source) << " reader=0x" << method
                   << " record=0x" << record << " ours=0x" << body_address << " original=0x" << original_body
-                  << std::dec << " count=" << count << " distinct=" << seen.size() << char(10);
+                  << " at_78=0x" << (memory().load<uint32_t>(nui_box) ? memory().load<uint32_t>(memory().load<uint32_t>(nui_box) + 0x78) : 0)
+                  << std::dec << " count=" << count << " sources=" << seen.size() << char(10);
 }
 
 // Result entry the detector writes: [results] + [results+8 (or +12)] * 84.

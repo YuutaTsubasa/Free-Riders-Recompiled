@@ -560,13 +560,27 @@ GamepadState nui_gamepad() {
     return input().current(0).value_or(GamepadState{});
 }
 
-// SFR_TWO_PLAYERS=0 keeps the title to one Kinect player whatever is plugged in.
-std::optional<GamepadState> nui_second_gamepad(uint32_t user) {
-    static const bool allowed = [] {
+// SFR_TWO_PLAYERS=0 keeps the title to one Kinect player whatever is plugged
+// in. The other two settings are for finding out what the title does with a
+// second player on a machine with one controller:
+//   force         a second player throughout, holding nothing
+//   force-racing  a second player only once a race is running
+// The menus are why the second one exists: a second player standing there
+// makes the title open its two-player character select, where each player
+// confirms with their own cursor and the injected voice words -- which the
+// title hears once, not once per player -- cannot finish the page.
+std::optional<GamepadState> nui_second_gamepad(uint32_t user, bool racing) {
+    static const int setting = [] {
         const char* const text = std::getenv("SFR_TWO_PLAYERS");
-        return !text || *text != '0';
+        if (!text || !*text) return 1;
+        if (*text == '0') return 0;
+        const std::string_view value(text);
+        if (value == "force") return 2;
+        return value == "force-racing" ? 3 : 1;
     }();
-    if (!allowed) return std::nullopt;
+    if (setting == 0) return std::nullopt;
+    if (setting == 3 && !racing) return std::nullopt;
+    if (setting >= 2) return input().controller(user).value_or(GamepadState{});
     // The controller itself: a second player is somebody holding a pad, and
     // user 0's current() is backed by the keyboard whether or not one is.
     return input().controller(user);

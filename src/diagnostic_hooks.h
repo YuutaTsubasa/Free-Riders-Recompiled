@@ -138,7 +138,7 @@ GamepadState nui_gamepad();
 // result means the title sees one Kinect player, as it did before. Which pad
 // that is depends on who the first player is -- the second pad normally, but
 // the first pad once a camera has taken the first player's body over.
-std::optional<GamepadState> nui_second_gamepad(uint32_t user);
+std::optional<GamepadState> nui_second_gamepad(uint32_t user, bool racing);
 void start_nui_skeleton_events(uint32_t event_handle);
 void stop_nui_skeleton_events();
 }
