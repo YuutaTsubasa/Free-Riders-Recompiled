@@ -1,4 +1,6 @@
 #include "native_graphics.h"
+#include "native_pipeline_cache.h"
+#include "plume_vulkan.h"
 
 #ifdef _WIN32
 #include "plume_d3d12.h"
@@ -8,6 +10,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
 #include <stdexcept>
 #include <sstream>
 #include <thread>
@@ -74,6 +77,7 @@ struct NativeGraphics::Impl {
 #else
     SDL_Window* window = nullptr;
     ~Impl() {
+        pipeline_cache.reset();
         idle_signal.reset();
         idle_list.reset();
         queue.reset();
@@ -84,6 +88,7 @@ struct NativeGraphics::Impl {
 #endif
     std::unique_ptr<plume::RenderCommandList> idle_list;
     std::unique_ptr<plume::RenderCommandFence> idle_signal;
+    std::unique_ptr<NativePipelineCache> pipeline_cache;
 };
 
 NativeGraphics::NativeGraphics() = default;
@@ -153,6 +158,15 @@ void NativeGraphics::initialize() {
     implementation->render_interface = std::move(render_interface);
     implementation->device = std::move(render_device);
     implementation->queue = std::move(render_queue);
+    const char* cache = std::getenv("SFR_PIPELINE_CACHE");
+    if (backend == GraphicsBackend::vulkan && (!cache || std::strcmp(cache, "0") != 0)) {
+        try {
+            implementation->pipeline_cache = std::make_unique<NativePipelineCache>(
+                *static_cast<plume::VulkanDevice*>(implementation->device.get()));
+        } catch (const std::exception& e) {
+            std::cerr << std::string("NATIVE_PIPELINE_CACHE initialization_failed=") + e.what() + '\n';
+        }
+    }
     impl_ = std::move(implementation);
 }
 

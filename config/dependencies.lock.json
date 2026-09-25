@@ -51,8 +51,8 @@
       "commit": "11926860e878e68626ea99ec88562ce2b8badc4f",
       "path": "tools/Plume",
       "license": "MIT",
-      "patches": ["patches/plume-optional-extensions.patch"],
-      "patch_rationale": "Makes VK_EXT_robustness2 and VK_KHR_sampler_mirror_clamp_to_edge optional (Plume already has fallbacks for null descriptors), as some Android Vulkan drivers, including the emulator's, lack them; and frees the null-descriptor placeholder buffer before the allocator it came from.",
+      "patches": ["patches/plume-optional-extensions.patch", "patches/plume-pipeline-cache.patch"],
+      "patch_rationale": "Makes VK_EXT_robustness2 and VK_KHR_sampler_mirror_clamp_to_edge optional (Plume already has fallbacks for null descriptors), as some Android Vulkan drivers, including the emulator's, lack them; and frees the null-descriptor placeholder buffer before the allocator it came from. Adds an optional device-owned pipeline cache and a generation counter for application-managed persistence.",
       "submodules": [
         { "path": "contrib/D3D12MemoryAllocator", "commit": "9ef66bc14edd10dee0de3a545b98578363552f66" },
         { "path": "contrib/Vulkan-Headers", "commit": "89268a6d17fc87003b209a1422c17ab288be99a0" },

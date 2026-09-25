@@ -1,0 +1,64 @@
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -1376,10 +1376,13 @@
+         pipelineInfo.layout = pipelineLayout->vk;
+         pipelineInfo.stage = stageInfo;
+ 
+-        VkResult res = vkCreateComputePipelines(device->vk, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &vk);
++        VkResult res = vkCreateComputePipelines(device->vk, device->pipelineCache, 1, &pipelineInfo, nullptr, &vk);
+         if (res != VK_SUCCESS) {
+             fprintf(stderr, "vkCreateComputePipelines failed with error code 0x%X.\n", res);
+             return;
++        }
++        if (device->pipelineCache != VK_NULL_HANDLE) {
++            device->pipelineCacheGeneration.fetch_add(1, std::memory_order_relaxed);
+         }
+     }
+ 
+@@ -1635,10 +1638,13 @@
+         pipelineInfo.layout = pipelineLayout->vk;
+         pipelineInfo.renderPass = renderPass;
+ 
+-        VkResult res = vkCreateGraphicsPipelines(device->vk, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &vk);
++        VkResult res = vkCreateGraphicsPipelines(device->vk, device->pipelineCache, 1, &pipelineInfo, nullptr, &vk);
+         if (res != VK_SUCCESS) {
+             fprintf(stderr, "vkCreateGraphicsPipelines failed with error code 0x%X.\n", res);
+             return;
++        }
++        if (device->pipelineCache != VK_NULL_HANDLE) {
++            device->pipelineCacheGeneration.fetch_add(1, std::memory_order_relaxed);
+         }
+     }
+ 
+@@ -4382,6 +4388,10 @@
+         }
+ 
+         if (vk != VK_NULL_HANDLE) {
++            if (pipelineCache != VK_NULL_HANDLE) {
++                vkDestroyPipelineCache(vk, pipelineCache, nullptr);
++                pipelineCache = VK_NULL_HANDLE;
++            }
+             vkDestroyDevice(vk, nullptr);
+             vk = VK_NULL_HANDLE;
+         }
+--- a/plume_vulkan.h
++++ b/plume_vulkan.h
+@@ -9,6 +9,7 @@
+ 
+ #include "plume_render_interface.h"
+ 
++#include <atomic>
+ #include <mutex>
+ #include <set>
+ #include <unordered_map>
+@@ -406,6 +407,10 @@
+ 
+     struct VulkanDevice : RenderDevice {
+         VkDevice vk = VK_NULL_HANDLE;
++        // Optional application-initialized cache; set before creating pipelines.
++        // The device owns the handle. Stop cache readers before destroying it.
++        VkPipelineCache pipelineCache = VK_NULL_HANDLE;
++        std::atomic<uint64_t> pipelineCacheGeneration{0};
+         VulkanInterface *renderInterface = nullptr;
+         VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+         VkPhysicalDeviceProperties physicalDeviceProperties = {};

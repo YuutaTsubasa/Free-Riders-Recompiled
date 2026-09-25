@@ -611,3 +611,78 @@ shader pack 仍為上述圖形修正版，雜湊相同。
 （`no-skip.log`、`final-menu.png`）。這是暫時避開自動提早結束影片的設定，
 不是對影片終止問題的程式修復，也尚未做大量重啟穩定性測試。
 已移除 debug.env 的自動啟動、平行追蹤及影片等待 override，裝置停在選單。
+
+
+## 2026-09-25：持久化 Vulkan pipeline cache，消除重複編譯的大停頓
+
+沿用 round4 的啟動漏喚醒修正，這輪只處理管線快取。原來 Plume 的 graphics /
+compute pipeline creation 都傳入 VK_NULL_HANDLE；現在可共用一個 device-owned
+VkPipelineCache。NativeGraphics 在開始繪製前載入它，NativePipelineCache 的
+背景執行緒每 10 秒檢查建立次數，有新增才匯出；正常結束也會保存，並先停止／
+join 背景執行緒，再銷毀裝置。Android 強制結束時可保留最近完成的快照。
+
+預設位置是工作目錄下 `pipeline-cache/vulkan.bin`（Android 即 app files 下），
+`SFR_PIPELINE_CACHE=0` 關閉整條快取路徑；`SFR_PIPELINE_CACHE_PATH` 可指定測試檔。
+檔案限制 64 MiB，外層有格式版本、長度及完整性 checksum；送給驅動前檢查 Vulkan
+version-one header 的 vendor / device / UUID。損壞、不相容或無法讀取會用空快取；
+驅動拒絕初始資料時再試空快取，建立快取失敗則繼續原本路徑。新檔先寫入旁邊，
+再原子替換舊檔；不先刪除最後一份成功快取。
+
+使用 flags=0 的 Vulkan 內部同步，讓建立管線與背景匯出可並行；size query 與
+copy 之間快取可能變大，因此 VK_INCOMPLETE 最多重試三次，保留舊快照等待下次。
+這遵循 [vkCreatePipelineCache](https://docs.vulkan.org/refpages/latest/refpages/source/vkCreatePipelineCache.html)
+與 [vkGetPipelineCacheData](https://docs.vulkan.org/refpages/latest/refpages/source/vkGetPipelineCacheData.html)
+的同步與資料取得規則。Plume 的修改存為 `patches/plume-pipeline-cache.patch`，
+列在 dependency lock 中，bootstrap verify-only 已驗證可重現。
+
+四趟使用**同一份 APK**、同一個 Free Race / Sonic / 初始賽道與裝備選擇，比賽開始後
+沒有輸入。沿用 round3 測量腳本的 draws>600 篩選與 100 個 frame intervals；
+下表兩個視窗的 frame 都連續，draws 中位數全部是 796 / 793。
+
+| 模式（依執行順序） | 100–200 FPS | 200–300 FPS | 第二段建立數 | 第二段 pipeline 累計 ms | 第二段最慢一格 ms | 電池 °C 起／迄 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 關閉快取 A1 | 14.65 | 11.43 | 24 | 2022.84 | 1189 | 40 / 39 |
+| 首次空快取 B1 | 14.72 | 13.71 | 29 | 616.46 | 344 | 39 / 38 |
+| 載入快取 B2 | 15.45 | 14.23 | 22 | 9.41 | 160 | 38 / 38 |
+| 再次關閉 A2 | 15.30 | 11.38 | 27 | 2077.92 | 1233 | 38 / 38 |
+
+B2 的初始化實際載入 2,612,004 bytes；A1 / A2 均沒有建立快取物件。B2 第二段
+沒有超過 200 ms 的 interval，A1 有 4 個、A2 有 3 個。A2 在 B2 之後執行，
+同樣約 38°C，卻恢復兩秒以上的管線建立成本與一秒以上的最慢格，支持改善來自
+快取，而非只因為執行順序／溫度降低。B1 在同次執行中也能重用驅動資料，所以
+尚未有磁碟快取時就比 A1 少一些編譯成本。
+
+限制：沒有固定輸入重播，也沒有控制 SoC 溫度／頻率。繪製次數中位數一致仍不
+代表逐格相同，第二段建立數 24 / 29 / 22 / 27 也直接顯示這一點。此結果足以
+支持明顯縮短編譯停頓；不把前一段不到 1 FPS 的差異當作另一項 CPU 優化成果。
+暖快取也不代表所有新賽道／新狀態都已經快取，首次遇到仍可能需要編譯。
+
+計時仍不能相加重複計算：pipeline_ms 包含在 record_ms 與 draw_ms 內。B2 第二段
+平均 pipeline_ms 0.094、record_ms 4.917、draw_ms 11.655，main_ready_ms 17.497。
+整體仍約 14–15 FPS，沒有達成 30 FPS。後續應在暖快取場景量每格固定 CPU 成本，
+包括 indexed-draw hook 與客體執行／排隊，不能繼續把編譯停頓當成全部效能問題。
+背景保存的 wall time 在 B2 約 5.7–15.8 ms／次，並非每格的主執行緒成本；
+建立數不變時不會持續重寫檔案。
+
+驗證：
+- 先用未實作的 file store 跑回歸，於 first cache save succeeds 失敗；實作後
+  Windows 與 Android arm64 通過。涵蓋 byte-exact round trip、覆寫、每個截斷點、
+  header / payload 位元損壞、超過大小限制、Vulkan header 不相容及替換失敗不破壞原檔。
+- 五項 host CTest 通過：pipeline_cache_file、native_graphics、guest_execution、
+  guest_critical_sections、guest_threads。NativeGraphics 實際 GPU copy 另以 Vulkan
+  執行通過；Vulkan native_presentation 的 clear / readback 行為測試通過。
+- 四次比賽分別取得 537 / 425 / 510 / 523 個 draws>600 的格，紀錄沒有 HANG_REPORT
+  或 RUNTIME_STOP。關閉與暖快取的截圖皆能正常辨識角色與場景，未做逐像素比較。
+
+所有原始紀錄、截圖、快取檔與測量摘要位於 `out/android-pipeline-round5/`；
+`comparison.json` 可由同目錄的 compare.py 重建。APK 是 `pipeline-cache.apk`，
+minSdk 29、targetSdk 35、arm64-v8a、無 profileable。libmain.so SHA-256：
+`29db52f0f21b3b69008e4c18fa5a827f7ed2db423f618d69e83fca0564ef10bd`；
+shader pack 保持 `d430c0c0bff5f7b9937a16d67dd3b5059bc9165296a440a73b32a9201fd93b4a`。
+
+交付：新版已安裝，暖快取複製到預設 `pipeline-cache/vulkan.bin`，以正常開場設定
+重新啟動並確認載入 2,631,092 bytes，之後到達標題畫面。`debug.env` 已逐 byte 回復
+原檔（skip_movies=0、cores），移除自動啟動與本輪 A/B 開關。最後狀態與紀錄是
+`delivery.png` / `delivery.log`；這一輪沒有提交 Git commit。
+
+
