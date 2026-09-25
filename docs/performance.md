@@ -613,6 +613,150 @@ shader pack 仍為上述圖形修正版，雜湊相同。
 已移除 debug.env 的自動啟動、平行追蹤及影片等待 override，裝置停在選單。
 
 
+## 2026-09-25：分開計量執行許可，避免 critical-section 等待取得全域許可
+
+先前 `holders` 把全域與六個核心的時間加在同一個計數器，既會跨執行緒重疊，
+同一執行緒持有全域與核心時也會重複計入。現在每個 `GuestExecution` 各有
+計數，在 Present 取樣時連仍在持有中的區間一併結算，釋放時只計後續區間。
+`holders` 現在只表示全域許可；`core0_holders` 到 `core5_holders` 各自獨立。
+各欄仍只列前五名，不應把列出值當成所有執行緒的總和。
+
+`main_blockers` 表示「guest 1 在此許可的 ready queue 裡」與某個 owner
+持有它的重疊時間；`main_ready_unowned_ms` 是主執行緒已排隊、卻暫無 owner
+的時間。`main_ready_ms` 是兩者完整總和。這些時間在當前 snapshot 截斷，
+有別於原本在等待完成後才整段入帳的 `main_queued_ms`。全域持有時間是
+牆鐘時間，也可能包含 owner 等待核心或被 OS 換出的時間，不等同 CPU 執行時間。
+
+`GUEST_HOST_THREAD` 印出 guest ID、Linux TID（Windows thread ID）及 worker
+入口，可用 Simpleperf 按 TID 分析；不必在每次客體函式進入新增紀錄。
+
+`Lease::run_wait` 對 attached 執行緒沿用 `run_blocking`；對 detached
+執行緒只讓出並重新取得 companion core。critical-section 的 pending wait
+使用此 helper，完成交接仍由 `GuestCriticalSections` 的 mutex 保護。
+`SFR_CRITICAL_WAIT_GLOBAL=0` 可選用不先 attach 的實驗路徑，`=1` 使用原本路徑，
+可用同一二進位做對照。最終預設維持原本路徑；本輪未取得可靠效能改善證據。
+沒有移除全域許可或任何記憶體保護。
+
+驗證：Windows 的 guest_execution、guest_critical_sections、guest_memory、
+pending_guest_write、guest_threads、guest_wait、async_completion_primitives
+七項通過；新增測試包括 live snapshot、scope 隔離、主執行緒 ready 重疊歸因、
+detached 等待時同核心 peer 能前進、取消，以及另一執行緒仍持有全域許可時
+完成真實 critical-section 交接。Android 上排程與 critical-section 測試也通過。
+
+注意：`draw_ms` 已包含 `record_ms`、常數讀取與紋理查詢，不能把這些分項
+再次相加。round2 的 CAS 呼叫堆疊中，342 筆 `__aarch64_cas2_acq` 有 291 筆
+位於 GuestMemory::check/read_scalar 的 shared_mutex 進出；它是 userspace
+CPU 樣本占比，不能直接換算成每格可節省毫秒。
+
+本輪資料：`out/android-performance-round3/`。`measure.py` 使用 101 個時間戳
+計算 100 個間隔，分項統計使用後 100 筆（與間隔對應），並提供算術平均值。
+
+初步取樣（candidate-initial.perf.data，15 秒、12937 筆、0 lost）按主執行緒
+TID 16482 拆開後有 5165 筆。inclusive 呼叫樹中 sub_82809570 佔 60.43%，
+sub_824F56E8 佔 28.23%；後者實際執行的是 native indexed-draw hook，不能把
+原始重編譯函式的內容當成該樣本的工作。NativeRenderer::draw 佔 14.93%。
+這些是相互包含的 CPU 樣本比例，不可相加，也不是牆鐘時間。
+guest 29（TID 16531）有 3648 筆，主要沿 sub_827C9508 / sub_827D7250
+等呼叫鏈執行；尚未確認該工作語意。原先全程序的 flat ranking 無法排除熱點。
+
+第一趟新版比賽樣本曾出現 pipeline_ms 約 1011、657、227 ms 的單格卡頓；
+它們已包含在 record_ms 與 draw_ms。這是管線建立的延遲，與平常十多 FPS
+的持續成本需分別處理。該趟 100–200 / 200–300 為 14.97 / 12.12 FPS，
+僅供定位，並非有效的同條件 A/B 結論。
+
+舊等待政策的三次開場嘗試均停在約 21–25 秒（其中一次 skip movies=1）；
+新政策一次成功進入比賽。尚未判定開場卡住的根因。測試增加
+SFR_CRITICAL_WAIT_GLOBAL_AFTER_PRESENT=5000，讓兩趟都以新政策通過
+開場，再讓 baseline 於第 5000 次 Present 後採用舊政策。
+Present 訊息改成一次輸出完整字串，避免 detached worker 的 RESULT 訊息
+插進數值欄位；增加 frame 欄位，量測時拒絕不連續的視窗。
+
+後續新版開場也曾在切換點之前卡住（presents=652），因此開場問題不屬於
+舊等待政策獨有。用 skip_movies=1 / movie_allowance_ms=1 成功取得 baseline
+比賽，但新版同設定也有一次停在 presents=669；這個啟動穩定性問題仍未解決。
+上述設定僅作這輪比較的開場 workaround，不能視為修復。
+
+最終同版本對照的 baseline（permit-final.apk、舊政策自 Present 5000 生效）
+成功取得連續比賽格；第一個 race frame 為 8001，兩視窗的實際 frame 是
+8101–8201 / 8201–8301。結果：
+
+| 視窗 | FPS | draws 中位數 | 全域 ready 平均 ms | 其中無 owner 平均 ms | pipeline 平均 ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 100–200 | 14.76 | 796 | 18.84 | 6.27 | 0.00 |
+| 200–300 | 11.05 | 799 | 17.97 | 6.20 | 22.02 |
+
+第一視窗的主要列出 blocker 為 guest 18 約 2.94 ms、15 約 2.04 ms、
+16 約 1.76 ms、26 約 1.51 ms、37 約 1.34 ms；各格只列前五名，這些平均值
+是列出部分的平均，不是每個 guest 的完整累計。ready 無 owner 期間可能含
+執行緒喚醒、排程與 companion 釋放交接，不能直接當成可刪除的等待。
+
+同設定候選版三次重啟未通過開場（紀錄 candidate-final-start*-failed.log），
+所以 **沒有完成同版本 A/B，不能用早期候選版 14.97 / 12.12 對上述 baseline
+計算提升率**。早期候選與最終候選之間改過 Present 訊息格式與測試切換點，
+開場設定也不同。後續兩者都能遇到開場停住，根因尚未判定。
+
+最終交付保留新量測與 detached-wait 測試工具，但將 critical wait 預設恢復
+原本行為；核心-only 路徑必須明確設 SFR_CRITICAL_WAIT_GLOBAL=0 才啟用。
+測試用自動啟動、hang 與等待切換設定已從裝置移除，恢復 skip_movies=0、cores。
+下一步應先穩定啟動／建立固定重播，再針對 native indexed draw 呼叫鏈與
+首次 pipeline 建立分別優化；不能把本輪判讀修正報成 FPS 改善。
+
+交付 APK：`out/android-performance-round3/permit-instrumented.apk`（已安裝）。
+minSdk 29、無 profileable；libmain.so SHA-256：`6fee20c394a824b36fd805fcf67723c396c3cca5642547ee7d8d62ec8a76df68`。
+shader pack 維持既有圖形修正版。最終僅改回等待政策預設值，未重做比賽效能
+量測；Windows 排程／critical-section 回歸再次通過，裝置停在啟動器。
+
+
+## 2026-09-25：開場卡住的完成通知／自我暫停競爭
+
+`out/android-startup-round4/trace1.log` 捕捉到原本只靠 HANG_THREAD 看不到的
+呼叫順序：guest 35（worker 824C39C8）先 SetEvent(0x72100200)，主執行緒
+完成等待、ResumeThread(0x72200088)、再次等待相同完成事件，guest 35 才
+NtSuspendThread(-2)。最後一次主執行緒呼叫鏈是 824C3A98 → 824A01EC。
+這時 resume 發生在 suspend count 為零的時候，不會保留為未來的喚醒；
+隨後自我暫停使主執行緒永遠等不到下一次完成。關鍵順序在 19976–19994 行。
+這次不是 GPU 等待，也不是全域許可仍被其他執行緒占住。
+
+修正只涵蓋原遊戲 LR=824C3A3C 的「通知完成→自我暫停」配對：在發送完成
+事件之前先登記一份暫停，後續 self-suspend 消耗這份登記，不再累加一次。
+早到的 resume 因此可以解除已登記的暫停。一般或其他執行緒發起的 suspend
+保持原有計數語意，並非把所有 ResumeThread 改成可累積的喚醒通知。
+`SFR_COMPLETION_SUSPEND_HANDOFF=0` 可關閉這個特定相容性修正作診斷比較。
+
+同時，等待自行暫停的 callback 現在在釋放全域許可前取得穩定 record，等待
+時只讀 atomic suspend count。原本 callback 在許可外遍歷 registry 並讀取
+非 atomic 計數，會與其他執行緒建立／恢復發生資料競爭；保留原本 1 ms 輪詢
+與取消行為，不在這輪另改等待機制。
+
+新增回歸先在未登記暫停的實作上失敗（early resume consumes the announced
+suspension），修正後通過；也涵蓋晚到的恢復、一般自我暫停、外部巢狀暫停、
+重複登記、錯誤輸出位址與取消。Windows 六項相關回歸全部通過，Android
+上的 guest_threads 測試也通過。
+
+診斷使用 `SFR_THREAD_WAIT_TRACE=1`，只追主執行緒及 guest ID >=30 的部分
+等待／事件／暫停 import；包含等待 handle 與主客體堆疊鏈，預設關閉。
+
+套件 `out/android-startup-round4/completion-handoff.apk`：minSdk 29、無 profileable，
+libmain.so SHA-256：`ff4ec895f3eb8713f3f4677bdb69b7172031a86bb952943b7b4ecc21271f9fe7`。Shader pack 與先前修正版相同。
+
+實機驗證：修正後連續三次冷啟動都通過開場並到達標題畫面：
+1. 正常播放、追蹤開啟（fixed-start1.log，後手動跳過剩餘影片）。
+2. skip_movies=1 / allowance=1、追蹤關閉（fixed-start2.log）。
+3. 正常播放、追蹤關閉（fixed-start3.log，後手動跳過剩餘影片並進入比賽）。
+這是三次驗證結果，並非長時間或所有場景的穩定性保證。
+
+第三趟成功進入同一場 Free Race，取得 906 個 draws>600 的格；紀錄沒有
+HANG_REPORT 或 RUNTIME_STOP。100–200 / 200–300 視窗 frame 連續，分別為
+14.68 / 11.40 FPS，draws 中位數 796 / 793。第二視窗 pipeline_ms 平均
+21.68 ms，仍有建立管線的停頓。本輪是修復漏喚醒，不宣稱 FPS 顯著改善。
+套件已安裝；裝置留在比賽暫停選單。debug.env 已回復 skip_movies=0、cores，
+移除自動啟動、hang、追蹤與所有這輪比較開關。
+
+後續具體目標：Plume 的 vkCreateGraphicsPipelines 目前傳入 VK_NULL_HANDLE
+作為 pipeline cache（plume_vulkan.cpp:1638）；可先量測共用／持久化 cache
+是否減少反覆建立管線的成本，再處理持續每格的 indexed-draw CPU 成本。
+這部分本輪沒有修改，不能把 cache 的可能收益當成已實現的改善。
+
 ## 2026-09-25：持久化 Vulkan pipeline cache，消除重複編譯的大停頓
 
 沿用 round4 的啟動漏喚醒修正，這輪只處理管線快取。原來 Plume 的 graphics /
@@ -684,6 +828,87 @@ shader pack 保持 `d430c0c0bff5f7b9937a16d67dd3b5059bc9165296a440a73b32a9201fd9
 重新啟動並確認載入 2,631,092 bytes，之後到達標題畫面。`debug.env` 已逐 byte 回復
 原檔（skip_movies=0、cores），移除自動啟動與本輪 A/B 開關。最後狀態與紀錄是
 `delivery.png` / `delivery.log`；這一輪沒有提交 Git commit。
+
+
+## 2026-09-25：等待結果日誌 A/B 與暖快取 CPU 取樣
+
+round5 暖快取紀錄的 200 格中有 4,771 行，其中 3,852 行 CriticalSectionWait、
+200 行 NtWaitForMultipleObjectsEx 成功結果沒有遵守 SFR_TRACE_IMPORTS=0。
+這輪讓這兩處繼承 trace_imports；NtWaitForMultipleObjectsEx 的高位錯誤狀態仍印出。
+新增 SFR_TRACE_WAIT_RESULTS=1/0，僅切換這兩處，方便同一 APK 比較；未修改等待、
+排程、許可或記憶體檢查。日常設定 TRACE_IMPORTS=0 時預設安靜，未設定的稽核模式仍有日誌。
+
+測試使用同一份 profileable APK、既有暖快取、同一 Free Race / Sonic / 初始賽道與
+裝備，開始後不輸入，順序開／關／關／開。沿用 draws>600 的 100–200 / 200–300
+視窗，每段 100 個 interval。兩段實際 frame 編號皆連續，draws 中位數均為 796 / 793。
+
+| 日誌（依執行順序） | 100–200 FPS | 200–300 FPS | 200 格總行數 | 其中等待結果 | 電池 °C 起／迄 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| on-a | 14.21 | 14.59 | 5340 | 4578 | 38 / 37 |
+| off-a | 14.06 | 14.41 | 733 | 0 | 37 / 37 |
+| off-b | 15.51 | 14.53 | 701 | 0 | 37 / 37 |
+| on-b | 14.29 | 14.05 | 5435 | 4709 | 37 / 37 |
+
+關閉後量測區間的日誌少約 87%，兩種等待結果確實歸零；四趟取得 467 / 461 /
+460 / 478 個比賽格，沒有 HANG_REPORT / RUNTIME_STOP。但 FPS 未呈現可重複的提升：
+off-a 略低於 on-a，off-b 前段較快，後段差距小。這輪僅確認成功抑制日誌，
+不把單次 15.51 FPS 當成優化收益，正常速度仍約 14–15 FPS。
+
+on-a 的第二段另有一格新管線建立花 248.278 ms；該段平均 pipeline_ms 為 2.561，
+其餘三趟是 0.110 / 0.082 / 0.097。首段四趟都是 0。這是快取補齊的混雜因素，
+不能算成日誌改善。比賽沒有固定輸入重播、未控制 SoC 溫度／頻率，電池溫度與
+相同 draws 中位數只能改善可比性，不能保證逐格相同或證明微小差異不存在。
+
+
+在 off-a 測量結束、暫停後再恢復比賽，另錄 15.0167 秒 task-clock:u、500 Hz
+含呼叫堆疊的 simpleperf：12,526 筆、零遺失。這是較後方場景，並非上述測量視窗。
+由 GUEST_HOST_THREAD 對應 guest id 與 Android TID，不必加入每次函式進入的計數器：
+
+- 主客體 1（TID 18258）：4,403 筆，占全程序 35.15%。native_draw 包含子呼叫占
+  該執行緒 26.96%；indexed-draw hook sub_824F56E8 25.39%；NativeRenderer::draw
+  14.01%。三者有包含關係，不能相加。自身成本有 TLS resolver 5.61%、native_draw
+  3.07%、memmove 2.61%、decode_indices 2.07%、byte-vector insertion 1.70%。
+- 客體 29（TID 18307）：3,614 筆，占全程序 28.85%。
+  827C9508 → 827D7250 → 827D66C0 → 827D6088 這串呼叫包含其 95.52% 的 CPU 樣本；
+  sub_827DA100 包含子呼叫占 59.27%，TLS resolver 自身 12.51%。尚未判定這些
+  數字命名函式的遊戲語意；不能因最大 leaf 小，就推論沒有可定位的熱點。
+- 全程序自身成本：TLS resolver 7.51%，16-bit CAS 5.26%。這是目前版本的觀察，
+  沒有與舊版相同場景重測，不能當成 TLS 修改前後的提升／退步。
+
+原始堆疊中，659 筆 CAS 有 603 筆（91.50%）同時經過 GuestMemory 與 libc++
+shared_mutex，有 491 筆（74.51%）經過 check_reservation_context；集合互相重疊。
+代表路徑是 pthread_mutex_lock → shared_mutex 的 lock_shared / unlock_shared →
+GuestMemory::check / read_scalar。來源是函式庫內部鎖，無須在應用程式找到
+atomic<uint16_t> 的 compare_exchange。主客體只有 2 筆 CAS，客體 29 只有 14 筆；
+最多的是客體 14（236）、39（132）、36（95），所以這個全程序百分比並不是可直接
+從主執行緒扣掉的時間，也尚未證明這些工作在每格的關鍵等待路徑上。
+
+程式碼可解釋反覆檢查的原因：check_reservation_context 讀 PCR+0x100 與
+thread_object+0x14c；GuestThreads::initialize 只 commit 0x2D8 / 0xAB0 bytes，
+而 fast-page 只承認整頁已 commit，因此這些合法位址仍走慢路徑。detached guest
+的 check 與 read_scalar 查 provider 時會分別取 layout reader lock。後續可研究
+減少此類重複驗證，但直接擴大 commit 會改變非法位址的偵測範圍，移除鎖則必須證明
+layout/provider 的生命週期；這輪均未採用。
+
+主執行緒的具體後續方向是 native_draw 每次重建頂點宣告，以及 NativeRenderer::draw
+每次逐欄位組 pipeline key 的成本。先保留完整狀態與 guest 寫入時的失效條件，再比較
+減少重複解析／複製的方案，不能僅以宣告指標相同就假定內容未變，也尚未宣稱 FPS 收益。
+CPU 樣本不含阻塞時間，這些比例都不是每格 wall time 或可直接相加的加速上限。
+
+原始資料位於 out/android-logging-round6/：四趟 log / measure.json / 截圖、
+comparison.json、quiet.perf.data、main-report.txt、worker29-report.txt，以及
+profile_summary.py / profile-summary.json 的逐筆堆疊歸因。unstripped 符號檔的
+build ID 是 f8c5b577dce2e847d1b9020c090833ecc640d308。profileable 與正常 APK
+內的 libmain.so / shaders.pack 完全相同，雜湊記在 build-identity.json：
+libmain.so a97a6d085df8ddf424d4886d6b31f790a456f74bd1238c443febf25ed99deb68，
+shader pack 仍是 d430c0c0bff5f7b9937a16d67dd3b5059bc9165296a440a73b32a9201fd93b4a。
+
+驗證與交付：Android 重新編譯成功，最終 build 檢查為 no work to do；四趟比賽皆
+成功完成取樣。這是兩個低風險日誌條件，未新增只重述實作的單元測試；實機開／關
+輸出計數確認開關有效，錯誤狀態保留條件經程式碼檢查，未刻意在實機注入 NT 錯誤。
+正常 wait-logging.apk 已安裝，manifest 確認無 profileable，原本的 debug.env
+逐 byte 還原（skip_movies=0、cores），保留暖快取並在正常開場確認載入 2,781,269
+bytes。delivery.png / delivery.log 記錄恢復後的開場動畫與啟動狀態。沒有提交 commit。
 
 
 ## 2026-09-25：一次填入 pipeline key，保留逐 byte 相同的查詢資料

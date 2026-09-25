@@ -137,6 +137,7 @@ uint32_t NativeInput::get_state(GuestMemory& memory, uint32_t user, uint32_t out
     if (user > 3) throw RuntimeStop("native-input", user, "unsupported XamInputGetState user index");
     const std::optional<GamepadState> state = current(user);
     if (!state) return xinput_not_connected;
+    std::lock_guard guard(*mutex_);
     // XInput semantics: the packet number changes only when the state changes.
     if (*state != last_[user]) {
         last_[user] = *state;

@@ -105,12 +105,25 @@ void helper_leaves_job() {
 }
 
 PPC_FUNC_IMPL(__imp__sub_824D0B18);
+namespace sfr { void prepare_worker_self_suspend(); }
 
 // SetEvent. The helper's own (return address 823B6150) says it has finished
 // the jobs it took.
 SFR_CONCURRENT_HOOK(sub_824D0B18) {
     sfr::enter_function(ctx,"sub_824D0B18",0x824D0B18);
     if(ctx.lr==0x823B6150) helper_leaves_job();
+    // Worker 824C39C8 signals done and then suspends itself. A phone can run
+    // the main thread's next ResumeThread between those two calls, losing
+    // that resume and hanging its next completion wait (824C3A98). Register
+    // the suspension before publishing done; its following self-suspend
+    // consumes that registration instead of incrementing the count again.
+    if(ctx.lr==0x824C3A3C) {
+        static const bool handoff=[]{
+            const char* t=std::getenv("SFR_COMPLETION_SUSPEND_HANDOFF");
+            return !t || *t!='0';
+        }();
+        if(handoff) sfr::prepare_worker_self_suspend();
+    }
     __imp__sub_824D0B18(ctx,base);
 }
 

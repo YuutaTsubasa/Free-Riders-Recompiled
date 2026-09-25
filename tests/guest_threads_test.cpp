@@ -5,6 +5,7 @@
 #include <thread>
 #include <iostream>
 #include <stdexcept>
+#include <future>
 
 namespace {
 void require(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
@@ -324,10 +325,57 @@ void actual_resume_and_owned_shutdown() {
     require(exited && calls == 1, "shutdown joins live workers before dependent state can be destroyed");
     threads.shutdown();
 }
+void completion_before_self_suspend_does_not_lose_an_early_resume() {
+    sfr::GuestMemory memory;
+    prepare(memory);
+    sfr::GuestThreads threads(memory, {4, 0x10000040, 8, 4}, 0x40000, target,
+        [](const auto&) { return [](std::stop_token stop) {
+            while (!stop.stop_requested()) std::this_thread::yield();
+            return 0u;
+        }; });
+    threads.create(request());
+    const auto handle = memory.load<uint32_t>(0x10000000);
+    threads.resume(handle, 0);
+
+    // Worker announces completion; main consumes it and resumes the next job
+    // before the worker reaches its following NtSuspendThread call.
+    require(threads.prepare_self_suspend(handle).status == 0, "prepare completion handoff");
+    require(threads.resume(handle, 0).previous == 1, "early resume consumes the announced suspension");
+    require(threads.suspend_self(handle, 0x10000010).previous == 0 &&
+            memory.load<uint32_t>(0x10000010) == 0 && threads.guest_suspends(handle) == 0,
+            "the following self-suspend must not suspend a second time");
+
+    // An ordinary self suspension still blocks, and a late resume releases it.
+    require(threads.suspend_self(handle, 0).previous == 0 && threads.guest_suspends(handle) == 1,
+            "ordinary self suspension is unchanged");
+    auto waiter = threads.suspension_waiter(handle);
+    std::stop_source cancel;
+    auto waiting = std::async(std::launch::async, [&] { waiter(cancel.get_token()); });
+    const bool blocked = waiting.wait_for(std::chrono::milliseconds(20)) == std::future_status::timeout;
+    threads.resume(handle, 0);
+    const bool woke = waiting.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+    cancel.request_stop();
+    waiting.get();
+    require(blocked && woke, "a retained suspension waiter observes a later resume");
+
+    // Preparation consumes only its own suspension, not another caller's.
+    threads.prepare_self_suspend(handle);
+    rejects([&] { threads.prepare_self_suspend(handle); });
+    threads.suspend(handle, 0);
+    threads.resume(handle, 0);
+    rejects([&] { threads.suspend_self(handle, 0x20000000); });
+    threads.suspend_self(handle, 0);
+    require(threads.guest_suspends(handle) == 1, "foreign nested suspension remains outstanding");
+    auto cancelled_wait = threads.suspension_waiter(handle);
+    cancelled_wait(cancel.get_token());
+    require(threads.guest_suspends(handle) == 1, "cancellation does not fabricate a resume");
+    threads.resume(handle, 0);
+}
 }
 int main() { try { independent_state_and_owned_suspension();
     creation_affinity_selects_guest_and_native_processor_while_parked();
     preflight_rejects_without_publishing_or_allocating();
     creation_failures_retire_slots_without_publishing(); invalid_templates_reject_before_allocation();
-    object_references_and_native_configuration(); actual_resume_and_owned_shutdown(); return 0; }
+    object_references_and_native_configuration(); actual_resume_and_owned_shutdown();
+    completion_before_self_suspend_does_not_lose_an_early_resume(); return 0; }
     catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; } }

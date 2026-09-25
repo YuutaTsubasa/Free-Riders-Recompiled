@@ -382,7 +382,7 @@ class NativeBootTests(unittest.TestCase):
         self.assertLess(sampler_mag, sampler_inline.start())
         # The loading screen now runs until the bounded call budget: every
         # frame after the first draws its textured sprites natively.
-        self.assertRegex(result.stderr, r'NATIVE_PRESENT source=0x824e65a0 device=0x71600000 lr=0x8249bc70 draws=4 textured=4 [^\n]*presented=1')
+        self.assertRegex(result.stderr, r'NATIVE_PRESENT source=0x824e65a0 device=0x71600000 lr=0x8249bc70 (?:frame=\d+ )?draws=4 textured=4 [^\n]*presented=1')
         for address, offset, value in [('824e6a08','60','1'),('824e6ec8','68','4'),
                                        ('824e6e68','64','0'),('824e70d0','28','1'),
                                        ('824e7140','2c','3'),('824e7110','30','1'),('824e69a8','38','6')]:
@@ -488,7 +488,7 @@ class NativeBootTests(unittest.TestCase):
         self.assertNotIn('STOP native-graphics-function @0x824e66b8:', result.stderr)
         self.assertNotIn('STOP native-graphics-function @0x82a5606c:', result.stderr)
         # The first original present: resolve RT0 into the front buffer and swap.
-        self.assertRegex(result.stderr, r'NATIVE_PRESENT source=0x824e65a0 device=0x71600000 lr=0x8249bc70 draws=0 textured=0 [^\n]*presented=1')
+        self.assertRegex(result.stderr, r'NATIVE_PRESENT source=0x824e65a0 device=0x71600000 lr=0x8249bc70 (?:frame=\d+ )?draws=0 textured=0 [^\n]*presented=1')
         self.assertNotIn('STOP native-graphics-function @0x824e65a0:', result.stderr)
         # The worker polls gamepad 0 (keyboard-backed, so always connected).
         self.assertRegex(result.stderr, r'NATIVE_INPUT user=0 status=0x0 packet=\d+ buttons=0x[0-9a-f]+ '

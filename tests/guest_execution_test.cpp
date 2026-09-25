@@ -27,6 +27,12 @@ template<class T> T ready(std::future<T>& future, const char* message) {
     return future.get();
 }
 
+// Long enough for a hold to be worth a measurable number of nanoseconds.
+// steady_clock's tick is coarse enough that two adjacent calls can read the
+// same instant, and a live hold of zero elapsed nanoseconds is accounted as
+// zero -- which is correct, and not what these checks are about.
+void hold_a_while() { std::this_thread::sleep_for(2ms); }
+
 struct StopOnExit {
     sfr::GuestExecution& gate;
     ~StopOnExit() { gate.stop(); }
@@ -36,6 +42,85 @@ void acquires_initial_owner() {
     sfr::GuestExecution gate;
     auto owner = gate.enter(1);
     require(bool(owner), "initial guest acquires execution ownership");
+}
+
+void timing_separates_instances_and_accounts_live_holds() {
+    sfr::GuestExecution global, core;
+    auto owner = global.enter(29);
+    hold_a_while();
+    const auto first = global.take_timing();
+    require(first.held_ns[29] > 0, "snapshot includes a hold before its release");
+    require(core.take_timing().held_ns[29] == 0, "another scheduler does not inherit the global hold");
+    auto on_core = core.enter(29);
+    hold_a_while();
+    require(core.take_timing().held_ns[29] > 0, "the core accounts its own live hold");
+    hold_a_while();
+    owner->detach();
+    const auto tail = global.take_timing();
+    require(tail.held_ns[29] > 0, "release accounts only the remaining hold interval");
+    require(global.take_timing().held_ns[29] == 0, "detached intervals do not count as ownership");
+    on_core->detach();
+    core.take_timing();
+    require(core.take_timing().held_ns[29] == 0, "snapshots consume completed core intervals");
+}
+
+void timing_attributes_only_holds_overlapping_main_ready() {
+    sfr::GuestExecution gate;
+    auto owner = gate.enter(29);
+    require(gate.take_timing().main_ready_by_owner_ns[29] == 0,
+            "ownership alone is not a main-thread blocker");
+    auto main = std::async(std::launch::async, [&] { auto lease = gate.enter(1); });
+    StopOnExit cleanup{gate};
+    gate.wait_until_ready(1);
+    const auto timing = gate.take_timing();
+    require(timing.main_ready_by_owner_ns[29] > 0, "live owner is charged while guest 1 is queued");
+    require(timing.main_ready_by_owner_ns[29] <= timing.held_ns[29], "overlap cannot exceed ownership");
+    owner.reset();
+    ready(main, "main gets its turn after the owner releases");
+    gate.take_timing();
+    require(gate.take_timing().main_ready_by_owner_ns[29] == 0, "completed ready interval is not counted again");
+}
+
+void detached_wait_does_not_queue_for_global() {
+    sfr::GuestExecution global, core;
+    global.add_follower(core);
+    auto worker = global.enter(29);
+    worker->detach();
+    auto on_core = core.enter(29);
+    worker->set_companion(on_core.get());
+    std::promise<void> global_held, release_global;
+    auto release = release_global.get_future();
+    auto holder = std::async(std::launch::async, [&] {
+        auto lease = global.enter(1);
+        global_held.set_value();
+        release.wait();
+    });
+    struct Release { std::promise<void>& signal; ~Release() { signal.set_value(); } } cleanup{release_global};
+    global_held.get_future().wait();
+    worker->run_wait([&](std::stop_token stop) {
+        require(!stop.stop_requested(), "detached wait starts without cancellation");
+        require(core.standing().owner == 0, "waiting releases the core");
+        require(global.standing().owner == 1 && global.standing().ready.empty(),
+                "waiting never queues behind the global owner");
+        auto peer = std::async(std::launch::async, [&] { auto lease = core.enter(28); });
+        ready(peer, "same-core peer progresses during detached wait");
+    });
+    require(worker->detached() && !on_core->detached(), "wait restores only core ownership");
+    require(global.standing().owner == 1, "global ownership is undisturbed");
+}
+
+void detached_wait_observes_cancellation() {
+    sfr::GuestExecution global, core;
+    global.add_follower(core);
+    auto worker = global.enter(29);
+    worker->detach();
+    auto on_core = core.enter(29);
+    worker->set_companion(on_core.get());
+    cancelled([&] { worker->run_wait([&](std::stop_token stop) {
+        global.stop();
+        require(stop.stop_requested(), "detached wait gets the propagated stop token");
+    }); });
+    require(core.standing().owner == 0, "cancelled wait does not reacquire a stopped core");
 }
 
 void blocking_operation_returns_with_ownership() {
@@ -534,7 +619,11 @@ void stop_cancels_detached_checkpoint() {
 
 int main() {
     struct Test { const char* name; void (*run)(); };
-    for (auto test : {Test{"initial owner", acquires_initial_owner},
+    for (auto test : {Test{"live per-instance timing", timing_separates_instances_and_accounts_live_holds},
+                      {"main-ready attribution", timing_attributes_only_holds_overlapping_main_ready},
+                      {"detached wait", detached_wait_does_not_queue_for_global},
+                      {"detached wait cancellation", detached_wait_observes_cancellation},
+                      {"initial owner", acquires_initial_owner},
                       {"blocking operation ownership", blocking_operation_returns_with_ownership},
                       {"blocking operation permit release", blocking_operation_releases_permit_for_peer},
                       {"blocking exception reacquire", blocking_exception_is_rethrown_after_fifo_reacquire},

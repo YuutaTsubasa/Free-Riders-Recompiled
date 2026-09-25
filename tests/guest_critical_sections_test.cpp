@@ -584,6 +584,44 @@ void real_execution_handoff_allows_original_owner_to_release() {
     f.state(0xFFFFFFFF, 0, 0);
 }
 
+void detached_execution_completes_handoff_while_global_is_owned() {
+    Fixture f;
+    sfr::GuestExecution execution, core;
+    execution.add_follower(core);
+    auto owner = execution.enter(1);
+    require(!f.locks.enter(section, owner_thread), "main owns the section before detached contention");
+    std::promise<void> admitted;
+    auto admitted_future = admitted.get_future();
+    auto contender = std::async(std::launch::async, [&] {
+        auto lease = execution.enter(29);
+        lease->detach();
+        auto on_core = core.enter(29);
+        lease->set_companion(on_core.get());
+        struct Reader {
+            Reader() { sfr::GuestMemory::concurrent_reader = true; }
+            ~Reader() { sfr::GuestMemory::concurrent_reader = false; }
+        } reader;
+        auto pending = f.locks.enter(section, other_thread);
+        require(bool(pending), "detached contender registers its pending section");
+        admitted.set_value();
+        lease->run_wait([&](std::stop_token stop) {
+            if (!pending->wait(stop)) throw sfr::GuestExecutionCancelled();
+        });
+        f.locks.complete(*pending);
+        require(lease->detached() && execution.standing().owner == 1,
+                "section handoff completes while another guest holds the global permit");
+        f.state(0, 1, other_thread);
+        f.locks.leave(section, other_thread);
+    });
+    StopExecution cleanup{execution, f.locks};
+    execution.wait_until_ready(29);
+    owner->checkpoint();
+    ready(admitted_future, "detached guest admitted its wait");
+    f.locks.leave(section, owner_thread);
+    ready(contender, "detached waiter finishes without needing main to release execution");
+    f.state(0xFFFFFFFF, 0, 0);
+}
+
 void real_execution_stop_drains_all_blocked_contenders_without_acquisition() {
     Fixture f;
     sfr::GuestExecution execution;
@@ -635,6 +673,7 @@ int main() {
                       initialization_preserves_existing_layout_and_rejects_active_lifetimes,
                       abandoning_uncompleted_admission_stops_peers_without_guest_mutation,
                       real_execution_handoff_allows_original_owner_to_release,
+                      detached_execution_completes_handoff_while_global_is_owned,
                       real_execution_stop_drains_all_blocked_contenders_without_acquisition}) {
         try { test(); }
         catch (const std::exception& error) { std::cerr << error.what() << '\n'; ++failures; }

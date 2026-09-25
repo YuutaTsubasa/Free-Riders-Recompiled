@@ -6,6 +6,9 @@
 #include <limits>
 #include <utility>
 #include <vector>
+#include <atomic>
+#include <chrono>
+#include <thread>
 namespace sfr {
 namespace {
 // 96 slots fill 0x73000000..0x7EFFFFFF, below the XMA registers at 0x7FEA0000.
@@ -26,7 +29,9 @@ struct GuestThreads::Impl {
         std::unique_ptr<NativeThread> native;
         uint32_t references = 0;
         // Guest-only suspensions of a running thread (see GuestThreads::suspend).
-        uint32_t guest_suspends = 0;
+        std::atomic<uint32_t> guest_suspends{0};
+        bool prepared_self_suspend = false;
+        uint32_t prepared_previous = 0;
         bool handle_open = true;
     };
     GuestMemory& memory;
@@ -176,7 +181,43 @@ void* GuestThreads::host_handle(uint32_t handle) const {
 }
 uint32_t GuestThreads::guest_suspends(uint32_t handle) const {
     auto* record = impl_->find_handle(handle);
-    return record ? record->guest_suspends : 0;
+    return record ? record->guest_suspends.load() : 0;
+}
+GuestThreads::ResumeResult GuestThreads::prepare_self_suspend(uint32_t handle) {
+    auto* record = impl_->find_handle(handle);
+    if (!record) return {0xC0000008, 0, 0};
+    if (record->prepared_self_suspend)
+        throw RuntimeStop("thread-suspend", handle, "self suspension already prepared");
+    const auto result = suspend(handle, 0);
+    if (!result.status) {
+        record->prepared_previous = result.previous;
+        record->prepared_self_suspend = true;
+    }
+    return result;
+}
+GuestThreads::ResumeResult GuestThreads::suspend_self(uint32_t handle, uint32_t output) {
+    auto* record = impl_->find_handle(handle);
+    if (record && record->prepared_self_suspend) {
+        const uint32_t count_address = record->state.thread_object + 0xBC;
+        if (output & 3) throw RuntimeStop("thread-output", output, "suspend output must be aligned");
+        if (output) {
+            impl_->memory.check_write(output, 4);
+            if (output <= count_address && uint64_t(output) + 4 > count_address)
+                throw RuntimeStop("thread-output", output, "suspend output overlaps suspend count");
+            impl_->memory.store<uint32_t>(output, record->prepared_previous);
+        }
+        record->prepared_self_suspend = false;
+        return {0, record->prepared_previous, record->state.id};
+    }
+    return suspend(handle, output);
+}
+std::function<void(std::stop_token)> GuestThreads::suspension_waiter(uint32_t handle) const {
+    auto* record = impl_->find_handle(handle);
+    if (!record) throw RuntimeStop("thread-suspend", handle, "unknown suspension waiter");
+    return [record](std::stop_token stop) {
+        while (!stop.stop_requested() && record->guest_suspends.load(std::memory_order_acquire))
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    };
 }
 void GuestThreads::shutdown() noexcept {
     for (const auto& record : impl_->records) record->native->request_stop();

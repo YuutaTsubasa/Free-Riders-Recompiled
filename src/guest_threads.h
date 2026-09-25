@@ -40,6 +40,13 @@ public:
     // only through the suspend count. The host thread is not stopped, so a
     // suspension held across a blocking call does not pause the target.
     ResumeResult suspend(uint32_t handle, uint32_t previous_output);
+    // For the title's completion-then-self-suspend worker only: register the
+    // suspension before publishing completion. suspend_self consumes it once.
+    ResumeResult prepare_self_suspend(uint32_t handle);
+    ResumeResult suspend_self(uint32_t handle, uint32_t previous_output);
+    // Obtain under the execution permit; invoke without it. The captured
+    // record stays alive until shutdown has joined every worker.
+    std::function<void(std::stop_token)> suspension_waiter(uint32_t handle) const;
     uint32_t guest_suspends(uint32_t handle) const;
     // Host handle of an open guest thread handle, or null.
     void* host_handle(uint32_t handle) const;

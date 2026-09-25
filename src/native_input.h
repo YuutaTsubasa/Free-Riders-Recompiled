@@ -2,6 +2,8 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 
@@ -50,6 +52,9 @@ public:
                 std::function<GamepadState()> keyboard);
     // Returns xinput_success or xinput_not_connected; always writes all 16 bytes
     // when connected. User 0 is always connected because the keyboard backs it.
+    // Safe to call from several guest threads at once: the title polls input
+    // without the global execution permit (diagnostic_main.cpp's permit_free),
+    // and the packet numbers it keeps are this object's own state.
     uint32_t get_state(GuestMemory& memory, uint32_t user, uint32_t output);
     // The merged state of user 0 (pad, keyboard, script) or a host pad; null
     // when that user has no controller.
@@ -75,6 +80,10 @@ private:
     std::function<GamepadState()> keyboard_;
     std::function<GamepadState()> script_ = [] { return GamepadState{}; };
     std::function<bool(uint32_t, uint16_t, uint16_t)> vibrate_ = [](uint32_t, uint16_t, uint16_t) { return false; };
+    // Held only over last_ and packets_. Indirect because a NativeInput is
+    // built by a factory and copied out of it, and a mutex is neither
+    // copyable nor movable.
+    std::shared_ptr<std::mutex> mutex_ = std::make_shared<std::mutex>();
     std::array<GamepadState, 4> last_{};
     std::array<uint32_t, 4> packets_{};
 };

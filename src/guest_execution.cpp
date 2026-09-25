@@ -11,11 +11,11 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <utility>
 
 namespace sfr {
 std::atomic<uint64_t> GuestExecution::main_thread_ready_wait_ns{0};
 std::atomic<uint64_t> GuestExecution::main_thread_blocked_ns{0};
-std::atomic<uint64_t> GuestExecution::held_ns[64]{};
 
 GuestExecutionCancelled::GuestExecutionCancelled()
     : std::runtime_error("guest execution cancelled") {}
@@ -43,8 +43,25 @@ struct GuestExecution::State {
     // console core would run them at once. Rotation after a quantum stays FIFO.
     std::unordered_set<uint64_t> urgent_ids;
     std::atomic<uint32_t> urgent_waiting{0};
+    Timing timing;
+    bool main_ready = false;
+    std::chrono::steady_clock::time_point accounted_at = std::chrono::steady_clock::now();
+
+    // Called under mutex before ownership/ready-state changes and snapshots.
+    void account() {
+        const auto now = std::chrono::steady_clock::now();
+        const auto ns = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(now - accounted_at).count());
+        accounted_at = now;
+        const size_t slot = owner_id < 64 ? size_t(owner_id) : 0;
+        if (owner_id) timing.held_ns[slot] += ns;
+        if (main_ready && owner_id != 1) {
+            if (owner_id) timing.main_ready_by_owner_ns[slot] += ns;
+            else timing.main_ready_unowned_ns += ns;
+        }
+    }
 
     void enqueue(const std::shared_ptr<Waiter>& waiter, bool woken) {
+        account();
         if (woken && urgent_ids.contains(waiter->guest_id)) {
             waiter->urgent = true;
             const auto position = std::find_if(ready.begin(), ready.end(), [](const auto& w) { return !w->urgent; });
@@ -54,8 +71,11 @@ struct GuestExecution::State {
             waiter->urgent = false;
             ready.push_back(waiter);
         }
+        if (waiter->guest_id == 1) main_ready = true;
     }
     void remove(std::deque<std::shared_ptr<Waiter>>::iterator position) {
+        account();
+        if ((*position)->guest_id == 1) main_ready = false;
         if ((*position)->urgent) urgent_waiting.fetch_sub(1, std::memory_order_relaxed);
         ready.erase(position);
     }
@@ -66,6 +86,12 @@ struct GuestExecution::State {
     // Stops the followers too; the caller has set stopping and released the mutex.
     void stop_followers() noexcept;
 };
+
+GuestExecution::Timing GuestExecution::take_timing() {
+    std::lock_guard lock(state_->mutex);
+    state_->account();
+    return std::exchange(state_->timing, Timing{});
+}
 
 GuestExecution::Standing GuestExecution::standing() const {
     Standing result;
@@ -147,15 +173,13 @@ GuestExecution::Lease::~Lease() noexcept {
 }
 
 void GuestExecution::Lease::released() {
-    if (guest_id_ < 64)
-        held_ns[guest_id_].fetch_add(uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now() - held_since_).count()), std::memory_order_relaxed);
+    state_->account();
 }
 
 void GuestExecution::Lease::acquired() {
     owner_thread_.store(std::this_thread::get_id(), std::memory_order_relaxed);
     acquired_at_ = std::chrono::steady_clock::now();
-    held_since_ = acquired_at_;
+    state_->accounted_at = acquired_at_;
     checkpoints_ = 0;
     urgent_owner_ = state_->urgent_ids.contains(guest_id_);  // callers hold the mutex
 }
@@ -262,6 +286,20 @@ void GuestExecution::wait_for_block(uint32_t guest_id, uint64_t after, std::chro
         const auto found = block_counts.find(guest_id);
         return found != block_counts.end() && found->second > after;
     });
+}
+
+void GuestExecution::Lease::run_wait(std::function<void(std::stop_token)> operation) {
+    if (!operation) throw std::logic_error("blocking guest operation is required");
+    if (!detached_) return run_blocking(std::move(operation));
+    if (companion_) return companion_->run_blocking(std::move(operation));
+    std::stop_token token;
+    {
+        std::lock_guard lock(state_->mutex);
+        if (state_->stopping) throw GuestExecutionCancelled();
+        token = state_->stop_source.get_token();
+    }
+    operation(token);
+    if (token.stop_requested()) throw GuestExecutionCancelled();
 }
 
 void GuestExecution::Lease::run_blocking(std::function<void(std::stop_token)> operation,

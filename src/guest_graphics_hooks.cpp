@@ -25,6 +25,7 @@
 #include <utility>
 #include <cstdio>
 #include <string>
+#include <sstream>
 #include <thread>
 #include <vector>
 #ifdef _WIN32
@@ -268,10 +269,10 @@ static std::span<uint8_t> byte_scratch(size_t bytes,int which=0) {
 
 // The guests that held the execution permit longest since the last frame,
 // as id:milliseconds.
-static std::string permit_holders() {
+static std::string permit_holders(const std::array<uint64_t, 64>& counters) {
     std::vector<std::pair<uint64_t, int>> held;
     for (int id = 0; id < 64; ++id)
-        if (const uint64_t ns = sfr::GuestExecution::held_ns[id].exchange(0, std::memory_order_relaxed))
+        if (const uint64_t ns = counters[id])
             held.push_back({ns, id});
     std::sort(held.rbegin(), held.rend());
     std::string text;
@@ -371,8 +372,12 @@ SFR_HOOK(sub_824E65A0) {
     }
     // One line a frame: the per-frame timings a profile run reads.
     const auto pipeline_work=graphics().renderer().take_pipeline_work();
-    std::cerr << "NATIVE_PRESENT source=0x824e65a0 device=0x" << std::hex << ctx.r3.u32
-              << " lr=0x" << ctx.lr << std::dec << " draws=" << frame_draws
+    const auto execution_work=sfr::take_guest_execution_timings();
+    uint64_t main_ready_ns=execution_work[0].main_ready_unowned_ns;
+    for(const auto ns:execution_work[0].main_ready_by_owner_ns) main_ready_ns+=ns;
+    std::ostringstream present_log;
+    present_log << "NATIVE_PRESENT source=0x824e65a0 device=0x" << std::hex << ctx.r3.u32
+              << " lr=0x" << ctx.lr << std::dec << " frame=" << sfr::present_count.load() << " draws=" << frame_draws
               << " textured=" << frame_textured_draws << " foreign=" << foreign_draws
               << " vertex_bytes=" << frame_vertex_bytes << " cached_draws=" << frame_cached_draws
               << " biggest=" << frame_biggest_draw
@@ -388,9 +393,15 @@ SFR_HOOK(sub_824E65A0) {
               << " main_blocked_ms="
               << double(sfr::GuestExecution::main_thread_blocked_ns.exchange(0,std::memory_order_relaxed))/1e6
               << " gpu_wait_ms=" << double(sfr::main_gpu_wait_ns.exchange(0,std::memory_order_relaxed))/1e6
-              << " holders=" << permit_holders()
-              << " presented=1 seconds="
+              << " holders=" << permit_holders(execution_work[0].held_ns)
+              << " main_ready_ms=" << double(main_ready_ns)/1e6
+              << " main_ready_unowned_ms=" << double(execution_work[0].main_ready_unowned_ns)/1e6
+              << " main_blockers=" << permit_holders(execution_work[0].main_ready_by_owner_ns);
+    for(size_t core=0;core<6;++core)
+        present_log << " core" << core << "_holders=" << permit_holders(execution_work[core+1].held_ns);
+    present_log << " presented=1 seconds="
               << std::chrono::duration<double>(std::chrono::steady_clock::now()-process_start).count() << '\n';
+    std::cerr << present_log.str();
     frame_draws=frame_textured_draws=foreign_draws=0;
     frame_vertex_bytes=0;
     frame_cached_draws=0;

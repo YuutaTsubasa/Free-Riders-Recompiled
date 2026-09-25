@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <exception>
@@ -38,6 +39,9 @@ public:
         // It must not re-enter the scheduler. A thrown exception preserves ownership.
         void run_blocking(std::function<void(std::stop_token)> operation,
                           std::function<void()> before_release = {});
+        // Native wait preserving the current execution mode. Detached guests
+        // release/reacquire only their companion core, never the global permit.
+        void run_wait(std::function<void(std::stop_token)> operation);
         // Lets the owner run on beside the permit's next owner, as a guest on
         // a console core of its own: until attach(), checkpoints only observe
         // cancellation. Only code that touches nothing but guest memory and
@@ -69,7 +73,6 @@ public:
         bool owns_ = false;
         std::atomic<std::thread::id> owner_thread_{};
         std::chrono::steady_clock::time_point acquired_at_{};
-        std::chrono::steady_clock::time_point held_since_{};
         void released();  // accounts the hold that ends
         uint32_t checkpoints_ = 0;
         bool urgent_owner_ = false;
@@ -91,8 +94,16 @@ public:
     // Nanoseconds guest 1 has spent in run_blocking operations: waits on
     // events, other threads and sleeps.
     static std::atomic<uint64_t> main_thread_blocked_ns;
-    // Nanoseconds each guest (IDs below 64) has held the permit.
-    static std::atomic<uint64_t> held_ns[64];
+    struct Timing {
+        // Per scheduler, not summed across overlapping global/core permits.
+        // Index 0 accounts host completion identities (guest IDs are 1..63).
+        std::array<uint64_t, 64> held_ns{};
+        std::array<uint64_t, 64> main_ready_by_owner_ns{};
+        uint64_t main_ready_unowned_ns = 0;
+    };
+    // Consumes this instance's counters, including the owner's current hold.
+    // All accounting is clipped at the snapshot; release never recounts it.
+    Timing take_timing();
 
     GuestExecution();
     ~GuestExecution();
@@ -136,5 +147,8 @@ private:
     std::unique_ptr<Lease> enter_identity(uint64_t identity);
     std::shared_ptr<State> state_;
 };
+
+// Runtime integration: index 0 is global, indices 1..6 are guest cores 0..5.
+std::array<GuestExecution::Timing, 7> take_guest_execution_timings();
 
 }

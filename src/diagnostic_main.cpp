@@ -78,6 +78,9 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#elif defined(__linux__)
+#include <sys/syscall.h>
+#include <unistd.h>
 #endif
 
 static std::string fingerprint(const void* data, size_t size) {
@@ -92,6 +95,15 @@ static std::string fingerprint(const void* data, size_t size) {
 }
 
 namespace sfr {
+static uint64_t host_thread_id() {
+#ifdef _WIN32
+    return GetCurrentThreadId();
+#elif defined(__linux__)
+    return uint64_t(syscall(SYS_gettid));
+#else
+    return 0;
+#endif
+}
 GuestMemory* active_memory = nullptr;
 static std::unordered_map<uint32_t, PPCFunc*> functions;
 // Names come from string literals (generated code and hooks): keep the pointer,
@@ -125,8 +137,11 @@ struct GuestThreadExit { uint32_t code; };
 static thread_local uint64_t thread_calls = 0;
 static uint64_t calls = 0;
 static std::unique_ptr<NativeInput> native_input;
-static uint64_t input_queries = 0, hid_queries = 0, keystroke_queries = 0, critical_region_calls = 0, printf_calls = 0;
-static uint32_t last_input_packet = 0;
+// The input queries are answered without the permit (permit_free below),
+// so several guest threads may count them at once.
+static std::atomic<uint64_t> input_queries{0}, hid_queries{0}, keystroke_queries{0};
+static uint64_t critical_region_calls = 0, printf_calls = 0;
+static std::atomic<uint32_t> last_input_packet{0};
 static NativeInput& input() {
     if (!native_input)
         native_input = std::make_unique<NativeInput>(NativeInput::host([]() -> void* {
@@ -188,6 +203,12 @@ static const uint64_t call_budget = limit_from_environment("SFR_CALL_BUDGET", 20
 static const bool trace_imports = [] {
     const char* const text = std::getenv("SFR_TRACE_IMPORTS");
     return !text || *text != '0';
+}();
+// These two wait-completion lines used to ignore the playing trace setting.
+// The override restores just those lines for a same-binary performance A/B.
+static const bool trace_wait_results = [] {
+    const char* const text = std::getenv("SFR_TRACE_WAIT_RESULTS");
+    return text ? *text != '0' : trace_imports;
 }();
 // SFR_GUEST_REACH=1 names, once per guest thread, each function and import
 // a thread other than the main one reaches: what running it beside the main
@@ -373,6 +394,13 @@ static const ParallelGuests parallel_worker = [] {
 }();
 static constexpr unsigned guest_processors = 6;
 static std::array<std::unique_ptr<GuestExecution>, guest_processors> core_executions;
+std::array<GuestExecution::Timing, 7> take_guest_execution_timings() {
+    std::array<GuestExecution::Timing, 7> result{};
+    if (execution) result[0] = execution->take_timing();
+    for (size_t i = 0; i < core_executions.size(); ++i)
+        if (core_executions[i]) result[i + 1] = core_executions[i]->take_timing();
+    return result;
+}
 static thread_local std::unique_ptr<GuestExecution::Lease> core_permit;
 static thread_local unsigned core_index = 0;
 static constexpr uint32_t parallel_worker_entry = 0x8222E008;
@@ -393,6 +421,21 @@ static void parallel_attached(int reason) {
     if (++count % 20000 == 0)
         std::cerr << "PARALLEL_STATS imports=" << parallel_attaches[0] << " hooks=" << parallel_attaches[1]
                   << " memory=" << parallel_attaches[2] << char(10);
+}
+
+// Called only by the completion/suspend pair in worker 824C39C8. Reserve
+// its suspension before SetEvent lets the main thread queue the next job.
+void prepare_worker_self_suspend() {
+    const bool detached = execution_permit->detached();
+    if (detached) {
+        execution_permit->attach();
+        parallel_attached(0);
+    }
+    const uint32_t own = guest_threads->handle_for_object(current_thread);
+    const auto result = guest_threads->prepare_self_suspend(own);
+    if (result.status)
+        throw RuntimeStop("thread-suspend", own, "could not prepare worker completion suspension");
+    if (detached) execution_permit->detach();
 }
 
 static void parallel_slow_access(uint64_t address) {
@@ -736,12 +779,7 @@ template<class Operation> static void block_guest(Operation&& operation) {
         Blocked() { own_activity().blocked.store(true, std::memory_order_relaxed); }
         ~Blocked() { own_activity().blocked.store(false, std::memory_order_relaxed); }
     } blocked_note;
-    if (!execution_permit->detached()) {
-        execution_permit->run_blocking(std::forward<Operation>(operation));
-        return;
-    }
-    if (core_permit) core_permit->run_blocking([&](std::stop_token stop) { operation(stop); });
-    else operation(execution->stop_token());
+    execution_permit->run_wait(std::forward<Operation>(operation));
 }
 
 void wait_without_permit(void (*wait)(void*), void* argument) {
@@ -813,7 +851,7 @@ void dispatch_import(PPCContext& ctx, const char* name, uint32_t address) {
     }
     if (!guest_entry.parallel || !execution_permit->detached()) return dispatch_import_owned(ctx, name, address);
     // Imports a detached guest runs as it is: critical sections keep their
-    // own lock (only a contended enter attaches, to wait), a TLS value lives
+    // own lock (contended waits attach unless the experiment is enabled), a TLS value lives
     // in the calling thread's own bank, and the process type is a constant.
     // KeTlsGetValue alone brought detached guests back to the permit some
     // four hundred thousand times in a race's first minute.
@@ -830,6 +868,15 @@ void dispatch_import(PPCContext& ctx, const char* name, uint32_t address) {
         address == 0x82ACC2EC ||                                                 // KeReleaseSemaphore
         address == 0x82ACB5EC || address == 0x82ACB6CC ||                        // Nt{Set,Clear}Event
         address == 0x82ACC18C ||                                                 // XAudioGetVoiceCategoryVolume (a constant)
+        // Polling the pad. PARALLEL_IMPORTS named these three as the commonest
+        // reason a detached guest came back to the permit -- XamInputGetState
+        // alone 14233 times in a race sample, from the thread that polls it
+        // about a thousand times a second, while the main thread waited its
+        // turn. Two of them answer with a constant (no device); the third
+        // reads the host's pads and keeps its own packet numbers under its own
+        // lock, and writes only the caller's sixteen bytes.
+        address == 0x82ACC16C || address == 0x82ACC46C ||                        // XamInputGetKeystrokeEx, HidReadKeys
+        address == 0x82ACC14C ||                                                 // XamInputGetState
         (address == 0x82ACB63C && !GuestThreads::is_handle_range(ctx.r3.u32));  // NtWaitForSingleObjectEx
     if (!permit_free) {
         execution_permit->attach();
@@ -872,6 +919,30 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
     } in_import;
     note_activity(name, address);
     guest_checkpoint();
+    static const bool thread_wait_trace = [] {
+        const char* text = std::getenv("SFR_THREAD_WAIT_TRACE");
+        return text && *text == '1';
+    }();
+    if (thread_wait_trace && (current_id == 1 || current_id >= 30) &&
+            (address == 0x82ACB51C || address == 0x82ACB54C ||
+             address == 0x82ACB5DC || address == 0x82ACB63C ||
+             address == 0x82ACB87C || address == 0x82ACB9DC ||
+             std::string_view(name) == "__imp__NtSetEvent" ||
+             std::string_view(name) == "__imp__NtClearEvent")) {
+        std::ostringstream line;
+        line << "THREAD_WAIT_TRACE guest=" << current_id << " import=" << name
+             << " lr=0x" << std::hex << ctx.lr << " r3=0x" << ctx.r3.u32
+             << " r4=0x" << ctx.r4.u32 << " r5=0x" << ctx.r5.u32
+             << " r6=0x" << ctx.r6.u32;
+        if (address == 0x82ACB5DC && ctx.r3.u32 <= 64) {
+            line << " handles=";
+            for (uint32_t i = 0; i < ctx.r3.u32; ++i)
+                line << "0x" << active_memory->load<uint32_t>(uint64_t(ctx.r4.u32) + i * 4) << ',';
+            line << " chain=" << guest_back_chain(ctx.r1.u32);
+        }
+        line << '\n';
+        std::cerr << line.str();
+    }
     if (guest_reach && current_id != 1) {
         static thread_local std::unordered_set<uint32_t> reached;
         if (reached.insert(address).second)
@@ -1029,13 +1100,13 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         ctx.r3.u64 = input().get_state(*active_memory, user, output);
         // Polled every frame: log only the first query and every state change.
         const uint32_t packet = ctx.r3.u32 == xinput_success ? active_memory->load<uint32_t>(output) : 0;
-        if (input_queries++ == 0 || packet != last_input_packet) {
+        const uint32_t previous = last_input_packet.exchange(packet);
+        if (input_queries++ == 0 || packet != previous) {
             std::cerr << "NATIVE_INPUT user=" << user << " status=0x" << std::hex << ctx.r3.u32;
             if (ctx.r3.u32 == xinput_success)
                 std::cerr << " packet=" << std::dec << packet << " buttons=0x" << std::hex
                           << active_memory->load<uint16_t>(uint64_t(output) + 4);
             std::cerr << " lr=0x" << ctx.lr << std::dec << " backend=xinput+keyboard\n";
-            last_input_packet = packet;
         }
         return;
     }
@@ -1211,8 +1282,15 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         else
             throw RuntimeStop("memory-protection", queried_address, "unsupported address class for protection query");
         ctx.r3.u64 = protection;
-        std::cerr << "RESULT MmQueryAddressProtect address=0x" << std::hex << queried_address
-                  << " protection=0x" << protection << " lr=0x" << ctx.lr << std::dec << '\n';
+        // Asked thousands of times in a race, and the answer for an address
+        // rarely changes: only the first of each answer is written down.
+        static std::unordered_map<uint32_t, uint32_t> reported;
+        if (const auto [entry, fresh] = reported.try_emplace(queried_address, protection);
+            fresh || entry->second != protection) {
+            entry->second = protection;
+            std::cerr << "RESULT MmQueryAddressProtect address=0x" << std::hex << queried_address
+                      << " protection=0x" << protection << " lr=0x" << ctx.lr << std::dec << '\n';
+        }
         return;
     }
     if (address == 0x82ACBA0C && std::string_view(name) == "__imp__MmAllocatePhysicalMemoryEx" && physical_memory) {
@@ -1474,11 +1552,22 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
                               << " owner=0x" << active_memory->load<uint32_t>(uint64_t(section) + 24)
                               << " contender=0x" << current_thread << std::dec << '\n';
                 bool ready = false;
-                if (execution_permit->detached()) {
+                // Keep the established path by default until same-binary A/B
+                // establishes a benefit. Set 0 to try a core-only detached wait.
+                static const bool global_wait = [] {
+                    const char* text = std::getenv("SFR_CRITICAL_WAIT_GLOBAL");
+                    return !text || *text != '0';
+                }();
+                // Let both comparison runs use the same startup policy. Some
+                // existing movie waits stall before a race can be measured.
+                static const uint64_t global_wait_after =
+                    limit_from_environment("SFR_CRITICAL_WAIT_GLOBAL_AFTER_PRESENT", 0);
+                if (global_wait && present_count.load(std::memory_order_relaxed) >= global_wait_after &&
+                        execution_permit->detached()) {
                     execution_permit->attach();
                     parallel_attached(0);
                 }
-                execution_permit->run_blocking([&](std::stop_token stop) {
+                block_guest([&](std::stop_token stop) {
                     ready = pending->wait(stop);
                 });
                 if (!ready) {
@@ -1488,7 +1577,7 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
                     throw GuestExecutionCancelled();
                 }
                 critical_sections->complete(*pending);
-                std::cerr << "RESULT CriticalSectionWait guest_id=" << current_id
+                if (trace_wait_results) std::cerr << "RESULT CriticalSectionWait guest_id=" << current_id
                           << " address=0x" << std::hex << section << std::dec
                           << " acquired=1\n";
             }
@@ -1717,7 +1806,8 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         });
         if (result.cancelled) throw GuestExecutionCancelled();
         ctx.r3.u64 = result.status;
-        std::cerr << "RESULT NtWaitForMultipleObjectsEx guest_id=" << current_id << " count=" << count
+        if (trace_wait_results || (result.status & 0x80000000u))
+            std::cerr << "RESULT NtWaitForMultipleObjectsEx guest_id=" << current_id << " count=" << count
                   << " wait_all=" << (wait_type == 0) << " status=0x" << std::hex << result.status << std::dec << '\n';
         return;
     }
@@ -1749,17 +1839,17 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         const uint32_t own = guest_threads->handle_for_object(current_thread);
         const auto handle = ctx.r3.u32 == 0xFFFFFFFE ? own : ctx.r3.u32, output = ctx.r4.u32;
         if (!handle) throw RuntimeStop("thread-suspend", current_id, "the main thread cannot suspend itself");
-        const auto result = guest_threads->suspend(handle, output);
+        const auto result = handle == own ? guest_threads->suspend_self(handle, output)
+                                         : guest_threads->suspend(handle, output);
         ctx.r3.u64 = result.status;
         if (trace_imports) std::cerr << "RESULT NtSuspendThread handle=0x" << std::hex << handle << " output=0x" << output
                   << " status=0x" << result.status << std::dec << " previous=" << result.previous
                   << " guest_id=" << result.id << " backend=guest-suspend-count\n";
         if (!result.status && handle == own) {
             // A thread that suspends itself stops until another thread resumes it.
-            execution_permit->run_blocking([handle](std::stop_token stop) {
-                while (!stop.stop_requested() && guest_threads->guest_suspends(handle))
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            });
+            // Capture the stable record while serialized. The wait reads only
+            // its atomic count, never the registry while another guest edits it.
+            execution_permit->run_blocking(guest_threads->suspension_waiter(handle));
             if (trace_imports) std::cerr << "RESULT NtSuspendThread resumed handle=0x" << std::hex << handle << std::dec << '\n';
         }
         return;
@@ -3548,6 +3638,9 @@ int main(int argc, char** argv) {
                         sfr::current_pcr = state.pcr;
                         sfr::current_thread = state.thread_object;
                         sfr::current_id = state.id;
+                        std::cerr << "GUEST_HOST_THREAD guest_id=" << state.id
+                                  << " tid=" << sfr::host_thread_id() << " worker=0x" << std::hex
+                                  << state.worker << std::dec << '\n';
                         sfr::current_tls = state.tls_static;
                         sfr::current_tls_dynamic = state.tls_dynamic;
 #ifdef _WIN32
@@ -3857,6 +3950,7 @@ int main(int argc, char** argv) {
             sfr::execution_permit = permit.get();
             sfr::current_context = &ctx;
             sfr::refresh_entry_observation();
+            std::cerr << "GUEST_HOST_THREAD guest_id=1 tid=" << sfr::host_thread_id() << " worker=0x824d22f0\n";
 #ifdef _WIN32
             sfr::guest_host_threads[1] = sfr::own_thread_handle();
 #endif
