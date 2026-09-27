@@ -32,6 +32,8 @@
 #include "launcher_platform.h"
 #include "camera_capture.h"
 #include "launcher_settings.h"
+#include "input_bindings.h"
+#include "pad_devices.h"
 #include "launcher_sound.h"
 #include "sony_gamepad.h"
 
@@ -87,6 +89,11 @@ enum Text {
     ShaderPack, ShaderPackHint, ChoosePack, InstallIntroFile, InstallFromImage, NoShaderPack,
     LanguageLabel, LanguageHint, LanguageSystem, LanguageEnglish, LanguageChinese, TouchLabel, TouchHint, TiltLabel, TiltHint,
     BarSettings, BarInstaller, BarInstalling, BarStopped,
+    TabControls, PlayerOneDevice, PlayerOneDeviceHint, PlayerTwoDevice, PlayerTwoDeviceHint,
+    DeviceBoth, DeviceGamepad, DeviceKeyboard, DeviceOff,
+    BindingSet, BindingSetHint, SetOneKeyboard, SetOnePad, SetTwoKeyboard, SetTwoPad,
+    PressKey, PressButton, Unbound, ResetBindings, BindingsHint, SticksFixed,
+    PlayerOneGamepad, PlayerTwoGamepad, GamepadHint, GamepadAutomatic, GamepadMissing,
     TextCount
 };
 
@@ -236,6 +243,37 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"INSTALLER", "安裝"},
     {"INSTALLING", "安裝中"},
     {"STOPPED", "已停止"},
+    {"Controls", "操作"},
+    {"Player 1", "1P"},
+    {"What the first player uses. The keyboard has always been there behind the controller; leaving it there costs nothing.",
+     "第一位玩家用什麼操作。鍵盤一直都在手把後面備著，留著它沒有壞處。"},
+    {"Player 2", "2P"},
+    {"Configure the second input slot. This release does not add playable two-player modes or split screen.",
+     "設定第二組輸入。本次發行不新增可遊玩的雙人模式或分割畫面。"},
+    {"Controller and keyboard", "手把與鍵盤"},
+    {"Controller", "手把"},
+    {"Keyboard", "鍵盤"},
+    {"Nobody", "沒有"},
+    {"Buttons for", "設定按鍵"},
+    {"Which set of buttons the list below changes.", "下面的列表要改哪一組按鍵。"},
+    {"Player 1 keyboard", "1P 鍵盤"},
+    {"Player 1 controller", "1P 手把"},
+    {"Player 2 keyboard", "2P 鍵盤"},
+    {"Player 2 controller", "2P 手把"},
+    {"Press a key...", "請按一個鍵..."},
+    {"Press a button...", "請按一個按鈕..."},
+    {"none", "無"},
+    {"Reset these", "還原這組"},
+    {"Choose a button to change it, then press what you want it to be. The two players share one keyboard, so their keys must differ.",
+     "點一個按鍵再按下你想用的鍵就會換掉。兩位玩家共用一個鍵盤，所以按鍵不能重複。"},
+    {"The sticks stay the sticks: a controller's sticks are positions, not presses.",
+     "類比搖桿維持原樣：搖桿讀的是位置，不是按下與否。"},
+    {"Player 1 controller", "1P 用哪一支手把"},
+    {"Player 2 controller", "2P 用哪一支手把"},
+    {"Which controller this player holds. While it is plugged in it is theirs, wherever the computer lists it; unplugged, they wait for it rather than taking somebody else's.",
+     "這位玩家拿哪一支手把。只要它插著就是這位玩家的，不管電腦把它排在第幾個；拔掉的話這位玩家就等它，不會去搶別人的。"},
+    {"Whichever is first", "自動（依順序）"},
+    {"not plugged in", "目前沒插著"},
 }};
 
 int language = 0;
@@ -714,6 +752,10 @@ void feed_sony_pad() {
     button(ImGuiKey_GamepadDpadDown, b::dpad_down);
     button(ImGuiKey_GamepadL1, b::left_shoulder);
     button(ImGuiKey_GamepadR1, b::right_shoulder);
+    button(ImGuiKey_GamepadL3, b::left_thumb);
+    button(ImGuiKey_GamepadR3, b::right_thumb);
+    io.AddKeyAnalogEvent(ImGuiKey_GamepadL2, pad->left_trigger > 64, float(pad->left_trigger) / 255.0f);
+    io.AddKeyAnalogEvent(ImGuiKey_GamepadR2, pad->right_trigger > 64, float(pad->right_trigger) / 255.0f);
     const auto stick = [&](ImGuiKey key, float value) {
         constexpr float dead = 8000.0f;
         const float amount = std::clamp((value - dead) / (32767.0f - dead), 0.0f, 1.0f);
@@ -723,6 +765,62 @@ void feed_sony_pad() {
     stick(ImGuiKey_GamepadLStickRight, float(pad->thumb_lx));
     stick(ImGuiKey_GamepadLStickUp, float(pad->thumb_ly));
     stick(ImGuiKey_GamepadLStickDown, -float(pad->thumb_ly));
+}
+
+// The Windows virtual key an ImGui key stands for. Bindings are kept in
+// Windows numbering wherever they travel (input_bindings.h), so a key chosen
+// here means the same key to the game on every platform.
+int virtual_key_of(ImGuiKey key) {
+    if (key >= ImGuiKey_A && key <= ImGuiKey_Z) return 'A' + (key - ImGuiKey_A);
+    if (key >= ImGuiKey_0 && key <= ImGuiKey_9) return '0' + (key - ImGuiKey_0);
+    if (key >= ImGuiKey_Keypad0 && key <= ImGuiKey_Keypad9) return 0x60 + (key - ImGuiKey_Keypad0);
+    if (key >= ImGuiKey_F1 && key <= ImGuiKey_F12) return 0x70 + (key - ImGuiKey_F1);
+    switch (key) {
+    case ImGuiKey_Tab: return 0x09;
+    case ImGuiKey_LeftArrow: return 0x25;
+    case ImGuiKey_UpArrow: return 0x26;
+    case ImGuiKey_RightArrow: return 0x27;
+    case ImGuiKey_DownArrow: return 0x28;
+    case ImGuiKey_PageUp: return 0x21;
+    case ImGuiKey_PageDown: return 0x22;
+    case ImGuiKey_Home: return 0x24;
+    case ImGuiKey_End: return 0x23;
+    case ImGuiKey_Insert: return 0x2D;
+    case ImGuiKey_Delete: return 0x2E;
+    case ImGuiKey_Backspace: return 0x08;
+    case ImGuiKey_Space: return 0x20;
+    case ImGuiKey_Enter: case ImGuiKey_KeypadEnter: return 0x0D;
+    case ImGuiKey_Escape: return 0x1B;
+    case ImGuiKey_LeftShift: case ImGuiKey_RightShift: return 0x10;
+    case ImGuiKey_LeftCtrl: case ImGuiKey_RightCtrl: return 0x11;
+    case ImGuiKey_LeftAlt: case ImGuiKey_RightAlt: return 0x12;
+    case ImGuiKey_Semicolon: return 0xBA;
+    case ImGuiKey_Equal: return 0xBB;
+    case ImGuiKey_Comma: return 0xBC;
+    case ImGuiKey_Minus: return 0xBD;
+    case ImGuiKey_Period: return 0xBE;
+    case ImGuiKey_Slash: return 0xBF;
+    case ImGuiKey_GraveAccent: return 0xC0;
+    case ImGuiKey_LeftBracket: return 0xDB;
+    case ImGuiKey_Backslash: return 0xDC;
+    case ImGuiKey_RightBracket: return 0xDD;
+    case ImGuiKey_Apostrophe: return 0xDE;
+    case ImGuiKey_KeypadMultiply: return 0x6A;
+    case ImGuiKey_KeypadAdd: return 0x6B;
+    case ImGuiKey_KeypadSubtract: return 0x6D;
+    case ImGuiKey_KeypadDecimal: return 0x6E;
+    case ImGuiKey_KeypadDivide: return 0x6F;
+    default: return 0;
+    }
+}
+
+// The key, or the pad control, pressed this frame -- what a player means
+// when a control is waiting to be bound.
+int captured_key() {
+    for (int key = ImGuiKey_NamedKey_BEGIN; key < ImGuiKey_GamepadStart; ++key)
+        if (ImGui::IsKeyPressed(ImGuiKey(key), false))
+            if (const int virtual_key = virtual_key_of(ImGuiKey(key))) return virtual_key;
+    return 0;
 }
 
 // Which prompts the button guide shows: the last device used.
@@ -802,7 +900,7 @@ float draw_prompt(ImDrawList* draw, ImVec2 at, float size, InputKind kind, Promp
 
 // ---------------------------------------------------------------- app
 enum class Page { Settings, Stopped, Install, Installing, Installed };
-enum Tab { DisplayTab, SoundTab, GameTab, AdvancedTab, FilesTab, TabCount };
+enum Tab { DisplayTab, SoundTab, GameTab, ControlsTab, AdvancedTab, FilesTab, TabCount };
 enum class Question { none, quit, cancel_install, quit_during_install };
 
 // An installation running on its own thread; the page reads its progress.
@@ -1244,7 +1342,7 @@ struct Launcher {
     void tab_list(ImVec2 size) {
         const float left = ImGui::GetCursorPosX();
         ImGui::PushFont(fonts.heading);
-        constexpr Text names[TabCount] = {TabDisplay, TabSound, TabGame, TabAdvanced, TabFiles};
+        constexpr Text names[TabCount] = {TabDisplay, TabSound, TabGame, TabControls, TabAdvanced, TabFiles};
         for (int i = 0; i < TabCount; ++i) {
             ImGui::SetCursorPosX(left);
             const ImVec2 at = ImGui::GetCursorScreenPos();
@@ -1352,6 +1450,196 @@ struct Launcher {
 #endif
     }
 
+    // ------------------------------------------------ controls
+    // Two players' bindings; the four sets on the page are each player's
+    // keys and the same player's pad (input_bindings.h).
+    sfr::InputBindings bindings[2];
+    bool bindings_read = false;
+    int binding_set = 0;   // 0: 1P keys, 1: 1P pad, 2: 2P keys, 3: 2P pad
+    int capturing = -1;    // the action waiting for a press, or -1
+    bool capture_frame = false;  // stays true through the frame that accepts a binding
+    sfr::PadButtonCapture pad_capture;
+
+    void read_bindings() {
+        if (bindings_read) return;
+        bindings_read = true;
+        for (uint32_t player = 0; player < 2; ++player) {
+            bindings[player] = sfr::default_bindings(player);
+            sfr::read_keys(player ? settings.player2_keys : settings.player1_keys, bindings[player]);
+            sfr::read_pad(player ? settings.player2_pad : settings.player1_pad, bindings[player]);
+        }
+    }
+    void write_bindings() {
+        settings.player1_keys = sfr::format_keys(bindings[0]);
+        settings.player1_pad = sfr::format_pad(bindings[0]);
+        settings.player2_keys = sfr::format_keys(bindings[1]);
+        settings.player2_pad = sfr::format_pad(bindings[1]);
+    }
+
+    // What each control is called here: an Xbox pad's own names, because
+    // that is what the game reads and what is printed on a pad.
+    static const char* action_label(sfr::InputAction action) {
+        static const std::array<std::array<const char*, 2>, sfr::input_action_count> names{{
+            {"A", "A"}, {"B", "B"}, {"X", "X"}, {"Y", "Y"},
+            {"LB", "LB"}, {"RB", "RB"}, {"LT", "LT"}, {"RT", "RT"},
+            {"Start", "Start"}, {"Back", "Back"},
+            {"Left stick press", "左搖桿按下"}, {"Right stick press", "右搖桿按下"},
+            {"D-pad up", "十字鍵 上"}, {"D-pad down", "十字鍵 下"},
+            {"D-pad left", "十字鍵 左"}, {"D-pad right", "十字鍵 右"},
+            {"Left stick up", "左搖桿 上"}, {"Left stick down", "左搖桿 下"},
+            {"Left stick left", "左搖桿 左"}, {"Left stick right", "左搖桿 右"},
+            {"Right stick up", "右搖桿 上"}, {"Right stick down", "右搖桿 下"},
+            {"Right stick left", "右搖桿 左"}, {"Right stick right", "右搖桿 右"}}};
+        return names[size_t(action)][language];
+    }
+
+    // One row of the list: the control's name, and a button showing what it
+    // is bound to. Choosing the button waits for a press.
+    void binding_row(sfr::InputAction action, bool keys, sfr::InputBindings& player) {
+        const float button_width = 200 * scale;
+        const bool waiting = capturing == int(action);
+        char shown[64];
+        if (waiting) std::snprintf(shown, sizeof shown, "%s", tr(keys ? PressKey : PressButton));
+        else if (keys) std::snprintf(shown, sizeof shown, "%s", player[action] ? sfr::key_name(player[action]).c_str() : tr(Unbound));
+        else {
+            const sfr::InputAction source = player.from(action);
+            std::snprintf(shown, sizeof shown, "%s",
+                          size_t(source) < sfr::input_action_count ? action_label(source) : tr(Unbound));
+        }
+        setting_row(action_label(action), nullptr, button_width, scale, [&] {
+            char id[96];
+            std::snprintf(id, sizeof id, "%s##bind%d", shown, int(action));
+            if (ImGui::Button(id, ImVec2(button_width, 0))) {
+                capturing = waiting ? -1 : int(action);
+                if (!keys && capturing >= 0) pad_capture.reset(sfr::poll_pad_buttons());
+            }
+            focus_glow(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), ImGui::GetStyle().FrameRounding,
+                       focus_amount(ImGui::IsItemFocused() && nav_visible()), scale);
+        });
+    }
+
+    void controls_settings() {
+        read_bindings();
+        const float combo_width = 300 * scale;
+        const auto choice = [&](const char* id, Text label, Text hint, std::string& value,
+                                std::initializer_list<std::pair<const char*, Text>> options) {
+            setting_row(tr(label), hint == TextCount ? nullptr : tr(hint), combo_width, scale, [&] {
+                const char* shown = options.begin()->second ? tr(options.begin()->second) : "";
+                for (const auto& [name, text] : options)
+                    if (value == name) shown = tr(text);
+                ImGui::SetNextItemWidth(combo_width);
+                if (ImGui::BeginCombo(id, shown)) {
+                    for (const auto& [name, text] : options) {
+                        const bool chosen = value == name;
+                        if (ImGui::Selectable(tr(text), chosen)) {
+                            value = name;
+                            ::play(sfr::UiSound::confirm);
+                        }
+                        if (chosen) ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+            });
+        };
+        choice("##p1device", PlayerOneDevice, PlayerOneDeviceHint, settings.player1_device,
+               {{"both", DeviceBoth}, {"gamepad", DeviceGamepad}, {"keyboard", DeviceKeyboard}});
+        choice("##p2device", PlayerTwoDevice, PlayerTwoDeviceHint, settings.player2_device,
+               {{"gamepad", DeviceGamepad}, {"keyboard", DeviceKeyboard}, {"off", DeviceOff}});
+
+        // Which controller each player holds, by name. The list is what is
+        // plugged in now, and a name chosen earlier stays on the list even
+        // while its controller is away, so unplugging it does not silently
+        // choose another.
+        const auto pads = sfr::connected_pads();
+        const auto gamepad_row = [&](const char* id, Text label, std::string& chosen, bool enabled) {
+            ImGui::BeginDisabled(!enabled);
+            setting_row(tr(label), tr(GamepadHint), combo_width, scale, [&] {
+                char shown[160];
+                const uint64_t selected = sfr::pad_with_name(chosen, pads);
+                const auto device = std::find_if(pads.begin(), pads.end(),
+                                                [&](const sfr::PadDevice& pad) { return pad.id == selected; });
+                const bool here = device != pads.end();
+                if (chosen.empty()) std::snprintf(shown, sizeof shown, "%s", tr(GamepadAutomatic));
+                else if (here) std::snprintf(shown, sizeof shown, "%s", device->name.c_str());
+                else std::snprintf(shown, sizeof shown, "%s (%s)", chosen.c_str(), tr(GamepadMissing));
+                ImGui::SetNextItemWidth(combo_width);
+                if (ImGui::BeginCombo(id, shown)) {
+                    if (ImGui::Selectable(tr(GamepadAutomatic), chosen.empty())) {
+                        chosen.clear();
+                        ::play(sfr::UiSound::confirm);
+                    }
+                    for (const sfr::PadDevice& pad : pads) {
+                        ImGui::PushID(int(pad.id));
+                        if (ImGui::Selectable(pad.name.c_str(), pad.id == selected)) {
+                            chosen = pad.identity.empty() ? pad.name : pad.identity;
+                            ::play(sfr::UiSound::confirm);
+                        }
+                        ImGui::PopID();
+                    }
+                    if (!chosen.empty() && !here && ImGui::Selectable(shown, true)) {}
+                    ImGui::EndCombo();
+                }
+            });
+            ImGui::EndDisabled();
+        };
+        gamepad_row("##p1gamepad", PlayerOneGamepad, settings.player1_gamepad, settings.player1_device != "keyboard");
+        gamepad_row("##p2gamepad", PlayerTwoGamepad, settings.player2_gamepad, settings.player2_device == "gamepad");
+
+        // Which set the list below changes.
+        setting_row(tr(BindingSet), tr(BindingSetHint), combo_width, scale, [&] {
+            const Text labels[4] = {SetOneKeyboard, SetOnePad, SetTwoKeyboard, SetTwoPad};
+            ImGui::SetNextItemWidth(combo_width);
+            if (ImGui::BeginCombo("##bindingset", tr(labels[binding_set]))) {
+                for (int index = 0; index < 4; ++index) {
+                    if (ImGui::Selectable(tr(labels[index]), index == binding_set)) {
+                        binding_set = index;
+                        capturing = -1;
+                        ::play(sfr::UiSound::confirm);
+                    }
+                    if (index == binding_set) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+        });
+        const bool keys = binding_set % 2 == 0;
+        sfr::InputBindings& player = bindings[binding_set / 2];
+        ImGui::PushStyleColor(ImGuiCol_Text, dim_text);
+        ImGui::PushTextWrapPos(content_width);
+        ImGui::TextUnformatted(tr(keys ? BindingsHint : SticksFixed));
+        ImGui::PopTextWrapPos();
+        ImGui::PopStyleColor();
+        ImGui::Dummy(ImVec2(0, 6 * scale));
+
+        // A pad's sticks are positions rather than presses, so only the
+        // buttons are offered for one.
+        const size_t listed = keys ? sfr::input_action_count : size_t(sfr::InputAction::left_stick_up);
+        for (size_t index = 0; index < listed; ++index) binding_row(sfr::InputAction(index), keys, player);
+
+        if (small_button(tr(ResetBindings), scale)) {
+            const sfr::InputBindings fresh = sfr::default_bindings(uint32_t(binding_set / 2));
+            if (keys) player.key = fresh.key;
+            else player.source = fresh.source;
+            capturing = -1;
+        }
+        // A press while one is waiting binds it. Nav is off meanwhile, so
+        // that the same press does not also move the focus.
+        if (capture_frame && capturing >= 0 && capturing < int(sfr::input_action_count)) {
+            const sfr::InputAction action = sfr::InputAction(capturing);
+            if (keys) {
+                if (const int key = captured_key()) {
+                    player[action] = key;
+                    capturing = -1;
+                    ::play(sfr::UiSound::confirm);
+                }
+            } else if (const auto source = pad_capture.update(sfr::poll_pad_buttons())) {
+                player.from(action) = *source;
+                capturing = -1;
+                ::play(sfr::UiSound::confirm);
+            }
+        }
+        write_bindings();
+    }
+
     void advanced_settings() {
         const float switch_width = ImGui::GetFrameHeight() * 1.9f;
         setting_row(tr(Parallel), tr(ParallelHint), switch_width, scale, [&] { toggle("##parallel", &settings.parallel); });
@@ -1431,6 +1719,8 @@ struct Launcher {
             settings.image_directory = image;
             settings.asset_directory = assets;
             ui_sounds.enabled = settings.ui_sounds;
+            bindings_read = false;  // the Controls page reads them again
+            capturing = -1;
         }
     }
 
@@ -1539,14 +1829,17 @@ struct Launcher {
         const ImVec2 inside(panel_size.x - pad_x * 2, panel_size.y - pad_y * 2);
         ImGui::SetCursorPos(ImVec2(panel_at.x + pad_x + (1.0f - tab_fade) * 24 * scale, panel_at.y + pad_y));
         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * tab_fade);
-        ImGui::BeginChild("settings", inside, false, ImGuiWindowFlags_NoBackground);
-        // A scrollbar, when one appears, takes its width from the rows.
-        content_width = inside.x - (ImGui::GetCurrentWindow()->ScrollbarY ? ImGui::GetStyle().ScrollbarSize : 0.0f);
+        const ImGuiWindowFlags panel_flags = ImGuiWindowFlags_NoBackground |
+            (tab == ControlsTab ? ImGuiWindowFlags_AlwaysVerticalScrollbar : ImGuiWindowFlags_None);
+        ImGui::BeginChild("settings", inside, ImGuiChildFlags_None, panel_flags);
+        // Account for the scrollbar before laying out the rows.
+        content_width = ImGui::GetContentRegionAvail().x;
         ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + content_width);
         switch (tab) {
         case DisplayTab: display_settings(); break;
         case SoundTab: sound_settings(); break;
         case GameTab: game_settings(); break;
+        case ControlsTab: controls_settings(); break;
         case AdvancedTab: advanced_settings(); break;
         case FilesTab: file_settings(); break;
         }
@@ -1563,7 +1856,7 @@ struct Launcher {
         }
         guide(size, {{Prompt::confirm, GuideSelect}, {Prompt::tabs, GuideTabs}, {Prompt::back, GuideQuit}, {Prompt::start, GuidePlay}});
         const bool typing = ImGui::GetIO().WantTextInput;
-        const int step = question != Question::none || typing ? 0
+        const int step = question != Question::none || typing || capture_frame ? 0
             : ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) || ImGui::IsKeyPressed(ImGuiKey_Q, false) || ImGui::IsKeyPressed(ImGuiKey_PageUp, false) ? -1
             : ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) || ImGui::IsKeyPressed(ImGuiKey_E, false) || ImGui::IsKeyPressed(ImGuiKey_PageDown, false) ? 1 : 0;
         if (step) {
@@ -1575,7 +1868,7 @@ struct Launcher {
         const int pressed = actions(size, {{tr(Quit), false}, {tr(StartGame), true}}, 1);
         if (pressed == 0) quit_now = true;
         if (pressed == 1) play();
-        if (ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false) && question == Question::none) { ::play(sfr::UiSound::confirm); play(); }
+        if (!capture_frame && ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false) && question == Question::none) { ::play(sfr::UiSound::confirm); play(); }
     }
 
     void stopped_page(ImVec2 size) {
@@ -1889,9 +2182,23 @@ struct Launcher {
     }
 
     // ------------------------------------------------ frame
+    void configure_navigation() {
+        // Mouse tab changes, installer pages, and starting the game can hide
+        // the waiting row. Cancel it before configuring the next frame's nav.
+        // capture_frame stays latched through the frame that accepted a binding.
+        if (page != Page::Settings || tab != ControlsTab || leaving) capturing = -1;
+        ImGuiIO& io = ImGui::GetIO();
+        // While a control is waiting to be bound, the keys and the pad mean
+        // "this one" and nothing else: navigation would otherwise take the
+        // same press and move the focus away.
+        if (capturing >= 0) io.ConfigFlags &= ~(ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad);
+        else io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
+    }
+
     void frame() {
         ImGuiIO& io = ImGui::GetIO();
         input = last_input(input);
+        capture_frame = capturing >= 0;
         appear = leaving ? approach(appear, 0.0f, 9.0f) : approach(appear, 1.0f, 4.5f);
         page_fade = approach(page_fade, 1.0f, 7.0f);
         if (leaving && appear < 0.03f) launch_now();
@@ -1922,7 +2229,7 @@ struct Launcher {
         // (and Android's back button)
         const bool back_pressed = ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
                                   ImGui::IsKeyPressed(ImGuiKey_AppBack, false);
-        if (back_pressed && !asking && question == Question::none && !leaving && !ImGui::IsAnyItemActive() &&
+        if (!capture_frame && back_pressed && !asking && question == Question::none && !leaving && !ImGui::IsAnyItemActive() &&
             !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId))
             back();
         ImGui::End();
@@ -2049,9 +2356,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
         }
         if (IsIconic(window)) { Sleep(16); continue; }
 
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
         feed_sony_pad();
+        launcher.configure_navigation();
         ImGui::NewFrame();
         launcher.frame();
         ImGui::Render();
@@ -2215,9 +2524,12 @@ int main(int argc, char** argv) {
         }
         if (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED) { SDL_Delay(16); continue; }
 
+        // SDL still requires this flag to poll buttons for binding capture.
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
         ImGui_ImplSDLRenderer2_NewFrame();
         ImGui_ImplSDL2_NewFrame();
         feed_sony_pad();
+        launcher.configure_navigation();
         ImGui::NewFrame();
         launcher.frame();
         ImGui::Render();

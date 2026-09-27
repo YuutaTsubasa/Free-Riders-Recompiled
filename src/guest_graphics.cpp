@@ -552,8 +552,6 @@ uint32_t GuestGraphics::create_device(uint32_t adapter, uint32_t mode, uint32_t 
     memory_.store<uint32_t>(device_address+0x5E88,0x0C000000);
     memory_.store<uint32_t>(output,device_address);
     impl_ = std::move(next);
-    std::cerr << "NATIVE_GRAPHICS backend=" << graphics_backend_name(graphics_.backend()) << " adapter="
-              << graphics_.device().getDescription().name << '\n';
     std::cerr << "NATIVE_BLEND_DEFAULTS table=0x82ad0a60 requested=0x" << std::hex
               << blend_defaults.requested << " flags=0x" << blend_defaults.flags
               << " effective=0x" << blend_defaults.effective << std::dec << " targets=4\n";

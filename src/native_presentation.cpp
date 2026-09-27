@@ -771,9 +771,11 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height) {
     impl_->presented_area = part ? std::pair{area_width, area_height} : std::pair{impl_->width, impl_->height};
     const auto [shown_width, shown_height] = impl_->presented_area;
     // Scaled into the window keeping its shape, the rest black; a straight
-    // copy when the window is exactly the framebuffer.
+    // copy when the window is exactly the framebuffer and supports transfers.
     const uint32_t out_width = impl_->swap_chain->getWidth(), out_height = impl_->swap_chain->getHeight();
-    const bool stretch = part || out_width != impl_->width || out_height != impl_->height;
+    const bool can_copy = impl_->graphics->backend() != GraphicsBackend::vulkan ||
+        (static_cast<plume::VulkanSwapChain*>(impl_->swap_chain.get())->createInfo.imageUsage & VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    const bool stretch = !can_copy || part || out_width != impl_->width || out_height != impl_->height;
     // The copy to the swap-chain texture follows the frame's draws in their
     // own list; pipelined, the frame is submitted without waiting for it.
     const bool pipelined = Impl::pipelined();

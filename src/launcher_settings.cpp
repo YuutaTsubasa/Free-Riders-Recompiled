@@ -61,6 +61,16 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         else if (key == "camera" && (value == "off" || value == "picture" || value == "motion")) settings.camera = value;
         else if (key == "camera_device" && value.size() <= 128) settings.camera_device = value;
         else if (key == "camera_mirror") read_flag(value, settings.camera_mirror);
+        else if (key == "player1_device" && (value == "both" || value == "gamepad" || value == "keyboard"))
+            settings.player1_device = value;
+        else if (key == "player2_device" && (value == "gamepad" || value == "keyboard" || value == "off"))
+            settings.player2_device = value;
+        else if (key == "player1_gamepad" && value.size() <= 128) settings.player1_gamepad = value;
+        else if (key == "player2_gamepad" && value.size() <= 128) settings.player2_gamepad = value;
+        else if (key == "player1_keys" && value.size() <= 1024) settings.player1_keys = value;
+        else if (key == "player1_pad" && value.size() <= 1024) settings.player1_pad = value;
+        else if (key == "player2_keys" && value.size() <= 1024) settings.player2_keys = value;
+        else if (key == "player2_pad" && value.size() <= 1024) settings.player2_pad = value;
         else if (key == "language" && (value == "auto" || value == "en" || value == "zh-TW")) settings.language = value;
         else if (key == "image_directory") settings.image_directory = utf8_path(value);
         else if (key == "asset_directory") settings.asset_directory = utf8_path(value);
@@ -89,6 +99,14 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "camera=" << s.camera << '\n'
         << "camera_device=" << s.camera_device << '\n'
         << "camera_mirror=" << s.camera_mirror << '\n'
+        << "player1_device=" << s.player1_device << '\n'
+        << "player2_device=" << s.player2_device << '\n'
+        << "player1_gamepad=" << s.player1_gamepad << '\n'
+        << "player2_gamepad=" << s.player2_gamepad << '\n'
+        << "player1_keys=" << s.player1_keys << '\n'
+        << "player1_pad=" << s.player1_pad << '\n'
+        << "player2_keys=" << s.player2_keys << '\n'
+        << "player2_pad=" << s.player2_pad << '\n'
         << "language=" << s.language << '\n'
         << "image_directory=" << path_utf8(s.image_directory) << '\n'
         << "asset_directory=" << path_utf8(s.asset_directory) << '\n';
@@ -148,6 +166,16 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         {"SFR_CAMERA", s.camera == "off" ? "" : s.camera},
         {"SFR_CAMERA_DEVICE", s.camera_device},
         {"SFR_CAMERA_MIRROR", s.camera_mirror ? "1" : "0"},
+        // Controls: who plays with what, and which button does what. Empty
+        // removes the variable, and the game then uses its own defaults.
+        {"SFR_PLAYER1_INPUT", s.player1_device},
+        {"SFR_PLAYER2_INPUT", s.player2_device},
+        {"SFR_PLAYER1_GAMEPAD", s.player1_gamepad},
+        {"SFR_PLAYER2_GAMEPAD", s.player2_gamepad},
+        {"SFR_PLAYER1_KEYS", s.player1_keys},
+        {"SFR_PLAYER1_PAD", s.player1_pad},
+        {"SFR_PLAYER2_KEYS", s.player2_keys},
+        {"SFR_PLAYER2_PAD", s.player2_pad},
 #ifdef __ANDROID__
         {"SFR_TOUCH_CONTROLS", s.touch_controls ? "1" : "0"},
         {"SFR_TILT", s.tilt ? "1" : "0"},
