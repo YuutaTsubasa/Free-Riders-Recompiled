@@ -8,15 +8,20 @@ if (-not $vsRoot) { throw 'Visual Studio C++ desktop tools are required.' }
 $vcvars = Join-Path $vsRoot 'VC\Auxiliary\Build\vcvars64.bat'
 $compiler = Join-Path $env:ProgramFiles 'LLVM\bin\clang-cl.exe'
 if (-not (Test-Path -LiteralPath $compiler)) { throw "Install LLVM with clang-cl at $compiler" }
-# Import the compiler/SDK environment into this process only.
-$environmentLines = & $env:COMSPEC /d /s /c "`"$vcvars`" >nul && set"
-if ($LASTEXITCODE -ne 0) { throw 'vcvars64 failed.' }
-foreach ($line in $environmentLines) {
-    if ($line -match '^([^=]+)=(.*)$') {
-        [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], 'Process')
+# Import the compiler/SDK environment into this process only. The session
+# keeps it, so a second run in the same window finds it there: running
+# vcvars64 again would add to PATH each time until cmd refuses the line.
+if ($env:VSCMD_ARG_TGT_ARCH -ne 'x64' -or -not $env:VCToolsInstallDir) {
+    $environmentLines = & $env:COMSPEC /d /s /c "`"$vcvars`" >nul && set"
+    if ($LASTEXITCODE -ne 0) { throw 'vcvars64 failed (if it says the input line is too long, open a new window).' }
+    foreach ($line in $environmentLines) {
+        if ($line -match '^([^=]+)=(.*)$') {
+            [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], 'Process')
+        }
     }
 }
-$env:PATH = (Split-Path -Parent $compiler) + ';' + $env:PATH
+$llvmBin = Split-Path -Parent $compiler
+if (-not $env:PATH.StartsWith($llvmBin + ';')) { $env:PATH = $llvmBin + ';' + $env:PATH }
 $source = $repoRoot
 $build = Join-Path $repoRoot 'out\build\host'
 $diagnosticOption = if ($Diagnostic) { 'ON' } else { 'OFF' }
