@@ -139,6 +139,12 @@ GamepadState nui_gamepad();
 // that is depends on who the first player is -- the second pad normally, but
 // the first pad once a camera has taken the first player's body over.
 std::optional<GamepadState> nui_second_gamepad(uint32_t user, bool racing);
+// The second player's pad as the Kinect emulation last read it, for the race
+// hooks: which pad that is depends on whether a camera has the first
+// player's body, and nui_hooks.cpp is where that is decided. Empty when
+// there is no second player.
+std::optional<GamepadState> second_player_pad();
+void publish_second_player_pad(const std::optional<GamepadState>& pad);
 void start_nui_skeleton_events(uint32_t event_handle);
 void stop_nui_skeleton_events();
 }

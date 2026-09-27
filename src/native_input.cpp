@@ -151,8 +151,13 @@ bool uses_keyboard(uint8_t device) {
 }
 
 std::optional<GamepadState> NativeInput::current(uint32_t user) const {
-    const Player& player = players_[user < players_.size() ? user : 0];
-    std::optional<GamepadState> state = controller(user);
+    if (user >= players_.size()) return std::nullopt;
+    const Player& player = players_[user];
+    std::optional<GamepadState> state;
+    if (uses_pad(player.device)) {
+        state = pad_(user);
+        if (state && player.pad) state = remap_pad(*player.pad, *state);
+    }
     if (uses_keyboard(player.device)) {
         // The first player's keyboard is the one the factory always made;
         // anybody else brings their own.
@@ -160,6 +165,7 @@ std::optional<GamepadState> NativeInput::current(uint32_t user) const {
         if (keys) state = merge_gamepads(state.value_or(GamepadState{}), keys());
     }
     if (user == 0) state = merge_gamepads(state.value_or(GamepadState{}), script_());
+    if (user == 1 && second_script_) state = merge_gamepads(state.value_or(GamepadState{}), second_script_());
     // The title polls user 0 every frame and stops when it is not there, so
     // that user stays connected even with every device taken away.
     if (user == 0 && !state) state = GamepadState{};
@@ -167,9 +173,20 @@ std::optional<GamepadState> NativeInput::current(uint32_t user) const {
 }
 
 std::optional<GamepadState> NativeInput::controller(uint32_t user) const {
-    if (user >= players_.size() || !uses_pad(players_[user].device)) return std::nullopt;
-    auto state = pad_(user);
-    if (state && players_[user].pad) state = remap_pad(*players_[user].pad, *state);
+    if (user >= players_.size()) return std::nullopt;
+    const Player& player = players_[user];
+    // A scripted second pad is a pad: the title counts its players by who is
+    // holding one, so a script that only reached current() would move a
+    // second player who never arrives. A player on the keyboard counts the
+    // same way, which is what lets two people share one machine.
+    std::optional<GamepadState> state;
+    if (uses_pad(player.device)) {
+        state = pad_(user);
+        if (state && player.pad) state = remap_pad(*player.pad, *state);
+    }
+    if (user != 0 && uses_keyboard(player.device) && player.keyboard)
+        state = merge_gamepads(state.value_or(GamepadState{}), player.keyboard());
+    if (user == 1 && second_script_) state = merge_gamepads(state.value_or(GamepadState{}), second_script_());
     return state;
 }
 
@@ -525,14 +542,16 @@ NativeInput NativeInput::host(std::function<void*()> focus_window, std::function
 #endif
 
 void NativeInput::attach_script(std::function<double()> script_clock) {
-    const char* script = std::getenv("SFR_INPUT_SCRIPT");
-    if (!script || !*script) return;
     const auto started = std::chrono::steady_clock::now();
-    scripted_gamepad(script, 0);  // validate before the title runs
-    script_ = [text = std::string(script), started, script_clock = std::move(script_clock)] {
-        const double seconds = script_clock ? script_clock()
-            : std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
-        return seconds < 0 ? GamepadState{} : scripted_gamepad(text, seconds);
+    const auto reader = [started, script_clock](const char* text) {
+        scripted_gamepad(text, 0);  // validate before the title runs
+        return [script = std::string(text), started, script_clock]() {
+            const double seconds = script_clock ? script_clock()
+                : std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+            return seconds < 0 ? GamepadState{} : scripted_gamepad(script, seconds);
+        };
     };
+    if (const char* script = std::getenv("SFR_INPUT_SCRIPT"); script && *script) script_ = reader(script);
+    if (const char* script = std::getenv("SFR_INPUT_SCRIPT_2"); script && *script) second_script_ = reader(script);
 }
 }

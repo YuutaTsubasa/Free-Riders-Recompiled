@@ -586,6 +586,24 @@ std::optional<GamepadState> nui_second_gamepad(uint32_t user, bool racing) {
     return input().controller(user);
 }
 
+// The second player's pad, as nui_hooks last read it. The race hooks read
+// it from another thread's call, so it is kept behind a lock rather than
+// assumed to be one word.
+namespace {
+std::mutex second_pad_lock;
+std::optional<GamepadState> second_pad_state;
+}
+
+void publish_second_player_pad(const std::optional<GamepadState>& pad) {
+    std::lock_guard guard(second_pad_lock);
+    second_pad_state = pad;
+}
+
+std::optional<GamepadState> second_player_pad() {
+    std::lock_guard guard(second_pad_lock);
+    return second_pad_state;
+}
+
 static std::jthread nui_events;
 void start_nui_skeleton_events(uint32_t event_handle) {
     std::shared_ptr<NativeSyncObjects::RetainedEvent> event = native_sync_objects->retain_event(event_handle);

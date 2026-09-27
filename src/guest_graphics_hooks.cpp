@@ -1134,13 +1134,12 @@ SFR_HOOK(sub_824E96C8) {
         std::cerr << " target=0x" << std::hex << target
                   << std::dec << " back_buffer=" << memory.load<uint32_t>(uint64_t(ctx.r3.u32)+0x35BC)
                   << "x" << memory.load<uint32_t>(uint64_t(ctx.r3.u32)+0x35C0);
-        // One of the title's own surfaces carries a texture fetch constant at
-        // +28, which names the size the viewport is in.
-        if(target && target!=sfr::GuestGraphics::color_handle) try {
-            sfr::FetchWords words{};
-            for(size_t i=0;i<words.size();++i) words[i]=memory.load<uint32_t>(uint64_t(target)+28+i*4);
-            const auto fetch=sfr::decode_texture_fetch(words);
-            std::cerr << " surface=" << fetch.width << "x" << fetch.height << " format=" << fetch.format;
+        // Render-surface dimensions use the +36 layout read by sub_824E9460,
+        // not the texture-fetch layout at the same offset in a texture.
+        if(target && target!=sfr::GuestGraphics::color_handle && target!=sfr::GuestGraphics::depth_handle) try {
+            const uint32_t size=memory.load<uint32_t>(uint64_t(target)+36);
+            std::cerr << " surface=" << (((size>>18)&0x3FFFu)+1)
+                      << "x" << (((size>>3)&0x7FFFu)+1);
         } catch(const sfr::RuntimeStop&) {
             std::cerr << " surface=unreadable";
         }

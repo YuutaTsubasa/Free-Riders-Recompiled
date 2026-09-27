@@ -6,7 +6,9 @@
 #include <cstdlib>
 #include <cmath>
 #include <iostream>
+#include <algorithm>
 #include <unordered_map>
+#include <vector>
 
 // Race controls (see nui_race.h). Gesture detectors are called as
 // detect(detector, source, results): source's vtable[1] returns the player's
@@ -17,11 +19,18 @@
 // reports are the ones the original detectors set.
 
 namespace {
-sfr::RaceInput race;
+// One set of controls per player: the first from the pad the Kinect
+// emulation calls the first player's, the second from the pad beside them.
+sfr::RaceInput race[2];
+// A body record each. The title keeps one pointer for all of its players
+// (the Kinect manager's +0x78), but each player object holds its own at +4,
+// which is the only way two of them can feel different things.
 constexpr uint32_t body_address = 0x71730000, body_mapping = 0x2000;
 constexpr uint32_t nui_box = 0x83E52F88, race_flag = 0x83E52F8C, time_global = 0x83E516A0;
 bool swapped = false;
 uint32_t original_body = 0;
+uint32_t active_box = 0;
+bool two_players = false;
 
 sfr::GuestMemory& memory() { return *sfr::active_memory; }
 float load_float(uint32_t address) { return std::bit_cast<float>(memory().load<uint32_t>(address)); }
@@ -62,6 +71,9 @@ uint32_t body_of_source(PPCContext& ctx, uint8_t* base, uint32_t source, uint32_
     const uint32_t method = m.load<uint32_t>(uint64_t(vtable) + 4);
     if (!method) return 0;
     if (which) *which = method;
+    // The reader used by the title's race objects is exactly
+    // lwz r3,4(r3); blr. Read its live pointer without a guest call.
+    if (method == 0x82918418) return m.load<uint32_t>(uint64_t(object) + 4);
     PPCContext saved = ctx;
     ctx.r3.u64 = object;
     sfr::call_indirect(ctx, base, method);
@@ -99,7 +111,64 @@ uint32_t entry(uint32_t results, uint32_t index_offset = 8) {
 void set_bits(uint32_t address, uint32_t bits) { memory().store<uint32_t>(address, memory().load<uint32_t>(address) | bits); }
 void set_byte(uint32_t address, uint8_t value) { memory().store<uint8_t>(address, value); }
 
-const sfr::RaceBody& body() { return race.body(); }
+// Which player a detector is being asked about, and where that player's
+// body record lives.
+//
+// A two-player race asks through four objects, two for each player, and a
+// log of a real one says how to tell them apart: the first player's objects
+// answer with the Kinect manager's record -- ours, because we put it there
+// -- and the second player's answer with one of their own. So the record an
+// object answers with identifies the player. Loading can replace an object
+// behind the same source, or change its record, so resolve the live pointer
+// each time. The original manager record is also a first-player alias.
+//
+// The second player's own record is also where their controls go: the title
+// built it and keeps it up to date, and writing the pad's fields over it
+// leaves everything else exactly as the title left it.
+// This map only suppresses repeated diagnostics; no stored address is ever
+// dereferenced later. Every body write requires a current guest consumer.
+std::unordered_map<uint32_t, uint32_t> source_records;
+// Valid only on the stack of a live guest race consumer. Never replay a
+// saved source after that call: Loading can free it without changing the
+// manager or body record.
+thread_local uint32_t live_race_source = 0;
+struct RaceSourceScope {
+    uint32_t previous = live_race_source;
+    explicit RaceSourceScope(uint32_t source) { live_race_source = source; }
+    ~RaceSourceScope() { live_race_source = previous; }
+};
+
+uint32_t player_of_record(uint32_t record) {
+    // One player's race is asked about through two objects of their own, so
+    // telling players apart is only right when there really are two.
+    if (!two_players) return 0;
+    // SFR_RACE_TWO_PLAYERS=0 puts both riders back on the first pad, which
+    // is what they shared before any of this.
+    static const bool split = [] { const char* t = std::getenv("SFR_RACE_TWO_PLAYERS");
+                                   return !t || !*t || *t != '0'; }();
+    if (!split) return 0;
+    static const bool swap = [] { const char* t = std::getenv("SFR_RACE_PLAYERS_SWAP");
+                                  return t && *t && *t != '0'; }();
+    const uint32_t player = record && record != body_address && record != original_body ? 1u : 0u;
+    return swap ? 1u - player : player;
+}
+
+uint32_t player_of_source(PPCContext& ctx, uint8_t* base, uint32_t source) {
+    if (!two_players) return 0;
+    const uint32_t record = body_of_source(ctx, base, source);
+    const auto previous = source_records.find(source);
+    if (record && record != body_address && record != original_body &&
+        (previous == source_records.end() || previous->second != record))
+        std::cerr << "NUI_RACE_SECOND_BODY record=0x" << std::hex << record << " source=0x" << source
+                  << std::dec << char(10);
+    source_records[source] = record;
+    const uint32_t player = player_of_record(record);
+    if (record) race[player].write(memory(), record);
+    return player;
+}
+
+const sfr::RaceBody& body() { return race[0].body(); }
+
 }
 
 PPC_FUNC_IMPL(__imp__sub_82438930);
@@ -114,13 +183,25 @@ SFR_HOOK(sub_82438930) {
     // SFR_NO_RACE_BODY leaves the title's own body record in place.
     static const bool disabled = std::getenv("SFR_NO_RACE_BODY") != nullptr;
     const bool racing = !disabled && m.load<uint32_t>(race_flag) != 0;
-    race.update(sfr::nui_gamepad(), frame_seconds());
+    const float seconds = frame_seconds();
+    race[0].update(sfr::nui_gamepad(), seconds);
+    const auto second_pad = sfr::second_player_pad();
+    if (second_pad) race[1].update(*second_pad, seconds);
+    else race[1] = sfr::RaceInput{};  // loss of a pad is not an A/X release gesture
     if (box && racing) {
         if (m.available(body_address, body_mapping)) {
             m.map(body_address, body_mapping);
             for (uint32_t offset = 0; offset < body_mapping; offset += 4) m.store<uint32_t>(body_address + offset, 0);
         }
         const uint32_t current = m.load<uint32_t>(box + 0x78);
+        if (box != active_box || (current != body_address && current != original_body)) {
+            source_records.clear();
+        }
+        active_box = box;
+        // A disconnected second pad becomes neutral, never the first pad.
+        // Manager/body replacement during Loading does not end ownership;
+        // only leaving the race clears it.
+        two_players = two_players || second_pad.has_value();
         if (current != body_address) {
             original_body = current;
             m.store<uint32_t>(box + 0x78, body_address);
@@ -134,7 +215,7 @@ SFR_HOOK(sub_82438930) {
             for (uint32_t offset = 0; offset < sfr::race_body_size; offset += 4)
                 m.store<uint32_t>(body_address + offset, m.load<uint32_t>(original_body + offset));
         swapped = true;
-        race.write(m, body_address);
+        race[player_of_record(body_address)].write(m, body_address);
         // SFR_RACE_BODY_DUMP=N: every N frames, the record's non-zero floats.
         // The title fills the rest from the skeleton, so this shows what the
         // race reads besides the pad's fields.
@@ -156,9 +237,40 @@ SFR_HOOK(sub_82438930) {
     } else if (swapped) {
         if (box && m.load<uint32_t>(box + 0x78) == body_address) m.store<uint32_t>(box + 0x78, original_body);
         swapped = false;
+        source_records.clear();  // no active manager/body for these diagnostics
+        active_box = 0;
         std::cerr << "NUI_RACE_BODY restored original=0x" << std::hex << original_body << std::dec << '\n';
     }
+    // Loading can briefly remove the manager while the race remains active.
+    // Preserve ownership then, but clear it on the real exit even if that
+    // missing-manager frame already removed the injected body.
+    if (!racing) two_players = false;
     __imp__sub_82438930(ctx, base);
+}
+
+PPC_FUNC_IMPL(__imp__sub_822C6200);
+PPC_FUNC_IMPL(__imp__sub_82918418);
+
+// This original race consumer updates source->object through vtable[2],
+// then reads its body through vtable[1] before calculating lean. Keep that
+// order and the title's calculations; patch only the live reader result.
+SFR_HOOK(sub_822C6200) {
+    sfr::enter_function(ctx, "sub_822C6200", 0x822C6200);
+    RaceSourceScope scope(pad_racing() ? ctx.r3.u32 : 0);
+    __imp__sub_822C6200(ctx, base);
+}
+
+// 82918418 is a shared accessor, so calls outside the live race source's
+// update retain their original behavior. The scope restores on exceptions
+// and is thread-local because guest consumers can run on different threads.
+SFR_HOOK(sub_82918418) {
+    sfr::enter_function(ctx, "sub_82918418", 0x82918418);
+    const uint32_t object = ctx.r3.u32;
+    __imp__sub_82918418(ctx, base);
+    const uint32_t record = ctx.r3.u32;
+    if (pad_racing() && live_race_source && record &&
+        memory().load<uint32_t>(live_race_source) == object)
+        race[player_of_record(record)].write(memory(), record);
 }
 
 // One detector override: while the pad drives the race the body decides,
@@ -171,7 +283,7 @@ SFR_HOOK(sub_82438930) {
         const uint32_t detector = ctx.r3.u32, source = ctx.r4.u32, results = ctx.r5.u32; \
         (void)detector; (void)source; (void)results;                           \
         note_detector_source(ctx, base, 0x##address, source);                  \
-        const sfr::RaceBody& b = body();                                       \
+        const sfr::RaceBody& b = race[player_of_source(ctx, base, source)].body(); \
         uint32_t result = 0;                                                   \
         __VA_ARGS__                                                            \
         ctx.r3.u64 = result;                                                   \
