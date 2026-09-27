@@ -2,6 +2,7 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -42,6 +43,9 @@ GamepadState merge_gamepads(const GamepadState& first, const GamepadState& secon
 // Big-endian XINPUT_STATE: packet number, then XINPUT_GAMEPAD.
 void write_xinput_state(GuestMemory& memory, uint32_t address, uint32_t packet, const GamepadState& state);
 
+struct InputBindings;
+enum class PlayerDevice : uint8_t;
+
 class NativeInput {
 public:
     // pad(user) reads a host controller; keyboard() reads the fallback keys
@@ -65,10 +69,19 @@ public:
     static NativeInput sdl(std::function<void*()> focus_window, std::function<double()> script_clock = {});
     // windows() on Windows, sdl() elsewhere.
     static NativeInput host(std::function<void*()> focus_window, std::function<double()> script_clock = {});
+    // Configure an input slot without changing the release's supported game modes.
+    void set_player(uint32_t user, PlayerDevice device, std::shared_ptr<const InputBindings> pad,
+                    std::function<GamepadState()> keyboard = {});
 private:
     void attach_script(std::function<double()> script_clock);
     std::function<std::optional<GamepadState>(uint32_t)> pad_;
     std::function<GamepadState()> keyboard_;
+    struct Player {
+        uint8_t device = 0;
+        std::shared_ptr<const InputBindings> pad;
+        std::function<GamepadState()> keyboard;
+    };
+    std::array<Player, 4> players_{};
     std::function<GamepadState()> script_ = [] { return GamepadState{}; };
     std::function<bool(uint32_t, uint16_t, uint16_t)> vibrate_ = [](uint32_t, uint16_t, uint16_t) { return false; };
     std::array<GamepadState, 4> last_{};

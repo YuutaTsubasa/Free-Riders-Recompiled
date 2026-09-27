@@ -72,6 +72,32 @@ void environment_follows_settings() {
         require(parsed.language == "zh-TW", "the launcher language survives a save");
         require(sfr::parse_launcher_settings("language=klingon\n").language == "auto", "an unknown language is the system's");
     }
+    {
+        // Controls: the first player has the keyboard behind their pad and
+        // the second waits for one to be plugged in, which is what this did
+        // before any of it could be changed.
+        require(value_of(settings, "SFR_PLAYER1_INPUT") == "both" &&
+                value_of(settings, "SFR_PLAYER2_INPUT") == "gamepad", "the devices each player starts with");
+        require(value_of(settings, "SFR_PLAYER1_KEYS").empty() && value_of(settings, "SFR_PLAYER2_PAD").empty(),
+                "and no bindings, so the game uses its own");
+        sfr::LauncherSettings controls;
+        controls.player2_device = "keyboard";
+        controls.player2_keys = "a=G,b=H";
+        controls.player1_pad = "a=b,b=a";
+        controls.player1_gamepad = "PlayStation controller";
+        controls.player2_gamepad = "Controller 2";
+        const auto parsed = sfr::parse_launcher_settings(sfr::format_launcher_settings(controls));
+        require(parsed.player2_device == "keyboard" && parsed.player2_keys == "a=G,b=H" &&
+                parsed.player1_pad == "a=b,b=a", "the controls survive a save");
+        require(value_of(controls, "SFR_PLAYER2_KEYS") == "a=G,b=H", "and reach the game");
+        require(parsed.player1_gamepad == controls.player1_gamepad && parsed.player2_gamepad == controls.player2_gamepad,
+                "each controller choice survives a save");
+        require(value_of(controls, "SFR_PLAYER1_GAMEPAD") == controls.player1_gamepad &&
+                value_of(controls, "SFR_PLAYER2_GAMEPAD") == controls.player2_gamepad,
+                "each controller choice reaches the game");
+        require(sfr::parse_launcher_settings("player2_device=mouse\n").player2_device == "gamepad",
+                "a device nobody has is ignored");
+    }
     require(value_of(settings, "SFR_FULLSCREEN") == "0" && value_of(settings, "SFR_WINDOW_WIDTH") == "1280",
             "windowed 1280x720 by default");
     settings.fullscreen = true;

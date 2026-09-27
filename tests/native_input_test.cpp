@@ -1,4 +1,5 @@
 #include "native_input.h"
+#include "input_bindings.h"
 #include "sony_gamepad.h"
 #include <vector>
 #include "guest_memory.h"
@@ -116,11 +117,30 @@ void run() {
     stops([&] { input.get_state(memory, 4, 0x10000030); }, "user 4 must stop");
     playstation_reports();
 }
+
+void player_settings_route_and_remap_input() {
+    auto bindings = std::make_shared<sfr::InputBindings>(sfr::default_bindings(0));
+    bindings->from(sfr::InputAction::a) = sfr::InputAction::b;
+    bindings->from(sfr::InputAction::b) = sfr::InputAction::a;
+    sfr::NativeInput input([](uint32_t) { return std::optional(sfr::GamepadState{button::b}); },
+                           [] { return sfr::GamepadState{button::start}; });
+    input.set_player(0, sfr::PlayerDevice::gamepad, bindings);
+    require(input.current(0)->buttons == button::a, "gamepad-only applies remapping and excludes the keyboard");
+    input.set_player(0, sfr::PlayerDevice::keyboard, bindings);
+    require(input.current(0)->buttons == button::start, "keyboard-only excludes the pad");
+    input.set_player(0, sfr::PlayerDevice::both, bindings);
+    require(input.current(0)->buttons == (button::a | button::start), "both sources merge after pad remapping");
+    input.set_player(1, sfr::PlayerDevice::keyboard, bindings, [] { return sfr::GamepadState{button::x}; });
+    require(input.current(1)->buttons == button::x, "the second input slot has its own keyboard reader");
+    input.set_player(1, sfr::PlayerDevice::off, bindings);
+    require(!input.current(1), "an off input slot is disconnected even with a controller present");
+}
 }
 
 int main() {
     try {
         run();
+        player_settings_route_and_remap_input();
         std::cout << "native input tests passed\n";
         return 0;
     } catch (const std::exception& error) {

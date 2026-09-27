@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
 #include <stdexcept>
 #include <sstream>
 #include <thread>
@@ -93,6 +94,7 @@ void NativeGraphics::initialize() {
     if (impl_) return;
     const GraphicsBackend backend = selected_graphics_backend();
     const char* name = graphics_backend_name(backend);
+    std::cerr << "NATIVE_GRAPHICS_INITIALIZE backend=" << name << '\n';
 
 #ifdef _WIN32
     auto render_interface = backend == GraphicsBackend::vulkan ? plume::CreateVulkanInterface() : plume::CreateD3D12Interface();
@@ -120,6 +122,8 @@ void NativeGraphics::initialize() {
     auto render_device = render_interface->createDevice();
     if (!render_device)
         throw std::runtime_error(std::string("failed to create a ") + name + " render device");
+    std::cerr << "NATIVE_GRAPHICS backend=" << name << " adapter="
+              << render_device->getDescription().name << '\n';
 
     auto render_queue = render_device->createCommandQueue(plume::RenderCommandListType::DIRECT);
     if (!render_queue)

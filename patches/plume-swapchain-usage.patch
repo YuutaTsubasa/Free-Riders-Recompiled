@@ -1,0 +1,43 @@
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -2309,9 +2309,13 @@
+         // Destroy any image view references to the current swap chain.
+         releaseImageViews();
+ 
+-        // We don't actually need to query the surface capabilities but the validation layer seems to cache the valid extents from this call.
++        // Optional image usages vary by surface and must be queried again on resize.
+         VkSurfaceCapabilitiesKHR surfaceCapabilities = {};
+-        vkGetPhysicalDeviceSurfaceCapabilitiesKHR(commandQueue->device->physicalDevice, surface, &surfaceCapabilities);
++        VkResult res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(commandQueue->device->physicalDevice, surface, &surfaceCapabilities);
++        if (res != VK_SUCCESS) {
++            fprintf(stderr, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR failed with error code 0x%X.\n", res);
++            return false;
++        }
+ 
+         createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+         createInfo.surface = surface;
+@@ -2321,7 +2325,8 @@
+         createInfo.imageExtent.width = width;
+         createInfo.imageExtent.height = height;
+         createInfo.imageArrayLayers = 1;
+-        createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
++        createInfo.imageUsage = (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT)
++            & surfaceCapabilities.supportedUsageFlags;
+         createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+         createInfo.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+         createInfo.compositeAlpha = pickedAlphaFlag;
+@@ -2329,9 +2334,13 @@
+         createInfo.clipped = VK_TRUE;
+         createInfo.oldSwapchain = vk;
+ 
+-        VkResult res = vkCreateSwapchainKHR(commandQueue->device->vk, &createInfo, nullptr, &vk);
++        res = vkCreateSwapchainKHR(commandQueue->device->vk, &createInfo, nullptr, &vk);
+         if (res != VK_SUCCESS) {
+             fprintf(stderr, "vkCreateSwapchainKHR failed with error code 0x%X.\n", res);
++            fprintf(stderr, "Swap chain: extent=%ux%u images=%u format=%u colorSpace=%u usage=0x%X supportedUsage=0x%X presentMode=%u transform=0x%X alpha=0x%X.\n",
++                width, height, createInfo.minImageCount, unsigned(createInfo.imageFormat), unsigned(createInfo.imageColorSpace),
++                createInfo.imageUsage, surfaceCapabilities.supportedUsageFlags, unsigned(createInfo.presentMode),
++                unsigned(createInfo.preTransform), unsigned(createInfo.compositeAlpha));
+             return false;
+         }
+ 

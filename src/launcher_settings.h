@@ -23,6 +23,17 @@ struct LauncherSettings {
     bool vulkan = false;             // SFR_GRAPHICS=vulkan instead of Direct3D 12
     bool touch_controls = true;      // SFR_TOUCH_CONTROLS (Android)
     bool tilt = true;                // SFR_TILT: tilt to steer (Android)
+    // Controls (input_bindings.h). The devices each player uses, and how
+    // their keys and pad buttons are arranged, as "a=Z,b=X,..." lines. An
+    // empty line means the defaults, so a settings file written before any
+    // of this existed plays exactly as it did.
+    std::string player1_device = "both";     // "both", "gamepad" or "keyboard"
+    std::string player2_device = "gamepad";  // "gamepad", "keyboard" or "off"
+    std::string player1_keys, player1_pad, player2_keys, player2_pad;
+    // Which controller each player uses, by the name the host lists it under
+    // (pad_devices.h). SDL device indices can change when a pad is plugged in.
+    // Empty means whichever one the host offers first.
+    std::string player1_gamepad, player2_gamepad;
     std::string language = "auto";   // the launcher's: "auto" (the system's), "en" or "zh-TW"
     std::filesystem::path image_directory, asset_directory;
 };
