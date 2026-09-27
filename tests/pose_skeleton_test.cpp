@@ -4,6 +4,7 @@
 #include <utility>
 #include <iostream>
 #include <stdexcept>
+#include <limits>
 
 namespace {
 void require(bool value, const char* message) {
@@ -18,14 +19,12 @@ sfr::PoseLandmarks standing() {
     const auto put = [&](uint32_t point, float x, float y) { landmarks[point] = {x, y, 0.9f}; };
     put(nose, 320, 120);
     // A camera faces the player, so the player's right is the picture's left.
-    // Shoulders about three quarters as wide as the torso is long, as
-    // people's are (the torso, 130 px, is what the picture is scaled by).
-    put(shoulder_left, 369, 170);
-    put(shoulder_right, 271, 170);
-    put(elbow_left, 379, 230);
-    put(elbow_right, 261, 230);
-    put(wrist_left, 384, 290);
-    put(wrist_right, 256, 290);
+    put(shoulder_left, 360, 170);
+    put(shoulder_right, 280, 170);
+    put(elbow_left, 370, 230);
+    put(elbow_right, 270, 230);
+    put(wrist_left, 375, 290);
+    put(wrist_right, 265, 290);
     put(hip_left, 345, 300);
     put(hip_right, 295, 300);
     put(knee_left, 348, 380);
@@ -102,103 +101,104 @@ void what_is_refused() {
     require(!sfr::pose_to_joints(nothing, 640, 480, joints), "no confidence, no skeleton");
     require(!sfr::pose_to_joints(standing(), 0, 480, joints), "an empty picture is refused");
     sfr::PoseLandmarks squashed = standing();
-    for (const uint32_t point : {sfr::pose_point::hip_left, sfr::pose_point::hip_right})
-        squashed[point].y = squashed[sfr::pose_point::shoulder_left].y;
-    require(!sfr::pose_to_joints(squashed, 640, 480, joints), "hips level with the shoulders cannot be scaled by");
+    squashed[sfr::pose_point::shoulder_left].x = squashed[sfr::pose_point::shoulder_right].x;
+    require(!sfr::pose_to_joints(squashed, 640, 480, joints), "shoulders at one point cannot be scaled by");
 }
 
-// A board is ridden side-on: from the front the shoulders are one behind
-// the other. The body keeps its height, which the shoulders alone lost.
-void a_side_on_rider_keeps_its_size() {
-    using namespace sfr::pose_point;
-    sfr::PoseLandmarks side = standing();
-    side[shoulder_left].x = 322;
-    side[shoulder_right].x = 318;
-    side[hip_left].x = 322;
-    side[hip_right].x = 318;
-    sfr::SkeletonJoints front{}, turned{};
-    require(sfr::pose_to_joints(standing(), 640, 480, front), "facing the camera maps");
-    require(sfr::pose_to_joints(side, 640, 480, turned), "side-on maps too");
-    namespace joint = sfr::nui_joint;
-    require(near(turned[joint::head][1] - turned[joint::ankle_left][1],
-                 front[joint::head][1] - front[joint::ankle_left][1]),
-            "side-on, the body is as tall as facing the camera");
-    require(near(front[joint::shoulder_center][1] - front[joint::hip_center][1], sfr::pose_torso_length),
-            "the torso comes out the emulated player's length");
-
-    // The scale follows slowly: a sudden half-length torso (a bend towards
-    // the camera) moves it a tenth of the way.
-    sfr::PoseMapping mapping;
-    require(sfr::pose_to_joints(standing(), 640, 480, front, false, &mapping) && mapping.scale > 0, "the scale starts");
-    const float settled = mapping.scale;
-    sfr::PoseLandmarks bent = standing();
-    for (const uint32_t point : {shoulder_left, shoulder_right}) bent[point].y = 235;
-    require(sfr::pose_to_joints(bent, 640, 480, turned, false, &mapping), "a bent body maps");
-    require(near(mapping.scale, settled * 1.1f, settled * 0.01f), "one picture moves the scale a tenth of the way");
-}
-
-// How far the rider has turned: side-on, one shoulder is a shoulder's width
-// behind the other; opened towards the screen, less; facing it, not at all.
-// The leading (nearer) side is the one whose ankle is lower in the picture.
-void a_turn_gives_the_shoulders_depth() {
-    using namespace sfr::pose_point;
-    namespace joint = sfr::nui_joint;
-    const auto rider = [](float shoulder_half_span, float left_ankle_lower) {
-        sfr::PoseLandmarks body = standing();
-        body[shoulder_left].x = 320 + shoulder_half_span;
-        body[shoulder_right].x = 320 - shoulder_half_span;
-        body[hip_left].x = 320 + shoulder_half_span * 0.5f;
-        body[hip_right].x = 320 - shoulder_half_span * 0.5f;
-        body[ankle_left].y = 450 + left_ankle_lower;
-        return body;
-    };
-    const auto gap = [](const sfr::SkeletonJoints& j) {
-        return j[joint::shoulder_right][2] - j[joint::shoulder_left][2];  // > 0: the left is nearer
-    };
-    sfr::SkeletonJoints joints{};
-    sfr::PoseMapping regular;
-    require(sfr::pose_to_joints(rider(2, 20), 640, 480, joints, false, &regular) && regular.lead == -1,
-            "the lower left ankle makes the left the leading side");
-    require(near(gap(joints), 2 * sfr::pose_shoulder_half_width, 0.03f),
-            "side-on, the right shoulder is a shoulder's width behind the left");
-    require(near(joints[joint::shoulder_center][2], sfr::pose_distance), "the body stays where it stood");
-    require(joints[joint::hand_left][2] < joints[joint::hand_right][2], "each arm goes with its shoulder");
-    // Opened a little towards the screen: the shoulders look wider.
-    require(sfr::pose_to_joints(rider(24, 0), 640, 480, joints, false, &regular) && regular.lead == -1,
-            "level ankles keep the leading side");
-    const float opened = gap(joints);
-    require(opened > 0.1f && opened < 2 * sfr::pose_shoulder_half_width - 0.03f, "opened, the gap is smaller");
-    // Facing the screen, the shoulders look their true width: no gap.
-    require(sfr::pose_to_joints(standing(), 640, 480, joints, false, &regular) && near(gap(joints), 0.0f, 0.02f),
-            "facing the camera, both shoulders are at one distance");
-    // A kick boost lifting the front foot high: its ankle rises far above
-    // the other, which must not read as the far foot.
-    sfr::PoseLandmarks kick = rider(2, 0);
-    kick[ankle_left].y = 450 - 70;
-    kick[knee_left].y = 300;
-    for (int i = 0; i < 10; ++i) require(sfr::pose_to_joints(kick, 640, 480, joints, false, &regular), "a kick maps");
-    require(regular.lead == -1, "a lifted foot does not change the leading side");
-    // Paddling: the back foot slides nearer, so lower, for longer than a few
-    // pictures, but the shoulders stay side-on: no switch. (Riding side-on
-    // for a while first, so the facing picture above is long past.)
-    for (int i = 0; i < 50; ++i) require(sfr::pose_to_joints(rider(2, 0), 640, 480, joints, false, &regular), "riding maps");
-    for (int i = 0; i < 60; ++i) require(sfr::pose_to_joints(rider(2, -20), 640, 480, joints, false, &regular), "a paddle maps");
-    require(regular.lead == -1, "a paddling foot sliding nearer is not a turn");
-    // Turned round (switch): the shoulders pass through facing the camera,
-    // then the right ankle is lower, the right leads once a few agree.
-    require(sfr::pose_to_joints(standing(), 640, 480, joints, false, &regular), "the turn passes the front");
-    for (uint32_t i = 1; i < sfr::PoseMapping::pictures_to_turn; ++i) {
-        require(sfr::pose_to_joints(rider(2, -20), 640, 480, joints, false, &regular), "a switch maps");
-        require(regular.lead == -1, "a picture or two of a turn is not a switch yet");
+sfr::PoseLandmarks standing_world() {
+    auto landmarks = standing();
+    for (auto& point : landmarks) {
+        point.world = {(point.x - 320.0f) * 0.005f, (point.y - 300.0f) * 0.005f, 0.0f};
+        point.has_world = true;
     }
-    require(sfr::pose_to_joints(rider(2, -20), 640, 480, joints, false, &regular) && regular.lead == 1 &&
-                gap(joints) < -0.3f,
-            "after a switch the right shoulder is the nearer one");
-    // Until a leading side is known, nothing is given depth.
-    sfr::PoseMapping unknown;
-    require(sfr::pose_to_joints(rider(2, 0), 640, 480, joints, false, &unknown) && unknown.lead == 0 &&
-                near(gap(joints), 0.0f, 0.001f),
-            "with the ankles level from the start, the body stays flat");
+    return landmarks;
+}
+
+void world_depth_survives_reaching_and_retracting() {
+    namespace p = sfr::pose_point;
+    namespace j = sfr::nui_joint;
+    auto body = standing_world();
+    body[p::shoulder_right].world[2] = -0.1f;
+    body[p::shoulder_left].world[2] = -0.1f;
+    body[p::elbow_right].world[2] = -0.25f;
+    body[p::wrist_right].world[2] = -0.5f;
+    body[p::ankle_right].world[2] = 0.2f;
+    sfr::SkeletonJoints forward{}, back{};
+    require(sfr::pose_to_joints(body, 640, 480, forward), "world body maps");
+    require(near(forward[j::hand_right][2], 2.05f, 0.0001f), "forward hand retains measured depth");
+    require(near(forward[j::wrist_right][2], 2.0725f, 0.0001f), "inferred wrist interpolates depth");
+    require(near(forward[j::spine][2], 2.455f, 0.0001f), "spine interpolates torso depth");
+    require(near(forward[j::foot_right][2], 2.6f, 0.0001f), "foot depth follows its ankle");
+    require(near(forward[j::hip_center][0], 0, 0.0001f) && near(forward[j::hip_center][1], 0, 0.0001f) &&
+            near(forward[j::hip_center][2], sfr::pose_distance, 0.0001f), "hips anchor the body in all axes");
+    body[p::wrist_right].world[2] = 0.2f;
+    require(sfr::pose_to_joints(body, 640, 480, back), "retracted body maps");
+    require(near(back[j::hand_right][2], 2.68f, 0.0001f), "retracted hand retains measured depth");
+}
+
+void world_scale_uses_the_full_shoulder_distance() {
+    namespace p = sfr::pose_point;
+    auto body = standing_world();
+    body[p::shoulder_left].world = {0.12f, -0.65f, 0.16f};
+    body[p::shoulder_right].world = {-0.12f, -0.65f, -0.16f};
+    // An edge-on body can have no image-space shoulder separation.
+    body[p::shoulder_right].x = body[p::shoulder_left].x;
+    body[p::wrist_right].world[2] = -0.5f;
+    sfr::SkeletonJoints joints{}, translated{};
+    require(sfr::pose_to_joints(body, 640, 480, joints), "rotated 3D shoulders still define scale");
+    require(near(joints[sfr::nui_joint::hand_right][2], 2.05f, 0.0001f), "rotation does not amplify reaching depth");
+    for (auto& point : body) {
+        point.world[0] += 0.4f;
+        point.world[1] -= 0.2f;
+        point.world[2] += 0.3f;
+    }
+    require(sfr::pose_to_joints(body, 640, 480, translated), "translated world body maps");
+    for (size_t joint = 0; joint < joints.size(); ++joint)
+        for (size_t axis = 0; axis < 3; ++axis)
+            require(near(joints[joint][axis], translated[joint][axis], 0.0001f), "world origin does not change the anchored skeleton");
+}
+
+void world_mirroring_preserves_body_identity_and_depth() {
+    using namespace sfr::pose_point;
+    auto body = standing_world();
+    body[wrist_right].world = {-0.35f, -0.8f, -0.5f};
+    auto mirrored = body;
+    for (auto& point : mirrored) { point.x = 640.0f - point.x; point.world[0] = -point.world[0]; }
+    for (const auto& pair : {std::pair{shoulder_left, shoulder_right}, {elbow_left, elbow_right},
+                            {wrist_left, wrist_right}, {hip_left, hip_right}, {knee_left, knee_right},
+                            {ankle_left, ankle_right}, {eye_left, eye_right}, {ear_left, ear_right}})
+        std::swap(mirrored[pair.first], mirrored[pair.second]);
+    sfr::SkeletonJoints normal{}, corrected{};
+    require(sfr::pose_to_joints(body, 640, 480, normal), "world reference maps");
+    require(sfr::pose_to_joints(mirrored, 640, 480, corrected, true), "mirrored world body maps");
+    for (size_t joint = 0; joint < normal.size(); ++joint)
+        for (size_t axis = 0; axis < 3; ++axis)
+            require(near(normal[joint][axis], corrected[joint][axis], 0.0001f), "mirror correction preserves XYZ and body identity");
+}
+
+void invalid_world_does_not_replace_the_last_skeleton() {
+    namespace p = sfr::pose_point;
+    sfr::SkeletonJoints original{};
+    for (auto& point : original) point = {7, 8, 9};
+    const auto refused = [&](const sfr::PoseLandmarks& body) {
+        auto joints = original;
+        require(!sfr::pose_to_joints(body, 640, 480, joints), "invalid world pose is refused");
+        require(joints == original, "invalid input leaves every output joint untouched");
+    };
+    for (const float invalid : {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(), 100.0f}) {
+        auto body = standing_world();
+        body[p::wrist_right].world[2] = invalid;
+        refused(body);
+    }
+    auto body = standing_world();
+    body[p::ear_left].has_world = false;
+    refused(body);
+    body = standing_world();
+    body[p::shoulder_right].world = body[p::shoulder_left].world;
+    refused(body);
+    body = standing_world();
+    body[p::hip_left].score = std::numeric_limits<float>::quiet_NaN();
+    refused(body);
 }
 }
 
@@ -208,8 +208,10 @@ int main() {
         a_raised_arm_raises_the_hand();
         a_mirrored_picture_comes_out_the_same_way_round();
         what_is_refused();
-        a_side_on_rider_keeps_its_size();
-        a_turn_gives_the_shoulders_depth();
+        world_depth_survives_reaching_and_retracting();
+        world_scale_uses_the_full_shoulder_distance();
+        world_mirroring_preserves_body_identity_and_depth();
+        invalid_world_does_not_replace_the_last_skeleton();
         std::cout << "Pose skeleton checks passed\n";
         return 0;
     } catch (const std::exception& error) {

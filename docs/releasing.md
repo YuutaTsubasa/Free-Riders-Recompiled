@@ -9,22 +9,16 @@ has no disc, and must never be given one.
 
 What a release does contain, beside the launcher: the recompiled game
 (`sfr_cpu_diagnostic`), the `shaders.pack` translated so far, the licences,
-ONNX Runtime and the RTMPose model for the webcam's motion input, and, on
-Windows, the shader tools that translate shaders the pack lacks.
+on Windows the shader tools that translate shaders the pack lacks, and with
+`--camera` the ONNX Runtime and MediaPipe models of the webcam's motion input.
 
 ## 1. Build
-
-Fetch the pose runtime and model on each machine that builds (the Android
-build takes them from the machine that runs `build_android.sh`):
-
-```bash
-python scripts/fetch_pose_model.py            # add --android where the APK is built
-```
 
 On Windows, from a clean tree at the commit being released:
 
 ```powershell
 ./scripts/build_shader_translator.ps1
+python scripts/fetch_pose_model.py       # Windows camera models and runtime
 ./scripts/build_tools.ps1 -Diagnostic
 python scripts/pack_shaders.py            # out/shaders/shaders.pack
 ```
@@ -48,15 +42,23 @@ Keep that key: Android only installs an update signed with the same one.
 ## 2. Package
 
 ```bash
-python scripts/package_release.py windows --version 0.1.0
-python scripts/package_release.py linux --version 0.1.0 --build ~/sfr-build
-python scripts/package_release.py android --version 0.1.0
+python scripts/package_release.py windows --version 0.2.0 --camera
+python scripts/package_release.py linux --version 0.2.0 --build ~/sfr-build
+python scripts/package_release.py android --version 0.2.0
 ```
 
 Each prints the SHA-256 of what it wrote to `out/release/`. The script stops
-when a licence file, the pose runtime or the model is missing (`--no-pose`
-leaves the motion input out); the DirectX Shader Compiler's texts are kept in
+when a licence file is missing; the DirectX Shader Compiler's texts are kept in
 `packaging/licenses/` because dxc-bin ships none.
+
+The Windows `--camera` bundle also requires both MediaPipe models, ONNX
+Runtime DLLs, the model licence and the runtime's licence/third-party notices.
+Verify the pinned downloads with `python scripts/fetch_pose_model.py --verify-only`.
+Linux and Android prebuilt releases currently omit camera motion inference;
+state this in the release notes. (`fetch_pose_model.py --platform linux` and
+`--android` fetch their runtimes, and `build_android.sh` puts the MediaPipe
+models in the APK when they are there, but neither is packaged for release yet.) Update `VERSION_NAME` and monotonically
+increase `VERSION_CODE` in `scripts/package_android.py` before packaging.
 
 ## 3. Check
 
@@ -67,7 +69,7 @@ launcher must have no `untranslatable=1` line.
 
 ## 4. Publish
 
-Tag the commit (`v0.1.0`), push the tag, and create the GitHub release with
+Tag the commit (`v0.2.0`), push the tag, and create the GitHub release with
 the archives and their SHA-256 sums, marked as a pre-release while the game is
 incomplete. Say in the notes which disc is supported and that the game data is
 not included.

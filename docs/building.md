@@ -27,8 +27,9 @@ prebuilt DXC, Plume, Dear ImGui, SDL) into `tools/`:
 python scripts/bootstrap.py
 ```
 
-For the webcam's motion input (optional), fetch ONNX Runtime and the RTMPose
-model into `tools/onnx` too (`--android` adds the Android runtime):
+For the webcam's motion input (optional), fetch ONNX Runtime and the MediaPipe
+models into `tools/onnx` too (`--platform linux` for Linux's runtime,
+`--android` adds the Android runtime; see docs/camera-input.md):
 
 ```bash
 python scripts/fetch_pose_model.py

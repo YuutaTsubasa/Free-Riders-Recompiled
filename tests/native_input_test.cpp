@@ -58,6 +58,34 @@ sfr::GamepadState keys(std::set<int> held) {
     return sfr::keyboard_gamepad([&](int key) { return held.count(key) > 0; });
 }
 
+void put_environment(const char* name, const char* value) {
+#ifdef _WIN32
+    _putenv_s(name, value);
+#else
+    setenv(name, value, 1);
+#endif
+}
+
+// A scripted second pad stands in for one nobody is holding, so that a
+// two-player run needs no second controller. It has to look like a
+// controller, not just like input: the title counts its Kinect players by
+// who is holding one.
+void scripted_second_pad() {
+    double now = 0;
+    put_environment("SFR_INPUT_SCRIPT_2", "a@1+1");
+    sfr::NativeInput input([](uint32_t) { return std::optional<sfr::GamepadState>{}; },
+                           [] { return sfr::GamepadState{}; });
+    require(!input.controller(1), "no second pad before the script is attached");
+    input.attach_script([&now] { return now; });
+    require(input.controller(1).has_value(), "the scripted pad is a controller");
+    require(input.controller(1)->buttons == 0, "holding nothing before its time");
+    now = 1.5;
+    require(input.controller(1)->buttons == button::a, "and holding A at its time");
+    require(input.current(1)->buttons == button::a, "which is what the second player reads");
+    require(!input.controller(2), "and no other user gains a pad");
+    put_environment("SFR_INPUT_SCRIPT_2", "");
+}
+
 void run() {
     // Keyboard mapping (Windows virtual keys: arrows 0x25..0x28, Enter 0x0D).
     require(keys({}) == sfr::GamepadState{}, "no keys is rest");
@@ -121,6 +149,8 @@ void run() {
     held = {0x0D};
     require(input.current(0) && !input.controller(0), "the keyboard backs user 0 but is not a controller");
     require(input.controller(1) == pad1, "a controller is itself, whoever is holding it");
+    require(!input.controller(4) && !input.current(4), "out-of-range users stay disconnected");
+    scripted_second_pad();
     playstation_reports();
 }
 
@@ -141,6 +171,7 @@ void player_settings_route_and_remap_input() {
     require(input.controller(0)->buttons == button::a, "controller state excludes fallback keyboard buttons");
     input.set_player(1, sfr::PlayerDevice::keyboard, bindings, [] { return sfr::GamepadState{button::x}; });
     require(input.current(1)->buttons == button::x, "the second input slot has its own keyboard reader");
+    require(input.controller(1)->buttons == button::x, "the second keyboard joins as a Kinect player");
     input.set_player(1, sfr::PlayerDevice::off, bindings);
     require(!input.current(1), "an off input slot is disconnected even with a controller present");
     require(!input.controller(1), "off input slots cannot join as controller-backed Kinect players");

@@ -242,18 +242,8 @@ static uint64_t frame_stream_bytes=0;
 // index buffer, turning a cut strip into triangles, and gathering vertices.
 static uint64_t frame_indices=0;
 static double frame_index_ms=0, frame_cut_ms=0, frame_gather_ms=0;
-// Cycles this thread actually ran for, beside the wall clock above: a loop
-// that takes far longer than it executes is waiting for a core, not working.
-static uint64_t frame_index_cycles=0, frame_gather_cycles=0;
 // The rest of a draw: its two constant blocks, and recording it.
 static double frame_constants_ms=0, frame_record_ms=0, frame_draw_ms=0;
-static uint64_t thread_cycles() {
-#ifdef _WIN32
-    uint64_t cycles=0;
-    if(QueryThreadCycleTime(GetCurrentThread(),&cycles)) return cycles;
-#endif
-    return 0;
-}
 
 // SFR_SKIP_DRAWS=1 drops every draw before any work, including gathering its
 // vertices: what a frame costs with no renderer at all.
@@ -411,7 +401,6 @@ SFR_HOOK(sub_824E65A0) {
     frame_stream_bytes=0;
     frame_indices=0;
     frame_index_ms=frame_cut_ms=frame_gather_ms=0;
-    frame_index_cycles=frame_gather_cycles=0;
     frame_constants_ms=frame_record_ms=frame_draw_ms=0;
     ++sfr::present_count;
     // SFR_MEMORY_DUMP=P1,P2,... (investigation): at those presents, every
@@ -1008,7 +997,6 @@ SFR_HOOK(sub_824F56E8) {
     const uint8_t* index_bytes=memory.base()+indices;
     frame_indices+=count;
     const auto index_start=std::chrono::steady_clock::now();
-    const uint64_t index_cycles=thread_cycles();
     static thread_local std::vector<uint32_t> order;
     order.resize(count);
     const sfr::IndexScan scan=sfr::decode_indices(index_bytes,count,wide,base_vertex,restart_enabled,order.data());
@@ -1017,7 +1005,6 @@ SFR_HOOK(sub_824F56E8) {
     if(lowest<=highest && highest>=vertex_count)
         throw sfr::RuntimeStop("native-draw",highest,"index exceeds the stream 0 vertex buffer");
     frame_index_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-index_start).count();
-    frame_index_cycles+=thread_cycles()-index_cycles;
     if(lowest>highest) return;  // restart indices only
     // Only the vertices the indices reach are located and checked: the title
     // binds streams of megabytes and draws small pieces of them, and checking
@@ -1034,13 +1021,11 @@ SFR_HOOK(sub_824F56E8) {
         const uint64_t block=uint64_t(highest-lowest+1);
         if(block<=4*order.size() && used<=0x800000) {
             const auto copy_start=std::chrono::steady_clock::now();
-            const uint64_t copy_cycles=thread_cycles();
             // Read in place (native_draw swaps it into the upload ring). The
             // indices keep their stream numbering; the base vertex location
             // moves the block back to the start.
             const std::span<const uint8_t> window(used_bytes,size_t(used));
             frame_gather_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-copy_start).count();
-            frame_gather_cycles+=thread_cycles()-copy_cycles;
             native_draw(ctx,0x824F56E8,device,primitive,uint32_t(block),window,stream.stride,order,-int32_t(lowest),
                         stream.physical+lowest*stream.stride);
             return;
@@ -1113,9 +1098,13 @@ SFR_HOOK(sub_824F6DC8) {
 
 SFR_HOOK(sub_824E96C8) {
     sfr::enter_function(ctx,"sub_824E96C8",0x824E96C8);
+    // Sample viewport requests/results without enabling per-draw graphics
+    // logging. One presented frame per second retains every pass in it.
+    static const bool viewport_log=[] {const char* t=std::getenv("SFR_VIEWPORT_LOG");return t && *t=='1';}();
+    const bool trace=sfr::graphics_trace() || (viewport_log && sfr::present_count%60==0);
     if(sfr::active_memory) {
         sfr::active_memory->check(ctx.r4.u32,24);
-        if(sfr::graphics_trace()) {
+        if(trace) {
             std::cerr << "NATIVE_VIEWPORT_REQUEST address=0x" << std::hex << ctx.r4.u32 << " words=";
             for(uint32_t offset=0;offset<24;offset+=4)
                 std::cerr << (offset?",":"") << sfr::active_memory->load<uint32_t>(uint64_t(ctx.r4.u32)+offset);
@@ -1123,7 +1112,7 @@ SFR_HOOK(sub_824E96C8) {
         }
     }
     const bool updated=graphics().set_viewport(ctx.r3.u32,ctx.r4.u32);
-    if(!sfr::graphics_trace()) return;
+    if(!trace) return;
     const auto& v=graphics().presentation().raster_state().viewport();
     std::cerr << "NATIVE_VIEWPORT source=0x824e96c8 x=" << v.x << " y=" << v.y
               << " width=" << v.width << " height=" << v.height
@@ -1134,13 +1123,12 @@ SFR_HOOK(sub_824E96C8) {
         std::cerr << " target=0x" << std::hex << target
                   << std::dec << " back_buffer=" << memory.load<uint32_t>(uint64_t(ctx.r3.u32)+0x35BC)
                   << "x" << memory.load<uint32_t>(uint64_t(ctx.r3.u32)+0x35C0);
-        // One of the title's own surfaces carries a texture fetch constant at
-        // +28, which names the size the viewport is in.
-        if(target && target!=sfr::GuestGraphics::color_handle) try {
-            sfr::FetchWords words{};
-            for(size_t i=0;i<words.size();++i) words[i]=memory.load<uint32_t>(uint64_t(target)+28+i*4);
-            const auto fetch=sfr::decode_texture_fetch(words);
-            std::cerr << " surface=" << fetch.width << "x" << fetch.height << " format=" << fetch.format;
+        // Render-surface dimensions use the +36 layout read by sub_824E9460,
+        // not the texture-fetch layout at the same offset in a texture.
+        if(target && target!=sfr::GuestGraphics::color_handle && target!=sfr::GuestGraphics::depth_handle) try {
+            const uint32_t size=memory.load<uint32_t>(uint64_t(target)+36);
+            std::cerr << " surface=" << (((size>>18)&0x3FFFu)+1)
+                      << "x" << (((size>>3)&0x7FFFu)+1);
         } catch(const sfr::RuntimeStop&) {
             std::cerr << " surface=unreadable";
         }

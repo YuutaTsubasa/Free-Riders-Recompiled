@@ -59,7 +59,14 @@ bool NuiSkeletonEmulation::hand_starts_centred() {
     return centred;
 }
 
-void NuiSkeletonEmulation::update(const GamepadState& pad, bool racing) {
+void NuiSkeletonEmulation::rearm_menu() {
+    engage_ = 0;
+    park_ = false;
+    left_ = rest_position(false);
+    right_ = rest_position(true);
+}
+
+void NuiSkeletonEmulation::update(const GamepadState& pad, bool racing, bool two_player_menu, bool cursor_pending) {
     const float rx = axis(pad.thumb_rx), ry = axis(pad.thumb_ry);
     if (racing) {
         engage_ = 0;
@@ -75,6 +82,8 @@ void NuiSkeletonEmulation::update(const GamepadState& pad, bool racing) {
         }
         return;
     }
+    // Keep the left hand out of two-player menu selection.
+    if (two_player_menu) left_ = rest_position(false);
     const bool rest = (pad.buttons & gamepad_button::back) != 0;
     if (rest) engage_ = 0;
     // The first right-stick input raises the hand (one second) and then
@@ -82,12 +91,19 @@ void NuiSkeletonEmulation::update(const GamepadState& pad, bool racing) {
     if (!rest && engage_ == 0 && (rx != 0.0f || ry != 0.0f)) { engage_ = 1; park_ = false; }
     if (engage_ >= 1 && engage_ <= 30) {
         right_ = raised_hand;
-        if (++engage_ > 30) right_ = park_ ? parked_hand : centred_hand;
+        // A Gear transition can suspend cursor consumption for seconds.
+        // Keep presenting the initial raise until the guest acknowledges it;
+        // elapsed sensor frames alone cannot prove the cursor was activated.
+        if (engage_ < 30 || !two_player_menu || !cursor_pending)
+            if (++engage_ > 30) right_ = park_ ? parked_hand : centred_hand;
+        if (two_player_menu) right_[2] = 2.1f;
         return;
     }
     // The shoulders push the hands towards the sensor.
-    move(right_, rx, ry, true, (pad.buttons & gamepad_button::right_shoulder) != 0, rest);
-    move(left_, axis(pad.thumb_lx), axis(pad.thumb_ly), false, (pad.buttons & gamepad_button::left_shoulder) != 0, rest);
+    move(right_, rx, ry, true, (pad.buttons & gamepad_button::right_shoulder) != 0 ||
+         (two_player_menu && engage_ > 0), rest);
+    if (!two_player_menu)
+        move(left_, axis(pad.thumb_lx), axis(pad.thumb_ly), false, (pad.buttons & gamepad_button::left_shoulder) != 0, rest);
 }
 
 void NuiSkeletonEmulation::write_header(GuestMemory& memory, uint32_t address, uint32_t frame_number,
@@ -157,6 +173,7 @@ void NuiSkeletonEmulation::write_joints(GuestMemory& memory, uint32_t address, u
     // Until identified (-1) the title runs NuiIdentityIdentify on it before
     // it may join; afterwards the guest result.
     memory.store<uint32_t>(data + 8, enrollment_);
+    memory.store<uint32_t>(data + 12, slot);  // NUI_SKELETON_DATA::dwUserIndex
     store_vector(memory, data + 16, position, 1.0f);
     for (uint32_t j = 0; j < nui_joint_count; ++j) {
         store_vector(memory, data + 32 + j * 16, joints[j], 1.0f);

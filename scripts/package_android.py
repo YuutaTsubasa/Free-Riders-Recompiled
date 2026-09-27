@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 PROJECT = ROOT / 'android' / 'app' / 'src' / 'main'
 SDL_JAVA = ROOT / 'tools' / 'SDL' / 'android-project' / 'app' / 'src' / 'main' / 'java'
 MIN_SDK, TARGET_SDK = 28, 35
-VERSION_CODE, VERSION_NAME = 4, '0.1.3'
+VERSION_CODE, VERSION_NAME = 7, '0.2.0'
 
 
 def version_key(path):
@@ -64,8 +64,8 @@ def main():
     parser.add_argument('--output', default=str(ROOT / 'out' / 'android' / 'FreeRidersRecompiled.apk'))
     parser.add_argument('--abi', action='append', help='only these ABIs (default: every built one)')
     parser.add_argument('--pack', help='a shaders.pack to carry as an asset (LauncherActivity copies it out)')
-    parser.add_argument('--pose', help='the RTMPose model to carry as an asset, for the camera motion input '
-                                       '(LauncherActivity copies it to pose/rtmpose.onnx)')
+    parser.add_argument('--pose', help='a folder of pose models (tools/onnx/mediapipe) to carry as assets, for the '
+                                       'camera motion input (LauncherActivity copies them to pose/)')
     parser.add_argument('--min-sdk', type=int, default=MIN_SDK,
                         help='minimum API level, matching the native build (default: 28)')
     args = parser.parse_args()
@@ -122,7 +122,8 @@ def main():
         if args.pack:
             apk.write(args.pack, 'assets/shaders.pack', compress_type=zipfile.ZIP_DEFLATED)
         if args.pose:
-            apk.write(args.pose, 'assets/pose/rtmpose.onnx', compress_type=zipfile.ZIP_DEFLATED)
+            for model in sorted(Path(args.pose).glob('*.onnx')):
+                apk.write(model, 'assets/pose/' + model.name, compress_type=zipfile.ZIP_DEFLATED)
     aligned = work / 'aligned.apk'
     run(tool(build_tools, 'zipalign'), '-f', '-P', '16', '4', unsigned, aligned)
 

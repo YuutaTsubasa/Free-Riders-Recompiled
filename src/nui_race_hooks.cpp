@@ -2,11 +2,15 @@
 #include "diagnostic_hooks.h"
 #include "guest_memory.h"
 #include "nui_race.h"
+#include "camera_input.h"
+#include "camera_race_motion.h"
 #include <bit>
 #include <cstdlib>
 #include <cmath>
 #include <iostream>
+#include <algorithm>
 #include <unordered_map>
+#include <vector>
 
 // Race controls (see nui_race.h). Gesture detectors are called as
 // detect(detector, source, results): source's vtable[1] returns the player's
@@ -17,17 +21,27 @@
 // reports are the ones the original detectors set.
 
 namespace {
-sfr::RaceInput race;
+// One set of controls per player: the first from the pad the Kinect
+// emulation calls the first player's, the second from the pad beside them.
+sfr::RaceInput race[2];
+sfr::CameraRaceMotion camera_motion;
+uint64_t camera_last_tick=0;
+// A body record each. The title keeps one pointer for all of its players
+// (the Kinect manager's +0x78), but each player object holds its own at +4,
+// which is the only way two of them can feel different things.
 constexpr uint32_t body_address = 0x71730000, body_mapping = 0x2000;
 constexpr uint32_t nui_box = 0x83E52F88, race_flag = 0x83E52F8C, time_global = 0x83E516A0;
 bool swapped = false;
 uint32_t original_body = 0;
+uint32_t active_box = 0;
+bool two_players = false;
 
 sfr::GuestMemory& memory() { return *sfr::active_memory; }
 float load_float(uint32_t address) { return std::bit_cast<float>(memory().load<uint32_t>(address)); }
 void store_float(uint32_t address, float value) { memory().store<uint32_t>(address, std::bit_cast<uint32_t>(value)); }
 
-// Title frame step: [[83E516A0]+24] holds the elapsed time (+4) and frames (+40).
+// Legacy controller timing fields. During normal play +4 can be 1; Camera
+// dwell durations use the host monotonic clock instead of assuming seconds.
 float frame_seconds() {
     const uint32_t clock = memory().load<uint32_t>(time_global);
     return clock ? load_float(memory().load<uint32_t>(clock + 24) + 4) : 1.0f / 60.0f;
@@ -38,6 +52,28 @@ float frame_count() {
 }
 
 bool pad_racing() { return swapped; }
+bool camera_player(uint32_t player) {
+    return sfr::camera_controls_player(player,sfr::camera_motion_active());
+}
+void write_camera_lean(uint32_t record) {
+    // These are depth-image pixel counts in the original game, not joints.
+    // RGB pose input supplies their ratio; zero/zero means full right lean.
+    const float lean=camera_motion.lean();
+    store_float(record+640,1.f+std::max(lean,0.f));
+    store_float(record+644,1.f+std::max(-lean,0.f));
+}
+void update_camera_motion(uint32_t record) {
+    const uint64_t now=sfr::camera_motion_clock_ns();
+    const float seconds=camera_last_tick && now>camera_last_tick?float(double(now-camera_last_tick)*1e-9):1.f/60.f;
+    camera_last_tick=now;
+    const auto point=[&](uint32_t offset) {
+        return std::array{load_float(record+offset),load_float(record+offset+4),load_float(record+offset+8)};
+    };
+    const bool ready=camera_motion.ready();
+    camera_motion.observe({point(0),point(32),point(224),point(288),point(64),point(128),point(192),point(256),point(80),point(96),point(144),point(160),point(208),point(272)},seconds,sfr::camera_pose_generation());
+    if(camera_motion.ready()!=ready)
+        std::cerr<<"CAMERA_RACE_CALIBRATION ready="<<camera_motion.ready()<<'\n';
+}
 
 // The body record the title itself would read for the player a detector is
 // being asked about. Every original detector begins the same way (822C9050
@@ -62,6 +98,9 @@ uint32_t body_of_source(PPCContext& ctx, uint8_t* base, uint32_t source, uint32_
     const uint32_t method = m.load<uint32_t>(uint64_t(vtable) + 4);
     if (!method) return 0;
     if (which) *which = method;
+    // The reader used by the title's race objects is exactly
+    // lwz r3,4(r3); blr. Read its live pointer without a guest call.
+    if (method == 0x82918418) return m.load<uint32_t>(uint64_t(object) + 4);
     PPCContext saved = ctx;
     ctx.r3.u64 = object;
     sfr::call_indirect(ctx, base, method);
@@ -99,7 +138,100 @@ uint32_t entry(uint32_t results, uint32_t index_offset = 8) {
 void set_bits(uint32_t address, uint32_t bits) { memory().store<uint32_t>(address, memory().load<uint32_t>(address) | bits); }
 void set_byte(uint32_t address, uint8_t value) { memory().store<uint8_t>(address, value); }
 
-const sfr::RaceBody& body() { return race.body(); }
+// Only gestures whose inputs are missing/unreliable in RGB pose need a bridge.
+// All joint XYZ and unrelated camera detectors keep their original path.
+std::optional<uint32_t> camera_gesture(uint32_t address,uint32_t detector,uint32_t results) {
+    const auto primary=[&](uint32_t bits){set_bits(entry(results)+4,bits);};
+    switch(address) {
+    case 0x822C9050:
+        memory().store<uint32_t>(detector+88,camera_motion.jump()?0xFFFFFFFFu:1u);
+        memory().store<uint32_t>(detector+92,camera_motion.jump()?0xFFFFFFFFu:1u);
+        if(camera_motion.jump()){primary(0x200);return 1;}
+        return 2;
+    case 0x822C8778: case 0x822CB840:
+        if(camera_motion.crouch()){primary(0x7000);return 1;}
+        return 2;
+    case 0x822C9A80: case 0x822CAF48:
+        if(camera_motion.boost()){primary(0x8000);return 1;}
+        return 0;
+    case 0x822CA6B0:
+        if(!camera_motion.brake_ready()){set_bits(entry(results)+20,0x2000);return 2;}
+        break;
+    case 0x822C9BF0:
+        if(!camera_motion.brake_ready()){set_byte(entry(results)+80,0);store_float(detector+72,0);return 2;}
+        break;
+    case 0x822CA518:
+        if(camera_motion.jump_protected()||(camera_motion.arm_action()&&!camera_motion.kick_leg_action())) {
+            set_byte(detector+72,0);return 2;
+        }
+        break;
+    case 0x822CBD28:
+        if(camera_motion.jump_protected()||(camera_motion.arm_action()&&!camera_motion.kick_leg_action())) {
+            memory().store<uint32_t>(detector+72,0);return 2;
+        }
+        break;
+    }
+    return std::nullopt;
+}
+
+// Which player a detector is being asked about, and where that player's
+// body record lives.
+//
+// A two-player race asks through four objects, two for each player, and a
+// log of a real one says how to tell them apart: the first player's objects
+// answer with the Kinect manager's record -- ours, because we put it there
+// -- and the second player's answer with one of their own. So the record an
+// object answers with identifies the player. Loading can replace an object
+// behind the same source, or change its record, so resolve the live pointer
+// each time. The original manager record is also a first-player alias.
+//
+// The second player's own record is also where their controls go: the title
+// built it and keeps it up to date, and writing the pad's fields over it
+// leaves everything else exactly as the title left it.
+// This map only suppresses repeated diagnostics; no stored address is ever
+// dereferenced later. Every body write requires a current guest consumer.
+std::unordered_map<uint32_t, uint32_t> source_records;
+// Valid only on the stack of a live guest race consumer. Never replay a
+// saved source after that call: Loading can free it without changing the
+// manager or body record.
+thread_local uint32_t live_race_source = 0;
+struct RaceSourceScope {
+    uint32_t previous = live_race_source;
+    explicit RaceSourceScope(uint32_t source) { live_race_source = source; }
+    ~RaceSourceScope() { live_race_source = previous; }
+};
+
+uint32_t player_of_record(uint32_t record) {
+    // One player's race is asked about through two objects of their own, so
+    // telling players apart is only right when there really are two.
+    if (!two_players) return 0;
+    // SFR_RACE_TWO_PLAYERS=0 puts both riders back on the first pad, which
+    // is what they shared before any of this.
+    static const bool split = [] { const char* t = std::getenv("SFR_RACE_TWO_PLAYERS");
+                                   return !t || !*t || *t != '0'; }();
+    if (!split) return 0;
+    static const bool swap = [] { const char* t = std::getenv("SFR_RACE_PLAYERS_SWAP");
+                                  return t && *t && *t != '0'; }();
+    const uint32_t player = record && record != body_address && record != original_body ? 1u : 0u;
+    return swap ? 1u - player : player;
+}
+
+uint32_t player_of_source(PPCContext& ctx, uint8_t* base, uint32_t source) {
+    if (!two_players) return 0;
+    const uint32_t record = body_of_source(ctx, base, source);
+    const auto previous = source_records.find(source);
+    if (record && record != body_address && record != original_body &&
+        (previous == source_records.end() || previous->second != record))
+        std::cerr << "NUI_RACE_SECOND_BODY record=0x" << std::hex << record << " source=0x" << source
+                  << std::dec << char(10);
+    source_records[source] = record;
+    const uint32_t player = player_of_record(record);
+    if (record && !camera_player(player)) race[player].write(memory(), record);
+    return player;
+}
+
+const sfr::RaceBody& body() { return race[0].body(); }
+
 }
 
 PPC_FUNC_IMPL(__imp__sub_82438930);
@@ -113,15 +245,30 @@ SFR_HOOK(sub_82438930) {
     const uint32_t box = m.load<uint32_t>(nui_box);
     // SFR_NO_RACE_BODY leaves the title's own body record in place.
     static const bool disabled = std::getenv("SFR_NO_RACE_BODY") != nullptr;
-    // A real sensor's body is the title's to read, as on the console.
+    // A real Kinect's bodies are the title's to read, as on the console.
     const bool racing = !disabled && !sfr::nui_body_from_sensor() && m.load<uint32_t>(race_flag) != 0;
-    race.update(sfr::nui_gamepad(), frame_seconds());
+    const float seconds = frame_seconds();
+    if(camera_player(0)) race[0]=sfr::RaceInput{};
+    else race[0].update(sfr::nui_gamepad(), seconds);
+    const auto second_pad = sfr::second_player_pad();
+    if (second_pad) race[1].update(*second_pad, seconds);
+    else race[1] = sfr::RaceInput{};  // loss of a pad is not an A/X release gesture
     if (box && racing) {
         if (m.available(body_address, body_mapping)) {
             m.map(body_address, body_mapping);
             for (uint32_t offset = 0; offset < body_mapping; offset += 4) m.store<uint32_t>(body_address + offset, 0);
         }
         const uint32_t current = m.load<uint32_t>(box + 0x78);
+        if (box != active_box || (current != body_address && current != original_body)) {
+            source_records.clear();
+            camera_motion.reset();
+            camera_last_tick=0;
+        }
+        active_box = box;
+        // A disconnected second pad becomes neutral, never the first pad.
+        // Manager/body replacement during Loading does not end ownership;
+        // only leaving the race clears it.
+        two_players = two_players || second_pad.has_value();
         if (current != body_address) {
             original_body = current;
             m.store<uint32_t>(box + 0x78, body_address);
@@ -135,7 +282,8 @@ SFR_HOOK(sub_82438930) {
             for (uint32_t offset = 0; offset < sfr::race_body_size; offset += 4)
                 m.store<uint32_t>(body_address + offset, m.load<uint32_t>(original_body + offset));
         swapped = true;
-        race.write(m, body_address);
+        const uint32_t player=player_of_record(body_address);
+        if(!camera_player(player)) race[player].write(m, body_address);
         // SFR_RACE_BODY_DUMP=N: every N frames, the record's non-zero floats.
         // The title fills the rest from the skeleton, so this shows what the
         // race reads besides the pad's fields.
@@ -157,9 +305,119 @@ SFR_HOOK(sub_82438930) {
     } else if (swapped) {
         if (box && m.load<uint32_t>(box + 0x78) == body_address) m.store<uint32_t>(box + 0x78, original_body);
         swapped = false;
+        source_records.clear();  // no active manager/body for these diagnostics
+        active_box = 0;
         std::cerr << "NUI_RACE_BODY restored original=0x" << std::hex << original_body << std::dec << '\n';
     }
+    // Loading can briefly remove the manager while the race remains active.
+    // Preserve ownership then, but clear it on the real exit even if that
+    // missing-manager frame already removed the injected body.
+    if (!racing) two_players = false;
     __imp__sub_82438930(ctx, base);
+    // Sample the live original skeleton after the manager refresh, once per
+    // game update. Never advance gesture timers once per detector invocation.
+    if(racing && box && original_body && camera_player(0))update_camera_motion(original_body);
+    else {camera_motion.reset();camera_last_tick=0;}
+    static const bool motion_trace=[] {const char* p=std::getenv("SFR_CAMERA_RACE_TRACE");return p && *p=='1';}();
+    static uint32_t motion_frames=0;
+    if(motion_trace && racing && (++motion_frames%30==0 || camera_motion.jump() || camera_motion.overthrow())) {
+        std::cerr<<"CAMERA_RACE_MOTION title_step="<<seconds<<" generation="<<sfr::camera_pose_generation()
+                 <<" camera="<<camera_player(0)<<" ready="<<camera_motion.ready()
+                 <<" lean="<<camera_motion.lean()<<" crouch="<<camera_motion.crouch()
+                 <<" jump="<<camera_motion.jump()<<" acceleration="<<camera_motion.boost()<<" arm_action="<<camera_motion.arm_action()
+                 <<" overthrow="<<camera_motion.overthrow()<<" kick_leg="<<camera_motion.kick_leg_action()<<'\n';
+    }
+}
+
+PPC_FUNC_IMPL(__imp__sub_822C6200);
+PPC_FUNC_IMPL(__imp__sub_82918418);
+
+// This original race consumer updates source->object through vtable[2],
+// then reads its body through vtable[1] before calculating lean. Keep that
+// order and the title's calculations; patch only the live reader result.
+SFR_HOOK(sub_822C6200) {
+    sfr::enter_function(ctx, "sub_822C6200", 0x822C6200);
+    RaceSourceScope scope(pad_racing() ? ctx.r3.u32 : 0);
+    __imp__sub_822C6200(ctx, base);
+}
+
+// 82918418 is a shared accessor, so calls outside the live race source's
+// update retain their original behavior. The scope restores on exceptions
+// and is thread-local because guest consumers can run on different threads.
+SFR_HOOK(sub_82918418) {
+    sfr::enter_function(ctx, "sub_82918418", 0x82918418);
+    const uint32_t object = ctx.r3.u32;
+    __imp__sub_82918418(ctx, base);
+    const uint32_t record = ctx.r3.u32;
+    if (pad_racing() && live_race_source && record &&
+        memory().load<uint32_t>(live_race_source) == object) {
+        const uint32_t player=player_of_record(record);
+        if(camera_player(player))write_camera_lean(record);
+        else race[player].write(memory(), record);
+    }
+}
+
+// Opt-in detector transitions: numeric state only, no camera images.
+static void trace_camera_detector(uint32_t address,uint32_t detector,uint32_t results,uint32_t result) {
+    if(address!=0x822C8778 && address!=0x822CB840 && address!=0x822CA6B0 && address!=0x822C9BF0 && address!=0x822C9050 &&
+       address!=0x822CA518 && address!=0x822CBD28 && address!=0x822CC590 && address!=0x822CCD98 && address!=0x822CD068)return;
+    static const bool enabled=[] {const char* p=std::getenv("SFR_CAMERA_RACE_TRACE");return p && *p=='1';}();
+    if(!enabled)return;
+    static std::unordered_map<uint64_t,std::array<uint32_t,4>> last;
+    const uint64_t key=uint64_t(address)<<32|detector;
+    const uint32_t left_arm=address==0x822CC590?memory().load<uint32_t>(detector+72):0;
+    const uint32_t right_arm=address==0x822CC590?memory().load<uint32_t>(detector+76):0;
+    const uint32_t kick_state=address==0x822CA518?memory().load<uint8_t>(detector+72):
+        address==0x822CBD28?memory().load<uint32_t>(detector+72):0;
+    const std::array state{result,left_arm,right_arm,kick_state};
+    const bool changed=!last.contains(key)||last[key]!=state;
+    last[key]=state;
+    if(changed||camera_motion.jump())std::cerr<<"CAMERA_GESTURE address=0x"<<std::hex<<address
+        <<" detector=0x"<<detector<<" primary=0x"<<memory().load<uint32_t>(entry(results)+4)
+        <<" secondary=0x"<<memory().load<uint32_t>(entry(results)+20)<<std::dec
+        <<" arm_first="<<left_arm<<" arm_second="<<right_arm<<" result="<<result<<" generation="<<sfr::camera_pose_generation()<<" motion_jump="<<camera_motion.jump()<<" brake_ready="<<camera_motion.brake_ready()<<" arm_action="<<camera_motion.arm_action()
+        <<" kick_state="<<kick_state<<" kick_leg="<<camera_motion.kick_leg_action()<<'\n';
+}
+
+// Opt-in numeric consumer trace: distinguish recognized crouch from title
+// restrictions (for example the opening tutorial masks other race actions).
+PPC_FUNC_IMPL(__imp__sub_822B60F8);
+SFR_HOOK(sub_822B60F8) {
+    sfr::enter_function(ctx,"sub_822B60F8",0x822B60F8);
+    const uint32_t actor=ctx.r3.u32;
+    __imp__sub_822B60F8(ctx,base);
+    static const bool enabled=[] {const char* p=std::getenv("SFR_CAMERA_RACE_TRACE");return p&&*p=='1';}();
+    if(!enabled || !pad_racing() || !sfr::camera_motion_active())return;
+    const uint32_t owner=memory().load<uint32_t>(actor+1680);
+    if(!owner)return;
+    const uint32_t results=memory().load<uint32_t>(owner+3220);
+    const uint32_t animation=memory().load<uint32_t>(owner+3208),state=memory().load<uint32_t>(owner+3212);
+    if(!results || !animation || !state)return;
+    const uint32_t entries=memory().load<uint32_t>(results+16),data=memory().load<uint32_t>(animation+12);
+    if(!entries || !data)return;
+    const uint32_t read=entries+84*memory().load<uint32_t>(results+28);
+    const std::array<uint32_t,6> now{memory().load<uint32_t>(read+4),memory().load<uint32_t>(read+8),
+        memory().load<uint32_t>(data+44),memory().load<uint32_t>(state+400),uint32_t(camera_motion.crouch()),uint32_t(camera_motion.jump())};
+    static std::unordered_map<uint32_t,std::array<uint32_t,6>> previous;
+    if(previous.contains(actor) && previous.at(actor)==now)return;
+    previous.insert_or_assign(actor,now);
+    std::cerr<<"CAMERA_RACE_ACTOR actor=0x"<<std::hex<<actor<<" ring=0x"<<results+16
+             <<" written=0x"<<memory().load<uint32_t>(entries+84*memory().load<uint32_t>(results+24)+4)
+             <<" flags=0x"<<now[0]<<" released=0x"<<now[1]
+             <<" mask1=0x"<<memory().load<uint32_t>(results+36)<<" mask2=0x"<<memory().load<uint32_t>(results+40)<<std::dec
+             <<" anim="<<now[2]<<" state="<<now[3]<<" crouch="<<now[4]<<" jump="<<now[5]
+             <<" enabled="<<unsigned(memory().load<uint8_t>(actor+1989))<<" block="<<load_float(actor+2080)
+             <<" block2636="<<unsigned(memory().load<uint8_t>(actor+2636))<<'\n';
+}
+
+void finish_camera_overthrow(uint32_t detector,uint32_t results,uint64_t& result) {
+    if(result==1) {camera_motion.consume_overthrow();return;}
+    if(!camera_motion.overthrow())return;
+    set_bits(entry(results)+20,0x8);
+    // Original +72/+76 are whole-word arm states, not power/strength bytes.
+    memory().store<uint32_t>(detector+72,0);
+    memory().store<uint32_t>(detector+76,0);
+    camera_motion.consume_overthrow();result=1;
 }
 
 // One detector override: while the pad drives the race the body decides,
@@ -172,7 +430,23 @@ SFR_HOOK(sub_82438930) {
         const uint32_t detector = ctx.r3.u32, source = ctx.r4.u32, results = ctx.r5.u32; \
         (void)detector; (void)source; (void)results;                           \
         note_detector_source(ctx, base, 0x##address, source);                  \
-        const sfr::RaceBody& b = body();                                       \
+        const uint32_t player=player_of_source(ctx,base,source);             \
+        if(camera_player(player)) {                                        \
+            if(const auto bridged=camera_gesture(0x##address,detector,results))ctx.r3.u64=*bridged; \
+            else {                                                        \
+                __imp__sub_##address(ctx,base);                            \
+                if constexpr(0x##address==0x822CA518 || 0x##address==0x822CBD28) { \
+                    /* Side and Kick share this prerequisite in 822C5BB0. */ \
+                    /* A gated kick must never enter this branch. */      \
+                    if(memory().load<uint32_t>(entry(results)+4)&0x1800000) \
+                        set_bits(entry(results)+4,0x400000);               \
+                }                                                         \
+            }                                                             \
+            if constexpr(0x##address==0x822CC590)finish_camera_overthrow(detector,results,ctx.r3.u64); \
+            trace_camera_detector(0x##address,detector,results,ctx.r3.u32); \
+            return;                                                       \
+        }                                                                 \
+        const sfr::RaceBody& b = race[player].body();                        \
         uint32_t result = 0;                                                   \
         __VA_ARGS__                                                            \
         ctx.r3.u64 = result;                                                   \
@@ -384,7 +658,7 @@ RACE_DETECTOR(822CE118, {
 PPC_FUNC_IMPL(__imp__sub_822CB9B8);
 SFR_HOOK(sub_822CB9B8) {
     sfr::enter_function(ctx, "sub_822CB9B8", 0x822CB9B8);
-    if (pad_racing()) sub_822C8958(ctx, base);
+    if (pad_racing() && !camera_player(player_of_source(ctx,base,ctx.r4.u32))) sub_822C8958(ctx, base);
     else __imp__sub_822CB9B8(ctx, base);
 }
 

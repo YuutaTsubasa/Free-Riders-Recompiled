@@ -76,11 +76,12 @@ enum Text {
     Parallel, ParallelHint, VertexCache, VertexCacheHint, GpuPipeline, GpuPipelineHint, RaceEvery, RaceEveryHint,
     CameraLabel, CameraHint, CameraOff, CameraPicture, CameraMotion, CameraDevice, CameraDeviceHint, CameraNone,
     CameraTest, CameraTesting, CameraWorks, CameraSilent, CameraClosed, CameraMirror, CameraMirrorHint,
-    CameraRace, CameraRaceHint, CameraKinect, KinectRow, KinectRowHint, KinectWorks, KinectSilent, KinectMissing,
+    CameraKinect, KinectRow, KinectRowHint, KinectWorks, KinectSilent, KinectMissing,
     KinectNoRuntime, KinectNoSensor, KinectFailed, KinectDownload, KinectDownloadV2, KinectInstallHint,
     VoiceLabel, VoiceHint, KinectPlacementLabel, KinectPlacementHint, PlacementScreen, PlacementPlayer, PlacementSensor, PlacementChest,
     PlacementFront, PlacementFrontRight, PlacementRight, PlacementBehindRight, PlacementBehind, PlacementBehindLeft,
     PlacementLeft, PlacementFrontLeft,
+    CameraDebug, CameraDebugHint,
     ImageDirectory, ImageDirectoryHint, AssetDirectory, AssetDirectoryHint, Browse, Found, Missing, FilesHint,
     StartGame, Quit, Defaults,
     MissingFiles, MissingGame, LaunchFailed, Ready,
@@ -140,8 +141,8 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Above 1, a slower computer keeps the race at full speed with fewer frames drawn.",
      "大於 1 時，較慢的電腦也能維持比賽速度，但畫面較不流暢。"},
     {"Camera", "攝影機"},
-    {"The title shows the Kinect camera's picture, and Kinect is how it is played. A webcam can stand in: Picture gives it the image and leaves the pad in charge; Motion also tracks your body, which the pad cannot then do.",
-     "遊戲會顯示 Kinect 的攝影機畫面，而它本來就是體感操作的。可以用 webcam 代替：「畫面」只提供影像、操作仍由手把負責；「體感」還會追蹤你的身體，此時手把就不再驅動玩家。"},
+    {"Motion tracks your body for Player 1. Controller input takes priority; after 1.5 seconds idle, fresh camera tracking resumes. Lost tracking falls back to the controller. Player 2 keeps its assigned controller.",
+     "「體感」追蹤你的身體來控制 1P。操作手把時優先接手，停止操作 1.5 秒後恢復攝影機追蹤；失去追蹤時退回手把。2P 保留原本指定的手把。"},
     {"Off", "關閉"},
     {"Picture", "畫面"},
     {"Motion", "體感"},
@@ -156,9 +157,6 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Mirrored camera", "攝影機畫面左右相反"},
     {"Turn this on when the camera shows you as a mirror does. With it wrong, raising one hand moves the other, and the cursor runs off the side of the screen.",
      "若攝影機畫面像照鏡子一樣左右相反，請開啟此項。設定相反時，舉起一隻手會動到另一隻，游標也會跑到畫面邊緣。"},
-    {"Race with your body (experimental)", "比賽也用身體操作（實驗性）"},
-    {"The camera's body also races: lean to steer, crouch and jump. A webcam sees no depth, so moves towards the screen are not recognized.",
-     "攝影機追蹤到的身體也用於比賽：傾身轉彎、蹲下、跳躍。webcam 沒有深度資訊，因此朝螢幕方向的動作無法辨識。"},
     {"Kinect", "Kinect"},
     {"Kinect sensor", "Kinect 感測器"},
     {"A real Kinect tracks you as the console did: an Xbox 360 Kinect (Kinect for Windows SDK 1.8) or a Kinect v2 for Xbox One (SDK 2.0). The first one found is used.",
@@ -191,6 +189,9 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Behind left", "左後方"},
     {"On your left", "左側"},
     {"Front left", "左前方"},
+    {"Skeleton debug window", "骨架 Debug 視窗"},
+    {"Shows only the skeleton received by the game, in front and side views, with no camera image. Closing this window does not stop the game. Changes apply on the next game launch.",
+     "僅顯示遊戲收到的骨架，提供正面與側面視圖，不顯示攝影機影像。關閉此視窗不會停止遊戲。設定會在下次啟動遊戲時套用。"},
     {"Game code image", "遊戲程式映像"},
     {"The game's decoded code and data (complete.txt, image.bin).", "解碼後的遊戲程式與資料（complete.txt、image.bin）。"},
     {"Game data", "遊戲資料"},
@@ -1902,12 +1903,14 @@ struct Launcher {
                 }
                 ImGui::EndDisabled();
             });
-            if (settings.camera == "motion")
+            if (settings.camera == "motion") {
                 setting_row(tr(CameraMirror), tr(CameraMirrorHint), switch_width, scale,
                             [&] { toggle("##camera_mirror", &settings.camera_mirror); });
-            if (settings.camera == "motion")
-                setting_row(tr(CameraRace), tr(CameraRaceHint), switch_width, scale,
-                            [&] { toggle("##camera_race", &settings.camera_race); });
+#ifdef _WIN32
+                setting_row(tr(CameraDebug), tr(CameraDebugHint), switch_width, scale,
+                            [&] { toggle("##camera_debug", &settings.camera_debug); });
+#endif
+            }
         }
         if (sfr::VoiceRecognizer::supported())
             setting_row(tr(VoiceLabel), tr(VoiceHint), switch_width, scale, [&] { toggle("##voice", &settings.voice); });

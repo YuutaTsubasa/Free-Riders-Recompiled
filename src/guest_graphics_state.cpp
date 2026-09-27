@@ -83,6 +83,20 @@ void apply(NativePresentation& presentation,uint32_t device,
 }
 }
 
+namespace {
+// Match sub_824E9460's render-surface bounds. A surface's +36 word is
+// packed differently from the word at the same offset in a texture header.
+std::pair<uint32_t,uint32_t> attachment_size(GuestMemory& memory,uint32_t device,
+                                             uint32_t attachment) {
+    // Reset updates the logical back buffer while the host framebuffer stays
+    // allocated at its original dimensions. Both native attachments follow it.
+    if(attachment==GuestGraphics::color_handle || attachment==GuestGraphics::depth_handle)
+        return {memory.load<uint32_t>(device+0x35BC),memory.load<uint32_t>(device+0x35C0)};
+    const uint32_t size=memory.load<uint32_t>(uint64_t(attachment)+36);
+    return {((size>>18)&0x3FFFu)+1,((size>>3)&0x7FFFu)+1};
+}
+}
+
 bool GuestGraphics::set_viewport(uint32_t device,uint32_t descriptor) {
     check_device(memory_,created(),device);
     memory_.check(descriptor,24);
@@ -101,12 +115,23 @@ bool GuestGraphics::set_viewport(uint32_t device,uint32_t descriptor) {
     const int64_t right=x+integer(viewport.width),bottom=y+integer(viewport.height);
     if(right>INT32_MAX || bottom>INT32_MAX)
         unsupported(descriptor,"signed viewport endpoint overflow is unsupported");
-    int64_t width=std::min<int64_t>(native.width(),right)-x;
-    int64_t height=std::min<int64_t>(native.height(),bottom)-y;
+    // Offscreen targets currently alias the physical framebuffer, including
+    // full-frame resolves and screen-space shader coordinates. Keep origin-zero
+    // passes in that same space: clamping their default 0xFFFF extent to a tiny
+    // bloom target also changes the viewport saved/restored by later passes.
+    // Offset split views still need the guest surface boundary; otherwise the
+    // right half of an 880-wide target extends from x=440 all the way to 1280.
+    const auto [surface_width,surface_height]=(x==0 && y==0)
+        ? std::pair{native.width(),native.height()}
+        : attachment_size(memory_,device,attachment);
+    int64_t width=std::min<int64_t>(surface_width,right)-x;
+    int64_t height=std::min<int64_t>(surface_height,bottom)-y;
     if(width<0 || height<0) width=height=0;
     viewport.width=float(width); viewport.height=float(height);
     const auto rectangle=read_rectangle(memory_,device+0x3234);
     const auto update=scissor_update(memory_,device,viewport,rectangle,
+        // Preserve the logical viewport and guest packed scissor, but clip the
+        // host scissor to the actual aliased framebuffer, as other setters do.
         memory_.load<uint32_t>(device+0x2F00),native.width(),native.height());
     memory_.check_write(device+0x3218,28);
     memory_.check_write(device+0x2908,24);

@@ -30,6 +30,10 @@ bool sensor_body = false;
 
 namespace sfr {
 GuestMemory* active_memory = nullptr;
+bool camera_motion_active() { return false; }
+uint64_t camera_pose_generation() { return 0; }
+uint64_t camera_motion_clock_ns() { return 0; }
+std::optional<GamepadState> second_player_pad() { return std::nullopt; }
 GamepadState nui_gamepad() { return harness::input; }
 bool nui_body_from_sensor() { return harness::sensor_body; }
 void enter_function_observed(PPCContext&, const char*, uint32_t) {}
@@ -39,6 +43,8 @@ void call_indirect(PPCContext&, uint8_t*, uint32_t) {
 }
 }
 
+PPC_FUNC(__imp__sub_822C6200) {}
+PPC_FUNC(__imp__sub_82918418) { ctx.r3.u64 = sfr::active_memory->load<uint32_t>(ctx.r3.u32 + 4); }
 PPC_FUNC(__imp__sub_82438930) { ++harness::manager_calls; }
 
 // Fixture for the original Side detector's observed result with the copied
@@ -62,6 +68,7 @@ PPC_FUNC(__imp__sub_822CA6B0) {
 #define UNUSED_ORIGINAL(address) PPC_FUNC(__imp__sub_##address) { \
     throw std::runtime_error("unexpected original detector " #address); }
 UNUSED_ORIGINAL(822C9050)
+UNUSED_ORIGINAL(822B60F8)
 UNUSED_ORIGINAL(822C8778)
 UNUSED_ORIGINAL(822CB840)
 UNUSED_ORIGINAL(822C8650)

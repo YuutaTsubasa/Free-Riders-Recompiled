@@ -51,6 +51,8 @@ int main() {
         const uint32_t slot1 = data + sfr::nui_skeleton_data_size;
         require(memory.load<uint32_t>(slot1) == sfr::nui_tracked &&
                     memory.load<uint32_t>(slot1 + 4) == 2, "the second player is tracked in slot 1 as id 2");
+        require(memory.load<uint32_t>(data + 12) == 0 && memory.load<uint32_t>(slot1 + 12) == 1,
+                "each player carries its own user index");
         for (uint32_t slot = 2; slot < 6; ++slot)
             require(memory.load<uint32_t>(data + slot * sfr::nui_skeleton_data_size) == 0,
                     "no other slot is tracked with two players");

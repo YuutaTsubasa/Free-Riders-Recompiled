@@ -5,6 +5,7 @@
 #include "native_presentation.h"
 #include "native_raster_state.h"
 #include "native_blend_control.h"
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <iostream>
@@ -217,6 +218,107 @@ void viewport_state() {
     require(!guest.set_viewport(device,viewport),"original no-attachment viewport is no-op");
     require(field(0x3218)==20 && field(0x3220)==0,"no-attachment call retains previous state");
 }
+void attachment_viewports(bool foreign, bool oversized) {
+    sfr::GuestMemory memory;
+    sfr::NativeGraphics graphics;
+    sfr::GuestGraphics guest(memory,graphics);
+    setup(memory);
+    guest.create_device(0,1,0,0,params,output);
+    constexpr uint32_t viewport=rects+32, surface=0x10001000;
+    const uint32_t width=oversized?32:12, height=oversized?24:11;
+    const uint32_t x=6;
+    if(foreign) {
+        sfr::GuestGraphics::foreign_render_targets=true;
+        memory.map(surface,64);
+        // sub_824E9460 reads a surface size word, not a texture fetch.
+        memory.store<uint32_t>(surface+36,((width-1)<<18)|((height-1)<<3));
+        memory.store<uint32_t>(surface+48,0x200); // unrelated to surface dimensions
+        memory.store<uint32_t>(device+0x3148,surface);
+    } else {
+        // Device reset retains the native framebuffer but changes guest size.
+        memory.store<uint32_t>(device+0x35BC,width);
+        memory.store<uint32_t>(device+0x35C0,height);
+    }
+    for(auto [i,v]: {std::pair{0u,x},std::pair{1u,0u},std::pair{2u,width},std::pair{3u,height}})
+        memory.store<uint32_t>(viewport+i*4,v);
+    memory.store<uint32_t>(viewport+16,0);
+    memory.store<uint32_t>(viewport+20,std::bit_cast<uint32_t>(1.0f));
+    require(guest.set_viewport(device,viewport),"attachment viewport updates");
+    const auto& raster=guest.presentation().raster_state();
+    require(raster.viewport().width==float(width-x) && raster.viewport().height==float(height),
+            "viewport clamps to guest attachment, independent of native framebuffer size");
+    require(raster.scissor().right==int32_t(std::min<uint32_t>(width,19u)) &&
+            raster.scissor().bottom==int32_t(std::min<uint32_t>(height,11u)),
+            "native scissor clips to physical framebuffer");
+    require(std::bit_cast<float>(memory.load<uint32_t>(device+0x2908))==float(width-x)*0.5f,
+            "guest viewport transform uses attachment width");
+    require((memory.load<uint32_t>(device+0x28C8)&0x7FFF7FFFu)==((height<<16)|width),
+            "guest packed scissor retains guest attachment bounds");
+    for(auto [i,v]: {std::pair{0u,x},std::pair{1u,0u},std::pair{2u,width},std::pair{3u,height}})
+        memory.store<uint32_t>(rects+i*4,v);
+    guest.set_scissor(device,rects);
+    guest.set_scissor_enabled(device,1);
+    guest.set_scissor_enabled(device,0);
+    require(raster.scissor().right==int32_t(std::min<uint32_t>(width,19u)) &&
+            raster.scissor().bottom==int32_t(std::min<uint32_t>(height,11u)),
+            "scissor setters retain host clipping after attachment viewport");
+    sfr::GuestGraphics::foreign_render_targets=false;
+}
+void aliased_full_frame_viewport(bool foreign) {
+    sfr::GuestMemory memory;
+    sfr::NativeGraphics graphics;
+    sfr::GuestGraphics guest(memory,graphics);
+    setup(memory);
+    guest.create_device(0,1,0,0,params,output);
+    constexpr uint32_t viewport=rects+32, surface=0x10001000;
+    // Race reset and a small postprocess target both alias the same 19x11
+    // framebuffer. Full-frame resolves must not include an undrawn right edge.
+    memory.store<uint32_t>(device+0x35BC,12);
+    if(foreign) {
+        sfr::GuestGraphics::foreign_render_targets=true;
+        memory.map(surface,64);
+        memory.store<uint32_t>(surface+36,((3u-1)<<18)|((2u-1)<<3));
+        memory.store<uint32_t>(device+0x3148,surface);
+    }
+    for(auto [i,v]: {std::pair{0u,0u},std::pair{1u,0u},std::pair{2u,65535u},std::pair{3u,65535u},
+                    std::pair{4u,0u},std::pair{5u,std::bit_cast<uint32_t>(1.0f)}})
+        memory.store<uint32_t>(viewport+i*4,v);
+    guest.set_viewport(device,viewport);
+    require(guest.presentation().raster_state().viewport().width==19 &&
+            guest.presentation().raster_state().viewport().height==11,
+            "full-frame alias viewport covers the physical resolve extent");
+    require(std::bit_cast<float>(memory.load<uint32_t>(device+0x3220))==19,
+            "saved full-frame viewport is restored at physical width by later passes");
+    guest.clear(device,0,0,1,0xFF123456,0,0);
+    pixels(guest,0xFF123456,0);
+    if(!foreign) {
+        // Explicit Loading width is not expanded. Two split views retain the
+        // left half and clamp an oversized right-half request to the back buffer.
+        memory.store<uint32_t>(viewport+8,12);
+        memory.store<uint32_t>(viewport+12,11);
+        guest.set_viewport(device,viewport);
+        require(guest.presentation().raster_state().viewport().width==12,
+                "explicit Loading viewport retains logical width for presentation stretch");
+        memory.store<uint32_t>(viewport+8,6);
+        guest.set_viewport(device,viewport);
+        guest.clear(device,0,0,1,0xFF102030,0,0);
+        pixels(guest,0xFF102030,0xFF123456,0,0,6,11);
+        memory.store<uint32_t>(viewport,6);
+        memory.store<uint32_t>(viewport+8,65535);
+        guest.set_viewport(device,viewport);
+        require(guest.presentation().raster_state().viewport().width==6,
+                "right split viewport ends at the guest back buffer boundary");
+        guest.clear(device,0,0,1,0xFFABCDEF,0,0);
+        const auto split=guest.presentation().readback_color();
+        for(int y=0;y<11;++y) for(int x=0;x<19;++x) {
+            const uint32_t expected=x<6?0xFF102030u:x<12?0xFFABCDEFu:0xFF123456u;
+            for(int c=0;c<4;++c)
+                require(split[(y*19+x)*4+c]==uint8_t(expected>>(c*8)),
+                        "right-half clear preserves left player and pixels beyond logical back buffer");
+        }
+    }
+    sfr::GuestGraphics::foreign_render_targets=false;
+}
 void blend_state() {
     sfr::GuestMemory memory;
     sfr::NativeGraphics graphics;
@@ -277,6 +379,14 @@ void blend_state() {
 }
 }
 int main() {
-    try { run(); viewport_state(); blend_state(); std::cout << "guest graphics tests passed\n"; return 0; }
-    catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
+    try {
+        run(); viewport_state(); blend_state();
+        attachment_viewports(false,false);
+        attachment_viewports(true,false);
+        attachment_viewports(true,true);
+        aliased_full_frame_viewport(false);
+        aliased_full_frame_viewport(true);
+        std::cout << "guest graphics tests passed\n";
+        return 0;
+    } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

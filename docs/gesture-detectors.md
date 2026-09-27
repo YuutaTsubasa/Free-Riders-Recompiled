@@ -10,7 +10,7 @@
 或 0。
 
 手把模式用自己的判斷取代它們（[`nui_race_hooks.cpp`](../src/nui_race_hooks.cpp)）；
-實體 Kinect 與「比賽也用身體操作」的 webcam 則交還給遊戲原本的判斷器。
+實體 Kinect 則交還給遊戲原本的判斷器；webcam 的比賽動作由 [`camera_race_motion.h`](../src/camera_race_motion.h) 另外辨識（見 [攝影機體感輸入](camera-input.md)）。
 
 ## 目前知道的
 

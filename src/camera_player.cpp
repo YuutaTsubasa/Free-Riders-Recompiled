@@ -22,15 +22,9 @@ struct CameraPlayer::Impl {
     std::mutex lock;
     SkeletonJoints joints{};
     uint64_t found = 0, taken = 0;
+    bool observed = false, detected = false;
+    std::chrono::steady_clock::time_point last_observation{}, last_pose{};
     std::atomic<bool> ever_found{false};
-    // steady_clock nanoseconds of the last body, for left().
-    std::atomic<int64_t> last_found{0};
-    double leave_seconds = [] {
-        const char* text = std::getenv("SFR_CAMERA_LEAVE_SECONDS");
-        if (!text || !*text) return 1.5;
-        const double value = std::strtod(text, nullptr);
-        return value > 0 ? value : 0.0;
-    }();
     std::jthread worker;
 
     void run(std::stop_token stop) {
@@ -41,7 +35,6 @@ struct CameraPlayer::Impl {
         auto reported = std::chrono::steady_clock::now();
         auto last_picture = reported;
         double spent = 0;
-        PoseMapping mapping;  // the scale and leading side, carried along (pose_to_joints)
         while (!stop.stop_requested()) {
             if (!camera->next(frame)) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
@@ -56,20 +49,23 @@ struct CameraPlayer::Impl {
                 // Smoothed where the model read them, before the picture
                 // becomes metres: the wandering is a picture's wandering.
                 smoothing.smooth(landmarks, interval);
-                body = pose_to_joints(landmarks, frame.width, frame.height, mapped, mirrored, &mapping);
+                body = pose_to_joints(landmarks, frame.width, frame.height, mapped, mirrored);
             } else {
                 smoothing.forget();
-                mapping = {};  // whoever comes next is measured afresh
             }
             spent += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
             ++estimates;
-            if (body) {
+            {
                 std::lock_guard guard(lock);
-                joints = mapped;
-                ++found;
-                ever_found.store(true, std::memory_order_relaxed);
-                last_found.store(std::chrono::steady_clock::now().time_since_epoch().count(),
-                                 std::memory_order_relaxed);
+                observed = true;
+                detected = body;
+                last_observation = std::chrono::steady_clock::now();
+                if (body) {
+                    joints = mapped;
+                    ++found;
+                    last_pose = last_observation;
+                    ever_found.store(true, std::memory_order_relaxed);
+                }
             }
             // Once every five seconds: how well the camera is keeping up.
             const auto now = std::chrono::steady_clock::now();
@@ -112,8 +108,14 @@ std::unique_ptr<CameraPlayer> CameraPlayer::start() {
     return std::unique_ptr<CameraPlayer>(new CameraPlayer(std::move(impl)));
 }
 
-bool CameraPlayer::joints(SkeletonJoints& out) {
+bool CameraPlayer::joints(SkeletonJoints& out, CameraTrackingStatus* status) {
     std::lock_guard guard(impl_->lock);
+    if (status) {
+        const auto now = std::chrono::steady_clock::now();
+        status->detected = impl_->detected;
+        status->observation_age_ms = impl_->observed ? std::chrono::duration<double,std::milli>(now-impl_->last_observation).count() : -1;
+        status->pose_age_ms = impl_->found ? std::chrono::duration<double,std::milli>(now-impl_->last_pose).count() : -1;
+    }
     if (impl_->found == impl_->taken) return false;
     out = impl_->joints;
     impl_->taken = impl_->found;
@@ -121,17 +123,5 @@ bool CameraPlayer::joints(SkeletonJoints& out) {
 }
 
 bool CameraPlayer::tracking() const { return impl_->ever_found.load(std::memory_order_relaxed); }
-
-bool CameraPlayer::left_after(double seconds_without_body, double leave_seconds) {
-    return leave_seconds > 0 && seconds_without_body >= leave_seconds;
-}
-
-bool CameraPlayer::left() const {
-    if (!tracking()) return false;
-    const auto last = std::chrono::steady_clock::time_point(
-        std::chrono::steady_clock::duration(impl_->last_found.load(std::memory_order_relaxed)));
-    const double since = std::chrono::duration<double>(std::chrono::steady_clock::now() - last).count();
-    return left_after(since, impl_->leave_seconds);
-}
 
 }

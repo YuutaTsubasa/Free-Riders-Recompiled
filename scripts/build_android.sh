@@ -74,7 +74,8 @@ if [ "$apk" = 1 ]; then
     abi_options=()
     for abi in "${abis[@]}"; do abi_options+=(--abi "$abi"); done
     [ -z "$pack" ] || abi_options+=(--pack "$pack")
-    pose="$root/tools/onnx/rtmpose/end2end.onnx"
-    [ ! -f "$pose" ] || abi_options+=(--pose "$(native "$pose")")
+    # The MediaPipe models for the camera's motion input (fetch_pose_model.py).
+    pose="$root/tools/onnx/mediapipe"
+    [ ! -f "$pose/pose_estimation_mediapipe_2023mar.onnx" ] || abi_options+=(--pose "$(native "$pose")")
     ANDROID_HOME="$ANDROID_HOME" python "$root/scripts/package_android.py" --min-sdk "$api" "${abi_options[@]}"
 fi

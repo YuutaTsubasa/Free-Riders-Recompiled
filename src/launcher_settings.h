@@ -40,9 +40,6 @@ struct LauncherSettings {
     // it is a setting: with it wrong, left and right are the wrong way
     // round and the cursor runs off the side of the screen.
     bool camera_mirror = false;   // SFR_CAMERA_MIRROR
-    // Motion only, experimental: the webcam's body races as well, read by
-    // the title's own gesture detectors instead of the pad.
-    bool camera_race = false;     // SFR_CAMERA_RACE
     // Where a real Kinect stands around the player, the screen ahead:
     // "front", "front-right", "right", "behind-right", "behind",
     // "behind-left", "left" or "front-left" (kinect_sensor.h). A board is
@@ -52,6 +49,9 @@ struct LauncherSettings {
     // microphone (a Kinect's array, made the default, is heard), in English
     // or Traditional Chinese; the pad's buttons still say them too.
     bool voice = false;  // SFR_VOICE
+    // Windows motion mode: show the skeleton submitted to the game in a
+    // separate window, without a camera image (SFR_CAMERA_DEBUG).
+    bool camera_debug = false;
     // Controls (input_bindings.h). The devices each player uses, and how
     // their keys and pad buttons are arranged, as "a=Z,b=X,..." lines. An
     // empty line means the defaults, so a settings file written before any

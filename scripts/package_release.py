@@ -17,15 +17,10 @@ pinned translator, shader_common.h and dxc-bin's DXC, which the launcher hands
 to the game for shaders the pack lacks: see shader_tool_environment in
 src/launcher_settings.h).
 
-The camera's motion input (webcam as the Kinect player) needs ONNX Runtime
-and the RTMPose model (scripts/fetch_pose_model.py): the runtime goes beside
-the programs, the model in pose/, and both licences in licenses/. A release
-without them (--no-pose) still plays, with the pad standing in for the body.
-
 Every licence file listed must exist; packaging stops otherwise.
 
 Usage: python scripts/package_release.py windows|linux|android --version 0.1.0
-       [--build DIR] [--pack out/shaders/shaders.pack] [--output out/release] [--no-pose]
+       [--build DIR] [--pack out/shaders/shaders.pack] [--output out/release]
 """
 import argparse
 import hashlib
@@ -38,7 +33,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DXC = ROOT / 'tools/XenosRecomp/thirdparty/dxc-bin'
-ONNX = ROOT / 'tools/onnx'
 # (file in the release's licenses/ directory, source)
 LICENSES = [
     ('FreeRidersRecompiled-GPL-3.0.txt', ROOT / 'COPYING'),
@@ -81,35 +75,6 @@ def sha256(path):
     return digest.hexdigest()
 
 
-def pose_licenses(platform):
-    """The licences of the runtime and the model the motion input uses."""
-    runtime = ONNX / ('onnxruntime-android' if platform == 'android' else 'onnxruntime')
-    return [('ONNXRuntime-MIT.txt', runtime / 'LICENSE'),
-            ('ONNXRuntime-ThirdPartyNotices.txt', runtime / 'ThirdPartyNotices.txt'),
-            ('RTMPose-Apache-2.0.txt', ONNX / 'rtmpose/LICENSE')]
-
-
-def pose_files(platform):
-    """(path in the release, source) of the runtime and the model, desktop only
-    (the APK carries them itself, scripts/package_android.py)."""
-    if platform == 'windows':
-        runtime = [('onnxruntime.dll', ONNX / 'onnxruntime/lib/onnxruntime.dll')]
-        shared = ONNX / 'onnxruntime/lib/onnxruntime_providers_shared.dll'
-        if shared.is_file():
-            runtime.append(('onnxruntime_providers_shared.dll', shared))
-    else:
-        # The program asks for the soname; the file behind the links is it.
-        runtime = [('libonnxruntime.so.1', (ONNX / 'onnxruntime/lib/libonnxruntime.so.1').resolve())]
-    return runtime + [('pose/rtmpose.onnx', ONNX / 'rtmpose/end2end.onnx')]
-
-
-def need_pose(path):
-    if not path.is_file():
-        sys.exit('missing %s: run scripts/fetch_pose_model.py%s, or package with --no-pose'
-                 % (path, ' --android' if 'android' in str(path) else ''))
-    return path
-
-
 def desktop_files(platform, build, pack):
     """(path in the release, source) for Windows or Linux."""
     exe = '.exe' if platform == 'windows' else ''
@@ -129,6 +94,22 @@ def desktop_files(platform, build, pack):
     return files
 
 
+def camera_files(root):
+    """Windows MediaPipe bundle. Missing runtime, model or licence is fatal."""
+    files = []
+    for name in ('onnxruntime.dll', 'onnxruntime_providers_shared.dll'):
+        files.append((name, need(root / 'onnxruntime/lib' / name)))
+    for name in ('pose_estimation_mediapipe_2023mar.onnx', 'person_detection_mediapipe_2023mar.onnx'):
+        files.append(('pose/' + name, need(root / 'mediapipe' / name)))
+    for inside, source in (
+        ('ONNXRuntime-MIT.txt', 'onnxruntime/LICENSE'),
+        ('ONNXRuntime-ThirdPartyNotices.txt', 'onnxruntime/ThirdPartyNotices.txt'),
+        ('MediaPipe-Apache-2.0.txt', 'mediapipe/LICENSE'),
+    ):
+        files.append(('licenses/' + inside, need(root / source)))
+    return files
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('platform', choices=('windows', 'linux', 'android'))
@@ -137,15 +118,14 @@ def main():
     parser.add_argument('--pack', type=Path, default=ROOT / 'out/shaders/shaders.pack',
                         help='shaders.pack to include (pass "" for none)')
     parser.add_argument('--output', type=Path, default=ROOT / 'out/release')
-    parser.add_argument('--no-pose', action='store_true',
-                        help='leave out the camera motion input (ONNX Runtime and the RTMPose model)')
+    parser.add_argument('--camera', action='store_true', help='bundle Windows MediaPipe models and ONNX Runtime')
     args = parser.parse_args()
+    if args.camera and args.platform != 'windows':
+        parser.error('--camera currently packages the Windows runtime only')
     pack = args.pack if args.pack and str(args.pack) else None
 
     licenses = [('licenses/' + name, need(source))
                 for name, source in LICENSES + (DXC_LICENSES if args.platform == 'windows' else [])]
-    if not args.no_pose:
-        licenses += [('licenses/' + name, need_pose(source)) for name, source in pose_licenses(args.platform)]
     name = 'FreeRidersRecompiled-%s-%s' % (args.version, {'windows': 'windows-x64', 'linux': 'linux-x64',
                                                             'android': 'android-arm64'}[args.platform])
     args.output.mkdir(parents=True, exist_ok=True)
@@ -165,8 +145,10 @@ def main():
     else:
         build = args.build or (ROOT / 'out/build/host' if args.platform == 'windows' else Path.home() / 'sfr-build')
         files = desktop_files(args.platform, build, pack) + licenses
-        if not args.no_pose:
-            files += [(inside, need_pose(source)) for inside, source in pose_files(args.platform)]
+        if args.camera:
+            files += camera_files(ROOT / 'tools/onnx')
+            files.append(('Camera-input.md', need(ROOT / 'docs/camera-input.md')))
+            readme += b'\nCamera motion: enable Camera > Motion in the launcher. Models and runtime are included.\nSkeleton debug window is optional. Camera controls 1P; controller input takes priority.\n'
         if args.platform == 'windows':
             out = args.output / (name + '.zip')
             with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as archive:

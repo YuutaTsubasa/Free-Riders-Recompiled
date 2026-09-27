@@ -35,7 +35,6 @@ void settings_round_trip() {
     settings.camera = "motion";
     settings.camera_device = "e2eSoft iVCam #2";
     settings.camera_mirror = true;
-    settings.camera_race = true;
     settings.kinect_placement = "right";
     settings.voice = true;
     settings.player1_device = "keyboard";
@@ -53,7 +52,7 @@ void settings_round_trip() {
     require(read.fullscreen && read.vsync && !read.audio && read.volume == 35, "display and sound survive a round trip");
     require(read.skip_movies && !read.vertex_cache && !read.gpu_pipeline && !read.parallel && read.race_render_every == 2 && !read.ui_sounds && read.vulkan,
             "advanced settings survive a round trip");
-    require(read.camera == "motion" && read.camera_device == "e2eSoft iVCam #2" && read.camera_mirror && read.camera_race,
+    require(read.camera == "motion" && read.camera_device == "e2eSoft iVCam #2" && read.camera_mirror,
             "the camera choice, name, and mirror setting survive a round trip");
     require(read.player1_device == settings.player1_device && read.player2_device == settings.player2_device &&
             read.player1_gamepad == settings.player1_gamepad && read.player2_gamepad == settings.player2_gamepad &&
@@ -61,13 +60,43 @@ void settings_round_trip() {
             read.player1_pad == settings.player1_pad && read.player2_pad == settings.player2_pad,
             "both players' controls survive a round trip alongside camera and pipeline settings");
     require(value_of(read, "SFR_CAMERA") == "motion" && value_of(read, "SFR_CAMERA_DEVICE") == settings.camera_device &&
-            value_of(read, "SFR_CAMERA_MIRROR") == "1" && value_of(read, "SFR_CAMERA_RACE") == "1" && value_of(read, "SFR_KINECT_PLACEMENT") == "right" && value_of(read, "SFR_VOICE") == "1" && read.voice &&
+            value_of(read, "SFR_CAMERA_MIRROR") == "1" && value_of(read, "SFR_KINECT_PLACEMENT") == "right" && value_of(read, "SFR_VOICE") == "1" && read.voice &&
             value_of(read, "SFR_GPU_PIPELINE") == "0" &&
             value_of(read, "SFR_PLAYER1_INPUT") == settings.player1_device &&
             value_of(read, "SFR_PLAYER2_PAD") == settings.player2_pad,
             "camera, pipeline, and custom controls reach the game together");
     require(read.image_directory == settings.image_directory && read.asset_directory == settings.asset_directory,
             "non-ASCII directories survive a round trip");
+}
+
+void camera_debug_settings() {
+    const sfr::LauncherSettings defaults;
+    require(sfr::format_launcher_settings(defaults).find("camera_debug=0\n") != std::string::npos,
+            "the skeleton debug window defaults to off");
+    for (const char* flag : {"1", "true"}) {
+        const auto enabled = sfr::parse_launcher_settings(std::string("camera=motion\ncamera_debug=") + flag + "\n");
+        const auto saved = sfr::format_launcher_settings(enabled);
+        require(saved.find("camera_debug=1\n") != std::string::npos,
+                "the debug preference survives a save");
+        require(sfr::format_launcher_settings(sfr::parse_launcher_settings(saved)) == saved,
+                "the debug preference survives reloading");
+    }
+    for (const char* flag : {"0", "false", "invalid"}) {
+        const auto disabled = sfr::parse_launcher_settings(std::string("camera_debug=") + flag + "\n");
+        require(sfr::format_launcher_settings(disabled).find("camera_debug=0\n") != std::string::npos,
+                "false or invalid debug flags keep debugging off");
+    }
+    for (const char* camera : {"off", "picture", "motion"}) {
+        for (const char* flag : {"0", "1"}) {
+            const auto settings = sfr::parse_launcher_settings(std::string("camera=") + camera + "\ncamera_debug=" + flag + "\n");
+            std::string expected = "0";
+#ifdef _WIN32
+            if (settings.camera == "motion" && std::string(flag) == "1") expected = "1";
+#endif
+            require(value_of(settings, "SFR_CAMERA_DEBUG") == expected,
+                    "debugging explicitly overrides the inherited environment and requires Windows motion mode plus opt-in");
+        }
+    }
 }
 
 void malformed_values_keep_defaults() {
@@ -196,6 +225,7 @@ void directories_are_found_and_checked() {
 int main() {
     try {
         settings_round_trip();
+        camera_debug_settings();
         malformed_values_keep_defaults();
         environment_follows_settings();
         directories_are_found_and_checked();
