@@ -27,8 +27,14 @@ Free Riders Recompiled 是以靜態重編譯製作的 Xbox 360 版《Sonic Free 
 - Direct3D 12 與 Vulkan 繪圖，著色器在遊戲遇到時即時轉換；音效；紀錄的儲存與讀取。
 - 不需要 Kinect：Kinect 由程式模擬。按鍵代替選單能聽懂的語音指令，手把驅動比賽讀取的
   身體動作（傾斜、跳躍、踢地加速、抓取、特技）。
+- Windows 上可接實體 Kinect（Xbox 360 版／Kinect for Windows 第一代需安裝 Kinect for Windows
+  SDK 1.8；Xbox One 版 Kinect v2 需安裝 SDK 2.0）：感測器的骨架直接交給遊戲，由遊戲自己的手勢判斷器讀取，和主機上一樣；也可以用 webcam
+  代替（[docs/kinect-sensor.md](docs/kinect-sensor.md)、[docs/camera-input.md](docs/camera-input.md)）。
+  尚未實機測試。
 - 各平台都有啟動器：從光碟映像檔安裝遊戲並保存設定，支援英文與繁體中文（右上角可切換）。
-- Linux（Vulkan、SDL2），以及 Android（arm64-v8a）的觸控按鈕與傾斜轉彎。
+- Linux（Vulkan、SDL2），以及 Android（arm64-v8a）的觸控按鈕與傾斜轉彎；手機本身的鏡頭也能當作 webcam
+  （Android 鏡頭擷取，尚未實機測試）。
+- Windows 可選擇使用 webcam 控制 1P：估算 3D 骨架、手把自動接手，以及獨立骨架 Debug 視窗。
 
 已知限制：
 
@@ -37,7 +43,6 @@ Free Riders Recompiled 是以靜態重編譯製作的 Xbox 360 版《Sonic Free 
 - Linux 與 Android 使用事先在 Windows 上轉換好的著色器（`shaders.pack`，發布版已附）。遊戲會
   在開機時建立全部 468 個著色器，因此在 Windows 上執行一次就能收集完整。
 - Android 已在模擬器與一台 Adreno 750 掌機上試過。
-- Android 目前只在模擬器上執行過，尚未在實機上測試。
 
 開發紀錄在 [docs/](docs/)，從 [docs/progress.md](docs/progress.md) 開始。
 
@@ -96,6 +101,26 @@ python scripts/prepare_recomp.py
 Xbox 與 PlayStation 手把都能使用。Android 沒有連接手把時，畫面上的半透明觸控按鈕提供相同的
 操作，比賽中也能左右傾斜手機轉彎。
 
+## 攝影機體感
+
+Windows v0.2.0 發行包已內附體感模型與執行庫。在啟動器選擇 **攝影機 → 體感**，
+並讓全身進入鏡頭範圍。可另外開啟 **骨架 Debug 視窗**，查看遊戲收到的骨架正面與
+側面視圖；視窗不顯示攝影機影像。
+
+攝影機控制 1P，操作手把時由手把優先接手；手把閒置 1.5 秒且仍有有效追蹤時，才回到
+體感。失去追蹤時仍可用手把操作。單人遊玩可將 2P 輸入設為 **關閉**。
+
+姿勢推論在本機執行，使用 [ONNX Runtime](https://github.com/microsoft/onnxruntime)
+1.30.0（MIT），搭配 [OpenCV Zoo 的 MediaPipe 姿勢模型](https://github.com/opencv/opencv_zoo/tree/47534e27c9851bb1128ccc0102f1145e27f23f98/models/pose_estimation_mediapipe)
+與[人物偵測模型](https://github.com/opencv/opencv_zoo/tree/47534e27c9851bb1128ccc0102f1145e27f23f98/models/person_detection_mediapipe)
+（Apache 2.0）。模型源自 Google MediaPipe，本專案使用其 ONNX 轉換版本，
+不需要安裝 MediaPipe 或 OpenCV 執行庫。下載檔的 SHA-256 固定於
+[scripts/fetch_pose_model.py](scripts/fetch_pose_model.py)，Windows 發行包的 `licenses/`
+資料夾內附授權與第三方通知。
+
+單眼攝影機估算的是相對 3D 姿勢，並非 Kinect 的深度量測。Linux 與 Android 預建包
+目前未啟用 Camera 體感。設定、動作說明與自行建置方式見[攝影機體感輸入](docs/camera-input.md)。
+
 ## 常見問題
 
 **設定與存檔在哪裡？** 在啟動器旁：`settings.ini`、`save/` 與 `game.log`（Android 在 app 的
@@ -127,6 +152,10 @@ Xbox 與 PlayStation 手把都能使用。Android 沒有連接手把時，畫面
   [DirectX Shader Compiler](https://github.com/microsoft/DirectXShaderCompiler)（經
   [dxc-bin](https://github.com/renderbag/dxc-bin)）。
 - [Xenia](https://github.com/xenia-project/xenia)：Xbox 360 核心行為的參考。
+- [ONNX Runtime](https://github.com/microsoft/onnxruntime)（姿勢推論）、
+  [OpenCV Zoo](https://github.com/opencv/opencv_zoo) 與
+  [MediaPipe](https://github.com/google-ai-edge/mediapipe)（人物偵測與 3D 姿勢模型）。
+  確切版本與授權見 [THIRD_PARTY.md](THIRD_PARTY.md)。
 - [No Kinect Patch](https://gamebanana.com/mods/456720)，作者 Rei-SanTH（測試：SmileyWorld、
   MagicShad、ivaschia）：它的逆向筆記指出遊戲在哪裡讀取 Kinect 的語音指令與手部游標，
   為本專案的 Kinect 模擬提供了方向。該補丁以 CC BY-NC-ND 4.0 授權；本專案沒有使用或

@@ -31,6 +31,8 @@
 #include "launcher_art.h"
 #include "launcher_platform.h"
 #include "camera_capture.h"
+#include "kinect_sensor.h"
+#include "voice_commands.h"
 #include "launcher_settings.h"
 #include "input_bindings.h"
 #include "pad_devices.h"
@@ -74,6 +76,12 @@ enum Text {
     Parallel, ParallelHint, VertexCache, VertexCacheHint, GpuPipeline, GpuPipelineHint, RaceEvery, RaceEveryHint,
     CameraLabel, CameraHint, CameraOff, CameraPicture, CameraMotion, CameraDevice, CameraDeviceHint, CameraNone,
     CameraTest, CameraTesting, CameraWorks, CameraSilent, CameraClosed, CameraMirror, CameraMirrorHint,
+    CameraKinect, KinectRow, KinectRowHint, KinectWorks, KinectSilent, KinectMissing,
+    KinectNoRuntime, KinectNoSensor, KinectFailed, KinectDownload, KinectDownloadV2, KinectInstallHint,
+    VoiceLabel, VoiceHint, KinectPlacementLabel, KinectPlacementHint, PlacementScreen, PlacementPlayer, PlacementSensor, PlacementChest,
+    PlacementFront, PlacementFrontRight, PlacementRight, PlacementBehindRight, PlacementBehind, PlacementBehindLeft,
+    PlacementLeft, PlacementFrontLeft,
+    CameraDebug, CameraDebugHint,
     ImageDirectory, ImageDirectoryHint, AssetDirectory, AssetDirectoryHint, Browse, Found, Missing, FilesHint,
     StartGame, Quit, Defaults,
     MissingFiles, MissingGame, LaunchFailed, Ready,
@@ -133,8 +141,8 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Above 1, a slower computer keeps the race at full speed with fewer frames drawn.",
      "大於 1 時，較慢的電腦也能維持比賽速度，但畫面較不流暢。"},
     {"Camera", "攝影機"},
-    {"The title shows the Kinect camera's picture, and Kinect is how it is played. A webcam can stand in: Picture gives it the image and leaves the pad in charge; Motion also tracks your body, which the pad cannot then do.",
-     "遊戲會顯示 Kinect 的攝影機畫面，而它本來就是體感操作的。可以用 webcam 代替：「畫面」只提供影像、操作仍由手把負責；「體感」還會追蹤你的身體，此時手把就不再驅動玩家。"},
+    {"Motion tracks your body for Player 1. Controller input takes priority; after 1.5 seconds idle, fresh camera tracking resumes. Lost tracking falls back to the controller. Player 2 keeps its assigned controller.",
+     "「體感」追蹤你的身體來控制 1P。操作手把時優先接手，停止操作 1.5 秒後恢復攝影機追蹤；失去追蹤時退回手把。2P 保留原本指定的手把。"},
     {"Off", "關閉"},
     {"Picture", "畫面"},
     {"Motion", "體感"},
@@ -149,6 +157,41 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Mirrored camera", "攝影機畫面左右相反"},
     {"Turn this on when the camera shows you as a mirror does. With it wrong, raising one hand moves the other, and the cursor runs off the side of the screen.",
      "若攝影機畫面像照鏡子一樣左右相反，請開啟此項。設定相反時，舉起一隻手會動到另一隻，游標也會跑到畫面邊緣。"},
+    {"Kinect", "Kinect"},
+    {"Kinect sensor", "Kinect 感測器"},
+    {"A real Kinect tracks you as the console did: an Xbox 360 Kinect (Kinect for Windows SDK 1.8) or a Kinect v2 for Xbox One (SDK 2.0). The first one found is used.",
+     "由實體 Kinect 像主機一樣追蹤你的身體：Xbox 360 版（需 Kinect for Windows SDK 1.8）或 Xbox One 版 Kinect v2（需 SDK 2.0）。會使用第一台找到的。"},
+    {"Kinect is working", "Kinect 運作中"},
+    {"Kinect opened, but sends nothing", "Kinect 已開啟，但沒有資料"},
+    {"No Kinect found", "找不到 Kinect"},
+    {"No Kinect SDK is installed", "尚未安裝 Kinect SDK"},
+    {"No Kinect connected", "沒有連接 Kinect"},
+    {"Kinect found, but it will not start", "找到 Kinect，但無法啟動"},
+    {"SDK 1.8 (Xbox 360)", "SDK 1.8（Xbox 360 版）"},
+    {"SDK 2.0 (Kinect v2)", "SDK 2.0（Kinect v2）"},
+    {"An Xbox 360 Kinect needs the full Kinect for Windows SDK 1.8 (the Runtime alone refuses it); a Kinect v2 needs SDK 2.0 and a USB 3.0 port. Install the one for your sensor, plug it in through its adapter, then test again. If it still will not start, close other programs using the Kinect.",
+     "Xbox 360 版 Kinect 需要完整的 Kinect for Windows SDK 1.8（只裝 Runtime 會被拒絕）；Kinect v2 需要 SDK 2.0 與 USB 3.0 連接埠。請安裝對應的 SDK，用轉接器接上感測器後再測試一次。若仍無法啟動，請關閉其他正在使用 Kinect 的程式。"},
+    {"Voice commands", "語音指令"},
+    {"Say the Kinect's commands again: start, OK, back, next, pause... in English or Chinese (開始、確定、返回、下一步、暫停…). Uses Windows speech recognition and the default microphone: make the Kinect's microphone array the default recording device to use it.",
+     "恢復 Kinect 的語音指令：start、OK、back、next、pause……英文或中文都可以（開始、確定、返回、下一步、暫停…）。使用 Windows 語音辨識與預設麥克風：要用 Kinect 的麥克風陣列，請把它設為預設錄音裝置。"},
+    {"Sensor placement", "感應器位置"},
+    {"Seen from above: click where the Kinect stands. A board is ridden side-on, so the side your chest faces sees your whole body: the right for Regular (left foot forward), the left for Goofy. A diagonal also sees an arm reaching behind your back. When you switch stance, the side sensor sees your back; your feet tell which way you face, and left and right are put right again.",
+     "俯視圖：點選 Kinect 放置的位置。滑板是側身站的，放在胸口朝向的那一側能看到全身：Regular（左腳在前）放右邊，Goofy 放左邊。斜角位置也看得到往背後伸的手。轉身切換站姿時，側邊的感應器會看到背部，程式會從腳尖方向判斷你面向哪邊，自動把左右換回來。"},
+    {"Screen", "螢幕"},
+    {"You", "玩家"},
+    {"Sensor", "感應器"},
+    {"Chest", "胸口"},
+    {"In front", "正前方"},
+    {"Front right", "右前方"},
+    {"On your right", "右側"},
+    {"Behind right", "右後方"},
+    {"Behind you", "正後方"},
+    {"Behind left", "左後方"},
+    {"On your left", "左側"},
+    {"Front left", "左前方"},
+    {"Skeleton debug window", "骨架 Debug 視窗"},
+    {"Shows only the skeleton received by the game, in front and side views, with no camera image. Closing this window does not stop the game. Changes apply on the next game launch.",
+     "僅顯示遊戲收到的骨架，提供正面與側面視圖，不顯示攝影機影像。關閉此視窗不會停止遊戲。設定會在下次啟動遊戲時套用。"},
     {"Game code image", "遊戲程式映像"},
     {"The game's decoded code and data (complete.txt, image.bin).", "解碼後的遊戲程式與資料（complete.txt、image.bin）。"},
     {"Game data", "遊戲資料"},
@@ -947,6 +990,11 @@ struct Launcher {
     enum class CameraTrial { none, looking, pictures, silent, closed };
     std::atomic<CameraTrial> camera_trial{CameraTrial::none};
     std::jthread camera_trial_worker;
+    // Trying the Kinect says which step is missing: the SDK, the sensor
+    // (unplugged, or its power adapter not in), or starting it.
+    enum class KinectTrial { none, looking, working, silent, no_runtime, no_sensor, failed };
+    std::atomic<KinectTrial> kinect_trial{KinectTrial::none};
+    std::jthread kinect_trial_worker;
     // The launcher slides in (appear rises to 1) and out before the game
     // starts (leaving, appear falls to 0).
     float appear = 0.0f, page_fade = 0.0f;
@@ -1441,6 +1489,110 @@ struct Launcher {
         });
     }
 
+    // The placement picker. Positions are fractions of the map; the chosen
+    // sensor is lit and looks at the player through a faint cone, and the
+    // player's chest turns towards a sensor at either side.
+    void placement_map(float width, float height) {
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        const ImVec2 origin = ImGui::GetCursorScreenPos();
+        const auto at = [&](float x, float y) { return ImVec2(origin.x + x * width, origin.y + y * height); };
+        const float s = scale;
+        draw->AddRectFilled(origin, at(1, 1), IM_COL32(255, 255, 255, 12), 10 * s);
+        draw->AddRect(origin, at(1, 1), IM_COL32(255, 255, 255, 40), 10 * s);
+        const ImU32 text = ImGui::GetColorU32(ImGuiCol_Text), dim = ImGui::GetColorU32(dim_text);
+        const auto label = [&](ImVec2 centre, const char* words, ImU32 colour) {
+            const ImVec2 size = ImGui::CalcTextSize(words);
+            draw->AddText(ImVec2(centre.x - size.x * 0.5f, centre.y - size.y * 0.5f), colour, words);
+        };
+        // The screen along the top edge.
+        draw->AddRectFilled(at(0.3f, 0.05f), at(0.7f, 0.1f), IM_COL32(200, 225, 255, 200), 3 * s);
+        label(at(0.5f, 0.155f), tr(PlacementScreen), dim);
+
+        // Eight places round the player, clockwise from the screen.
+        struct Spot { const char* value; Text name; float x, y; };
+        Spot spots[8] = {{"front", PlacementFront},          {"front-right", PlacementFrontRight},
+                         {"right", PlacementRight},          {"behind-right", PlacementBehindRight},
+                         {"behind", PlacementBehind},        {"behind-left", PlacementBehindLeft},
+                         {"left", PlacementLeft},            {"front-left", PlacementFrontLeft}};
+        for (int i = 0; i < 8; ++i) {
+            const float angle = float(i) * 3.14159265f / 4.0f;
+            spots[i].x = 0.5f + 0.4f * std::sin(angle);
+            spots[i].y = 0.58f - 0.33f * std::cos(angle);
+        }
+        const ImVec2 player = at(0.5f, 0.58f);
+        const Spot* chosen = &spots[0];
+        for (const Spot& spot : spots) if (settings.kinect_placement == spot.value) chosen = &spot;
+
+        // The chosen sensor's view of the player.
+        const ImVec2 eye = at(chosen->x, chosen->y);
+        const float dx = player.x - eye.x, dy = player.y - eye.y, length = std::sqrt(dx * dx + dy * dy);
+        const float nx = -dy / length, ny = dx / length, spread = 34 * s;
+        draw->AddTriangleFilled(eye, ImVec2(player.x + nx * spread, player.y + ny * spread),
+                                ImVec2(player.x - nx * spread, player.y - ny * spread), IM_COL32(64, 150, 255, 45));
+
+        // The player seen from above, riding side-on: the board points at the
+        // screen, the shoulders along it, the chest to one side.
+        draw->AddRectFilled(ImVec2(player.x - 9 * s, player.y - 36 * s), ImVec2(player.x + 9 * s, player.y + 36 * s),
+                            IM_COL32(255, 200, 80, 150), 9 * s);
+        draw->AddCircleFilled(ImVec2(player.x, player.y - 18 * s), 5 * s, IM_COL32(40, 40, 60, 220));
+        draw->AddCircleFilled(ImVec2(player.x, player.y + 18 * s), 5 * s, IM_COL32(40, 40, 60, 220));
+        draw->AddLine(ImVec2(player.x, player.y - 22 * s), ImVec2(player.x, player.y + 22 * s), text, 5 * s);
+        draw->AddCircleFilled(player, 9 * s, text);
+        // The chest faces the sensor's side; with the sensor in front or
+        // behind, it faces the right (Regular), the usual stance.
+        const float chest = chosen->x < 0.45f ? -1.0f : 1.0f;
+        const ImVec2 tip(player.x + chest * 34 * s, player.y);
+        draw->AddLine(ImVec2(player.x + chest * 12 * s, player.y), tip, IM_COL32(255, 120, 120, 255), 3 * s);
+        draw->AddTriangleFilled(tip, ImVec2(tip.x - chest * 8 * s, player.y - 6 * s),
+                                ImVec2(tip.x - chest * 8 * s, player.y + 6 * s), IM_COL32(255, 120, 120, 255));
+        label(ImVec2(player.x + chest * 34 * s, player.y - 14 * s), tr(PlacementChest), IM_COL32(255, 150, 150, 255));
+        label(ImVec2(player.x, player.y + 48 * s), tr(PlacementPlayer), dim);
+
+        // The four places, each a button; the chosen one lit.
+        for (const Spot& spot : spots) {
+            const ImVec2 centre = at(spot.x, spot.y);
+            const bool lit = &spot == chosen;
+            const float half = 13 * s;
+            ImGui::SetCursorScreenPos(ImVec2(centre.x - half, centre.y - half));
+            ImGui::PushID(spot.value);
+            if (ImGui::InvisibleButton("##spot", ImVec2(half * 2, half * 2))) settings.kinect_placement = spot.value;
+            const bool hovered = ImGui::IsItemHovered() || (ImGui::IsItemFocused() && nav_visible());
+            ImGui::PopID();
+            const ImU32 fill = lit ? ImGui::GetColorU32(accent) : IM_COL32(255, 255, 255, hovered ? 70 : 25);
+            // A Kinect's bar, turned to face the player.
+            const float fx = player.x - centre.x, fy = player.y - centre.y, f = std::sqrt(fx * fx + fy * fy);
+            const float ux = fx / f, uy = fy / f, bar = 12 * s, depth = 4 * s;
+            const ImVec2 corners[4] = {ImVec2(centre.x - uy * bar - ux * depth, centre.y + ux * bar - uy * depth),
+                                       ImVec2(centre.x + uy * bar - ux * depth, centre.y - ux * bar - uy * depth),
+                                       ImVec2(centre.x + uy * bar + ux * depth, centre.y - ux * bar + uy * depth),
+                                       ImVec2(centre.x - uy * bar + ux * depth, centre.y + ux * bar + uy * depth)};
+            draw->AddConvexPolyFilled(corners, 4, fill);
+            draw->AddPolyline(corners, 4, IM_COL32(255, 255, 255, lit ? 220 : 90), ImDrawFlags_Closed, 1.5f * s);
+            if (lit) {
+                // Beside a sensor in front or behind (clear of the screen's and
+                // the player's labels), elsewhere under it.
+                const bool middle = std::fabs(spot.x - 0.5f) < 0.05f;
+                const float across = ImGui::CalcTextSize(tr(PlacementSensor)).x * 0.5f + 20 * s;
+                label(middle ? ImVec2(centre.x + across, centre.y) : ImVec2(centre.x, centre.y + 24 * s),
+                      tr(PlacementSensor), ImGui::GetColorU32(accent_bright));
+            }
+        }
+        // Beside the map, in the row's left column: what to choose and why,
+        // then the choice in words.
+        const float left = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMin().x;
+        ImGui::SetCursorScreenPos(ImVec2(left, origin.y + ImGui::GetFrameHeightWithSpacing()));
+        ImGui::PushStyleColor(ImGuiCol_Text, dim_text);
+        ImGui::PushTextWrapPos(origin.x - ImGui::GetWindowPos().x - 24 * s);
+        ImGui::TextUnformatted(tr(KinectPlacementHint));
+        ImGui::PopTextWrapPos();
+        ImGui::PopStyleColor();
+        ImGui::SetCursorScreenPos(ImVec2(left, ImGui::GetCursorScreenPos().y + 6 * s));
+        ImGui::TextColored(accent_bright, "%s: %s", tr(PlacementSensor), tr(chosen->name));
+        // Whichever is taller ends the row.
+        ImGui::SetCursorScreenPos(ImVec2(left, (std::max)(origin.y + height, ImGui::GetCursorScreenPos().y) + 4 * s));
+        ImGui::Dummy(ImVec2(0, 0));
+    }
+
     void game_settings() {
         const float switch_width = ImGui::GetFrameHeight() * 1.9f;
         setting_row(tr(SkipMovies), tr(SkipMoviesHint), switch_width, scale, [&] { toggle("##movies", &settings.skip_movies); });
@@ -1647,20 +1799,72 @@ struct Launcher {
         setting_row(tr(GpuPipeline), tr(GpuPipelineHint), switch_width, scale, [&] { toggle("##pipeline", &settings.gpu_pipeline); });
         const float camera_width = 150 * scale;
         setting_row(tr(CameraLabel), tr(CameraHint), camera_width, scale, [&] {
-            const char* const values[] = {"off", "picture", "motion"};
-            const Text labels[] = {CameraOff, CameraPicture, CameraMotion};
+            const char* const values[] = {"off", "picture", "motion", "kinect"};
+            const Text labels[] = {CameraOff, CameraPicture, CameraMotion, CameraKinect};
+            // A real sensor only where there is a runtime to reach it.
+            const int choices = sfr::KinectSensor::supported() ? 4 : 3;
             int chosen = 0;
-            for (int i = 0; i < 3; ++i) if (settings.camera == values[i]) chosen = i;
+            for (int i = 0; i < choices; ++i) if (settings.camera == values[i]) chosen = i;
             ImGui::SetNextItemWidth(camera_width);
             if (ImGui::BeginCombo("##camera", tr(labels[chosen]))) {
-                for (int i = 0; i < 3; ++i)
+                for (int i = 0; i < choices; ++i)
                     if (ImGui::Selectable(tr(labels[i]), chosen == i)) settings.camera = values[i];
                 ImGui::EndCombo();
             }
         });
         // Which camera: the hosts's list, read once and again whenever the
         // camera is turned on, since one may have been plugged in since.
-        if (settings.camera != "off") {
+        // A Kinect is the host's only one: no list, only whether it answers.
+        if (settings.camera == "kinect") {
+            const auto state = kinect_trial.load();
+            const Text trial[] = {CameraTest, CameraTesting, KinectWorks, KinectSilent, KinectNoRuntime, KinectNoSensor,
+                                  KinectFailed};
+            float test_width = 0;
+            for (const Text text : trial) test_width = (std::max)(test_width, ImGui::CalcTextSize(tr(text)).x);
+            test_width += ImGui::GetStyle().FramePadding.x * 4;
+            setting_row(tr(KinectRow), tr(KinectRowHint), test_width, scale, [&] {
+                ImGui::BeginDisabled(state == KinectTrial::looking);
+                if (ImGui::Button(tr(trial[int(state)]), ImVec2(test_width, 0))) {
+                    kinect_trial.store(KinectTrial::looking);
+                    kinect_trial_worker = std::jthread([this] {
+                        std::string why;
+                        auto sensor = sfr::KinectSensor::open(&why);
+                        if (!sensor) {
+                            kinect_trial.store(why == "no-runtime" || why == "incomplete-runtime" ? KinectTrial::no_runtime
+                                               : why == "no-sensor"                              ? KinectTrial::no_sensor
+                                                                                                 : KinectTrial::failed);
+                            return;
+                        }
+                        sfr::KinectFrame frame;
+                        for (int attempt = 0; attempt < 300 && !frame.number; ++attempt)
+                            if (!sensor->next(frame)) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                        kinect_trial.store(frame.number ? KinectTrial::working : KinectTrial::silent);
+                    });
+                }
+                ImGui::EndDisabled();
+            });
+            // Where the sensor stands: a room seen from above, the screen at
+            // the top, the player riding side-on in the middle, and the four
+            // places the sensor can go, one of them chosen by clicking it.
+            const float map_width = 300 * scale, map_height = 230 * scale;
+            // The hint goes beside the map (placement_map), not under it.
+            setting_row(tr(KinectPlacementLabel), nullptr, map_width, scale,
+                        [&] { placement_map(map_width, map_height); });
+            // Anything short of a working sensor: what to install and check.
+            if (state == KinectTrial::no_runtime || state == KinectTrial::no_sensor || state == KinectTrial::failed) {
+                const float padding = ImGui::GetStyle().FramePadding.x * 4;
+                const float v1_width = ImGui::CalcTextSize(tr(KinectDownload)).x + padding;
+                const float v2_width = ImGui::CalcTextSize(tr(KinectDownloadV2)).x + padding;
+                setting_row(tr(trial[int(state)]), tr(KinectInstallHint),
+                            v1_width + v2_width + ImGui::GetStyle().ItemSpacing.x, scale, [&] {
+                    if (ImGui::Button(tr(KinectDownload), ImVec2(v1_width, 0)))
+                        sfr::launcher::open_url("https://www.microsoft.com/download/details.aspx?id=40278");
+                    ImGui::SameLine();
+                    if (ImGui::Button(tr(KinectDownloadV2), ImVec2(v2_width, 0)))
+                        sfr::launcher::open_url("https://www.microsoft.com/download/details.aspx?id=44561");
+                });
+            }
+        } else if (settings.camera != "off") {
             if (cameras_listed_for != settings.camera) {
                 cameras = sfr::CameraCapture::devices();
                 cameras_listed_for = settings.camera;
@@ -1699,10 +1903,17 @@ struct Launcher {
                 }
                 ImGui::EndDisabled();
             });
-            if (settings.camera == "motion")
+            if (settings.camera == "motion") {
                 setting_row(tr(CameraMirror), tr(CameraMirrorHint), switch_width, scale,
                             [&] { toggle("##camera_mirror", &settings.camera_mirror); });
+#ifdef _WIN32
+                setting_row(tr(CameraDebug), tr(CameraDebugHint), switch_width, scale,
+                            [&] { toggle("##camera_debug", &settings.camera_debug); });
+#endif
+            }
         }
+        if (sfr::VoiceRecognizer::supported())
+            setting_row(tr(VoiceLabel), tr(VoiceHint), switch_width, scale, [&] { toggle("##voice", &settings.voice); });
 #ifdef _WIN32  // elsewhere the game always draws with Vulkan
         setting_row(tr(VulkanLabel), tr(VulkanHint), switch_width, scale, [&] { toggle("##vulkan", &settings.vulkan); });
 #endif

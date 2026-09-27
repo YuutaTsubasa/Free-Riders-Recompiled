@@ -29,6 +29,7 @@ page; to build it yourself, see [Building](docs/building.md).
 - [How to Install](#how-to-install)
 - [How to Build](#how-to-build)
 - [Controls](#controls)
+- [Camera motion input](#camera-motion-input)
 - [FAQ](#faq)
 - [Repository Layout](#repository-layout)
 - [Credits](#credits)
@@ -45,10 +46,18 @@ What works today:
 - Playing without Kinect: the Kinect is emulated. Buttons stand in for the
   voice commands the menus understand, and the pad drives the body a race
   reads (leaning, jumping, kick dash, grabbing, tricks).
+- A real Kinect on Windows (Xbox 360 / Kinect for Windows v1 with the Kinect
+  for Windows SDK 1.8, or Kinect v2 with SDK 2.0): the sensor's skeletons go to the game, which
+  reads them with its own gesture detectors, as on the console; or a webcam
+  standing in for it ([docs/kinect-sensor.md](docs/kinect-sensor.md),
+  [docs/camera-input.md](docs/camera-input.md)). Not yet tried on hardware.
 - A launcher that installs the game from your disc image and keeps its
   settings, in English or Traditional Chinese, on every platform.
 - Linux (Vulkan, SDL2), and Android (arm64-v8a) with on-screen touch controls
-  and tilt steering.
+  and tilt steering; the phone's own camera can stand in for the webcam
+  (Android camera capture, not yet tried on a device).
+- Optional webcam motion input for 1P on Windows, with estimated 3D body
+  joints, controller handoff and a separate skeleton debug window.
 
 Known limits:
 
@@ -123,6 +132,32 @@ buttons cover the same actions when no controller is connected, and tilting
 the phone steers in a race. Details: [docs/race-controls.md](docs/race-controls.md),
 [docs/pad-menus.md](docs/pad-menus.md).
 
+## Camera motion input
+
+The Windows v0.2.0 release includes the models and runtime for webcam motion
+input. Select **Camera > Motion** in the launcher and keep your whole body
+in view. **Skeleton debug window** opens front and side views of the joints
+the game receives; it does not show the camera image.
+
+Camera input controls 1P. Using the controller takes priority; after 1.5
+seconds without controller input, fresh camera tracking resumes. If tracking
+is lost, controller input remains available. Set 2P input to **Off** for
+single-player play.
+
+Inference runs locally using [ONNX Runtime](https://github.com/microsoft/onnxruntime)
+1.30.0 (MIT), with the [OpenCV Zoo MediaPipe pose model](https://github.com/opencv/opencv_zoo/tree/47534e27c9851bb1128ccc0102f1145e27f23f98/models/pose_estimation_mediapipe)
+and [person detector](https://github.com/opencv/opencv_zoo/tree/47534e27c9851bb1128ccc0102f1145e27f23f98/models/person_detection_mediapipe)
+(Apache 2.0). These models originate from Google's MediaPipe; this port uses
+their ONNX exports, without requiring the MediaPipe or OpenCV runtime.
+Model downloads are pinned by SHA-256 in
+[scripts/fetch_pose_model.py](scripts/fetch_pose_model.py). Licences and
+third-party notices are included in the Windows archive's `licenses/` folder.
+
+A webcam estimates relative 3D pose; it does not measure depth like Kinect.
+The Linux and Android prebuilt packages do not enable camera motion input.
+Setup, gestures, source builds and limitations:
+[Camera input](docs/camera-input.md).
+
 ## FAQ
 
 **Where are the settings and saves?** Beside the launcher: `settings.ini`,
@@ -179,6 +214,10 @@ saves and local reference checkouts.
   (through [dxc-bin](https://github.com/renderbag/dxc-bin)).
 - [Xenia](https://github.com/xenia-project/xenia): reference for the Xbox 360
   kernel's behaviour.
+- [ONNX Runtime](https://github.com/microsoft/onnxruntime) (camera pose inference),
+  [OpenCV Zoo](https://github.com/opencv/opencv_zoo) and
+  [MediaPipe](https://github.com/google-ai-edge/mediapipe) (person detection and
+  3D pose models). Dependency versions and licences: [THIRD_PARTY.md](THIRD_PARTY.md).
 - [No Kinect Patch](https://gamebanana.com/mods/456720) by Rei-SanTH (tested
   by SmileyWorld, MagicShad and ivaschia): its reverse-engineering notes showed
   where the game reads the Kinect's voice commands and hand cursor, which

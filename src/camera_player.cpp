@@ -22,6 +22,8 @@ struct CameraPlayer::Impl {
     std::mutex lock;
     SkeletonJoints joints{};
     uint64_t found = 0, taken = 0;
+    bool observed = false, detected = false;
+    std::chrono::steady_clock::time_point last_observation{}, last_pose{};
     std::atomic<bool> ever_found{false};
     std::jthread worker;
 
@@ -53,11 +55,17 @@ struct CameraPlayer::Impl {
             }
             spent += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
             ++estimates;
-            if (body) {
+            {
                 std::lock_guard guard(lock);
-                joints = mapped;
-                ++found;
-                ever_found.store(true, std::memory_order_relaxed);
+                observed = true;
+                detected = body;
+                last_observation = std::chrono::steady_clock::now();
+                if (body) {
+                    joints = mapped;
+                    ++found;
+                    last_pose = last_observation;
+                    ever_found.store(true, std::memory_order_relaxed);
+                }
             }
             // Once every five seconds: how well the camera is keeping up.
             const auto now = std::chrono::steady_clock::now();
@@ -100,8 +108,14 @@ std::unique_ptr<CameraPlayer> CameraPlayer::start() {
     return std::unique_ptr<CameraPlayer>(new CameraPlayer(std::move(impl)));
 }
 
-bool CameraPlayer::joints(SkeletonJoints& out) {
+bool CameraPlayer::joints(SkeletonJoints& out, CameraTrackingStatus* status) {
     std::lock_guard guard(impl_->lock);
+    if (status) {
+        const auto now = std::chrono::steady_clock::now();
+        status->detected = impl_->detected;
+        status->observation_age_ms = impl_->observed ? std::chrono::duration<double,std::milli>(now-impl_->last_observation).count() : -1;
+        status->pose_age_ms = impl_->found ? std::chrono::duration<double,std::milli>(now-impl_->last_pose).count() : -1;
+    }
     if (impl_->found == impl_->taken) return false;
     out = impl_->joints;
     impl_->taken = impl_->found;

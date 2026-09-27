@@ -45,6 +45,8 @@ bool quit_with_game();
 
 bool can_open_log();
 void open_log(const std::filesystem::path& log);
+// A web page in the host's browser (the Kinect SDK's download page).
+void open_url(const char* url);
 
 // Font files, first existing one wins: Latin regular, semibold and a heavy
 // italic for the title; Chinese regular and bold.

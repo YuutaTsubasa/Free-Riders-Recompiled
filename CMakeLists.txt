@@ -80,12 +80,30 @@ add_test(NAME nui_device_status COMMAND sfr_nui_device_status_test)
 add_executable(sfr_nui_skeleton_test tests/nui_skeleton_test.cpp src/nui_skeleton.cpp src/nui_device_status.cpp src/guest_memory.cpp)
 target_include_directories(sfr_nui_skeleton_test PRIVATE src)
 add_test(NAME nui_skeleton COMMAND sfr_nui_skeleton_test)
+add_executable(sfr_kinect_sensor_test tests/kinect_sensor_test.cpp src/kinect_sensor.cpp src/kinect_sensor_none.cpp src/nui_skeleton.cpp src/guest_memory.cpp)
+target_include_directories(sfr_kinect_sensor_test PRIVATE src)
+add_test(NAME kinect_sensor COMMAND sfr_kinect_sensor_test)
+add_executable(sfr_nui_menu_players_test tests/nui_menu_players_test.cpp src/nui_skeleton.cpp src/guest_memory.cpp)
+target_include_directories(sfr_nui_menu_players_test PRIVATE src)
+add_test(NAME nui_menu_players COMMAND sfr_nui_menu_players_test)
+add_executable(sfr_camera_input_test tests/camera_input_test.cpp)
+target_include_directories(sfr_camera_input_test PRIVATE src)
+add_test(NAME camera_input COMMAND sfr_camera_input_test)
+add_executable(sfr_camera_race_motion_test tests/camera_race_motion_test.cpp)
+target_include_directories(sfr_camera_race_motion_test PRIVATE src)
+add_test(NAME camera_race_motion COMMAND sfr_camera_race_motion_test)
+add_executable(sfr_nui_menu_progress_test tests/nui_menu_progress_test.cpp)
+target_include_directories(sfr_nui_menu_progress_test PRIVATE src)
+add_test(NAME nui_menu_progress COMMAND sfr_nui_menu_progress_test)
 add_executable(sfr_nui_speech_test tests/nui_speech_test.cpp src/nui_speech.cpp src/guest_memory.cpp)
 target_include_directories(sfr_nui_speech_test PRIVATE src)
 add_test(NAME nui_speech COMMAND sfr_nui_speech_test)
 add_executable(sfr_nui_race_test tests/nui_race_test.cpp src/nui_race.cpp src/guest_memory.cpp)
 target_include_directories(sfr_nui_race_test PRIVATE src)
 add_test(NAME nui_race COMMAND sfr_nui_race_test)
+add_executable(sfr_nui_race_players_test tests/nui_race_players_test.cpp src/nui_race.cpp src/guest_memory.cpp)
+target_include_directories(sfr_nui_race_players_test PRIVATE tests/race_hook_stub src)
+add_test(NAME nui_race_players COMMAND sfr_nui_race_players_test)
 add_executable(sfr_nui_race_hooks_test tests/nui_race_hooks_test.cpp src/nui_race.cpp src/guest_memory.cpp)
 target_include_directories(sfr_nui_race_hooks_test PRIVATE tests/race_hook_stub src)
 add_test(NAME nui_race_hooks COMMAND sfr_nui_race_hooks_test)
@@ -191,35 +209,86 @@ add_executable(sfr_touch_controls_test tests/touch_controls_test.cpp src/touch_c
 target_include_directories(sfr_touch_controls_test PRIVATE src)
 add_test(NAME touch_controls COMMAND sfr_touch_controls_test)
 # The webcam standing in for the Kinect sensor: Media Foundation on Windows,
-# nothing yet elsewhere (the setting then has no effect).
+# V4L2 on Linux, the NDK's Camera2 on Android (the phone's own cameras),
+# nothing elsewhere (the setting then has no effect).
+set(SFR_CAMERA_LIBRARIES)
 if(WIN32)
     set(SFR_CAMERA_CAPTURE src/camera_capture.cpp src/camera_capture_win32.cpp)
+elseif(ANDROID)
+    set(SFR_CAMERA_CAPTURE src/camera_capture.cpp src/camera_capture_android.cpp)
+    set(SFR_CAMERA_LIBRARIES camera2ndk mediandk)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(SFR_CAMERA_CAPTURE src/camera_capture.cpp src/camera_capture_v4l2.cpp)
 else()
     set(SFR_CAMERA_CAPTURE src/camera_capture.cpp src/camera_capture_none.cpp)
 endif()
+if(WIN32)
+    set(SFR_KINECT_SENSOR src/kinect_sensor_win32.cpp src/kinect_v2_win32.cpp)
+    set(SFR_VOICE src/voice_commands.cpp src/voice_commands_win32.cpp)
+else()
+    set(SFR_KINECT_SENSOR src/kinect_sensor_none.cpp)
+    set(SFR_VOICE src/voice_commands.cpp src/voice_commands_none.cpp)
+endif()
+# The Kinect's voice commands, through the host's speech recognizer.
+add_executable(sfr_voice_commands_test tests/voice_commands_test.cpp src/voice_commands.cpp src/voice_commands_none.cpp)
+target_include_directories(sfr_voice_commands_test PRIVATE src)
+add_test(NAME voice_commands COMMAND sfr_voice_commands_test)
+# Checking a host's Kinect without starting the game (no test: it needs one).
+add_executable(sfr_kinect_probe tests/kinect_probe.cpp src/kinect_sensor.cpp ${SFR_KINECT_SENSOR})
+target_include_directories(sfr_kinect_probe PRIVATE src)
 add_executable(sfr_camera_capture_test tests/camera_capture_test.cpp src/camera_capture.cpp)
 target_include_directories(sfr_camera_capture_test PRIVATE src)
 add_test(NAME camera_capture COMMAND sfr_camera_capture_test)
 # Checking a host's camera without starting the game (no test: it needs one).
 add_executable(sfr_camera_probe tests/camera_probe.cpp ${SFR_CAMERA_CAPTURE})
 target_include_directories(sfr_camera_probe PRIVATE src)
-# Finding a body in a camera picture: ONNX Runtime and the pinned RTMPose
-# model (tools/onnx, fetched by scripts/fetch_pose_model.py). Without them
+target_link_libraries(sfr_camera_probe PRIVATE ${SFR_CAMERA_LIBRARIES})
+function(sfr_copy_onnx_dlls target)
+    if(TARGET sfr_onnx_dlls)
+        add_dependencies(${target} sfr_onnx_dlls)
+    endif()
+endfunction()
+# Finding a body in a camera picture: ONNX Runtime and the pinned MediaPipe
+# models (tools/onnx, fetched by scripts/fetch_pose_model.py). Without them
 # the camera can still give the title a picture, but not drive the player.
-set(SFR_ONNX_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/tools/onnx/onnxruntime")
-# The fetched runtime is a host library, not an Android NDK build.
-if(NOT ANDROID AND EXISTS "${SFR_ONNX_ROOT}/include/onnxruntime_cxx_api.h")
+# Android takes the runtime fetched for each ABI (--android).
+if(ANDROID)
+    set(SFR_ONNX_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/tools/onnx/onnxruntime-android")
+    set(SFR_ONNX_LIBRARY "${SFR_ONNX_ROOT}/lib/${ANDROID_ABI}/libonnxruntime.so")
+else()
+    set(SFR_ONNX_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/tools/onnx/onnxruntime" CACHE PATH "Host ONNX Runtime installation")
+    if(WIN32)
+        set(SFR_ONNX_LIBRARY "${SFR_ONNX_ROOT}/lib/onnxruntime.lib")
+    else()
+        set(SFR_ONNX_LIBRARY "${SFR_ONNX_ROOT}/lib/libonnxruntime.so")
+    endif()
+endif()
+if(EXISTS "${SFR_ONNX_ROOT}/include/onnxruntime_cxx_api.h" AND EXISTS "${SFR_ONNX_LIBRARY}")
     set(SFR_POSE_AVAILABLE ON)
     add_library(sfr_onnxruntime INTERFACE)
     target_include_directories(sfr_onnxruntime INTERFACE "${SFR_ONNX_ROOT}/include")
-    if(WIN32)
-        target_link_libraries(sfr_onnxruntime INTERFACE "${SFR_ONNX_ROOT}/lib/onnxruntime.lib")
-    else()
-        target_link_libraries(sfr_onnxruntime INTERFACE "${SFR_ONNX_ROOT}/lib/libonnxruntime.so")
+    target_link_libraries(sfr_onnxruntime INTERFACE "${SFR_ONNX_LIBRARY}")
+    if(NOT WIN32 AND NOT ANDROID)
+        # A release keeps libonnxruntime.so.1 beside the program.
+        target_link_options(sfr_onnxruntime INTERFACE "LINKER:-rpath,$ORIGIN")
     endif()
-    set(SFR_POSE_SOURCES src/pose_estimator.cpp src/pose_estimator_onnx.cpp)
+    # Windows finds a DLL beside the program before System32, which has an
+    # older onnxruntime.dll of its own (Windows ML's): without the fetched
+    # one beside it, the program loads that one and fails to start.
+    if(WIN32)
+        file(GLOB SFR_ONNX_DLLS "${SFR_ONNX_ROOT}/lib/*.dll")
+        set(SFR_ONNX_COPIES "")
+        foreach(dll ${SFR_ONNX_DLLS})
+            get_filename_component(name "${dll}" NAME)
+            list(APPEND SFR_ONNX_COPIES "${CMAKE_BINARY_DIR}/${name}")
+            add_custom_command(OUTPUT "${CMAKE_BINARY_DIR}/${name}"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${dll}" "${CMAKE_BINARY_DIR}/${name}" DEPENDS "${dll}")
+        endforeach()
+        if(SFR_ONNX_COPIES)
+            add_custom_target(sfr_onnx_dlls DEPENDS ${SFR_ONNX_COPIES})
+        endif()
+    endif()
+    set(SFR_POSE_SOURCES src/pose_estimator.cpp src/pose_estimator_onnx.cpp src/pose_mediapipe.cpp src/pose_mediapipe_onnx.cpp)
 else()
     set(SFR_POSE_AVAILABLE OFF)
     set(SFR_POSE_SOURCES src/pose_estimator.cpp src/pose_estimator_none.cpp)
@@ -236,9 +305,10 @@ target_include_directories(sfr_pose_smoothing_test PRIVATE src)
 add_test(NAME pose_smoothing COMMAND sfr_pose_smoothing_test)
 if(SFR_POSE_AVAILABLE)
     # Running the model over a camera picture, or a BMP, without the game.
-    add_executable(sfr_pose_probe tests/pose_probe.cpp ${SFR_POSE_SOURCES} ${SFR_CAMERA_CAPTURE})
+    add_executable(sfr_pose_probe tests/pose_probe.cpp src/pose_skeleton.cpp ${SFR_POSE_SOURCES} ${SFR_CAMERA_CAPTURE})
     target_include_directories(sfr_pose_probe PRIVATE src)
     target_link_libraries(sfr_pose_probe PRIVATE sfr_onnxruntime)
+    sfr_copy_onnx_dlls(sfr_pose_probe)
 endif()
 add_executable(sfr_pad_assignment_test tests/pad_assignment_test.cpp src/pad_assignment.cpp)
 target_include_directories(sfr_pad_assignment_test PRIVATE src)
@@ -246,6 +316,10 @@ add_test(NAME pad_assignment COMMAND sfr_pad_assignment_test)
 add_executable(sfr_input_bindings_test tests/input_bindings_test.cpp src/input_bindings.cpp)
 target_include_directories(sfr_input_bindings_test PRIVATE src)
 add_test(NAME input_bindings COMMAND sfr_input_bindings_test)
+
+add_executable(sfr_input_trace_test tests/input_trace_test.cpp)
+target_include_directories(sfr_input_trace_test PRIVATE src)
+add_test(NAME input_trace COMMAND sfr_input_trace_test)
 add_executable(sfr_pad_devices_test tests/pad_devices_test.cpp src/pad_devices.cpp src/sony_gamepad.cpp)
 target_include_directories(sfr_pad_devices_test PRIVATE src)
 if(WIN32)
@@ -273,6 +347,17 @@ add_test(NAME native_audio COMMAND sfr_native_audio_test)
 add_executable(sfr_launcher_settings_test tests/launcher_settings_test.cpp src/launcher_settings.cpp)
 target_include_directories(sfr_launcher_settings_test PRIVATE src)
 add_test(NAME launcher_settings COMMAND sfr_launcher_settings_test)
+add_executable(sfr_camera_debug_test tests/camera_debug_test.cpp src/camera_debug.cpp)
+target_include_directories(sfr_camera_debug_test PRIVATE src)
+add_test(NAME camera_debug COMMAND sfr_camera_debug_test)
+add_executable(sfr_pose_mediapipe_test tests/pose_mediapipe_test.cpp src/pose_mediapipe.cpp)
+target_include_directories(sfr_pose_mediapipe_test PRIVATE src)
+add_test(NAME pose_mediapipe COMMAND sfr_pose_mediapipe_test)
+if(WIN32)
+    add_executable(sfr_camera_debug_probe tests/camera_debug_probe.cpp src/camera_debug.cpp src/camera_debug_window.cpp)
+    target_include_directories(sfr_camera_debug_probe PRIVATE src)
+    target_link_libraries(sfr_camera_debug_probe PRIVATE user32 gdi32)
+endif()
 add_executable(sfr_portable_waitables_test tests/portable_waitables_test.cpp src/portable_waitables.cpp)
 target_include_directories(sfr_portable_waitables_test PRIVATE src)
 add_test(NAME portable_waitables COMMAND sfr_portable_waitables_test)
@@ -294,7 +379,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui/imgui.cpp")
     set(SFR_IMGUI "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui")
     # The launcher lists the host cameras and controllers.
     set(SFR_LAUNCHER_SOURCES src/launcher_main.cpp src/launcher_settings.cpp src/input_bindings.cpp src/pad_devices.cpp src/pad_assignment.cpp src/launcher_sound.cpp src/launcher_art.cpp src/sony_gamepad.cpp
-        ${SFR_CAMERA_CAPTURE}
+        ${SFR_CAMERA_CAPTURE} src/kinect_sensor.cpp ${SFR_KINECT_SENSOR} ${SFR_VOICE}
         ${SFR_IMGUI}/imgui.cpp ${SFR_IMGUI}/imgui_draw.cpp ${SFR_IMGUI}/imgui_tables.cpp ${SFR_IMGUI}/imgui_widgets.cpp)
     if(WIN32)
         add_executable(sfr_launcher WIN32 ${SFR_LAUNCHER_SOURCES} src/launcher_platform_win32.cpp
@@ -308,7 +393,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui/imgui.cpp")
             # liblauncher.so, run by LauncherActivity (android/).
             add_library(sfr_launcher SHARED ${SFR_LAUNCHER_SOURCES})
             set_target_properties(sfr_launcher PROPERTIES OUTPUT_NAME launcher)
-            target_link_libraries(sfr_launcher PRIVATE android log)
+            target_link_libraries(sfr_launcher PRIVATE android log ${SFR_CAMERA_LIBRARIES})
         else()
             add_executable(sfr_launcher ${SFR_LAUNCHER_SOURCES})
             set_target_properties(sfr_launcher PROPERTIES OUTPUT_NAME FreeRidersRecompiled)
@@ -446,6 +531,14 @@ if(WIN32 OR UNIX)
         set(SDL_VULKAN_ENABLED ON CACHE BOOL "" FORCE)
     endif()
     add_subdirectory(tools/Plume)
+    if(WIN32)
+        # Plume exports D3D12SDKVersion (the building Windows SDK's) and
+        # D3D12SDKPath even without the Agility SDK. The version the program
+        # names has to be the runtime's it ships in D3D12\ (src/d3d12_agility.cpp,
+        # below); renamed, Plume's are not exports the loader reads.
+        target_compile_definitions(plume PRIVATE D3D12SDKVersion=sfr_plume_unused_D3D12SDKVersion
+                                   D3D12SDKPath=sfr_plume_unused_D3D12SDKPath)
+    endif()
     if(APPLE)
         # Plume's Apple glue asks IOKit for the GPU vendor and uses Metal and
         # Cocoa objects; its own CMake leaves linking them to the user.
@@ -604,7 +697,7 @@ if(SFR_BUILD_DIAGNOSTIC)
         add_library(sfr_cpu_diagnostic SHARED src/android_main.cpp)
         set_target_properties(sfr_cpu_diagnostic PROPERTIES OUTPUT_NAME main)
         set_source_files_properties(src/diagnostic_main.cpp PROPERTIES COMPILE_DEFINITIONS main=sfr_game_main)
-        target_link_libraries(sfr_cpu_diagnostic PRIVATE android log)
+        target_link_libraries(sfr_cpu_diagnostic PRIVATE android log ${SFR_CAMERA_LIBRARIES})
         # The NDK hardens every translation unit by default. The guest code is
         # thirty thousand generated functions with large frames that only ever
         # touch the checked guest memory, so the canaries and the fortified
@@ -619,10 +712,13 @@ if(SFR_BUILD_DIAGNOSTIC)
     target_sources(sfr_cpu_diagnostic PRIVATE src/video_mode.cpp src/native_display.cpp src/physical_memory.cpp src/ansi_string.cpp src/store_halfword_update.cpp src/store_float_single_update.cpp src/load_halfword_update.cpp src/debug_monitor.cpp src/image_protection.cpp src/resource_coherency.cpp src/video_globals.cpp src/native_language.cpp src/system_config.cpp)
     target_sources(sfr_cpu_diagnostic PRIVATE src/game_region.cpp)
     # The webcam standing in for the sensor, and the body it finds.
-    target_sources(sfr_cpu_diagnostic PRIVATE src/camera_player.cpp src/pose_skeleton.cpp src/pose_smoothing.cpp
+    target_sources(sfr_cpu_diagnostic PRIVATE src/camera_player.cpp src/camera_debug.cpp src/camera_debug_window.cpp src/pose_skeleton.cpp src/pose_smoothing.cpp
                    ${SFR_CAMERA_CAPTURE} ${SFR_POSE_SOURCES})
+    # A real Kinect (SFR_CAMERA=kinect), through the Kinect for Windows runtime.
+    target_sources(sfr_cpu_diagnostic PRIVATE src/kinect_sensor.cpp ${SFR_KINECT_SENSOR} ${SFR_VOICE})
     if(SFR_POSE_AVAILABLE)
         target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_onnxruntime)
+        sfr_copy_onnx_dlls(sfr_cpu_diagnostic)
     endif()
     target_sources(sfr_cpu_diagnostic PRIVATE src/memory_update_forms.cpp)
     target_sources(sfr_cpu_diagnostic PRIVATE src/native_input.cpp src/input_bindings.cpp src/pad_assignment.cpp src/pad_devices.cpp src/sony_gamepad.cpp src/native_audio.cpp src/nui_skeleton.cpp src/nui_speech.cpp src/nui_race.cpp)
@@ -644,7 +740,7 @@ if(SFR_BUILD_DIAGNOSTIC)
     target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_guest_graphics sfr_asset_files sfr_native_sync_objects sfr_guest_threads)
     target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_guest_async_files)
     if(WIN32)
-        target_link_libraries(sfr_cpu_diagnostic PRIVATE ws2_32 user32)
+        target_link_libraries(sfr_cpu_diagnostic PRIVATE ws2_32 user32 gdi32)
     else()
         target_link_libraries(sfr_cpu_diagnostic PRIVATE SDL2::SDL2)
     endif()
@@ -659,5 +755,37 @@ if(SFR_BUILD_DIAGNOSTIC)
     endif()
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|amd64|x86_64")
         target_compile_options(sfr_cpu_diagnostic PRIVATE -march=sandybridge)
+    endif()
+endif()
+# D3D12 through the Agility SDK's runtime (scripts/fetch_d3d12_agility.py,
+# run by bootstrap on Windows): every program that draws with D3D12 exports
+# the SDK version it was fetched at and finds D3D12Core.dll in D3D12\ beside
+# it. Without the runtime, Windows 10 cannot make Plume's command lists and
+# the game falls back to Vulkan (native_graphics.cpp).
+if(WIN32)
+    set(SFR_D3D12_AGILITY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tools/d3d12-agility")
+    if(EXISTS "${SFR_D3D12_AGILITY_DIR}/D3D12Core.dll" AND EXISTS "${SFR_D3D12_AGILITY_DIR}/version.txt")
+        file(STRINGS "${SFR_D3D12_AGILITY_DIR}/version.txt" SFR_D3D12_SDK_VERSION LIMIT_COUNT 1)
+        message(STATUS "D3D12 Agility SDK runtime: ${SFR_D3D12_SDK_VERSION}")
+        add_library(sfr_d3d12_agility OBJECT src/d3d12_agility.cpp)
+        target_compile_definitions(sfr_d3d12_agility PRIVATE SFR_D3D12_SDK_VERSION=${SFR_D3D12_SDK_VERSION})
+        # One copy for all of them: they are all built into this directory.
+        set(SFR_D3D12_CORE "${CMAKE_BINARY_DIR}/D3D12/D3D12Core.dll")
+        add_custom_command(OUTPUT "${SFR_D3D12_CORE}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/D3D12"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SFR_D3D12_AGILITY_DIR}/D3D12Core.dll" "${SFR_D3D12_CORE}"
+            DEPENDS "${SFR_D3D12_AGILITY_DIR}/D3D12Core.dll")
+        add_custom_target(sfr_d3d12_runtime DEPENDS "${SFR_D3D12_CORE}")
+        foreach(target sfr_cpu_diagnostic sfr_native_graphics_test sfr_native_shaders_test sfr_native_presentation_test
+                       sfr_native_raster_state_test sfr_native_blend_control_test sfr_guest_graphics_test
+                       sfr_guest_render_state_test sfr_guest_blend_request_test sfr_guest_sampler_filter_test
+                       sfr_guest_texture_binding_test)
+            if(TARGET ${target})
+                target_sources(${target} PRIVATE $<TARGET_OBJECTS:sfr_d3d12_agility>)
+                add_dependencies(${target} sfr_d3d12_runtime)
+            endif()
+        endforeach()
+    else()
+        message(STATUS "D3D12 Agility SDK runtime: not fetched (Windows 10 will draw with Vulkan)")
     endif()
 endif()

@@ -10,8 +10,14 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
 
 namespace sfr {
+std::unique_ptr<PoseEstimator> open_mediapipe_pose(Ort::Env,Ort::Session,const std::filesystem::path&);
 namespace {
 constexpr uint32_t model_width = 192, model_height = 256;
 // RTMPose's SimCC head: the score rows are twice the input's pixels.
@@ -97,10 +103,25 @@ std::filesystem::path PoseEstimator::default_model() {
     if (const char* chosen = std::getenv("SFR_POSE_MODEL"); chosen && *chosen) return chosen;
     namespace fs = std::filesystem;
     std::error_code error;
-    // Beside the program in a release, or in the checkout while developing.
-    for (const fs::path candidate : {fs::path("pose/rtmpose.onnx"), fs::path("tools/onnx/rtmpose/end2end.onnx")})
+    // The launcher may use the checkout as its working directory for shaders.
+    // Prefer the model bundled with this executable, not an old checkout model.
+    fs::path program;
+#ifdef _WIN32
+    std::wstring filename(32768,L'\0');
+    const DWORD length=GetModuleFileNameW(nullptr,filename.data(),DWORD(filename.size()));
+    if(length && length<filename.size()) { filename.resize(length);program=filename; }
+#elif defined(__linux__)
+    program=fs::read_symlink("/proc/self/exe",error);
+#endif
+    const fs::path relative="pose/pose_estimation_mediapipe_2023mar.onnx";
+    if(!program.empty()) {
+        const auto bundled=program.parent_path()/relative;
+        if(fs::is_regular_file(bundled,error)) return bundled;
+    }
+    for (const fs::path candidate : {relative,fs::path("tools/onnx/mediapipe/pose_estimation_mediapipe_2023mar.onnx")})
         if (fs::is_regular_file(candidate, error)) return candidate;
-    return "pose/rtmpose.onnx";
+    // A flat legacy model is opt-in via SFR_POSE_MODEL, never a silent fallback.
+    return relative;
 }
 
 std::unique_ptr<PoseEstimator> PoseEstimator::open(const std::filesystem::path& model) {
@@ -122,6 +143,8 @@ std::unique_ptr<PoseEstimator> PoseEstimator::open(const std::filesystem::path& 
         Ort::Session session(environment, model.string().c_str(), options);
 #endif
         Ort::AllocatorWithDefaultOptions allocator;
+        if (session.GetOutputCount() == 5)
+            return open_mediapipe_pose(std::move(environment),std::move(session),model);
         if (session.GetInputCount() != 1 || session.GetOutputCount() != 2) {
             std::cerr << "NATIVE_POSE unavailable=unexpected-model inputs=" << session.GetInputCount()
                       << " outputs=" << session.GetOutputCount() << '\n';

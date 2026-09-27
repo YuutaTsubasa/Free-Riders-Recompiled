@@ -134,11 +134,27 @@ struct GamepadState;
 // Kinect emulation (nui_hooks.cpp): user 0's pad drives the skeleton, and a
 // host thread signals the title's next-frame event at 30 Hz.
 GamepadState nui_gamepad();
+// Source selected for logical P1's latest submitted skeleton. P1's pad
+// remains available while Camera is enabled; race consumers follow this.
+bool camera_motion_active();
+// Advances only when a newly inferred Camera pose is submitted to the guest.
+uint64_t camera_pose_generation();
+// Host monotonic time; title clock fields are not seconds.
+uint64_t camera_motion_clock_ns();
 // The pad standing beside the first player, when one is connected: an empty
-// result means the title sees one Kinect player, as it did before. Which pad
-// that is depends on who the first player is -- the second pad normally, but
-// the first pad once a camera has taken the first player's body over.
+// result means the title sees one Kinect player. Camera does not change
+// controller assignment: the configured P2 controller remains user 1.
 std::optional<GamepadState> nui_second_gamepad(uint32_t user, bool racing);
+// Whether a real Kinect (SFR_CAMERA=kinect) tracks the players' bodies. The
+// race then reads them through the title's own body record and gesture
+// detectors, and the "On your Gear!" measurements run as on the console,
+// instead of the pad or the camera's motion standing in for them
+// (nui_race_hooks.cpp).
+bool nui_body_from_sensor();
+// The second player's pad as the Kinect emulation last read it, for the race
+// hooks. Empty when there is no second player.
+std::optional<GamepadState> second_player_pad();
+void publish_second_player_pad(const std::optional<GamepadState>& pad);
 void start_nui_skeleton_events(uint32_t event_handle);
 void stop_nui_skeleton_events();
 }

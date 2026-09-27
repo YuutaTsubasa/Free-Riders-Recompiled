@@ -10,8 +10,9 @@ struct RenderDevice;
 
 namespace sfr {
 // Direct3D 12 by default; SFR_GRAPHICS=vulkan selects Vulkan (the only
-// backend elsewhere than Windows). Chosen once per process: the shader
-// cache prepares bytecode for this backend.
+// backend elsewhere than Windows); a machine where no adapter can make
+// Plume's D3D12 device falls back to Vulkan. Chosen once per process: the
+// shader cache prepares bytecode for this backend.
 enum class GraphicsBackend { d3d12, vulkan };
 GraphicsBackend selected_graphics_backend();
 const char* graphics_backend_name(GraphicsBackend backend);

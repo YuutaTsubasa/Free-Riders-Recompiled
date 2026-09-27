@@ -18,6 +18,7 @@ constexpr uint32_t selected = entries + 84, detector = 0x10004000;
 constexpr uint32_t nui_box_global = 0x83E52F88, race_flag_global = 0x83E52F8C;
 constexpr uint32_t existing_primary = 0x20, existing_secondary = 0x8;
 unsigned original_side_calls = 0, manager_calls = 0;
+bool sensor_body = false;
 }
 
 // Compile the real hooks, capturing their production registration names so a
@@ -29,7 +30,12 @@ unsigned original_side_calls = 0, manager_calls = 0;
 
 namespace sfr {
 GuestMemory* active_memory = nullptr;
+bool camera_motion_active() { return false; }
+uint64_t camera_pose_generation() { return 0; }
+uint64_t camera_motion_clock_ns() { return 0; }
+std::optional<GamepadState> second_player_pad() { return std::nullopt; }
 GamepadState nui_gamepad() { return harness::input; }
+bool nui_body_from_sensor() { return harness::sensor_body; }
 void enter_function_observed(PPCContext&, const char*, uint32_t) {}
 void guest_checkpoint_permit() {}
 void call_indirect(PPCContext&, uint8_t*, uint32_t) {
@@ -37,6 +43,8 @@ void call_indirect(PPCContext&, uint8_t*, uint32_t) {
 }
 }
 
+PPC_FUNC(__imp__sub_822C6200) {}
+PPC_FUNC(__imp__sub_82918418) { ctx.r3.u64 = sfr::active_memory->load<uint32_t>(ctx.r3.u32 + 4); }
 PPC_FUNC(__imp__sub_82438930) { ++harness::manager_calls; }
 
 // Fixture for the original Side detector's observed result with the copied
@@ -60,6 +68,7 @@ PPC_FUNC(__imp__sub_822CA6B0) {
 #define UNUSED_ORIGINAL(address) PPC_FUNC(__imp__sub_##address) { \
     throw std::runtime_error("unexpected original detector " #address); }
 UNUSED_ORIGINAL(822C9050)
+UNUSED_ORIGINAL(822B60F8)
 UNUSED_ORIGINAL(822C8778)
 UNUSED_ORIGINAL(822CB840)
 UNUSED_ORIGINAL(822C8650)
@@ -217,6 +226,16 @@ void run() {
     require(invoke("sub_822CA6B0") == 1 && original_side_calls == 1 && (primary() & 0x400000),
             "outside pad racing Side must delegate to the original detector");
     require(manager_calls > 0, "manager must continue invoking the original update");
+
+    // A real Kinect tracks the player: the race reads the title's own body
+    // record and detectors, whatever the pad does.
+    sensor_body = true;
+    m.store<uint32_t>(race_flag_global, 1);
+    frame(sfr::gamepad_button::b, -32768);
+    require(m.load<uint32_t>(box + 0x78) == original, "a sensor's body must stay the title's record");
+    require(invoke("sub_822CA6B0") == 1 && original_side_calls == 2,
+            "with a sensor the original detectors must run");
+    sensor_body = false;
 }
 }
 

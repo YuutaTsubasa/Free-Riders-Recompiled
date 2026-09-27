@@ -26,6 +26,27 @@ enum class CameraPixels { bgra, yuy2, nv12 };
 bool convert_camera_pixels(CameraPixels format, std::span<const uint8_t> source, uint32_t width, uint32_t height,
                            uint32_t stride, CameraFrame& frame);
 
+// Android's YUV_420_888: a plane of Y and two of chroma at half size, each
+// with its own row stride, and a pixel stride for the chroma (2 when U and V
+// interleave, as most phones deliver them, 1 when planar).
+struct CameraYuvPlanes {
+    std::span<const uint8_t> y, u, v;
+    uint32_t y_row = 0, uv_row = 0, uv_pixel = 1;
+};
+
+// Converts one such picture, turned clockwise by rotation degrees (0, 90,
+// 180 or 270) on the way: a phone's camera sensor is mounted sideways, and
+// the picture has to stand the way the player does before a body is looked
+// for in it. False when a plane cannot hold the picture.
+bool convert_camera_yuv420(const CameraYuvPlanes& planes, uint32_t width, uint32_t height, uint32_t rotation,
+                           CameraFrame& frame);
+
+// The clockwise turn that makes a phone camera's picture upright, from how
+// its sensor is mounted (Camera2's SENSOR_ORIENTATION), which way it faces,
+// and how far the screen is turned from the device's natural orientation
+// (0, 90, 180, 270). A front camera sees the screen's turn the other way.
+uint32_t camera_upright_rotation(uint32_t sensor_orientation, bool front_facing, uint32_t display_rotation);
+
 // An open camera. Only one is opened; nothing else in the runtime holds one.
 class CameraCapture {
 public:

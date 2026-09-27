@@ -7,6 +7,7 @@ Project code is licensed under GPL-3.0-or-later; see COPYING. No game binary or 
 - Dear ImGui: https://github.com/ocornut/imgui, MIT; the launcher (`src/launcher_main.cpp`) links it at the commit in `config/dependencies.lock.json`, with its Win32 and Direct3D 11 backends on Windows and its SDL2 and SDL_Renderer2 backends on Linux and Android. Fonts come from the system at run time (the Windows font directory, fontconfig on Linux, the system fonts on Android, where Chinese glyphs are drawn by the platform); no font or image is shipped. Upstream license notice remains in the downloaded source.
 - SDL 2: https://github.com/libsdl-org/SDL, zlib license; Android builds compile release 2.32.8 (commit in `config/dependencies.lock.json`) from source and package `libSDL2.so` with its Java activity sources; Linux builds link the system SDL2. Upstream license notice remains in the downloaded source.
 - `patches/plume-optional-extensions.patch`: project-authored change to the pinned Plume revision (MIT, as Plume), applied and verified by bootstrap.
+- Direct3D 12 Agility SDK runtime (Microsoft.Direct3D.D3D12 NuGet package, Microsoft software licence; `D3D12Core.dll` is on its list of distributable files): fetched by `scripts/fetch_d3d12_agility.py` (bootstrap runs it on Windows) into `tools/d3d12-agility`, pinned by SHA-256, and copied into `D3D12\` beside the Windows programs. Windows 10's own D3D12 lacks the command-list interface Plume uses. Not copied into this repository; Windows releases redistribute `D3D12\D3D12Core.dll` with the licence as `licenses/D3D12AgilitySDK-MS.txt`.
 - DirectX Shader Compiler (prebuilt, https://github.com/renderbag/dxc-bin, the submodule XenosRecomp pins; DXC itself is https://github.com/microsoft/DirectXShaderCompiler under the University of Illinois/NCSA Open Source License): fetched into `tools/XenosRecomp/thirdparty/dxc-bin` by bootstrap. It compiles the backend's own shaders at build time (DXIL and SPIR-V) and, on the Vulkan backend, the translated game shaders to SPIR-V at run time from the checkout. Not copied into this repository. Windows releases (docs/releasing.md) redistribute its `dxc.exe`, `dxcompiler.dll` and `dxil.dll` in `shader-tools/`, with the licence texts from `packaging/licenses/`.
 - Marathon-pinned XenosRecomp: https://github.com/sonicnext-dev/XenosRecomp/tree/fb32631ee398e46f2a113d8f9103201dbaa000b4; used in an ignored shader investigation harness to translate original locally supplied containers. This is not yet an installed build dependency or runtime shader cache. Source paths, upstream pins, compile commands and limits are documented in `docs/graphics-shader-intake.md`.
 - Marathon Recompiled: https://github.com/sonicnext-dev/MarathonRecomp, GPL-3.0; consulted runtime layout, platform separation, graphics and build organization. The initial diagnostic PCR/TEB arrangement followed this and Unleashed; title-specific TLS storage now follows Xenia's guest layout. COPYING is the standard GPL text from this project.
@@ -16,3 +17,27 @@ Project code is licensed under GPL-3.0-or-later; see COPYING. No game binary or 
 - Xenia: https://github.com/xenia-project/xenia, BSD-3-Clause; consulted `kernel/user_module.cc`, `kernel/xmodule.h`, `kernel/kernel_state.h/.cc`, `kernel/xthread.h/.cc`, `kernel/xboxkrnl/xboxkrnl_threading.cc`, `kernel/xboxkrnl/xboxkrnl_rtl.cc`, `kernel/xboxkrnl/xboxkrnl_memory.cc`, `kernel/xboxkrnl/xboxkrnl_module.cc / xboxkrnl_modules.cc`, `kernel/xobject.h`, `base/bit_map.h/.cc`, `base/clock.cc`, `kernel/xboxkrnl/xboxkrnl_video.cc`, `memory.cc` and `xbox.h` for optional-header return semantics, loader offset 0x58, virtual/physical-memory ABI, address views and flags, user process type, critical-section transitions, guest thread identity, hardware flags, executable privilege queries TLS layout/slot operations, system-time semantics and the video-mode ABI. The bounded implementations are project code; Xenia code is not linked or vendored. Reference revision is recorded in the lock file.
 
 Reference revisions are recorded separately from build dependencies in the lock file. Bootstrap fetches build dependencies only. Asset hashes and addresses identify locally supplied input; they do not contain the asset data.
+
+## Camera motion dependencies
+
+- [ONNX Runtime](https://github.com/microsoft/onnxruntime), Microsoft, MIT:
+  version 1.30.0, Windows x64 CPU runtime. Used for local camera pose inference.
+  Windows releases include `onnxruntime.dll`, `onnxruntime_providers_shared.dll`,
+  `licenses/ONNXRuntime-MIT.txt` and `licenses/ONNXRuntime-ThirdPartyNotices.txt`.
+- [OpenCV Zoo MediaPipe pose estimation](https://github.com/opencv/opencv_zoo/tree/47534e27c9851bb1128ccc0102f1145e27f23f98/models/pose_estimation_mediapipe)
+  and [person detection](https://github.com/opencv/opencv_zoo/tree/47534e27c9851bb1128ccc0102f1145e27f23f98/models/person_detection_mediapipe),
+  Apache 2.0: `pose_estimation_mediapipe_2023mar.onnx` and
+  `person_detection_mediapipe_2023mar.onnx` from commit
+  `47534e27c9851bb1128ccc0102f1145e27f23f98`. The models originate from
+  [Google MediaPipe](https://github.com/google-ai-edge/mediapipe), with ONNX
+  conversions distributed by OpenCV Zoo. Windows releases carry the models
+  in `pose/` and the upstream licence in `licenses/MediaPipe-Apache-2.0.txt`.
+  The MediaPipe and OpenCV runtime libraries are not linked or bundled.
+- [RTMPose](https://github.com/open-mmlab/mmpose/tree/main/projects/rtmpose),
+  OpenMMLab, Apache 2.0: the optional legacy RTMPose-t SimCC model is supported
+  for source builds but is not included in the v0.2.0 packages.
+
+Binary download URLs and SHA-256 pins are in
+[scripts/fetch_pose_model.py](scripts/fetch_pose_model.py); the source tree
+does not contain the model weights or runtime binaries. Configuration and
+platform support are described in [docs/camera-input.md](docs/camera-input.md).

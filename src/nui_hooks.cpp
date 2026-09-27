@@ -2,15 +2,23 @@
 #include "diagnostic_hooks.h"
 #include "guest_memory.h"
 #include "camera_player.h"
+#include "kinect_sensor.h"
+#include "camera_debug.h"
+#include "camera_input.h"
 #include "nui_skeleton.h"
+#include "nui_player_routing.h"
+#include "nui_menu_progress.h"
 #include "nui_speech.h"
+#include "voice_commands.h"
 #include "local_profile.h"
 #include "touch_controls.h"
 #include <bit>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <utility>
@@ -31,18 +39,40 @@ sfr::NuiSkeletonEmulation skeleton;
 // the pad. Started at the first frame the title asks for, because the camera
 // takes a moment to open and nothing should wait for it.
 std::unique_ptr<sfr::CameraPlayer> camera_player;
+std::unique_ptr<sfr::CameraDebugWindow> camera_debug;
 bool camera_started = false;
 sfr::SkeletonJoints camera_joints{};
 bool camera_has_joints = false;
+// SFR_CAMERA=kinect: a real sensor tracks the players, as on the console.
+// Its skeletons go to the title untouched, and the race reads them through
+// the title's own detectors instead of the pad (nui_body_from_sensor).
+std::unique_ptr<sfr::KinectSensor> kinect;
+std::atomic<bool> sensor_body{false};
+sfr::KinectFrame kinect_frame;
+sfr::KinectPlayerSlots kinect_slots;
+sfr::KinectPlacementTransform kinect_placement;  // SFR_KINECT_PLACEMENT
+sfr::CameraInputSelection camera_selection;
+std::atomic<bool> camera_input_active{false};
+std::atomic<uint64_t> camera_pose_counter{0};
 // A second Kinect player, driven by the second pad. The frame carries six
 // skeleton slots and the title reads them all, so a player appears simply by
 // filling another one; it is identified separately (tracking id 2).
 sfr::NuiSkeletonEmulation second_skeleton;
+sfr::NuiPlayerRouting player_routing;
 bool second_present = false;
 sfr::NuiPadEdges edges;
 uint16_t pressed=0;  // buttons newly pressed at the last input update
 uint32_t frame_number = 0;
 const auto started = std::chrono::steady_clock::now();
+}
+
+namespace sfr {
+bool camera_motion_active() { return camera_input_active.load(std::memory_order_relaxed); }
+uint64_t camera_pose_generation() { return camera_pose_counter.load(std::memory_order_relaxed); }
+uint64_t camera_motion_clock_ns() {
+    return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
 }
 
 namespace {
@@ -82,6 +112,8 @@ uint64_t menu_manager_frame=0;  // input update count at that time
 uint64_t input_frames=0;
 }
 
+
+bool sfr::nui_body_from_sensor() { return sensor_body.load(std::memory_order_relaxed); }
 
 // NuiInitialize(flags, ?)
 SFR_HOOK(sub_8276FD88) {
@@ -123,30 +155,136 @@ SFR_HOOK(sub_827707B0) {
     // [83E52F8C] is the race flag: the hands leave the menu cursor pose.
     const bool racing=sfr::active_memory->load<uint32_t>(0x83E52F8C) != 0;
     sfr::set_touch_racing(racing);
-    if(!camera_started) { camera_started=true; camera_player=sfr::CameraPlayer::start(); }
-    if(camera_player && camera_player->joints(camera_joints)) camera_has_joints=true;
-    skeleton.update(sfr::nui_gamepad(), racing);
-    // A camera playing as the first player leaves the first pad free, so the
-    // player beside them holds that one rather than having to plug into the
-    // second socket.
-    const auto second=sfr::nui_second_gamepad(camera_has_joints?0u:1u, racing);
-    if(second) second_skeleton.update(*second, racing);
+    if(!camera_started) {
+        camera_started=true;
+        const char* const choice=std::getenv("SFR_CAMERA");
+        if(choice && std::string_view(choice)=="kinect") {
+            std::string why;
+            kinect=sfr::KinectSensor::open(&why);
+            sensor_body.store(kinect!=nullptr);
+            // Without a sensor the pad's emulated player carries on, so a
+            // Kinect left unplugged does not leave the title unplayable.
+            std::cerr << "NATIVE_KINECT started=" << (kinect?1:0);
+            if(kinect) {
+                kinect_placement=sfr::KinectPlacementTransform(sfr::kinect_placement_from(std::getenv("SFR_KINECT_PLACEMENT")));
+                std::cerr << " model=" << kinect->model()
+                          << " placement=" << sfr::kinect_placement_name(kinect_placement.placement());
+            }
+            else std::cerr << " reason=" << why << " fallback=pad";
+            std::cerr << '\n';
+        } else {
+            camera_debug=sfr::CameraDebugWindow::start();
+            camera_player=sfr::CameraPlayer::start();
+        }
+    }
+    if(kinect) {
+        // Both players are whoever the sensor sees; nobody in front of it is
+        // an empty frame, which the title answers the way it did on the
+        // console (asking the player to step in). The pads keep their voice
+        // commands and menu buttons (the input update below).
+        auto& memory=*sfr::active_memory;
+        const auto elapsed=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-started);
+        // Turned once per new frame: the last one is kept as it was turned.
+        if(kinect->next(kinect_frame)) kinect_placement.apply(kinect_frame);
+        sfr::publish_second_player_pad(std::nullopt);
+        sfr::NuiSkeletonEmulation::write_header(memory,frame,++frame_number,uint64_t(elapsed.count()));
+        sfr::NuiSkeletonEmulation::write_floor(memory,frame,kinect_frame.floor_plane,kinect_frame.gravity);
+        const auto players=kinect_slots.assign(kinect_frame);
+        // Which side of the first player a side sensor is taken to see: the
+        // line to look for when checking a stance switch on real hardware.
+        static bool saw_back=false;
+        if(players[0] && kinect_placement.sees_back(players[0]->tracking_id)!=saw_back) {
+            saw_back=!saw_back;
+            std::cerr << "NATIVE_KINECT sees=" << (saw_back?"back":"chest") << " frame=" << frame_number << '\n';
+        }
+        for(uint32_t slot=0; slot<players.size(); ++slot) {
+            const sfr::KinectBody* const body=players[slot];
+            if(!body) continue;
+            (slot?second_skeleton:skeleton).write_joints(memory,frame,slot,slot+1,body->joints,body->joint_states,
+                                                        body->position);
+        }
+        if(bool(players[1])!=second_present) {
+            second_present=bool(players[1]);
+            std::cerr << "NUI_SECOND_PLAYER present=" << second_present << " source=kinect\n";
+        }
+        ctx.r3.u64=0;
+        return;
+    }
+    const bool debug_active=camera_debug && !camera_debug->closed();
+    sfr::CameraTrackingStatus camera_status;
+    if(camera_player && camera_player->joints(camera_joints,&camera_status)) {
+        camera_has_joints=true;
+        camera_pose_counter.fetch_add(1,std::memory_order_relaxed);
+    }
+    const auto first=sfr::nui_gamepad();
+    const bool use_camera=camera_selection.update(first,camera_has_joints?camera_status.pose_age_ms:-1,
+                                                  sfr::CameraInputSelection::Clock::now());
+    const bool was_camera=sfr::camera_motion_active();
+    camera_input_active.store(use_camera,std::memory_order_relaxed);
+    if(use_camera!=was_camera)
+        std::cerr<<"NUI_INPUT_SOURCE player=0 source="<<(use_camera?"camera":"controller")
+                 <<" pose_age_ms="<<camera_status.pose_age_ms<<'\n';
+    // Camera supplements P1. Each configured controller keeps its player,
+    // including while the camera opens, loses tracking, or is overridden.
+    const auto second=sfr::nui_second_gamepad(1u, racing);
+    const bool was_reversed=player_routing.reversed();
+    player_routing.update(*sfr::active_memory,skeleton,second_skeleton,
+                          first,second,racing,use_camera,was_camera && !use_camera);
+    if(was_reversed!=player_routing.reversed())
+        std::cerr << "NUI_PLAYER_ROUTING first_tracking_id=" << (player_routing.reversed()?2:1)
+                  << " second_tracking_id=" << (player_routing.reversed()?1:2) << '\n';
+    // The race hooks need the same pad, and this is where it is decided
+    // which one the second player is holding.
+    sfr::publish_second_player_pad(second);
     const auto elapsed=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-started);
     auto& memory=*sfr::active_memory;
     sfr::NuiSkeletonEmulation::write_header(memory,frame,++frame_number,uint64_t(elapsed.count()));
-    // The camera's body takes the first player's place once it has found
-    // one; until then the pad's emulated player stands in.
-    if(camera_has_joints) skeleton.write_joints(memory,frame,0,1,camera_joints);
-    else skeleton.write_slot(memory,frame,0,1);
-    if(second) second_skeleton.write_slot(memory,frame,1,2);
+    // Submit exactly one source for logical P1; never change slot identities.
+    player_routing.write_slots(memory,frame,skeleton,second_skeleton,second.has_value(),
+                               use_camera?&camera_joints:nullptr);
+    // Numeric-only race diagnostics: the exact submitted P1 joints, never
+    // camera pixels. Pair with SFR_RACE_BODY_DUMP to inspect guest processing.
+    static const bool race_trace=[] {const char* t=std::getenv("SFR_CAMERA_RACE_TRACE");return t && *t=='1';}();
+    if(race_trace && racing && frame_number%5==0) {
+        const uint64_t data=uint64_t(frame)+sfr::nui_skeleton_data_offset+
+            (player_routing.reversed()?sfr::nui_skeleton_data_size:0);
+        std::ostringstream line;
+        line<<"CAMERA_RACE_JOINTS frame="<<frame_number<<" source="<<(use_camera?"camera":"controller")
+            <<" age_ms="<<camera_status.pose_age_ms;
+        for(uint32_t j=0;j<sfr::nui_joint_count;++j) {
+            line<<" j"<<j<<'=';
+            for(uint32_t axis=0;axis<3;++axis)
+                line<<(axis?",":"")<<std::bit_cast<float>(memory.load<uint32_t>(data+32+j*16+axis*4));
+        }
+        std::cerr<<line.str()<<'\n';
+    }
+    if(debug_active) {
+        // Publish only after the guest frame was written, with those exact joints.
+        sfr::CameraDebugFrame snapshot;
+        snapshot.game_frame=frame_number;
+        snapshot.camera_available=bool(camera_player);
+        snapshot.has_pose=true;
+        snapshot.controller_active=!use_camera;
+        const uint64_t data=uint64_t(frame)+sfr::nui_skeleton_data_offset+
+            (player_routing.reversed()?sfr::nui_skeleton_data_size:0);
+        for(uint32_t joint=0;joint<sfr::nui_joint_count;++joint)
+            for(uint32_t axis=0;axis<3;++axis)
+                snapshot.joints[joint][axis]=std::bit_cast<float>(memory.load<uint32_t>(data+32+16*joint+4*axis));
+        snapshot.detected=camera_status.detected;
+        snapshot.observation_age_ms=camera_status.observation_age_ms;
+        snapshot.pose_age_ms=camera_status.pose_age_ms;
+        snapshot.submitted=sfr::CameraDebugClock::now();
+        camera_debug->publish(snapshot);
+    }
     if(second.has_value()!=second_present) {
         second_present=second.has_value();
         std::cerr << "NUI_SECOND_PLAYER present=" << second_present << '\n';
     }
     if(frame_number%300==1) {
-        const auto hand=skeleton.hand(true);
+        const auto hand=use_camera?camera_joints[sfr::nui_joint::hand_right]:
+            (player_routing.reversed()?second_skeleton:skeleton).hand(true);
         std::cerr << "NUI_SKELETON_FRAME number=" << frame_number << " right_hand=" << hand[0] << ',' << hand[1]
-                  << ',' << hand[2] << '\n';
+                  << ',' << hand[2] << " source=" << (use_camera?"camera":"controller") << '\n';
     }
     ctx.r3.u64=0;
 }
@@ -188,6 +326,49 @@ SFR_HOOK(sub_82764620) {
 }
 
 PPC_FUNC_IMPL(__imp__sub_82494658);
+
+PPC_FUNC_IMPL(__imp__sub_824920F8);
+// The title's START screen does not use every later menu-manager path.
+// Observe the completed common input update as well as the menu cursor below.
+SFR_HOOK(sub_824920F8) {
+    sfr::enter_function(ctx,"sub_824920F8",0x824920F8);
+    const uint32_t input=ctx.r3.u32;
+    __imp__sub_824920F8(ctx,base);
+    static const bool trace=[] {const char* text=std::getenv("SFR_NUI_CURSOR_TRACE");return text && *text=='1';}();
+    static uint32_t calls=0;
+    if(!trace || ++calls%12!=1) return;
+    auto& memory=*sfr::active_memory;
+    try {
+        const auto word=[&](uint64_t at) {return memory.readable(at,4)?memory.load<uint32_t>(at):0u;};
+        const auto number=[&](uint64_t at) {return std::bit_cast<float>(word(at));};
+        for(uint32_t player=0;player<2;++player) {
+            const uint64_t block=uint64_t(input)+32+2544*player;
+            const uint32_t body=word(block+12),data=body?word(uint64_t(body)+768):0;
+            std::ostringstream line;
+            line<<"NUI_INPUT_TRACE player="<<player<<" frame="<<input_frames
+                <<" tracking_id="<<(data?word(uint64_t(data)+4):0)
+                <<" body_slot="<<(body?word(uint64_t(body)+784):~0u)
+                <<" enabled="<<std::hex<<word(block+4)<<std::dec
+                <<" unavailable="<<unsigned(memory.load<uint8_t>(block+984));
+            for(uint32_t hand=0;hand<2;++hand) {
+                const uint64_t packet=block+16+400*hand;
+                line<<(hand?" right[":" left[")<<"flags="<<std::hex<<word(packet)
+                    <<" inhibit="<<word(packet+4)<<std::dec
+                    <<" angle="<<number(packet+164)<<" raise="<<number(packet+384)
+                    <<" lower="<<number(packet+388)<<']';
+            }
+            if(data) for(const uint32_t joint : {sfr::nui_joint::hand_right,sfr::nui_joint::elbow_right,
+                                                sfr::nui_joint::shoulder_right,sfr::nui_joint::hand_left,
+                                                sfr::nui_joint::elbow_left,sfr::nui_joint::shoulder_left}) {
+                const uint64_t at=uint64_t(data)+32+16*joint;
+                line<<" j"<<joint<<'='<<number(at)<<','<<number(at+4)<<','<<number(at+8);
+            }
+            std::cerr<<line.str()<<'\n';
+        }
+    } catch(const std::exception& error) {
+        std::cerr<<"NUI_INPUT_TRACE unreadable="<<error.what()<<'\n';
+    }
+}
 
 // Input update (once per frame, input object = [83E52FB8]): after the
 // original has published the recognizer's word, a newly pressed pad button
@@ -237,6 +418,28 @@ SFR_HOOK(sub_82494658) {
         memory.store<uint32_t>(uint64_t(input)+5448,2);
         std::cerr << "NUI_SAID word=" << entry.second << " present=" << sfr::present_count << '\n';
         return;
+    }
+    // SFR_VOICE=1: the player's own voice, through the host's speech
+    // recognizer (a Kinect's microphone array is one to Windows). A phrase
+    // heard is the title's word, as a button would be; the pad still works.
+    static std::unique_ptr<sfr::VoiceRecognizer> voice=[]() -> std::unique_ptr<sfr::VoiceRecognizer> {
+        const char* wanted=std::getenv("SFR_VOICE");
+        if(!wanted || !*wanted || *wanted=='0') return nullptr;
+        std::string why;
+        auto recognizer=sfr::VoiceRecognizer::open(sfr::voice_phrases(),&why);
+        if(!recognizer) std::cerr << "NATIVE_VOICE started=0 reason=" << why << '\n';
+        return recognizer;
+    }();
+    if(std::string phrase; voice && voice->next(phrase)) {
+        const auto title_word=sfr::title_word_for(phrase,racing);
+        if(!title_word.empty()) {
+            memory.check_write(uint64_t(input)+5440,12);
+            memory.store<uint32_t>(uint64_t(input)+5440,sfr::NuiSpeechEmulation::say(memory,title_word));
+            memory.store<uint32_t>(uint64_t(input)+5444,0x3F800000u);
+            memory.store<uint32_t>(uint64_t(input)+5448,2);
+            std::cerr << "NUI_VOICE heard=\"" << phrase << "\" word=" << title_word << " racing=" << racing << '\n';
+            return;
+        }
     }
     const auto word=sfr::NuiSpeechEmulation::hear(spoken,racing);
     if(word==sfr::NuiSpeechEmulation::Word::none) return;
@@ -292,6 +495,65 @@ SFR_HOOK(sub_8246A6D0) {
     ctx.r3.s64=step;
 }
 
+PPC_FUNC_IMPL(__imp__sub_82452F48);
+SFR_HOOK(sub_82452F48) {
+    sfr::enter_function(ctx,"sub_82452F48",0x82452F48);
+    const uint32_t slot=ctx.r3.u32;
+    __imp__sub_82452F48(ctx,base);
+    sfr::NuiMenuServiceScope::record_wait(slot,(ctx.r3.u32 & 0xff)!=0);
+}
+
+PPC_FUNC_IMPL(__imp__sub_82456700);
+SFR_HOOK(sub_82456700) {
+    sfr::enter_function(ctx,"sub_82456700",0x82456700);
+    // This updates the cursor before checking whether a pending animation
+    // blocks its delayed action, so elapsed time alone cannot prove service.
+    sfr::NuiMenuServiceScope::record(ctx.r3.u32,ctx.r4.u32);
+    __imp__sub_82456700(ctx,base);
+}
+
+PPC_FUNC_IMPL(__imp__sub_824560A8);
+// Observe the game's own hand activation result, logical-player binding and
+// cursor state together. Opt-in diagnostics only; no gesture or input changes.
+SFR_HOOK(sub_824560A8) {
+    sfr::enter_function(ctx,"sub_824560A8",0x824560A8);
+    const uint32_t manager=ctx.r3.u32,player=ctx.r4.u32;
+    __imp__sub_824560A8(ctx,base);
+    static const bool trace=[] {const char* text=std::getenv("SFR_NUI_CURSOR_TRACE");return text && *text=='1';}();
+    static uint32_t calls[2]{};
+    if(!trace || player>=2 || ++calls[player]%12!=1) return;
+    auto& memory=*sfr::active_memory;
+    try {
+        const auto word=[&](uint64_t at) {return memory.readable(at,4)?memory.load<uint32_t>(at):0u;};
+        const auto number=[&](uint64_t at) {return std::bit_cast<float>(word(at));};
+        const uint32_t input=word(0x83E52FB8),players=word(0x83E52F88);
+        const uint32_t body=players?word(uint64_t(players)+120+4*player):0;
+        const uint32_t data=body?word(uint64_t(body)+768):0;
+        const uint32_t owner=word(uint64_t(manager)+96+4*player);
+        const uint32_t hands=owner?word(uint64_t(owner)+112):0;
+        std::ostringstream line;
+        line<<"NUI_CURSOR_TRACE player="<<player<<" frame="<<input_frames
+            <<" tracking_id="<<(data?word(uint64_t(data)+4):0)
+            <<" body_slot="<<(body?word(uint64_t(body)+784):~0u)
+            <<" manager="<<std::hex<<manager<<" data="<<data<<std::dec;
+        for(uint32_t hand=0;hand<2;++hand) {
+            const uint64_t packet=uint64_t(input)+2544*player+400*hand;
+            const uint64_t cursor=uint64_t(hands)+116*hand;
+            line<<(hand?" right[":" left[")<<"flags="<<std::hex<<(input?word(packet+48):0)<<std::dec
+                <<" raise="<<(input?number(packet+432):0)<<" lower="<<(input?number(packet+436):0)
+                <<" state="<<(hands?word(cursor+100):~0u)<<" object="<<std::hex<<(hands?word(cursor+8):0)<<std::dec<<']';
+        }
+        if(data) for(const uint32_t joint : {sfr::nui_joint::hand_right,sfr::nui_joint::shoulder_right,
+                                           sfr::nui_joint::hand_left,sfr::nui_joint::shoulder_left,sfr::nui_joint::head}) {
+            const uint64_t at=uint64_t(data)+32+16*joint;
+            line<<" j"<<joint<<'='<<number(at)<<','<<number(at+4)<<','<<number(at+8);
+        }
+        std::cerr<<line.str()<<'\n';
+    } catch(const std::exception& error) {
+        std::cerr<<"NUI_CURSOR_TRACE unreadable="<<error.what()<<'\n';
+    }
+}
+
 PPC_FUNC_IMPL(__imp__sub_824578F0);
 
 // Menu update (this = manager+36). Buttons carry a type at +288 and flags at
@@ -305,6 +567,22 @@ SFR_HOOK(sub_824578F0) {
     const uint32_t manager=ctx.r3.u32-36;
     menu_manager=manager;
     menu_manager_frame=input_frames;
+    // Follow the title's own active-page lookup (+344 == 6, player from
+    // +320 bit 4). Inactive gaps matter even if the allocator reuses a page.
+    for (uint32_t player=0; player<2; ++player) {
+        const uint32_t page=call_guest(ctx,base,sub_82457348,manager,player);
+        bool cursor_pending=false;
+        if (page && memory.load<uint8_t>(0x83E515FB)) {
+            const uint32_t owner=memory.load<uint32_t>(manager+96+4*player);
+            if (owner && memory.readable(uint64_t(owner)+112,4)) {
+                const uint32_t hands=memory.load<uint32_t>(uint64_t(owner)+112);
+                // 824560A8's right-hand state: 2 hidden, 1 activating, 0 active.
+                if (hands && memory.readable(uint64_t(hands)+116+100,4))
+                    cursor_pending=memory.load<uint32_t>(uint64_t(hands)+116+100)!=0;
+            }
+        }
+        player_routing.observe_menu_page(player,page,page ? memory.load<uint32_t>(page+336) : 0,cursor_pending);
+    }
     // SFR_MENU_DUMP=1 reports each menu page: its buttons as type/flags/kind/state
     // and the player's current page, whenever they change (a debugging aid).
     if(std::getenv("SFR_MENU_DUMP")) {
@@ -355,18 +633,9 @@ SFR_HOOK(sub_824578F0) {
             }
         }
     }
-    // A page changes through a delayed action: the menu update (82456700)
-    // keeps its type at manager+488, its delay at +492, its elapsed time at
-    // +496 and its command at +500, and adds the title's frame step
-    // ([[83E516A0]+24]+40) to the elapsed time until it passes the delay. On
-    // some pages (the gear parts) the title stops calling that update while
-    // an action is queued, so the elapsed time never moves and the page never
-    // leaves, whatever the player presses; calling the update by hand
-    // advances it (elapsed 0 to 1 in the first measurement).
-    //
-    // While the elapsed time has not moved for half a second, the update runs
-    // here, which elapses the action and fires its command through the
-    // title's own path. SFR_MENU_STALL=0 leaves the page as it is.
+    // Delayed menu actions live at manager+488+16*player. Some pages
+    // stop servicing them; inspect the original update below before deciding
+    // whether recovery is needed. SFR_MENU_STALL=0 disables recovery.
     // SFR_MENU_STATE=1: the manager's state ([r3+4]) and the queued action, on
     // every change and every two seconds. The state dispatches as state - 2:
     // 2 and 3 open the pages, 4 runs them (it is where the page update
@@ -417,20 +686,6 @@ SFR_HOOK(sub_824578F0) {
             std::cerr << "NUI_MENU_LEAVE unreadable: " << error.what() << '\n';
         }
     }
-    const uint32_t action=memory.load<uint32_t>(manager+488);
-    const uint32_t elapsed=memory.load<uint32_t>(manager+496);
-    static uint32_t last_elapsed=0;
-    static uint64_t stalled_frames=0;
-    stalled_frames=(action && elapsed==last_elapsed) ? stalled_frames+1 : 0;
-    last_elapsed=elapsed;
-    static const bool run_stalled=[]{ const char* t=std::getenv("SFR_MENU_STALL"); return !t || *t!='0'; }();
-    if(run_stalled && stalled_frames>=30) {
-        if(stalled_frames==30)
-            std::cerr << "NUI_MENU_UPDATE_RUN manager=0x" << std::hex << manager << std::dec << " type=" << action
-                      << " delay=" << std::bit_cast<float>(memory.load<uint32_t>(manager+492))
-                      << " command=" << memory.load<uint32_t>(manager+500) << '\n';
-        call_guest(ctx,base,sub_82456700,manager,0);
-    }
     if(pressed & button::y) {
         uint32_t command=0;
         for_each_menu_button(memory,manager,[&](uint32_t b) {
@@ -444,7 +699,61 @@ SFR_HOOK(sub_824578F0) {
             std::cerr << "NUI_MENU_SHORTCUT command=" << command << '\n';
         }
     }
-    __imp__sub_824578F0(ctx,base);
+    const auto actions = [&] {
+        sfr::NuiMenuActions result;
+        for (uint32_t player=0; player<2; ++player) {
+            const uint32_t at=manager+488+16*player;
+            result[player]={memory.load<uint32_t>(at),memory.load<uint32_t>(at+8),memory.load<uint32_t>(at+12)};
+        }
+        return result;
+    };
+    const auto before=actions();
+    uint32_t serviced=0, blocked=0;
+    {
+        sfr::NuiMenuServiceScope scope(manager);
+        __imp__sub_824578F0(ctx,base);
+        serviced=scope.serviced();
+        blocked=scope.blocked();
+    }
+    const auto after=actions();
+    uint32_t recovery_serviced=0;
+    static sfr::NuiMenuProgress progress;
+    static bool recovering=false;
+    static const bool run_stalled=[]{ const char* t=std::getenv("SFR_MENU_STALL"); return !t || *t!='0'; }();
+    recovering=progress.update(manager,before,after,
+        [&] { return memory.load<uint8_t>(0x83E515FB)!=0; },
+        [&](uint32_t player) {
+            if(!recovering && player==0)
+                std::cerr << "NUI_MENU_UPDATE_RUN manager=0x" << std::hex << manager << std::dec
+                          << " type=" << after[0].type << ',' << after[1].type << '\n';
+            call_guest(ctx,base,sub_82456700,manager,player);
+            recovery_serviced|=1u<<player;
+        },run_stalled,serviced);
+    // The original state-4 manager returns before updating either player
+    // when one confirmation request is outstanding. Keep the other Gear
+    // page responsive without settling that request or advancing the page.
+    uint32_t independently_serviced=0;
+    const auto gear_service_mask=[&] {
+        std::array<uint32_t,2> kinds{};
+        uint32_t settled=0;
+        for (uint32_t player=0; player<2; ++player) {
+            const uint32_t page=call_guest(ctx,base,sub_82457348,manager,player);
+            if (page) kinds[player]=memory.load<uint32_t>(page+336);
+            if (memory.load<uint8_t>(manager+36+1828+88*player+59)) settled|=1u<<player;
+        }
+        return sfr::nui_gear_service_mask(
+            sfr::second_player_pad().has_value() && memory.load<uint8_t>(0x83E515FB),
+            memory.load<uint32_t>(manager+40),memory.load<uint8_t>(manager+124)!=0,
+            kinds,settled,blocked,serviced|recovery_serviced|independently_serviced);
+    };
+    if (blocked) for (uint32_t player=0; player<2; ++player) {
+        // The first player's callback may change the page, state or 2P flag.
+        if (gear_service_mask() & (1u<<player)) {
+            call_guest(ctx,base,sub_82456700,manager,player);
+            independently_serviced|=1u<<player;
+        }
+    }
+
 }
 
 PPC_FUNC_IMPL(__imp__sub_82439530);

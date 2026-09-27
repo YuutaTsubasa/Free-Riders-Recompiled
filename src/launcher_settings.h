@@ -29,7 +29,8 @@ struct LauncherSettings {
     // gamepad drives; "camera" tracks a real body with a webcam, which cannot
     // share the pad's sticks, so the two are one choice. "picture" keeps the
     // pad in charge and only gives the title a camera image.
-    std::string camera = "off";      // "off", "picture" or "motion"
+    // "kinect" is a real Kinect tracking the players, as on the console.
+    std::string camera = "off";      // "off", "picture", "motion" or "kinect"
     // Which of the host's cameras, by the name it lists (SFR_CAMERA_DEVICE).
     // A name and not a number, because the list changes: a phone camera or a
     // capture card comes and goes, and the number then means another camera.
@@ -39,6 +40,18 @@ struct LauncherSettings {
     // it is a setting: with it wrong, left and right are the wrong way
     // round and the cursor runs off the side of the screen.
     bool camera_mirror = false;   // SFR_CAMERA_MIRROR
+    // Where a real Kinect stands around the player, the screen ahead:
+    // "front", "front-right", "right", "behind-right", "behind",
+    // "behind-left", "left" or "front-left" (kinect_sensor.h). A board is
+    // ridden side-on, so the side the chest faces sees the whole body.
+    std::string kinect_placement = "front";  // SFR_KINECT_PLACEMENT
+    // Voice commands through the host's speech recognizer and the default
+    // microphone (a Kinect's array, made the default, is heard), in English
+    // or Traditional Chinese; the pad's buttons still say them too.
+    bool voice = false;  // SFR_VOICE
+    // Windows motion mode: show the skeleton submitted to the game in a
+    // separate window, without a camera image (SFR_CAMERA_DEBUG).
+    bool camera_debug = false;
     // Controls (input_bindings.h). The devices each player uses, and how
     // their keys and pad buttons are arranged, as "a=Z,b=X,..." lines. An
     // empty line means the defaults, so a settings file written before any

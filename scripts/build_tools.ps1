@@ -8,15 +8,20 @@ if (-not $vsRoot) { throw 'Visual Studio C++ desktop tools are required.' }
 $vcvars = Join-Path $vsRoot 'VC\Auxiliary\Build\vcvars64.bat'
 $compiler = Join-Path $env:ProgramFiles 'LLVM\bin\clang-cl.exe'
 if (-not (Test-Path -LiteralPath $compiler)) { throw "Install LLVM with clang-cl at $compiler" }
-# Import the compiler/SDK environment into this process only.
-$environmentLines = & $env:COMSPEC /d /s /c "`"$vcvars`" >nul && set"
-if ($LASTEXITCODE -ne 0) { throw 'vcvars64 failed.' }
-foreach ($line in $environmentLines) {
-    if ($line -match '^([^=]+)=(.*)$') {
-        [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], 'Process')
+# Import the compiler/SDK environment into this process only. The session
+# keeps it, so a second run in the same window finds it there: running
+# vcvars64 again would add to PATH each time until cmd refuses the line.
+if ($env:VSCMD_ARG_TGT_ARCH -ne 'x64' -or -not $env:VCToolsInstallDir) {
+    $environmentLines = & $env:COMSPEC /d /s /c "`"$vcvars`" >nul && set"
+    if ($LASTEXITCODE -ne 0) { throw 'vcvars64 failed (if it says the input line is too long, open a new window).' }
+    foreach ($line in $environmentLines) {
+        if ($line -match '^([^=]+)=(.*)$') {
+            [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], 'Process')
+        }
     }
 }
-$env:PATH = (Split-Path -Parent $compiler) + ';' + $env:PATH
+$llvmBin = Split-Path -Parent $compiler
+if (-not $env:PATH.StartsWith($llvmBin + ';')) { $env:PATH = $llvmBin + ';' + $env:PATH }
 $source = $repoRoot
 $build = Join-Path $repoRoot 'out\build\host'
 $diagnosticOption = if ($Diagnostic) { 'ON' } else { 'OFF' }
@@ -28,8 +33,11 @@ $targets += 'sfr_vector_memory_test'
 $targets += 'sfr_debug_monitor_test'
 $targets += 'sfr_nui_device_status_test'
 $targets += 'sfr_nui_skeleton_test'
+$targets += 'sfr_nui_menu_players_test'
+$targets += 'sfr_nui_menu_progress_test'
 $targets += 'sfr_nui_speech_test'
 $targets += 'sfr_nui_race_test'
+$targets += 'sfr_nui_race_players_test'
 $targets += 'sfr_nui_race_hooks_test'
 $targets += 'sfr_shader_inputs_test'
 $targets += 'sfr_loop_constants_test'
@@ -57,6 +65,7 @@ $targets += 'sfr_load_halfword_update_test'
 $targets += 'sfr_memory_update_forms_test'
 $targets += 'sfr_vector_integer_test'
 $targets += 'sfr_native_input_test'
+$targets += 'sfr_input_trace_test'
 $targets += 'sfr_input_bindings_test'
 $targets += 'sfr_pad_assignment_test'
 $targets += 'sfr_pad_devices_test'
@@ -64,6 +73,14 @@ $targets += 'sfr_camera_capture_test'
 $targets += 'sfr_pose_estimator_test'
 $targets += 'sfr_pose_skeleton_test'
 $targets += 'sfr_pose_smoothing_test'
+$targets += 'sfr_kinect_sensor_test'
+$targets += 'sfr_voice_commands_test'
+# Checking a real Kinect without the game (docs/kinect-sensor.md).
+$targets += 'sfr_kinect_probe'
+$targets += 'sfr_pose_mediapipe_test'
+$targets += 'sfr_camera_debug_test'
+$targets += 'sfr_camera_input_test'
+$targets += 'sfr_camera_race_motion_test'
 $targets += 'sfr_pipeline_cache_file_test'
 $targets += 'sfr_native_pipeline_key_test'
 $targets += 'sfr_native_audio_test'
