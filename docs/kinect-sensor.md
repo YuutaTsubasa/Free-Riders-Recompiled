@@ -12,15 +12,28 @@
 +x 朝玩家的右手邊，+z 離開感測器）。所以感測器看到的東西幾乎原封不動交給遊戲，
 比賽也改回由遊戲自己的判斷器讀真實身體，而不是手把。
 
-## 怎麼用
+## 怎麼用（Xbox 360 版 Kinect）
 
-1. 需要一台 **Kinect for Xbox 360**（加上 USB 電源轉接線）或 **Kinect for Windows 第一代**。
-2. 安裝 **Kinect for Windows SDK 1.8**（Microsoft 官方，含驅動程式與執行階段）。
-   - 只有 Kinect for Windows 感測器時，較小的 *Kinect for Windows Runtime 1.8*
-     就夠了；**Xbox 360 版的 Kinect 需要完整 SDK**，只裝 Runtime 會被拒絕。
-3. launcher → 進階 →「攝影機」選 **Kinect**，按旁邊的「測試」確認有回應。
-4. 開始遊戲。log 會有 `NATIVE_KINECT started=1`，之後每五秒一行
-   `NATIVE_KINECT frames=… with_body=… bodies=…`。
+1. **先不要插 Kinect**。下載並安裝
+   [Kinect for Windows SDK 1.8](https://www.microsoft.com/download/details.aspx?id=40278)
+   （`KinectSDK-v1.8-Setup.exe`，含驅動程式與執行階段）。
+   - Xbox 360 版**必須裝完整 SDK**；只裝 *Kinect for Windows Runtime 1.8* 時，
+     執行階段會拒絕 Xbox 360 版感測器（那個 Runtime 只給 Kinect for Windows 感測器用）。
+   - Kinect for Windows 第一代感測器則只裝 Runtime 就夠了。
+2. Kinect 接上**電源轉接線**，轉接線的電源插上插座，USB 插到電腦
+   （建議直接插主機板上的 USB 2.0／3.0 孔，不要經過 USB Hub）。
+   第一次插上時 Windows 會安裝驅動，裝置管理員裡會出現「Kinect for Windows」
+   底下的 Audio、Camera、Device 等項目。綠燈亮起表示有電。
+3. （選用）SDK 附的 *Developer Toolkit Browser* 裡的 *Skeleton Basics* 範例可以先確認
+   骨架追蹤正常。
+4. launcher → 進階 →「攝影機」選 **Kinect**，按「測試」：
+   - 「Kinect 運作中」：可以玩了。
+   - 「尚未安裝 Kinect SDK 1.8」：按「下載 SDK」回到步驟 1。
+   - 「沒有連接 Kinect」：檢查電源轉接線與 USB。
+   - 「找到 Kinect，但無法啟動」：關掉其他使用 Kinect 的程式（SDK 範例、Kinect Studio），
+     或 Xbox 360 版只裝了 Runtime。
+5. 站在感測器前約 1.5～3 公尺、全身入鏡，開始遊戲。log 會有 `NATIVE_KINECT started=1`，
+   之後每五秒一行 `NATIVE_KINECT frames=… with_body=… bodies=…`。
 
 不開遊戲也可以檢查：`sfr_kinect_probe [秒數]` 會印出追蹤到的人與右手位置。
 

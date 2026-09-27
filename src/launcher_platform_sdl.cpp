@@ -401,6 +401,8 @@ void open_log(const fs::path& log) {
 #endif
 }
 
+void open_url(const char* url) { SDL_OpenURL(url); }
+
 FontFiles font_files() {
 #ifdef __ANDROID__
     const fs::path fonts = "/system/fonts";

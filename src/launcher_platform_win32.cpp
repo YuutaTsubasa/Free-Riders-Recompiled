@@ -144,6 +144,7 @@ std::unique_ptr<GameProcess> start_game(const LauncherSettings& settings, const 
 bool can_open_log() { return true; }
 
 void open_log(const fs::path& log) { ShellExecuteW(owner_window, L"open", log.c_str(), nullptr, nullptr, SW_SHOWNORMAL); }
+void open_url(const char* url) { ShellExecuteA(owner_window, "open", url, nullptr, nullptr, SW_SHOWNORMAL); }
 
 FontFiles font_files() {
     wchar_t windows[MAX_PATH]{};

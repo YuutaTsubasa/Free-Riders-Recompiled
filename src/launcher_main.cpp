@@ -76,6 +76,7 @@ enum Text {
     CameraLabel, CameraHint, CameraOff, CameraPicture, CameraMotion, CameraDevice, CameraDeviceHint, CameraNone,
     CameraTest, CameraTesting, CameraWorks, CameraSilent, CameraClosed, CameraMirror, CameraMirrorHint,
     CameraRace, CameraRaceHint, CameraKinect, KinectRow, KinectRowHint, KinectWorks, KinectSilent, KinectMissing,
+    KinectNoRuntime, KinectNoSensor, KinectFailed, KinectDownload, KinectInstallHint,
     ImageDirectory, ImageDirectoryHint, AssetDirectory, AssetDirectoryHint, Browse, Found, Missing, FilesHint,
     StartGame, Quit, Defaults,
     MissingFiles, MissingGame, LaunchFailed, Ready,
@@ -161,6 +162,12 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Kinect is working", "Kinect 運作中"},
     {"Kinect opened, but sends nothing", "Kinect 已開啟，但沒有資料"},
     {"No Kinect found", "找不到 Kinect"},
+    {"Kinect SDK 1.8 is not installed", "尚未安裝 Kinect SDK 1.8"},
+    {"No Kinect connected", "沒有連接 Kinect"},
+    {"Kinect found, but it will not start", "找到 Kinect，但無法啟動"},
+    {"Download the SDK", "下載 SDK"},
+    {"An Xbox 360 Kinect needs the full Kinect for Windows SDK 1.8 (the Runtime alone refuses it). Install it, plug the sensor in through its power adapter, then test again. If it still will not start, close other programs using the Kinect.",
+     "Xbox 360 版 Kinect 需要完整的 Kinect for Windows SDK 1.8（只裝 Runtime 會被拒絕）。安裝後，用電源轉接線接上感測器再測試一次。若仍無法啟動，請關閉其他正在使用 Kinect 的程式。"},
     {"Game code image", "遊戲程式映像"},
     {"The game's decoded code and data (complete.txt, image.bin).", "解碼後的遊戲程式與資料（complete.txt、image.bin）。"},
     {"Game data", "遊戲資料"},
@@ -959,7 +966,10 @@ struct Launcher {
     enum class CameraTrial { none, looking, pictures, silent, closed };
     std::atomic<CameraTrial> camera_trial{CameraTrial::none};
     std::jthread camera_trial_worker;
-    std::atomic<CameraTrial> kinect_trial{CameraTrial::none};
+    // Trying the Kinect says which step is missing: the SDK, the sensor
+    // (unplugged, or its power adapter not in), or starting it.
+    enum class KinectTrial { none, looking, working, silent, no_runtime, no_sensor, failed };
+    std::atomic<KinectTrial> kinect_trial{KinectTrial::none};
     std::jthread kinect_trial_worker;
     // The launcher slides in (appear rises to 1) and out before the game
     // starts (leaving, appear falls to 0).
@@ -1678,24 +1688,41 @@ struct Launcher {
         // camera is turned on, since one may have been plugged in since.
         // A Kinect is the host's only one: no list, only whether it answers.
         if (settings.camera == "kinect") {
-            const float test_width = ImGui::CalcTextSize(tr(KinectSilent)).x + ImGui::GetStyle().FramePadding.x * 4;
+            const auto state = kinect_trial.load();
+            const Text trial[] = {CameraTest, CameraTesting, KinectWorks, KinectSilent, KinectNoRuntime, KinectNoSensor,
+                                  KinectFailed};
+            float test_width = 0;
+            for (const Text text : trial) test_width = (std::max)(test_width, ImGui::CalcTextSize(tr(text)).x);
+            test_width += ImGui::GetStyle().FramePadding.x * 4;
             setting_row(tr(KinectRow), tr(KinectRowHint), test_width, scale, [&] {
-                const auto state = kinect_trial.load();
-                const Text trial[] = {CameraTest, CameraTesting, KinectWorks, KinectSilent, KinectMissing};
-                ImGui::BeginDisabled(state == CameraTrial::looking);
+                ImGui::BeginDisabled(state == KinectTrial::looking);
                 if (ImGui::Button(tr(trial[int(state)]), ImVec2(test_width, 0))) {
-                    kinect_trial.store(CameraTrial::looking);
+                    kinect_trial.store(KinectTrial::looking);
                     kinect_trial_worker = std::jthread([this] {
-                        auto sensor = sfr::KinectSensor::open();
-                        if (!sensor) { kinect_trial.store(CameraTrial::closed); return; }
+                        std::string why;
+                        auto sensor = sfr::KinectSensor::open(&why);
+                        if (!sensor) {
+                            kinect_trial.store(why == "no-runtime" || why == "incomplete-runtime" ? KinectTrial::no_runtime
+                                               : why == "no-sensor"                              ? KinectTrial::no_sensor
+                                                                                                 : KinectTrial::failed);
+                            return;
+                        }
                         sfr::KinectFrame frame;
                         for (int attempt = 0; attempt < 300 && !frame.number; ++attempt)
                             if (!sensor->next(frame)) std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                        kinect_trial.store(frame.number ? CameraTrial::pictures : CameraTrial::silent);
+                        kinect_trial.store(frame.number ? KinectTrial::working : KinectTrial::silent);
                     });
                 }
                 ImGui::EndDisabled();
             });
+            // Anything short of a working sensor: what to install and check.
+            if (state == KinectTrial::no_runtime || state == KinectTrial::no_sensor || state == KinectTrial::failed) {
+                const float download_width = ImGui::CalcTextSize(tr(KinectDownload)).x + ImGui::GetStyle().FramePadding.x * 4;
+                setting_row(tr(trial[int(state)]), tr(KinectInstallHint), download_width, scale, [&] {
+                    if (ImGui::Button(tr(KinectDownload), ImVec2(download_width, 0)))
+                        sfr::launcher::open_url("https://www.microsoft.com/download/details.aspx?id=40278");
+                });
+            }
         } else if (settings.camera != "off") {
             if (cameras_listed_for != settings.camera) {
                 cameras = sfr::CameraCapture::devices();
