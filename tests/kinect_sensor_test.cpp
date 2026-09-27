@@ -188,6 +188,68 @@ int main() {
                     "the diagonals have names and angles");
         }
 
+        // Switching stance in front of a side sensor: seeing the back, the
+        // tracker swaps left and right, and the feet tell it happened.
+        {
+            using namespace sfr::nui_joint;
+            // Seen from the right sensor (sensor space): the feet 8 cm ahead
+            // of the ankles, towards the sensor (chest) or away (back). The
+            // tracker's "left" hand is at +x of the sensor either way.
+            const auto rider = [](float toes) {
+                sfr::KinectFrame frame;
+                frame.bodies = {body(3, 0.0f)};
+                auto& b = frame.bodies[0];
+                b.position = {0.0f, 0.0f, 2.0f};
+                for (auto& joint : b.joints) joint = {0.0f, 0.0f, 2.0f};
+                b.joints[ankle_left] = b.joints[ankle_right] = {0.0f, -0.9f, 2.0f};
+                b.joints[foot_left] = b.joints[foot_right] = {0.0f, -0.95f, 2.0f + toes};
+                b.joints[hand_left] = {0.4f, 0.0f, 2.0f};
+                b.joint_states[hand_left] = 1;
+                return frame;
+            };
+            sfr::KinectPlacementTransform side(sfr::KinectPlacement::right);
+            sfr::KinectFrame frame = rider(-0.08f);  // toes towards the sensor: its chest
+            side.apply(frame);
+            require(!side.sees_back(3) && frame.bodies[0].joint_states[hand_left] == 1,
+                    "a chest towards the sensor keeps the tracker's left and right");
+            for (uint32_t i = 1; i < sfr::KinectPlacementTransform::frames_to_turn; ++i) {
+                frame = rider(0.08f);
+                side.apply(frame);
+                require(!side.sees_back(3), "a few frames of a back do not turn the player yet");
+            }
+            frame = rider(0.08f);
+            side.apply(frame);
+            require(side.sees_back(3) && frame.bodies[0].joint_states[hand_right] == 1 &&
+                        frame.bodies[0].joint_states[hand_left] != 1,
+                    "a back held long enough swaps left and right back");
+            frame = rider(0.005f);
+            side.apply(frame);
+            require(side.sees_back(3), "feet too level to tell leave the side as it was");
+            for (uint32_t i = 0; i < sfr::KinectPlacementTransform::frames_to_turn; ++i) {
+                frame = rider(-0.08f);
+                side.apply(frame);
+            }
+            require(!side.sees_back(3) && frame.bodies[0].joint_states[hand_left] == 1,
+                    "turning back to the sensor ends the swap");
+
+            // In front, a profile in either stance: nothing is swapped.
+            sfr::KinectPlacementTransform ahead(sfr::KinectPlacement::behind);
+            for (uint32_t i = 0; i < 20; ++i) {
+                frame = rider(0.08f);
+                ahead.apply(frame);
+            }
+            require(!ahead.sees_back(3), "behind, a side-on rider is never taken for a back");
+
+            // The left sensor is towards the player's left: there toes to +x
+            // of the front's space (the right) are a back.
+            sfr::KinectPlacementTransform left_side(sfr::KinectPlacement::front_left);
+            for (uint32_t i = 0; i < sfr::KinectPlacementTransform::frames_to_turn; ++i) {
+                frame = rider(0.08f);  // toes away from the sensor
+                left_side.apply(frame);
+            }
+            require(left_side.sees_back(3), "a diagonal sensor tells a back the same way");
+        }
+
         std::string why;
         if (!sfr::KinectSensor::supported())
             require(!sfr::KinectSensor::open(&why) && !why.empty(), "a platform without a runtime says why");

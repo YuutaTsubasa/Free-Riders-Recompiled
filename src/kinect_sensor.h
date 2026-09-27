@@ -105,9 +105,19 @@ float kinect_placement_degrees(KinectPlacement placement);
 // Each body is placed where the emulated player stands (pose_distance in
 // front of the sensor), measured from where it was when the sensor first
 // found it: that point stays fixed, so stepping and leaning still move the
-// body as they would have in front of a sensor at the screen. The sensor is
-// taken to see the side the player's chest faces (or a profile, in front
-// and behind), as its skeleton tracker assumes a body facing it.
+// body as they would have in front of a sensor at the screen.
+//
+// A skeleton tracker takes the body it sees to be facing it. In front and
+// behind, a side-on rider shows a profile either way (behind a Regular rider
+// is in front of a Goofy one), so nothing is wrong there. At the sides and
+// diagonals the sensor sees the chest in one stance and the back in the
+// other, and players switch stance mid-race: seeing a back, the tracker
+// calls the left arm the right. Which it sees is told by the feet: a foot
+// joint sits ahead of its ankle, towards the toes, and the toes point where
+// the chest does. Both feet together do not depend on which the tracker
+// called left, as their places are measured, not guessed. When the chest
+// has faced away from the sensor for a few frames, the pairs are swapped
+// back, until it has faced it again as long.
 class KinectPlacementTransform {
 public:
     explicit KinectPlacementTransform(KinectPlacement placement = KinectPlacement::front) : placement_(placement) {}
@@ -116,9 +126,22 @@ public:
     // exactly as it came; the others lose the sensor's floor plane, which
     // no longer describes the turned space.
     void apply(KinectFrame& frame);
+    // Whether the sensor is taken to see this body's back (and its left and
+    // right are being swapped back).
+    bool sees_back(uint32_t tracking_id) const;
+    // Frames the feet must agree before the side is changed, and the least
+    // they must point by (metres, foot ahead of ankle).
+    static constexpr uint32_t frames_to_turn = 8;
+    static constexpr float least_toe = 0.02f;
 private:
+    struct Tracked {
+        uint32_t id;
+        std::array<float, 3> anchor;  // where it was first found
+        bool back = false;
+        uint32_t streak = 0;          // frames the feet have disagreed with back
+    };
     KinectPlacement placement_;
-    std::vector<std::pair<uint32_t, std::array<float, 3>>> anchors_;  // tracking id, first position
+    std::vector<Tracked> tracked_;
 };
 
 // Which of the tracked bodies play as the title's two Kinect players. The

@@ -29,11 +29,11 @@ void KinectPlacementTransform::apply(KinectFrame& frame) {
     if (placement_ == KinectPlacement::front) return;
     frame.floor_plane = {};
     frame.gravity = {};
-    // Anchors of bodies no longer tracked are forgotten, so whoever steps in
-    // next is measured from where they stand.
-    std::erase_if(anchors_, [&](const auto& anchor) {
+    // Bodies no longer tracked are forgotten, so whoever steps in next is
+    // measured from where they stand.
+    std::erase_if(tracked_, [&](const Tracked& entry) {
         return std::none_of(frame.bodies.begin(), frame.bodies.end(),
-                            [&](const KinectBody& body) { return body.tracking_id == anchor.first; });
+                            [&](const KinectBody& body) { return body.tracking_id == entry.id; });
     });
     // Every sensor's camera space has +x on its own left, +y up and +z
     // towards the player; the front sensor's +x is the player's right. A
@@ -47,17 +47,53 @@ void KinectPlacementTransform::apply(KinectFrame& frame) {
     const float c = degrees == 90.0f || degrees == 270.0f ? 0.0f : degrees == 180.0f ? -1.0f : std::cos(radians);
     const float s = degrees == 180.0f ? 0.0f : degrees == 90.0f ? 1.0f : degrees == 270.0f ? -1.0f : std::sin(radians);
     for (KinectBody& body : frame.bodies) {
-        auto anchor = std::find_if(anchors_.begin(), anchors_.end(),
-                                   [&](const auto& entry) { return entry.first == body.tracking_id; });
-        if (anchor == anchors_.end()) anchor = anchors_.insert(anchors_.end(), {body.tracking_id, body.position});
-        const std::array<float, 3> origin = anchor->second;
+        auto entry = std::find_if(tracked_.begin(), tracked_.end(),
+                                  [&](const Tracked& known) { return known.id == body.tracking_id; });
+        if (entry == tracked_.end()) entry = tracked_.insert(tracked_.end(), Tracked{body.tracking_id, body.position});
+        const std::array<float, 3> origin = entry->anchor;
         const auto turn = [&](const std::array<float, 3>& p) -> std::array<float, 3> {
             const float x = p[0] - origin[0], z = p[2] - origin[2];
             return {x * c - z * s, p[1], pose_distance + x * s + z * c};
         };
         for (auto& joint : body.joints) joint = turn(joint);
         body.position = turn(body.position);
+
+        // The chest faces where the toes point: across the screen for a
+        // side-on rider, +x (the player's right) or -x. The sensor at angle a
+        // is towards +x when sin a > 0. In front and behind (sin a = 0) it
+        // sees a profile in either stance, and nothing is changed.
+        using namespace nui_joint;
+        if (std::fabs(s) > 0.5f) {
+            const float toes = 0.5f * ((body.joints[foot_left][0] - body.joints[ankle_left][0]) +
+                                       (body.joints[foot_right][0] - body.joints[ankle_right][0]));
+            const float towards_sensor = toes * (s > 0 ? 1.0f : -1.0f);
+            if (std::fabs(towards_sensor) >= least_toe) {
+                const bool back = towards_sensor < 0;
+                entry->streak = back == entry->back ? 0 : entry->streak + 1;
+                if (entry->streak >= frames_to_turn) {
+                    entry->back = back;
+                    entry->streak = 0;
+                }
+            }
+        }
+        if (entry->back) {
+            // Its left hand is the player's right: swap each pair back.
+            constexpr std::pair<uint32_t, uint32_t> pairs[] = {
+                {shoulder_left, shoulder_right}, {elbow_left, elbow_right}, {wrist_left, wrist_right},
+                {hand_left, hand_right},         {hip_left, hip_right},     {knee_left, knee_right},
+                {ankle_left, ankle_right},       {foot_left, foot_right}};
+            for (const auto& [left, right] : pairs) {
+                std::swap(body.joints[left], body.joints[right]);
+                std::swap(body.joint_states[left], body.joint_states[right]);
+            }
+        }
     }
+}
+
+bool KinectPlacementTransform::sees_back(uint32_t tracking_id) const {
+    for (const Tracked& entry : tracked_)
+        if (entry.id == tracking_id) return entry.back;
+    return false;
 }
 
 std::string kinect_open_failure(const std::string& v1, const std::string& v2) {

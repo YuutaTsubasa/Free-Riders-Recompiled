@@ -169,6 +169,13 @@ SFR_HOOK(sub_827707B0) {
         sfr::NuiSkeletonEmulation::write_header(memory,frame,++frame_number,uint64_t(elapsed.count()));
         sfr::NuiSkeletonEmulation::write_floor(memory,frame,kinect_frame.floor_plane,kinect_frame.gravity);
         const auto players=kinect_slots.assign(kinect_frame);
+        // Which side of the first player a side sensor is taken to see: the
+        // line to look for when checking a stance switch on real hardware.
+        static bool saw_back=false;
+        if(players[0] && kinect_placement.sees_back(players[0]->tracking_id)!=saw_back) {
+            saw_back=!saw_back;
+            std::cerr << "NATIVE_KINECT sees=" << (saw_back?"back":"chest") << " frame=" << frame_number << '\n';
+        }
         for(uint32_t slot=0; slot<players.size(); ++slot) {
             const sfr::KinectBody* const body=players[slot];
             if(!body) continue;

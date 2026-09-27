@@ -11,6 +11,10 @@
 
 int main(int argc, char** argv) {
     const int seconds = argc > 1 ? std::atoi(argv[1]) : 10;
+    // sfr_kinect_probe [seconds] [placement]: with a placement ("right",
+    // "front-left", ...) the bodies are turned as the game turns them, and
+    // which side of each the sensor is taken to see is printed.
+    sfr::KinectPlacementTransform placement(sfr::kinect_placement_from(argc > 2 ? argv[2] : nullptr));
     std::string why;
     auto sensor = sfr::KinectSensor::open(&why);
     if (!sensor) {
@@ -26,6 +30,7 @@ int main(int argc, char** argv) {
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
             continue;
         }
+        placement.apply(frame);
         if (frame.number - shown < 15) continue;  // twice a second
         shown = frame.number;
         std::cout << "frame " << frame.number << " floor=" << frame.floor_plane[1] << ',' << frame.floor_plane[3]
@@ -33,7 +38,9 @@ int main(int argc, char** argv) {
         for (const auto& body : frame.bodies) {
             const auto& hand = body.joints[sfr::nui_joint::hand_right];
             std::cout << " [id " << body.tracking_id << " at " << body.position[0] << ',' << body.position[2]
-                      << " right hand " << hand[0] << ',' << hand[1] << ',' << hand[2] << ']';
+                      << " right hand " << hand[0] << ',' << hand[1] << ',' << hand[2]
+                      << (placement.placement() == sfr::KinectPlacement::front ? ""
+                          : placement.sees_back(body.tracking_id) ? " sees back" : " sees chest") << ']';
         }
         std::cout << '\n';
     }
