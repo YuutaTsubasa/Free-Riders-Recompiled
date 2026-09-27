@@ -9,7 +9,8 @@ has no disc, and must never be given one.
 
 What a release does contain, beside the launcher: the recompiled game
 (`sfr_cpu_diagnostic`), the `shaders.pack` translated so far, the licences,
-on Windows the shader tools that translate shaders the pack lacks, and with
+on Windows the shader tools that translate shaders the pack lacks and the
+D3D12 Agility SDK runtime (`D3D12\D3D12Core.dll`, which Windows 10 needs), and with
 `--camera` the ONNX Runtime and MediaPipe models of the webcam's motion input.
 
 ## 1. Build

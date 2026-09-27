@@ -27,6 +27,10 @@ prebuilt DXC, Plume, Dear ImGui, SDL) into `tools/`:
 python scripts/bootstrap.py
 ```
 
+On Windows it also fetches the Direct3D 12 Agility SDK's `D3D12Core.dll`
+into `tools/d3d12-agility` (Windows 10's own D3D12 lacks what the renderer
+uses; the build copies it into `D3D12\` beside the game).
+
 For the webcam's motion input (optional), fetch ONNX Runtime and the MediaPipe
 models into `tools/onnx` too (`--platform linux` for Linux's runtime,
 `--android` adds the Android runtime; see docs/camera-input.md):

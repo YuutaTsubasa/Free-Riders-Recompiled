@@ -81,6 +81,16 @@ def main():
             if git('status', '--porcelain', '--untracked-files=no', '--ignore-submodules=all', cwd=subpath):
                 raise ValueError(f'{subpath}: tracked files are modified')
         print(f"Verified {dependency['name']} {actual}")
+    # Windows draws with D3D12 through the Agility SDK's runtime, a pinned
+    # binary rather than a repository (scripts/fetch_d3d12_agility.py).
+    if os.name == 'nt':
+        import fetch_d3d12_agility
+        if args.verify_only:
+            if not fetch_d3d12_agility.present():
+                raise ValueError('D3D12 Agility SDK runtime missing: run scripts/bootstrap.py')
+        else:
+            fetch_d3d12_agility.fetch()
+        print(f"Verified D3D12 Agility SDK {fetch_d3d12_agility.PACKAGE['sdk_version']}")
     return 0
 
 

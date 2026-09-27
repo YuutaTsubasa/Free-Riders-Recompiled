@@ -244,9 +244,8 @@ add_executable(sfr_camera_probe tests/camera_probe.cpp ${SFR_CAMERA_CAPTURE})
 target_include_directories(sfr_camera_probe PRIVATE src)
 target_link_libraries(sfr_camera_probe PRIVATE ${SFR_CAMERA_LIBRARIES})
 function(sfr_copy_onnx_dlls target)
-    if(SFR_ONNX_DLLS)
-        add_custom_command(TARGET ${target} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SFR_ONNX_DLLS} "$<TARGET_FILE_DIR:${target}>")
+    if(TARGET sfr_onnx_dlls)
+        add_dependencies(${target} sfr_onnx_dlls)
     endif()
 endfunction()
 # Finding a body in a camera picture: ONNX Runtime and the pinned MediaPipe
@@ -278,6 +277,16 @@ if(EXISTS "${SFR_ONNX_ROOT}/include/onnxruntime_cxx_api.h" AND EXISTS "${SFR_ONN
     # one beside it, the program loads that one and fails to start.
     if(WIN32)
         file(GLOB SFR_ONNX_DLLS "${SFR_ONNX_ROOT}/lib/*.dll")
+        set(SFR_ONNX_COPIES "")
+        foreach(dll ${SFR_ONNX_DLLS})
+            get_filename_component(name "${dll}" NAME)
+            list(APPEND SFR_ONNX_COPIES "${CMAKE_BINARY_DIR}/${name}")
+            add_custom_command(OUTPUT "${CMAKE_BINARY_DIR}/${name}"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${dll}" "${CMAKE_BINARY_DIR}/${name}" DEPENDS "${dll}")
+        endforeach()
+        if(SFR_ONNX_COPIES)
+            add_custom_target(sfr_onnx_dlls DEPENDS ${SFR_ONNX_COPIES})
+        endif()
     endif()
     set(SFR_POSE_SOURCES src/pose_estimator.cpp src/pose_estimator_onnx.cpp src/pose_mediapipe.cpp src/pose_mediapipe_onnx.cpp)
 else()
@@ -524,11 +533,9 @@ if(WIN32 OR UNIX)
     add_subdirectory(tools/Plume)
     if(WIN32)
         # Plume exports D3D12SDKVersion (the building Windows SDK's) and
-        # D3D12SDKPath (.\D3D12\) even without the Agility SDK. They ask
-        # d3d12.dll for that D3D12Core.dll beside the program; there is none,
-        # and a Windows older than the SDK (Windows 10) then makes no device
-        # on any adapter. Renamed, they are not exports the loader knows, and
-        # the system's own runtime is used, as the Agility SDK being off means.
+        # D3D12SDKPath even without the Agility SDK. The version the program
+        # names has to be the runtime's it ships in D3D12\ (src/d3d12_agility.cpp,
+        # below); renamed, Plume's are not exports the loader reads.
         target_compile_definitions(plume PRIVATE D3D12SDKVersion=sfr_plume_unused_D3D12SDKVersion
                                    D3D12SDKPath=sfr_plume_unused_D3D12SDKPath)
     endif()
@@ -748,5 +755,37 @@ if(SFR_BUILD_DIAGNOSTIC)
     endif()
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|amd64|x86_64")
         target_compile_options(sfr_cpu_diagnostic PRIVATE -march=sandybridge)
+    endif()
+endif()
+# D3D12 through the Agility SDK's runtime (scripts/fetch_d3d12_agility.py,
+# run by bootstrap on Windows): every program that draws with D3D12 exports
+# the SDK version it was fetched at and finds D3D12Core.dll in D3D12\ beside
+# it. Without the runtime, Windows 10 cannot make Plume's command lists and
+# the game falls back to Vulkan (native_graphics.cpp).
+if(WIN32)
+    set(SFR_D3D12_AGILITY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tools/d3d12-agility")
+    if(EXISTS "${SFR_D3D12_AGILITY_DIR}/D3D12Core.dll" AND EXISTS "${SFR_D3D12_AGILITY_DIR}/version.txt")
+        file(STRINGS "${SFR_D3D12_AGILITY_DIR}/version.txt" SFR_D3D12_SDK_VERSION LIMIT_COUNT 1)
+        message(STATUS "D3D12 Agility SDK runtime: ${SFR_D3D12_SDK_VERSION}")
+        add_library(sfr_d3d12_agility OBJECT src/d3d12_agility.cpp)
+        target_compile_definitions(sfr_d3d12_agility PRIVATE SFR_D3D12_SDK_VERSION=${SFR_D3D12_SDK_VERSION})
+        # One copy for all of them: they are all built into this directory.
+        set(SFR_D3D12_CORE "${CMAKE_BINARY_DIR}/D3D12/D3D12Core.dll")
+        add_custom_command(OUTPUT "${SFR_D3D12_CORE}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/D3D12"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SFR_D3D12_AGILITY_DIR}/D3D12Core.dll" "${SFR_D3D12_CORE}"
+            DEPENDS "${SFR_D3D12_AGILITY_DIR}/D3D12Core.dll")
+        add_custom_target(sfr_d3d12_runtime DEPENDS "${SFR_D3D12_CORE}")
+        foreach(target sfr_cpu_diagnostic sfr_native_graphics_test sfr_native_shaders_test sfr_native_presentation_test
+                       sfr_native_raster_state_test sfr_native_blend_control_test sfr_guest_graphics_test
+                       sfr_guest_render_state_test sfr_guest_blend_request_test sfr_guest_sampler_filter_test
+                       sfr_guest_texture_binding_test)
+            if(TARGET ${target})
+                target_sources(${target} PRIVATE $<TARGET_OBJECTS:sfr_d3d12_agility>)
+                add_dependencies(${target} sfr_d3d12_runtime)
+            endif()
+        endforeach()
+    else()
+        message(STATUS "D3D12 Agility SDK runtime: not fetched (Windows 10 will draw with Vulkan)")
     endif()
 endif()

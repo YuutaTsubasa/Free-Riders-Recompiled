@@ -7,13 +7,19 @@
 
 - `NativeGraphics` 依 `SFR_GRAPHICS` 建立 Plume 的 D3D12 或 Vulkan 介面，整個程序只選一次
   （著色器快取依它準備 DXIL 或 SPIR-V）。
+- Plume 的 D3D12 後端用到 `ID3D12GraphicsCommandList7`（enhanced barriers），只有新的 D3D12
+  執行環境才有：Windows 11 24H2 內建，Windows 10 沒有（能建立裝置，建立 command list 時回
+  `E_NOINTERFACE` 0x80004002）。所以 Windows 版帶 D3D12 Agility SDK 的 `D3D12Core.dll`：
+  `scripts/fetch_d3d12_agility.py`（Windows 上由 bootstrap 執行）依 SHA-256 取得固定版本放進
+  `tools/d3d12-agility/`，CMake 把它複製到程式旁的 `D3D12\`，並由 `src/d3d12_agility.cpp`
+  從程式本身匯出該版本號（`D3D12SDKVersion`）與路徑。Plume 自己也無條件匯出這兩個符號，
+  但版本是建置用 Windows SDK 的，與帶的執行環境不一定相同，所以 CMake 在編譯時把 Plume 的
+  改名。
 - 選 D3D12 時會先照 Plume 的條件逐一測試顯示卡（能建立 `ID3D12Device8`、回答 Shader Model
-  查詢）；一張都不行就自動改用 Vulkan。`game.log` 會為每張卡記一行 `NATIVE_GRAPHICS_D3D12_PROBE`
-  （失敗的 HRESULT），改用時記 `NATIVE_GRAPHICS_FALLBACK`。Plume 原本無條件匯出
-  `D3D12SDKVersion`（建置用 Windows SDK 的版本）與 `D3D12SDKPath`，要求程式旁的
-  `D3D12\D3D12Core.dll`；沒有這個檔案時，比 SDK 舊的 Windows（Windows 10）每張卡都建不出
-  裝置（曾在 Windows 10 22H2 加 RTX 3080 Ti 上 D3D12 失敗、Vulkan 正常）。CMake 現在把這兩個
-  符號改名，不再匯出，改用系統內建的 D3D12 執行環境。
+  查詢、建立 `ID3D12GraphicsCommandList7`）；一張都不行就自動改用 Vulkan。`game.log` 會為每張
+  卡記一行 `NATIVE_GRAPHICS_D3D12_PROBE`（失敗的 HRESULT），改用時記
+  `NATIVE_GRAPHICS_FALLBACK`。Windows 10 內建的執行環境也不認得 `D3D12_OPTIONS13`，查不到就
+  當作不支援反轉的 viewport 深度。
 - Plume 的 Vulkan 交換鏈在第一次 `resize()` 才建立影像，所以顯示端建構時就呼叫一次；
   取得影像與呈現用 semaphore 串起來（D3D12 不需要）。Vulkan 版預設開啟垂直同步，這裡改成和
   D3D12 一樣預設關閉（`SFR_VSYNC=1` 開啟）。
