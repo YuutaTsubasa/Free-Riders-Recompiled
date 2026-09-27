@@ -260,6 +260,16 @@ add_test(NAME pose_skeleton COMMAND sfr_pose_skeleton_test)
 add_executable(sfr_pose_smoothing_test tests/pose_smoothing_test.cpp src/pose_smoothing.cpp)
 target_include_directories(sfr_pose_smoothing_test PRIVATE src)
 add_test(NAME pose_smoothing COMMAND sfr_pose_smoothing_test)
+# The camera as the Kinect player: built here as well as in the game, so it
+# is compiled (and its leaving rule checked) without a disc.
+add_executable(sfr_camera_player_test tests/camera_player_test.cpp src/camera_player.cpp src/pose_skeleton.cpp
+               src/pose_smoothing.cpp ${SFR_POSE_SOURCES} ${SFR_CAMERA_CAPTURE})
+target_include_directories(sfr_camera_player_test PRIVATE src)
+target_link_libraries(sfr_camera_player_test PRIVATE ${SFR_CAMERA_LIBRARIES})
+if(SFR_POSE_AVAILABLE)
+    target_link_libraries(sfr_camera_player_test PRIVATE sfr_onnxruntime)
+endif()
+add_test(NAME camera_player COMMAND sfr_camera_player_test)
 if(SFR_POSE_AVAILABLE)
     # Running the model over a camera picture, or a BMP, without the game.
     add_executable(sfr_pose_probe tests/pose_probe.cpp ${SFR_POSE_SOURCES} ${SFR_CAMERA_CAPTURE})

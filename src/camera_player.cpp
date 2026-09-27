@@ -23,6 +23,14 @@ struct CameraPlayer::Impl {
     SkeletonJoints joints{};
     uint64_t found = 0, taken = 0;
     std::atomic<bool> ever_found{false};
+    // steady_clock nanoseconds of the last body, for left().
+    std::atomic<int64_t> last_found{0};
+    double leave_seconds = [] {
+        const char* text = std::getenv("SFR_CAMERA_LEAVE_SECONDS");
+        if (!text || !*text) return 1.5;
+        const double value = std::strtod(text, nullptr);
+        return value > 0 ? value : 0.0;
+    }();
     std::jthread worker;
 
     void run(std::stop_token stop) {
@@ -60,6 +68,8 @@ struct CameraPlayer::Impl {
                 joints = mapped;
                 ++found;
                 ever_found.store(true, std::memory_order_relaxed);
+                last_found.store(std::chrono::steady_clock::now().time_since_epoch().count(),
+                                 std::memory_order_relaxed);
             }
             // Once every five seconds: how well the camera is keeping up.
             const auto now = std::chrono::steady_clock::now();
@@ -111,5 +121,17 @@ bool CameraPlayer::joints(SkeletonJoints& out) {
 }
 
 bool CameraPlayer::tracking() const { return impl_->ever_found.load(std::memory_order_relaxed); }
+
+bool CameraPlayer::left_after(double seconds_without_body, double leave_seconds) {
+    return leave_seconds > 0 && seconds_without_body >= leave_seconds;
+}
+
+bool CameraPlayer::left() const {
+    if (!tracking()) return false;
+    const auto last = std::chrono::steady_clock::time_point(
+        std::chrono::steady_clock::duration(impl_->last_found.load(std::memory_order_relaxed)));
+    const double since = std::chrono::duration<double>(std::chrono::steady_clock::now() - last).count();
+    return left_after(since, impl_->leave_seconds);
+}
 
 }

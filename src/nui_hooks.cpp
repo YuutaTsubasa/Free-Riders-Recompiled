@@ -209,8 +209,15 @@ SFR_HOOK(sub_827707B0) {
     if(second) second_skeleton.update(*second, racing);
     sfr::NuiSkeletonEmulation::write_header(memory,frame,++frame_number,uint64_t(elapsed.count()));
     // The camera's body takes the first player's place once it has found
-    // one; until then the pad's emulated player stands in.
-    if(camera_has_joints) skeleton.write_joints(memory,frame,0,1,camera_joints);
+    // one; until then the pad's emulated player stands in. Once that player
+    // has left the picture the slot is empty, for the next one to step into.
+    static bool camera_left=false;
+    const bool gone=camera_player && camera_player->left();
+    if(gone!=camera_left) {
+        camera_left=gone;
+        std::cerr << "NATIVE_CAMERA_PLAYER present=" << !gone << '\n';
+    }
+    if(camera_has_joints) { if(!gone) skeleton.write_joints(memory,frame,0,1,camera_joints); }
     else skeleton.write_slot(memory,frame,0,1);
     if(second) second_skeleton.write_slot(memory,frame,1,2);
     if(second.has_value()!=second_present) {
