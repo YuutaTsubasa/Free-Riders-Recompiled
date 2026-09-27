@@ -53,11 +53,11 @@ std::string hex(HRESULT value) {
     return text.str();
 }
 
-// Whether Plume will find a D3D12 device, by its own test: the first
-// hardware adapter that makes an ID3D12Device8 at feature level 11_0 and
-// answers the shader model query. Each adapter's answer is logged, so a
-// machine that fails says which adapter failed and how (a USB display
-// adapter's driver, for one, can keep D3D12 from every adapter).
+// Whether Plume can draw with D3D12 here, by its own tests: the first
+// hardware adapter that makes an ID3D12Device8 at feature level 11_0,
+// answers the shader model query and records into the command list Plume
+// uses. Each adapter's answer is logged, so a machine that fails says which
+// adapter failed and how.
 bool d3d12_usable() {
     Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
     if (const HRESULT result = CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)); FAILED(result)) {
@@ -85,6 +85,22 @@ bool d3d12_usable() {
         const HRESULT result = device->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &model, sizeof model);
         if (FAILED(result) && result != E_INVALIDARG) {
             std::cerr << " shader_model=" << hex(result) << '\n';
+            continue;
+        }
+        // Plume records into ID3D12GraphicsCommandList7, which only a recent
+        // runtime has (Windows 11 24H2's own, or the Agility SDK's beside
+        // the program); Windows 10's own makes the device but not the list.
+        Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
+        Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList7> list;
+        if (const HRESULT made = device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator));
+            FAILED(made)) {
+            std::cerr << " command_allocator=" << hex(made) << '\n';
+            continue;
+        }
+        if (const HRESULT made = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr,
+                                                           IID_PPV_ARGS(&list));
+            FAILED(made)) {
+            std::cerr << " command_list7=" << hex(made) << " (no D3D12 Agility SDK runtime in D3D12\\?)\n";
             continue;
         }
         std::cerr << " usable=1\n";
