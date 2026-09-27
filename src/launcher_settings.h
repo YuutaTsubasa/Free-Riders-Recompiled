@@ -43,6 +43,11 @@ struct LauncherSettings {
     // Motion only, experimental: the webcam's body races as well, read by
     // the title's own gesture detectors instead of the pad.
     bool camera_race = false;     // SFR_CAMERA_RACE
+    // Where a real Kinect stands around the player, the screen ahead:
+    // "front", "front-right", "right", "behind-right", "behind",
+    // "behind-left", "left" or "front-left" (kinect_sensor.h). A board is
+    // ridden side-on, so the side the chest faces sees the whole body.
+    std::string kinect_placement = "front";  // SFR_KINECT_PLACEMENT
     // Controls (input_bindings.h). The devices each player uses, and how
     // their keys and pad buttons are arranged, as "a=Z,b=X,..." lines. An
     // empty line means the defaults, so a settings file written before any

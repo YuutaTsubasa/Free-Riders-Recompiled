@@ -1,5 +1,6 @@
 #include "guest_memory.h"
 #include "kinect_sensor.h"
+#include "pose_skeleton.h"
 #include <bit>
 #include <iostream>
 #include <stdexcept>
@@ -11,6 +12,7 @@ static void require(bool value, const char* message) {
 static float load_float(sfr::GuestMemory& memory, uint64_t address) {
     return std::bit_cast<float>(memory.load<uint32_t>(address));
 }
+static bool near(float a, float b) { return a - b < 1e-4f && b - a < 1e-4f; }
 static sfr::KinectBody body(uint32_t id, float x) {
     sfr::KinectBody b;
     b.tracking_id = id;
@@ -108,6 +110,83 @@ int main() {
                 "a v2 that is there but will not start says more than a missing v1");
         require(sfr::kinect_open_failure("initialize-0x8007048F", "no-sensor") == "initialize-0x8007048F",
                 "a v1 that will not start says more than a missing v2");
+
+        // Placement: a sensor at the player's side or behind is turned into
+        // the front sensor's space, measured from where the body was found.
+        require(sfr::kinect_placement_from("right") == sfr::KinectPlacement::right &&
+                    sfr::kinect_placement_from(nullptr) == sfr::KinectPlacement::front &&
+                    sfr::kinect_placement_from("sideways") == sfr::KinectPlacement::front,
+                "placements are read by name, front otherwise");
+        {
+            sfr::KinectFrame seen;
+            seen.floor_plane = {0.0f, 1.0f, 0.0f, 1.0f};
+            seen.bodies = {body(8, 0.0f)};
+            auto& b = seen.bodies[0];
+            b.position = {0.2f, 0.0f, 3.0f};
+            b.joints[sfr::nui_joint::hip_center] = {0.2f, 0.0f, 3.0f};
+            // Leaning 10 cm towards the sensor's left, and 20 cm towards it.
+            b.joints[sfr::nui_joint::head] = {0.3f, 0.6f, 2.8f};
+            sfr::KinectFrame front = seen;
+            sfr::KinectPlacementTransform none;
+            none.apply(front);
+            require(front.bodies[0].joints[sfr::nui_joint::head] == b.joints[sfr::nui_joint::head] &&
+                        front.floor_plane[1] == 1.0f,
+                    "a front sensor's frame is left as it came");
+
+            // On the player's right, the sensor's left is away from the
+            // screen and its forward is towards the player's left.
+            sfr::KinectFrame right = seen;
+            sfr::KinectPlacementTransform at_right(sfr::KinectPlacement::right);
+            at_right.apply(right);
+            const auto& hip = right.bodies[0].joints[sfr::nui_joint::hip_center];
+            const auto& head = right.bodies[0].joints[sfr::nui_joint::head];
+            require(near(hip[0], 0.0f) && near(hip[2], sfr::pose_distance), "the body stands where the player does");
+            require(near(head[0], 0.2f) && near(head[2], sfr::pose_distance + 0.1f) && near(head[1], 0.6f),
+                    "towards the right sensor is the player's right; its left is away from the screen");
+            require(right.floor_plane[1] == 0.0f, "a turned frame keeps no floor of the sensor's");
+
+            // The anchor stays: moving later moves the body.
+            seen.bodies[0].joints[sfr::nui_joint::hip_center] = {0.2f, 0.0f, 2.9f};
+            right = seen;
+            at_right.apply(right);
+            require(near(right.bodies[0].joints[sfr::nui_joint::hip_center][0], 0.1f),
+                    "a step towards the side sensor is a step to the player's right");
+
+            sfr::KinectFrame left = seen;
+            sfr::KinectPlacementTransform at_left(sfr::KinectPlacement::left);
+            left.bodies[0].joints[sfr::nui_joint::hip_center] = {0.2f, 0.0f, 3.0f};
+            at_left.apply(left);
+            const auto& left_head = left.bodies[0].joints[sfr::nui_joint::head];
+            require(near(left_head[0], -0.2f) && near(left_head[2], sfr::pose_distance - 0.1f),
+                    "towards the left sensor is the player's left; its left is towards the screen");
+
+            // Behind a side-on rider is a profile, as in front: turned half
+            // round, and nothing swapped.
+            sfr::KinectFrame behind = seen;
+            behind.bodies[0].joints[sfr::nui_joint::hip_center] = {0.2f, 0.0f, 3.0f};
+            behind.bodies[0].joints[sfr::nui_joint::hand_left] = {-0.1f, 0.2f, 3.0f};
+            sfr::KinectPlacementTransform at_back(sfr::KinectPlacement::behind);
+            at_back.apply(behind);
+            require(near(behind.bodies[0].joints[sfr::nui_joint::hand_left][0], 0.3f),
+                    "behind, the sensor's left is the player's right");
+            require(near(behind.bodies[0].joints[sfr::nui_joint::head][2], sfr::pose_distance + 0.2f),
+                    "behind, towards the sensor is away from the screen");
+
+            // At the front right (45 degrees), a step towards the sensor's
+            // left goes back and right in equal parts.
+            sfr::KinectFrame diagonal = seen;
+            diagonal.bodies[0].joints[sfr::nui_joint::hip_center] = {0.2f, 0.0f, 3.0f};
+            diagonal.bodies[0].joints[sfr::nui_joint::hand_right] = {1.2f, 0.0f, 3.0f};
+            sfr::KinectPlacementTransform at_front_right(sfr::KinectPlacement::front_right);
+            at_front_right.apply(diagonal);
+            const auto& reach = diagonal.bodies[0].joints[sfr::nui_joint::hand_right];
+            require(near(reach[0], 0.70710678f) && near(reach[2], sfr::pose_distance + 0.70710678f),
+                    "a diagonal sensor turns by 45 degrees");
+            require(sfr::kinect_placement_from("behind-left") == sfr::KinectPlacement::behind_left &&
+                        sfr::kinect_placement_degrees(sfr::KinectPlacement::behind_left) == 225.0f &&
+                        std::string(sfr::kinect_placement_name(sfr::KinectPlacement::front_left)) == "front-left",
+                    "the diagonals have names and angles");
+        }
 
         std::string why;
         if (!sfr::KinectSensor::supported())

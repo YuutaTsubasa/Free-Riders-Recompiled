@@ -44,6 +44,7 @@ std::unique_ptr<sfr::KinectSensor> kinect;
 std::atomic<bool> sensor_body{false};
 sfr::KinectFrame kinect_frame;
 sfr::KinectPlayerSlots kinect_slots;
+sfr::KinectPlacementTransform kinect_placement;  // SFR_KINECT_PLACEMENT
 // A second Kinect player, driven by the second pad. The frame carries six
 // skeleton slots and the title reads them all, so a player appears simply by
 // filling another one; it is identified separately (tracking id 2).
@@ -145,7 +146,11 @@ SFR_HOOK(sub_827707B0) {
             // Without a sensor the pad's emulated player carries on, so a
             // Kinect left unplugged does not leave the title unplayable.
             std::cerr << "NATIVE_KINECT started=" << (kinect?1:0);
-            if(kinect) std::cerr << " model=" << kinect->model();
+            if(kinect) {
+                kinect_placement=sfr::KinectPlacementTransform(sfr::kinect_placement_from(std::getenv("SFR_KINECT_PLACEMENT")));
+                std::cerr << " model=" << kinect->model()
+                          << " placement=" << sfr::kinect_placement_name(kinect_placement.placement());
+            }
             else std::cerr << " reason=" << why << " fallback=pad";
             std::cerr << '\n';
         } else {
@@ -158,7 +163,8 @@ SFR_HOOK(sub_827707B0) {
         // Both players are whoever the sensor sees; nobody in front of it is
         // an empty frame, which the title answers the way it did on the
         // console (asking the player to step in).
-        kinect->next(kinect_frame);
+        // Turned once per new frame: the last one is kept as it was turned.
+        if(kinect->next(kinect_frame)) kinect_placement.apply(kinect_frame);
         skeleton.update(sfr::nui_gamepad(), racing);
         sfr::NuiSkeletonEmulation::write_header(memory,frame,++frame_number,uint64_t(elapsed.count()));
         sfr::NuiSkeletonEmulation::write_floor(memory,frame,kinect_frame.floor_plane,kinect_frame.gravity);

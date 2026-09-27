@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace sfr {
@@ -79,6 +80,46 @@ void kinect_v2_body(const std::array<KinectV2Joint, kinect_v2_joint_count>& join
 // "no-sensor", ...): a runtime that is installed says more than one that is
 // not, so it is its reason that counts; with neither, "no-runtime".
 std::string kinect_open_failure(const std::string& v1, const std::string& v2);
+
+// Where the sensor stands around the player, seen from above with the
+// screen ahead. The title was made for a sensor at the screen, but a board is
+// ridden side-on, so a sensor at the side the chest faces sees the whole
+// body instead of its profile; in a room that is wide but shallow it is also
+// the only place far enough away. Straight to one side, an arm reaching
+// behind the back is hidden by the body; a sensor at a diagonal still sees
+// the chest and sees round to that arm. Whatever the placement, the skeleton
+// the title reads is turned to look as if the sensor stood at the screen
+// (KinectPlacementTransform).
+enum class KinectPlacement : uint8_t {
+    front, front_right, right, behind_right, behind, behind_left, left, front_left
+};
+// SFR_KINECT_PLACEMENT: "front" (or nothing), "front-right", "right",
+// "behind-right", "behind", "behind-left", "left" or "front-left".
+KinectPlacement kinect_placement_from(const char* text);
+const char* kinect_placement_name(KinectPlacement placement);
+// Clockwise from the screen, seen from above: 0 in front, 90 on the
+// player's right, 180 behind, 270 on the left.
+float kinect_placement_degrees(KinectPlacement placement);
+
+// Turns bodies seen from elsewhere into the front sensor's camera space.
+// Each body is placed where the emulated player stands (pose_distance in
+// front of the sensor), measured from where it was when the sensor first
+// found it: that point stays fixed, so stepping and leaning still move the
+// body as they would have in front of a sensor at the screen. The sensor is
+// taken to see the side the player's chest faces (or a profile, in front
+// and behind), as its skeleton tracker assumes a body facing it.
+class KinectPlacementTransform {
+public:
+    explicit KinectPlacementTransform(KinectPlacement placement = KinectPlacement::front) : placement_(placement) {}
+    KinectPlacement placement() const { return placement_; }
+    // In place, for every body of the frame. A front sensor's frame is left
+    // exactly as it came; the others lose the sensor's floor plane, which
+    // no longer describes the turned space.
+    void apply(KinectFrame& frame);
+private:
+    KinectPlacement placement_;
+    std::vector<std::pair<uint32_t, std::array<float, 3>>> anchors_;  // tracking id, first position
+};
 
 // Which of the tracked bodies play as the title's two Kinect players. The
 // title follows a player by the slot and the tracking id it was identified
