@@ -243,6 +243,12 @@ add_test(NAME camera_capture COMMAND sfr_camera_capture_test)
 add_executable(sfr_camera_probe tests/camera_probe.cpp ${SFR_CAMERA_CAPTURE})
 target_include_directories(sfr_camera_probe PRIVATE src)
 target_link_libraries(sfr_camera_probe PRIVATE ${SFR_CAMERA_LIBRARIES})
+function(sfr_copy_onnx_dlls target)
+    if(SFR_ONNX_DLLS)
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SFR_ONNX_DLLS} "$<TARGET_FILE_DIR:${target}>")
+    endif()
+endfunction()
 # Finding a body in a camera picture: ONNX Runtime and the pinned MediaPipe
 # models (tools/onnx, fetched by scripts/fetch_pose_model.py). Without them
 # the camera can still give the title a picture, but not drive the player.
@@ -267,6 +273,12 @@ if(EXISTS "${SFR_ONNX_ROOT}/include/onnxruntime_cxx_api.h" AND EXISTS "${SFR_ONN
         # A release keeps libonnxruntime.so.1 beside the program.
         target_link_options(sfr_onnxruntime INTERFACE "LINKER:-rpath,$ORIGIN")
     endif()
+    # Windows finds a DLL beside the program before System32, which has an
+    # older onnxruntime.dll of its own (Windows ML's): without the fetched
+    # one beside it, the program loads that one and fails to start.
+    if(WIN32)
+        file(GLOB SFR_ONNX_DLLS "${SFR_ONNX_ROOT}/lib/*.dll")
+    endif()
     set(SFR_POSE_SOURCES src/pose_estimator.cpp src/pose_estimator_onnx.cpp src/pose_mediapipe.cpp src/pose_mediapipe_onnx.cpp)
 else()
     set(SFR_POSE_AVAILABLE OFF)
@@ -287,6 +299,7 @@ if(SFR_POSE_AVAILABLE)
     add_executable(sfr_pose_probe tests/pose_probe.cpp src/pose_skeleton.cpp ${SFR_POSE_SOURCES} ${SFR_CAMERA_CAPTURE})
     target_include_directories(sfr_pose_probe PRIVATE src)
     target_link_libraries(sfr_pose_probe PRIVATE sfr_onnxruntime)
+    sfr_copy_onnx_dlls(sfr_pose_probe)
 endif()
 add_executable(sfr_pad_assignment_test tests/pad_assignment_test.cpp src/pad_assignment.cpp)
 target_include_directories(sfr_pad_assignment_test PRIVATE src)
@@ -509,6 +522,16 @@ if(WIN32 OR UNIX)
         set(SDL_VULKAN_ENABLED ON CACHE BOOL "" FORCE)
     endif()
     add_subdirectory(tools/Plume)
+    if(WIN32)
+        # Plume exports D3D12SDKVersion (the building Windows SDK's) and
+        # D3D12SDKPath (.\D3D12\) even without the Agility SDK. They ask
+        # d3d12.dll for that D3D12Core.dll beside the program; there is none,
+        # and a Windows older than the SDK (Windows 10) then makes no device
+        # on any adapter. Renamed, they are not exports the loader knows, and
+        # the system's own runtime is used, as the Agility SDK being off means.
+        target_compile_definitions(plume PRIVATE D3D12SDKVersion=sfr_plume_unused_D3D12SDKVersion
+                                   D3D12SDKPath=sfr_plume_unused_D3D12SDKPath)
+    endif()
     if(APPLE)
         # Plume's Apple glue asks IOKit for the GPU vendor and uses Metal and
         # Cocoa objects; its own CMake leaves linking them to the user.
@@ -688,6 +711,7 @@ if(SFR_BUILD_DIAGNOSTIC)
     target_sources(sfr_cpu_diagnostic PRIVATE src/kinect_sensor.cpp ${SFR_KINECT_SENSOR} ${SFR_VOICE})
     if(SFR_POSE_AVAILABLE)
         target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_onnxruntime)
+        sfr_copy_onnx_dlls(sfr_cpu_diagnostic)
     endif()
     target_sources(sfr_cpu_diagnostic PRIVATE src/memory_update_forms.cpp)
     target_sources(sfr_cpu_diagnostic PRIVATE src/native_input.cpp src/input_bindings.cpp src/pad_assignment.cpp src/pad_devices.cpp src/sony_gamepad.cpp src/native_audio.cpp src/nui_skeleton.cpp src/nui_speech.cpp src/nui_race.cpp)
