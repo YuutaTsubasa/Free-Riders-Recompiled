@@ -39,9 +39,23 @@ public:
     // and a parked hand would steer the board) unless the right stick
     // reaches: left or right holds that arm out to its side (for the rings
     // beside the board), up raises both.
-    void update(const GamepadState& pad, bool racing = false);
-    // Writes the complete frame (every other skeleton slot not tracked).
+    // Two-player menus use one forward right hand per player.
+    void update(const GamepadState& pad, bool racing = false, bool two_player_menu = false, bool cursor_pending = false);
+    // A new menu cursor needs a fresh raise on the next right-stick input.
+    void rearm_menu();
+    // Writes the complete frame for this player alone: the header, this
+    // skeleton in slot 0 with tracking id 1, and no other slot tracked.
     void write(GuestMemory& memory, uint32_t address, uint32_t frame_number, uint64_t timestamp_ms) const;
+    // The same in two parts, for a frame that carries more than one player:
+    // the header (which clears every slot), then a slot each. A slot's
+    // tracking id is what NuiIdentityIdentify is called with, so the players
+    // need different ones.
+    static void write_header(GuestMemory& memory, uint32_t address, uint32_t frame_number, uint64_t timestamp_ms);
+    void write_slot(GuestMemory& memory, uint32_t address, uint32_t slot, uint32_t tracking_id) const;
+    // A slot written from joints worked out elsewhere (a camera's pose), in
+    // camera space and in the order nui_joint numbers them.
+    void write_joints(GuestMemory& memory, uint32_t address, uint32_t slot, uint32_t tracking_id,
+                      const std::array<std::array<float, 3>, nui_joint_count>& joints) const;
     std::array<float, 3> hand(bool right) const { return right ? right_ : left_; }
     // After NuiIdentityIdentify completes the skeleton carries that result
     // instead of "not yet identified": the enrollment of the signed-in
@@ -49,8 +63,14 @@ public:
     static constexpr uint32_t unidentified = 0xFFFFFFFFu, guest = 0xFFFFFFFEu;
     void identify(uint32_t enrollment = guest) {
         enrollment_ = enrollment;
-        if (engage_ == 0) { engage_ = 1; park_ = true; }
+        if (engage_ == 0) { engage_ = 1; park_ = !hand_starts_centred(); }
     }
+    // SFR_NUI_HAND_CENTRED=1 raises the hand to the middle of the screen
+    // instead of parking it in the corner. A player wants it parked -- a
+    // cursor sitting on a button presses it by waiting -- but an unattended
+    // run has to steer it out of that corner with stick taps before it can
+    // press anything, and the timing of that is what makes those runs flaky.
+    static bool hand_starts_centred();
 private:
     std::array<float, 3> right_{0.25f, -0.15f, 2.45f};
     uint32_t engage_ = 0;  // 0 at rest, 1-30 raising, 31 tracking

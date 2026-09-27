@@ -58,6 +58,11 @@ public:
     // The merged state of user 0 (pad, keyboard, script) or a host pad; null
     // when that user has no controller.
     std::optional<GamepadState> current(uint32_t user) const;
+    // Configured pad input with bindings applied. A second-player keyboard
+    // supplies a connected player; optional scripts can synthesize a pad.
+    // User 0's current() is always connected, which says nothing about whether
+    // anybody is there.
+    std::optional<GamepadState> controller(uint32_t user) const;
     // XamInputSetState: forward rumble motor speeds to a host pad when present.
     // User 0 is always connected (keyboard-backed), so it always succeeds.
     uint32_t set_vibration(uint32_t user, uint16_t left_motor, uint16_t right_motor);
@@ -69,11 +74,12 @@ public:
     static NativeInput sdl(std::function<void*()> focus_window, std::function<double()> script_clock = {});
     // windows() on Windows, sdl() elsewhere.
     static NativeInput host(std::function<void*()> focus_window, std::function<double()> script_clock = {});
-    // Configure an input slot without changing the release's supported game modes.
+    // Configure each player's devices, bindings, and optional keyboard reader.
     void set_player(uint32_t user, PlayerDevice device, std::shared_ptr<const InputBindings> pad,
                     std::function<GamepadState()> keyboard = {});
-private:
+    // Optional second scripted controller, using SFR_INPUT_SCRIPT_2.
     void attach_script(std::function<double()> script_clock);
+private:
     std::function<std::optional<GamepadState>(uint32_t)> pad_;
     std::function<GamepadState()> keyboard_;
     struct Player {
@@ -83,6 +89,7 @@ private:
     };
     std::array<Player, 4> players_{};
     std::function<GamepadState()> script_ = [] { return GamepadState{}; };
+    std::function<GamepadState()> second_script_;
     std::function<bool(uint32_t, uint16_t, uint16_t)> vibrate_ = [](uint32_t, uint16_t, uint16_t) { return false; };
     std::array<GamepadState, 4> last_{};
     std::array<uint32_t, 4> packets_{};

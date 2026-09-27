@@ -50,6 +50,7 @@
 #include "guest_wait.h"
 #include "guest_threads.h"
 #include "native_input.h"
+#include "input_trace.h"
 #include "native_audio.h"
 #include "guest_printf.h"
 #include "native_presentation.h"
@@ -123,8 +124,8 @@ struct GuestThreadExit { uint32_t code; };
 static thread_local uint64_t thread_calls = 0;
 static uint64_t calls = 0;
 static std::unique_ptr<NativeInput> native_input;
-static uint64_t input_queries = 0, hid_queries = 0, keystroke_queries = 0, critical_region_calls = 0, printf_calls = 0;
-static uint32_t last_input_packet = 0;
+static uint64_t hid_queries = 0, keystroke_queries = 0, critical_region_calls = 0, printf_calls = 0;
+static InputTrace input_trace;
 static NativeInput& input() {
     if (!native_input)
         native_input = std::make_unique<NativeInput>(NativeInput::host([]() -> void* {
@@ -462,6 +463,50 @@ static uint32_t start_system_thread(PPCContext& ctx, uint32_t kind) {
 
 GamepadState nui_gamepad() {
     return input().current(0).value_or(GamepadState{});
+}
+
+// SFR_TWO_PLAYERS=0 keeps the title to one Kinect player whatever is plugged
+// in. The other two settings are for finding out what the title does with a
+// second player on a machine with one controller:
+//   force         a second player throughout, holding nothing
+//   force-racing  a second player only once a race is running
+// The menus are why the second one exists: a second player standing there
+// makes the title open its two-player character select, where each player
+// confirms with their own cursor and the injected voice words -- which the
+// title hears once, not once per player -- cannot finish the page.
+std::optional<GamepadState> nui_second_gamepad(uint32_t user, bool racing) {
+    static const int setting = [] {
+        const char* const text = std::getenv("SFR_TWO_PLAYERS");
+        if (!text || !*text) return 1;
+        if (*text == '0') return 0;
+        const std::string_view value(text);
+        if (value == "force") return 2;
+        return value == "force-racing" ? 3 : 1;
+    }();
+    if (setting == 0) return std::nullopt;
+    if (setting == 3 && !racing) return std::nullopt;
+    if (setting >= 2) return input().controller(user).value_or(GamepadState{});
+    // The controller itself: a second player is somebody holding a pad, and
+    // user 0's current() is backed by the keyboard whether or not one is.
+    return input().controller(user);
+}
+
+// The second player's pad, as nui_hooks last read it. The race hooks read
+// it from another thread's call, so it is kept behind a lock rather than
+// assumed to be one word.
+namespace {
+std::mutex second_pad_lock;
+std::optional<GamepadState> second_pad_state;
+}
+
+void publish_second_player_pad(const std::optional<GamepadState>& pad) {
+    std::lock_guard guard(second_pad_lock);
+    second_pad_state = pad;
+}
+
+std::optional<GamepadState> second_player_pad() {
+    std::lock_guard guard(second_pad_lock);
+    return second_pad_state;
 }
 
 static std::jthread nui_events;
@@ -945,15 +990,15 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         if ((flags & ~1u) || !output)
             throw RuntimeStop("native-input", flags, "unsupported XamInputGetState flags or null state");
         ctx.r3.u64 = input().get_state(*active_memory, user, output);
-        // Polled every frame: log only the first query and every state change.
+        // Polled every frame: each player's first query and state changes.
+        // A missing second controller must not reset the first player's packet.
         const uint32_t packet = ctx.r3.u32 == xinput_success ? active_memory->load<uint32_t>(output) : 0;
-        if (input_queries++ == 0 || packet != last_input_packet) {
+        if (input_trace.changed(user, ctx.r3.u32, packet)) {
             std::cerr << "NATIVE_INPUT user=" << user << " status=0x" << std::hex << ctx.r3.u32;
             if (ctx.r3.u32 == xinput_success)
                 std::cerr << " packet=" << std::dec << packet << " buttons=0x" << std::hex
                           << active_memory->load<uint16_t>(uint64_t(output) + 4);
             std::cerr << " lr=0x" << ctx.lr << std::dec << " backend=xinput+keyboard\n";
-            last_input_packet = packet;
         }
         return;
     }

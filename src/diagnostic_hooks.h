@@ -1,5 +1,6 @@
 #pragma once
 #include <atomic>
+#include <optional>
 #include "guest_memory.h"
 #include "integer_arithmetic.h"
 #include "store_halfword_update.h"
@@ -92,6 +93,13 @@ struct GamepadState;
 // Kinect emulation (nui_hooks.cpp): user 0's pad drives the skeleton, and a
 // host thread signals the title's next-frame event at 30 Hz.
 GamepadState nui_gamepad();
+// The configured second player's input, when connected. An empty result
+// means the title sees one Kinect player.
+std::optional<GamepadState> nui_second_gamepad(uint32_t user, bool racing);
+// The second player's input as the Kinect emulation last read it, for the
+// race hooks. Empty when there is no second player.
+std::optional<GamepadState> second_player_pad();
+void publish_second_player_pad(const std::optional<GamepadState>& pad);
 void start_nui_skeleton_events(uint32_t event_handle);
 void stop_nui_skeleton_events();
 }

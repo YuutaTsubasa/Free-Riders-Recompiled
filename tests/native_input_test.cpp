@@ -58,6 +58,34 @@ sfr::GamepadState keys(std::set<int> held) {
     return sfr::keyboard_gamepad([&](int key) { return held.count(key) > 0; });
 }
 
+void put_environment(const char* name, const char* value) {
+#ifdef _WIN32
+    _putenv_s(name, value);
+#else
+    setenv(name, value, 1);
+#endif
+}
+
+// A scripted second pad stands in for one nobody is holding, so that a
+// two-player run needs no second controller. It has to look like a
+// controller, not just like input: the title counts its Kinect players by
+// who is holding one.
+void scripted_second_pad() {
+    double now = 0;
+    put_environment("SFR_INPUT_SCRIPT_2", "a@1+1");
+    sfr::NativeInput input([](uint32_t) { return std::optional<sfr::GamepadState>{}; },
+                           [] { return sfr::GamepadState{}; });
+    require(!input.controller(1), "no second pad before the script is attached");
+    input.attach_script([&now] { return now; });
+    require(input.controller(1).has_value(), "the scripted pad is a controller");
+    require(input.controller(1)->buttons == 0, "holding nothing before its time");
+    now = 1.5;
+    require(input.controller(1)->buttons == button::a, "and holding A at its time");
+    require(input.current(1)->buttons == button::a, "which is what the second player reads");
+    require(!input.controller(2), "and no other user gains a pad");
+    put_environment("SFR_INPUT_SCRIPT_2", "");
+}
+
 void run() {
     // Keyboard mapping (Windows virtual keys: arrows 0x25..0x28, Enter 0x0D).
     require(keys({}) == sfr::GamepadState{}, "no keys is rest");
@@ -115,6 +143,12 @@ void run() {
             memory.load<uint16_t>(0x10000034) == button::b && memory.load<uint32_t>(0x10000030) == 1,
             "host pad for user 1 with its own packet count");
     stops([&] { input.get_state(memory, 4, 0x10000030); }, "user 4 must stop");
+    // User 0's keyboard fallback does not imply a connected controller.
+    held = {0x0D};
+    require(input.current(0) && !input.controller(0), "the keyboard backs user 0 but is not a controller");
+    require(input.controller(1) == pad1, "a controller is itself, whoever is holding it");
+    require(!input.controller(4) && !input.current(4), "out-of-range users stay disconnected");
+    scripted_second_pad();
     playstation_reports();
 }
 
@@ -126,14 +160,22 @@ void player_settings_route_and_remap_input() {
                            [] { return sfr::GamepadState{button::start}; });
     input.set_player(0, sfr::PlayerDevice::gamepad, bindings);
     require(input.current(0)->buttons == button::a, "gamepad-only applies remapping and excludes the keyboard");
+    require(input.controller(0) == input.current(0), "controller input uses the same configured remapping");
     input.set_player(0, sfr::PlayerDevice::keyboard, bindings);
     require(input.current(0)->buttons == button::start, "keyboard-only excludes the pad");
+    require(!input.controller(0), "keyboard-only does not supply a controller to a second Kinect player");
     input.set_player(0, sfr::PlayerDevice::both, bindings);
     require(input.current(0)->buttons == (button::a | button::start), "both sources merge after pad remapping");
+    require(input.controller(0)->buttons == button::a, "controller state excludes fallback keyboard buttons");
     input.set_player(1, sfr::PlayerDevice::keyboard, bindings, [] { return sfr::GamepadState{button::x}; });
     require(input.current(1)->buttons == button::x, "the second input slot has its own keyboard reader");
+    require(input.controller(1)->buttons == button::x, "the second keyboard joins as a Kinect player");
     input.set_player(1, sfr::PlayerDevice::off, bindings);
     require(!input.current(1), "an off input slot is disconnected even with a controller present");
+    require(!input.controller(1), "off input slots cannot join as controller-backed Kinect players");
+    input.set_player(0, sfr::PlayerDevice::off, bindings);
+    require(input.current(0) == sfr::GamepadState{} && !input.controller(0),
+            "off player one stays connected at rest without appearing as a controller");
 }
 }
 

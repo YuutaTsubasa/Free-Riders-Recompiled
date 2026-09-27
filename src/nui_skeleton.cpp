@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <cstdlib>
 
 namespace sfr {
 namespace {
@@ -50,7 +51,22 @@ void store_vector(GuestMemory& memory, uint64_t address, const Vector& v, float 
 }
 }
 
-void NuiSkeletonEmulation::update(const GamepadState& pad, bool racing) {
+bool NuiSkeletonEmulation::hand_starts_centred() {
+    static const bool centred = [] {
+        const char* const text = std::getenv("SFR_NUI_HAND_CENTRED");
+        return text && *text && *text != '0';
+    }();
+    return centred;
+}
+
+void NuiSkeletonEmulation::rearm_menu() {
+    engage_ = 0;
+    park_ = false;
+    left_ = rest_position(false);
+    right_ = rest_position(true);
+}
+
+void NuiSkeletonEmulation::update(const GamepadState& pad, bool racing, bool two_player_menu, bool cursor_pending) {
     const float rx = axis(pad.thumb_rx), ry = axis(pad.thumb_ry);
     if (racing) {
         engage_ = 0;
@@ -66,6 +82,8 @@ void NuiSkeletonEmulation::update(const GamepadState& pad, bool racing) {
         }
         return;
     }
+    // Keep the left hand out of two-player menu selection.
+    if (two_player_menu) left_ = rest_position(false);
     const bool rest = (pad.buttons & gamepad_button::back) != 0;
     if (rest) engage_ = 0;
     // The first right-stick input raises the hand (one second) and then
@@ -73,16 +91,23 @@ void NuiSkeletonEmulation::update(const GamepadState& pad, bool racing) {
     if (!rest && engage_ == 0 && (rx != 0.0f || ry != 0.0f)) { engage_ = 1; park_ = false; }
     if (engage_ >= 1 && engage_ <= 30) {
         right_ = raised_hand;
-        if (++engage_ > 30) right_ = park_ ? parked_hand : centred_hand;
+        // A Gear transition can suspend cursor consumption for seconds.
+        // Keep presenting the initial raise until the guest acknowledges it;
+        // elapsed sensor frames alone cannot prove the cursor was activated.
+        if (engage_ < 30 || !two_player_menu || !cursor_pending)
+            if (++engage_ > 30) right_ = park_ ? parked_hand : centred_hand;
+        if (two_player_menu) right_[2] = 2.1f;
         return;
     }
     // The shoulders push the hands towards the sensor.
-    move(right_, rx, ry, true, (pad.buttons & gamepad_button::right_shoulder) != 0, rest);
-    move(left_, axis(pad.thumb_lx), axis(pad.thumb_ly), false, (pad.buttons & gamepad_button::left_shoulder) != 0, rest);
+    move(right_, rx, ry, true, (pad.buttons & gamepad_button::right_shoulder) != 0 ||
+         (two_player_menu && engage_ > 0), rest);
+    if (!two_player_menu)
+        move(left_, axis(pad.thumb_lx), axis(pad.thumb_ly), false, (pad.buttons & gamepad_button::left_shoulder) != 0, rest);
 }
 
-void NuiSkeletonEmulation::write(GuestMemory& memory, uint32_t address, uint32_t frame_number,
-                                 uint64_t timestamp_ms) const {
+void NuiSkeletonEmulation::write_header(GuestMemory& memory, uint32_t address, uint32_t frame_number,
+                                       uint64_t timestamp_ms) {
     memory.check_write(address, nui_skeleton_frame_size);
     for (uint32_t offset = 0; offset < nui_skeleton_frame_size; offset += 4)
         memory.store<uint32_t>(uint64_t(address) + offset, 0);
@@ -91,7 +116,16 @@ void NuiSkeletonEmulation::write(GuestMemory& memory, uint32_t address, uint32_t
     // Floor 1 m below the sensor; gravity straight down.
     store_vector(memory, uint64_t(address) + 16, {0.0f, 1.0f, 0.0f}, 1.0f);
     store_vector(memory, uint64_t(address) + 32, {0.0f, 1.0f, 0.0f}, 0.0f);
+}
 
+void NuiSkeletonEmulation::write(GuestMemory& memory, uint32_t address, uint32_t frame_number,
+                                 uint64_t timestamp_ms) const {
+    write_header(memory, address, frame_number, timestamp_ms);
+    write_slot(memory, address, 0, 1);
+}
+
+void NuiSkeletonEmulation::write_slot(GuestMemory& memory, uint32_t address, uint32_t slot,
+                                      uint32_t tracking_id) const {
     std::array<Vector, nui_joint_count> joints{};
     using namespace nui_joint;
     constexpr float z = 2.5f;
@@ -119,13 +153,19 @@ void NuiSkeletonEmulation::write(GuestMemory& memory, uint32_t address, uint32_t
     joints[foot_left] = {-0.12f, -0.97f, z - 0.08f};
     joints[foot_right] = {0.12f, -0.97f, z - 0.08f};
 
-    const uint64_t data = uint64_t(address) + nui_skeleton_data_offset;  // slot 0 only
+    write_joints(memory, address, slot, tracking_id, joints);
+}
+
+void NuiSkeletonEmulation::write_joints(GuestMemory& memory, uint32_t address, uint32_t slot, uint32_t tracking_id,
+                                        const std::array<Vector, nui_joint_count>& joints) const {
+    const uint64_t data = uint64_t(address) + nui_skeleton_data_offset + uint64_t(slot) * nui_skeleton_data_size;
     memory.store<uint32_t>(data, nui_tracked);
-    memory.store<uint32_t>(data + 4, 1);  // tracking id
+    memory.store<uint32_t>(data + 4, tracking_id);
     // Until identified (-1) the title runs NuiIdentityIdentify on it before
     // it may join; afterwards the guest result.
     memory.store<uint32_t>(data + 8, enrollment_);
-    store_vector(memory, data + 16, joints[hip_center], 1.0f);
+    memory.store<uint32_t>(data + 12, slot);  // NUI_SKELETON_DATA::dwUserIndex
+    store_vector(memory, data + 16, joints[nui_joint::hip_center], 1.0f);
     for (uint32_t j = 0; j < nui_joint_count; ++j) {
         store_vector(memory, data + 32 + j * 16, joints[j], 1.0f);
         memory.store<uint32_t>(data + 352 + j * 4, nui_tracked);

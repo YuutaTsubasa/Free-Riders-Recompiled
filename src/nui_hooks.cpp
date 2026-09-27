@@ -2,6 +2,8 @@
 #include "diagnostic_hooks.h"
 #include "guest_memory.h"
 #include "nui_skeleton.h"
+#include "nui_player_routing.h"
+#include "nui_menu_progress.h"
 #include "nui_speech.h"
 #include "local_profile.h"
 #include "touch_controls.h"
@@ -26,6 +28,12 @@
 
 namespace {
 sfr::NuiSkeletonEmulation skeleton;
+// A second Kinect player, driven by the second pad. The frame carries six
+// skeleton slots and the title reads them all, so a player appears simply by
+// filling another one; it is identified separately (tracking id 2).
+sfr::NuiSkeletonEmulation second_skeleton;
+sfr::NuiPlayerRouting player_routing;
+bool second_present = false;
 sfr::NuiPadEdges edges;
 uint16_t pressed=0;  // buttons newly pressed at the last input update
 uint32_t frame_number = 0;
@@ -102,7 +110,7 @@ SFR_HOOK(sub_8276FEE0) {
     ctx.r3.u64=0;
 }
 
-// NuiSkeletonGetNextFrame(timeout ms, frame): one emulated player.
+// NuiSkeletonGetNextFrame(timeout ms, frame): up to two emulated players.
 SFR_HOOK(sub_827707B0) {
     sfr::enter_function(ctx,"sub_827707B0",0x827707B0);
     const uint32_t frame=ctx.r4.u32;
@@ -110,9 +118,25 @@ SFR_HOOK(sub_827707B0) {
     // [83E52F8C] is the race flag: the hands leave the menu cursor pose.
     const bool racing=sfr::active_memory->load<uint32_t>(0x83E52F8C) != 0;
     sfr::set_touch_racing(racing);
-    skeleton.update(sfr::nui_gamepad(), racing);
+    const auto second=sfr::nui_second_gamepad(1u, racing);
+    const bool was_reversed=player_routing.reversed();
+    player_routing.update(*sfr::active_memory,skeleton,second_skeleton,
+                          sfr::nui_gamepad(),second,racing,false);
+    if(was_reversed!=player_routing.reversed())
+        std::cerr << "NUI_PLAYER_ROUTING first_tracking_id=" << (player_routing.reversed()?2:1)
+                  << " second_tracking_id=" << (player_routing.reversed()?1:2) << '\n';
+    // The race hooks need the same pad, and this is where it is decided
+    // which one the second player is holding.
+    sfr::publish_second_player_pad(second);
     const auto elapsed=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-started);
-    skeleton.write(*sfr::active_memory,frame,++frame_number,uint64_t(elapsed.count()));
+    auto& memory=*sfr::active_memory;
+    sfr::NuiSkeletonEmulation::write_header(memory,frame,++frame_number,uint64_t(elapsed.count()));
+    if(player_routing.slot_present(0,second.has_value())) skeleton.write_slot(memory,frame,0,1);
+    if(player_routing.slot_present(1,second.has_value())) second_skeleton.write_slot(memory,frame,1,2);
+    if(second.has_value()!=second_present) {
+        second_present=second.has_value();
+        std::cerr << "NUI_SECOND_PLAYER present=" << second_present << '\n';
+    }
     if(frame_number%300==1) {
         const auto hand=skeleton.hand(true);
         std::cerr << "NUI_SKELETON_FRAME number=" << frame_number << " right_hand=" << hand[0] << ',' << hand[1]
@@ -138,10 +162,12 @@ SFR_HOOK(sub_82764620) {
     for(uint32_t offset=0;offset<32;offset+=4) memory.store<uint32_t>(uint64_t(message)+offset,0);
     memory.store<uint32_t>(message,1);                         // identity operation complete
     memory.store<uint32_t>(uint64_t(message)+4,tracking_id);
-    const bool profile=sfr::profile_for(0)!=nullptr;
+    // The first skeleton uses the signed-in profile; the second joins as
+    // an unenrolled guest with its own tracking identity.
+    const bool profile=tracking_id<=1 && sfr::profile_for(0)!=nullptr;
     const uint32_t enrollment=profile?0u:sfr::NuiSkeletonEmulation::guest;
     memory.store<uint32_t>(uint64_t(message)+12,enrollment);
-    skeleton.identify(enrollment);
+    (tracking_id>=2?second_skeleton:skeleton).identify(enrollment);
     std::cerr << "NUI_IDENTITY_IDENTIFY tracking_id=" << tracking_id << " callback=0x" << std::hex << callback
               << " context=0x" << context << std::dec << " result=" << (profile?"profile":"guest") << '\n';
     if(callback) {
@@ -260,6 +286,23 @@ SFR_HOOK(sub_8246A6D0) {
     ctx.r3.s64=step;
 }
 
+PPC_FUNC_IMPL(__imp__sub_82452F48);
+SFR_HOOK(sub_82452F48) {
+    sfr::enter_function(ctx,"sub_82452F48",0x82452F48);
+    const uint32_t slot=ctx.r3.u32;
+    __imp__sub_82452F48(ctx,base);
+    sfr::NuiMenuServiceScope::record_wait(slot,(ctx.r3.u32 & 0xff)!=0);
+}
+
+PPC_FUNC_IMPL(__imp__sub_82456700);
+SFR_HOOK(sub_82456700) {
+    sfr::enter_function(ctx,"sub_82456700",0x82456700);
+    // This updates the cursor before checking whether a pending animation
+    // blocks its delayed action, so elapsed time alone cannot prove service.
+    sfr::NuiMenuServiceScope::record(ctx.r3.u32,ctx.r4.u32);
+    __imp__sub_82456700(ctx,base);
+}
+
 PPC_FUNC_IMPL(__imp__sub_824578F0);
 
 // Menu update (this = manager+36). Buttons carry a type at +288 and flags at
@@ -273,6 +316,22 @@ SFR_HOOK(sub_824578F0) {
     const uint32_t manager=ctx.r3.u32-36;
     menu_manager=manager;
     menu_manager_frame=input_frames;
+    // Follow the title's own active-page lookup (+344 == 6, player from
+    // +320 bit 4). Inactive gaps matter even if the allocator reuses a page.
+    for (uint32_t player=0; player<2; ++player) {
+        const uint32_t page=call_guest(ctx,base,sub_82457348,manager,player);
+        bool cursor_pending=false;
+        if (page && memory.load<uint8_t>(0x83E515FB)) {
+            const uint32_t owner=memory.load<uint32_t>(manager+96+4*player);
+            if (owner && memory.readable(uint64_t(owner)+112,4)) {
+                const uint32_t hands=memory.load<uint32_t>(uint64_t(owner)+112);
+                // 824560A8's right-hand state: 2 hidden, 1 activating, 0 active.
+                if (hands && memory.readable(uint64_t(hands)+116+100,4))
+                    cursor_pending=memory.load<uint32_t>(uint64_t(hands)+116+100)!=0;
+            }
+        }
+        player_routing.observe_menu_page(player,page,page ? memory.load<uint32_t>(page+336) : 0,cursor_pending);
+    }
     // SFR_MENU_DUMP=1 reports each menu page: its buttons as type/flags/kind/state
     // and the player's current page, whenever they change (a debugging aid).
     if(std::getenv("SFR_MENU_DUMP")) {
@@ -323,18 +382,9 @@ SFR_HOOK(sub_824578F0) {
             }
         }
     }
-    // A page changes through a delayed action: the menu update (82456700)
-    // keeps its type at manager+488, its delay at +492, its elapsed time at
-    // +496 and its command at +500, and adds the title's frame step
-    // ([[83E516A0]+24]+40) to the elapsed time until it passes the delay. On
-    // some pages (the gear parts) the title stops calling that update while
-    // an action is queued, so the elapsed time never moves and the page never
-    // leaves, whatever the player presses; calling the update by hand
-    // advances it (elapsed 0 to 1 in the first measurement).
-    //
-    // While the elapsed time has not moved for half a second, the update runs
-    // here, which elapses the action and fires its command through the
-    // title's own path. SFR_MENU_STALL=0 leaves the page as it is.
+    // Delayed menu actions live at manager+488+16*player. Some pages
+    // stop servicing them; inspect the original update below before deciding
+    // whether recovery is needed. SFR_MENU_STALL=0 disables recovery.
     // SFR_MENU_STATE=1: the manager's state ([r3+4]) and the queued action, on
     // every change and every two seconds. The state dispatches as state - 2:
     // 2 and 3 open the pages, 4 runs them (it is where the page update
@@ -385,20 +435,6 @@ SFR_HOOK(sub_824578F0) {
             std::cerr << "NUI_MENU_LEAVE unreadable: " << error.what() << '\n';
         }
     }
-    const uint32_t action=memory.load<uint32_t>(manager+488);
-    const uint32_t elapsed=memory.load<uint32_t>(manager+496);
-    static uint32_t last_elapsed=0;
-    static uint64_t stalled_frames=0;
-    stalled_frames=(action && elapsed==last_elapsed) ? stalled_frames+1 : 0;
-    last_elapsed=elapsed;
-    static const bool run_stalled=[]{ const char* t=std::getenv("SFR_MENU_STALL"); return !t || *t!='0'; }();
-    if(run_stalled && stalled_frames>=30) {
-        if(stalled_frames==30)
-            std::cerr << "NUI_MENU_UPDATE_RUN manager=0x" << std::hex << manager << std::dec << " type=" << action
-                      << " delay=" << std::bit_cast<float>(memory.load<uint32_t>(manager+492))
-                      << " command=" << memory.load<uint32_t>(manager+500) << '\n';
-        call_guest(ctx,base,sub_82456700,manager,0);
-    }
     if(pressed & button::y) {
         uint32_t command=0;
         for_each_menu_button(memory,manager,[&](uint32_t b) {
@@ -412,7 +448,61 @@ SFR_HOOK(sub_824578F0) {
             std::cerr << "NUI_MENU_SHORTCUT command=" << command << '\n';
         }
     }
-    __imp__sub_824578F0(ctx,base);
+    const auto actions = [&] {
+        sfr::NuiMenuActions result;
+        for (uint32_t player=0; player<2; ++player) {
+            const uint32_t at=manager+488+16*player;
+            result[player]={memory.load<uint32_t>(at),memory.load<uint32_t>(at+8),memory.load<uint32_t>(at+12)};
+        }
+        return result;
+    };
+    const auto before=actions();
+    uint32_t serviced=0, blocked=0;
+    {
+        sfr::NuiMenuServiceScope scope(manager);
+        __imp__sub_824578F0(ctx,base);
+        serviced=scope.serviced();
+        blocked=scope.blocked();
+    }
+    const auto after=actions();
+    uint32_t recovery_serviced=0;
+    static sfr::NuiMenuProgress progress;
+    static bool recovering=false;
+    static const bool run_stalled=[]{ const char* t=std::getenv("SFR_MENU_STALL"); return !t || *t!='0'; }();
+    recovering=progress.update(manager,before,after,
+        [&] { return memory.load<uint8_t>(0x83E515FB)!=0; },
+        [&](uint32_t player) {
+            if(!recovering && player==0)
+                std::cerr << "NUI_MENU_UPDATE_RUN manager=0x" << std::hex << manager << std::dec
+                          << " type=" << after[0].type << ',' << after[1].type << '\n';
+            call_guest(ctx,base,sub_82456700,manager,player);
+            recovery_serviced|=1u<<player;
+        },run_stalled,serviced);
+    // The original state-4 manager returns before updating either player
+    // when one confirmation request is outstanding. Keep the other Gear
+    // page responsive without settling that request or advancing the page.
+    uint32_t independently_serviced=0;
+    const auto gear_service_mask=[&] {
+        std::array<uint32_t,2> kinds{};
+        uint32_t settled=0;
+        for (uint32_t player=0; player<2; ++player) {
+            const uint32_t page=call_guest(ctx,base,sub_82457348,manager,player);
+            if (page) kinds[player]=memory.load<uint32_t>(page+336);
+            if (memory.load<uint8_t>(manager+36+1828+88*player+59)) settled|=1u<<player;
+        }
+        return sfr::nui_gear_service_mask(
+            sfr::second_player_pad().has_value() && memory.load<uint8_t>(0x83E515FB),
+            memory.load<uint32_t>(manager+40),memory.load<uint8_t>(manager+124)!=0,
+            kinds,settled,blocked,serviced|recovery_serviced|independently_serviced);
+    };
+    if (blocked) for (uint32_t player=0; player<2; ++player) {
+        // The first player's callback may change the page, state or 2P flag.
+        if (gear_service_mask() & (1u<<player)) {
+            call_guest(ctx,base,sub_82456700,manager,player);
+            independently_serviced|=1u<<player;
+        }
+    }
+
 }
 
 PPC_FUNC_IMPL(__imp__sub_82439530);

@@ -29,6 +29,7 @@ unsigned original_side_calls = 0, manager_calls = 0;
 
 namespace sfr {
 GuestMemory* active_memory = nullptr;
+std::optional<GamepadState> second_player_pad() { return std::nullopt; }
 GamepadState nui_gamepad() { return harness::input; }
 void enter_function_observed(PPCContext&, const char*, uint32_t) {}
 void guest_checkpoint_permit() {}
@@ -37,6 +38,8 @@ void call_indirect(PPCContext&, uint8_t*, uint32_t) {
 }
 }
 
+PPC_FUNC(__imp__sub_822C6200) {}
+PPC_FUNC(__imp__sub_82918418) { ctx.r3.u64 = sfr::active_memory->load<uint32_t>(ctx.r3.u32 + 4); }
 PPC_FUNC(__imp__sub_82438930) { ++harness::manager_calls; }
 
 // Fixture for the original Side detector's observed result with the copied
