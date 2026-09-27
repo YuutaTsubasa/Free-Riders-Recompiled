@@ -31,6 +31,7 @@
 #include "launcher_art.h"
 #include "launcher_platform.h"
 #include "camera_capture.h"
+#include "kinect_sensor.h"
 #include "launcher_settings.h"
 #include "input_bindings.h"
 #include "pad_devices.h"
@@ -74,6 +75,7 @@ enum Text {
     Parallel, ParallelHint, VertexCache, VertexCacheHint, GpuPipeline, GpuPipelineHint, RaceEvery, RaceEveryHint,
     CameraLabel, CameraHint, CameraOff, CameraPicture, CameraMotion, CameraDevice, CameraDeviceHint, CameraNone,
     CameraTest, CameraTesting, CameraWorks, CameraSilent, CameraClosed, CameraMirror, CameraMirrorHint,
+    CameraRace, CameraRaceHint, CameraKinect, KinectRow, KinectRowHint, KinectWorks, KinectSilent, KinectMissing,
     ImageDirectory, ImageDirectoryHint, AssetDirectory, AssetDirectoryHint, Browse, Found, Missing, FilesHint,
     StartGame, Quit, Defaults,
     MissingFiles, MissingGame, LaunchFailed, Ready,
@@ -149,6 +151,16 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Mirrored camera", "攝影機畫面左右相反"},
     {"Turn this on when the camera shows you as a mirror does. With it wrong, raising one hand moves the other, and the cursor runs off the side of the screen.",
      "若攝影機畫面像照鏡子一樣左右相反，請開啟此項。設定相反時，舉起一隻手會動到另一隻，游標也會跑到畫面邊緣。"},
+    {"Race with your body (experimental)", "比賽也用身體操作（實驗性）"},
+    {"The camera's body also races: lean to steer, crouch and jump. A webcam sees no depth, so moves towards the screen are not recognized.",
+     "攝影機追蹤到的身體也用於比賽：傾身轉彎、蹲下、跳躍。webcam 沒有深度資訊，因此朝螢幕方向的動作無法辨識。"},
+    {"Kinect", "Kinect"},
+    {"Kinect sensor", "Kinect 感測器"},
+    {"A real Kinect (Xbox 360 or Kinect for Windows v1) tracks you as the console did. Needs the Kinect for Windows SDK 1.8 (runtime and drivers).",
+     "由實體 Kinect（Xbox 360 版或 Kinect for Windows 第一代）像主機一樣追蹤你的身體。需要安裝 Kinect for Windows SDK 1.8（含執行階段與驅動程式）。"},
+    {"Kinect is working", "Kinect 運作中"},
+    {"Kinect opened, but sends nothing", "Kinect 已開啟，但沒有資料"},
+    {"No Kinect found", "找不到 Kinect"},
     {"Game code image", "遊戲程式映像"},
     {"The game's decoded code and data (complete.txt, image.bin).", "解碼後的遊戲程式與資料（complete.txt、image.bin）。"},
     {"Game data", "遊戲資料"},
@@ -947,6 +959,8 @@ struct Launcher {
     enum class CameraTrial { none, looking, pictures, silent, closed };
     std::atomic<CameraTrial> camera_trial{CameraTrial::none};
     std::jthread camera_trial_worker;
+    std::atomic<CameraTrial> kinect_trial{CameraTrial::none};
+    std::jthread kinect_trial_worker;
     // The launcher slides in (appear rises to 1) and out before the game
     // starts (leaving, appear falls to 0).
     float appear = 0.0f, page_fade = 0.0f;
@@ -1647,20 +1661,42 @@ struct Launcher {
         setting_row(tr(GpuPipeline), tr(GpuPipelineHint), switch_width, scale, [&] { toggle("##pipeline", &settings.gpu_pipeline); });
         const float camera_width = 150 * scale;
         setting_row(tr(CameraLabel), tr(CameraHint), camera_width, scale, [&] {
-            const char* const values[] = {"off", "picture", "motion"};
-            const Text labels[] = {CameraOff, CameraPicture, CameraMotion};
+            const char* const values[] = {"off", "picture", "motion", "kinect"};
+            const Text labels[] = {CameraOff, CameraPicture, CameraMotion, CameraKinect};
+            // A real sensor only where there is a runtime to reach it.
+            const int choices = sfr::KinectSensor::supported() ? 4 : 3;
             int chosen = 0;
-            for (int i = 0; i < 3; ++i) if (settings.camera == values[i]) chosen = i;
+            for (int i = 0; i < choices; ++i) if (settings.camera == values[i]) chosen = i;
             ImGui::SetNextItemWidth(camera_width);
             if (ImGui::BeginCombo("##camera", tr(labels[chosen]))) {
-                for (int i = 0; i < 3; ++i)
+                for (int i = 0; i < choices; ++i)
                     if (ImGui::Selectable(tr(labels[i]), chosen == i)) settings.camera = values[i];
                 ImGui::EndCombo();
             }
         });
         // Which camera: the hosts's list, read once and again whenever the
         // camera is turned on, since one may have been plugged in since.
-        if (settings.camera != "off") {
+        // A Kinect is the host's only one: no list, only whether it answers.
+        if (settings.camera == "kinect") {
+            const float test_width = ImGui::CalcTextSize(tr(KinectSilent)).x + ImGui::GetStyle().FramePadding.x * 4;
+            setting_row(tr(KinectRow), tr(KinectRowHint), test_width, scale, [&] {
+                const auto state = kinect_trial.load();
+                const Text trial[] = {CameraTest, CameraTesting, KinectWorks, KinectSilent, KinectMissing};
+                ImGui::BeginDisabled(state == CameraTrial::looking);
+                if (ImGui::Button(tr(trial[int(state)]), ImVec2(test_width, 0))) {
+                    kinect_trial.store(CameraTrial::looking);
+                    kinect_trial_worker = std::jthread([this] {
+                        auto sensor = sfr::KinectSensor::open();
+                        if (!sensor) { kinect_trial.store(CameraTrial::closed); return; }
+                        sfr::KinectFrame frame;
+                        for (int attempt = 0; attempt < 300 && !frame.number; ++attempt)
+                            if (!sensor->next(frame)) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                        kinect_trial.store(frame.number ? CameraTrial::pictures : CameraTrial::silent);
+                    });
+                }
+                ImGui::EndDisabled();
+            });
+        } else if (settings.camera != "off") {
             if (cameras_listed_for != settings.camera) {
                 cameras = sfr::CameraCapture::devices();
                 cameras_listed_for = settings.camera;
@@ -1702,6 +1738,9 @@ struct Launcher {
             if (settings.camera == "motion")
                 setting_row(tr(CameraMirror), tr(CameraMirrorHint), switch_width, scale,
                             [&] { toggle("##camera_mirror", &settings.camera_mirror); });
+            if (settings.camera == "motion")
+                setting_row(tr(CameraRace), tr(CameraRaceHint), switch_width, scale,
+                            [&] { toggle("##camera_race", &settings.camera_race); });
         }
 #ifdef _WIN32  // elsewhere the game always draws with Vulkan
         setting_row(tr(VulkanLabel), tr(VulkanHint), switch_width, scale, [&] { toggle("##vulkan", &settings.vulkan); });

@@ -113,7 +113,8 @@ SFR_HOOK(sub_82438930) {
     const uint32_t box = m.load<uint32_t>(nui_box);
     // SFR_NO_RACE_BODY leaves the title's own body record in place.
     static const bool disabled = std::getenv("SFR_NO_RACE_BODY") != nullptr;
-    const bool racing = !disabled && m.load<uint32_t>(race_flag) != 0;
+    // A real sensor's body is the title's to read, as on the console.
+    const bool racing = !disabled && !sfr::nui_body_from_sensor() && m.load<uint32_t>(race_flag) != 0;
     race.update(sfr::nui_gamepad(), frame_seconds());
     if (box && racing) {
         if (m.available(body_address, body_mapping)) {

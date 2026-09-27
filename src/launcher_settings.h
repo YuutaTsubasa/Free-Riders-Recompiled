@@ -29,7 +29,8 @@ struct LauncherSettings {
     // gamepad drives; "camera" tracks a real body with a webcam, which cannot
     // share the pad's sticks, so the two are one choice. "picture" keeps the
     // pad in charge and only gives the title a camera image.
-    std::string camera = "off";      // "off", "picture" or "motion"
+    // "kinect" is a real Kinect tracking the players, as on the console.
+    std::string camera = "off";      // "off", "picture", "motion" or "kinect"
     // Which of the host's cameras, by the name it lists (SFR_CAMERA_DEVICE).
     // A name and not a number, because the list changes: a phone camera or a
     // capture card comes and goes, and the number then means another camera.
@@ -39,6 +40,9 @@ struct LauncherSettings {
     // it is a setting: with it wrong, left and right are the wrong way
     // round and the cursor runs off the side of the screen.
     bool camera_mirror = false;   // SFR_CAMERA_MIRROR
+    // Motion only, experimental: the webcam's body races as well, read by
+    // the title's own gesture detectors instead of the pad.
+    bool camera_race = false;     // SFR_CAMERA_RACE
     // Controls (input_bindings.h). The devices each player uses, and how
     // their keys and pad buttons are arranged, as "a=Z,b=X,..." lines. An
     // empty line means the defaults, so a settings file written before any

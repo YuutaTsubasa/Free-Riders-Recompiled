@@ -14,7 +14,6 @@ namespace sfr {
 // moves across and up and down. The picture is scaled so that the shoulders
 // come out as wide as the emulated player's, which keeps the title's gesture
 // detectors in the range they were tuned against by the pad emulation.
-using SkeletonJoints = std::array<std::array<float, 3>, nui_joint_count>;
 
 // False when the model was not confident enough about the torso for the rest
 // to mean anything, and the joints are left alone.

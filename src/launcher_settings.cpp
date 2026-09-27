@@ -58,9 +58,10 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         else if (key == "vulkan") read_flag(value, settings.vulkan);
         else if (key == "touch_controls") read_flag(value, settings.touch_controls);
         else if (key == "tilt") read_flag(value, settings.tilt);
-        else if (key == "camera" && (value == "off" || value == "picture" || value == "motion")) settings.camera = value;
+        else if (key == "camera" && (value == "off" || value == "picture" || value == "motion" || value == "kinect")) settings.camera = value;
         else if (key == "camera_device" && value.size() <= 128) settings.camera_device = value;
         else if (key == "camera_mirror") read_flag(value, settings.camera_mirror);
+        else if (key == "camera_race") read_flag(value, settings.camera_race);
         else if (key == "player1_device" && (value == "both" || value == "gamepad" || value == "keyboard"))
             settings.player1_device = value;
         else if (key == "player2_device" && (value == "gamepad" || value == "keyboard" || value == "off"))
@@ -99,6 +100,7 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "camera=" << s.camera << '\n'
         << "camera_device=" << s.camera_device << '\n'
         << "camera_mirror=" << s.camera_mirror << '\n'
+        << "camera_race=" << s.camera_race << '\n'
         << "player1_device=" << s.player1_device << '\n'
         << "player2_device=" << s.player2_device << '\n'
         << "player1_gamepad=" << s.player1_gamepad << '\n'
@@ -162,10 +164,12 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         {"SFR_VSYNC", s.vsync ? "1" : "0"},
         {"SFR_GRAPHICS", s.vulkan ? "vulkan" : ""},
         // "off" leaves the camera alone; "picture" opens it for the image the
-        // title shows; "motion" also drives the Kinect player's body with it.
+        // title shows; "motion" also drives the Kinect player's body with it;
+        // "kinect" is a real sensor tracking the players (kinect_sensor.h).
         {"SFR_CAMERA", s.camera == "off" ? "" : s.camera},
         {"SFR_CAMERA_DEVICE", s.camera_device},
         {"SFR_CAMERA_MIRROR", s.camera_mirror ? "1" : "0"},
+        {"SFR_CAMERA_RACE", s.camera_race ? "1" : "0"},
         // Controls: who plays with what, and which button does what. Empty
         // removes the variable, and the game then uses its own defaults.
         {"SFR_PLAYER1_INPUT", s.player1_device},

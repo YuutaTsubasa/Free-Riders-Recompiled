@@ -35,6 +35,7 @@ void settings_round_trip() {
     settings.camera = "motion";
     settings.camera_device = "e2eSoft iVCam #2";
     settings.camera_mirror = true;
+    settings.camera_race = true;
     settings.player1_device = "keyboard";
     settings.player2_device = "gamepad";
     settings.player1_gamepad = "Controller #1";
@@ -50,7 +51,7 @@ void settings_round_trip() {
     require(read.fullscreen && read.vsync && !read.audio && read.volume == 35, "display and sound survive a round trip");
     require(read.skip_movies && !read.vertex_cache && !read.gpu_pipeline && !read.parallel && read.race_render_every == 2 && !read.ui_sounds && read.vulkan,
             "advanced settings survive a round trip");
-    require(read.camera == "motion" && read.camera_device == "e2eSoft iVCam #2" && read.camera_mirror,
+    require(read.camera == "motion" && read.camera_device == "e2eSoft iVCam #2" && read.camera_mirror && read.camera_race,
             "the camera choice, name, and mirror setting survive a round trip");
     require(read.player1_device == settings.player1_device && read.player2_device == settings.player2_device &&
             read.player1_gamepad == settings.player1_gamepad && read.player2_gamepad == settings.player2_gamepad &&
@@ -58,7 +59,8 @@ void settings_round_trip() {
             read.player1_pad == settings.player1_pad && read.player2_pad == settings.player2_pad,
             "both players' controls survive a round trip alongside camera and pipeline settings");
     require(value_of(read, "SFR_CAMERA") == "motion" && value_of(read, "SFR_CAMERA_DEVICE") == settings.camera_device &&
-            value_of(read, "SFR_CAMERA_MIRROR") == "1" && value_of(read, "SFR_GPU_PIPELINE") == "0" &&
+            value_of(read, "SFR_CAMERA_MIRROR") == "1" && value_of(read, "SFR_CAMERA_RACE") == "1" &&
+            value_of(read, "SFR_GPU_PIPELINE") == "0" &&
             value_of(read, "SFR_PLAYER1_INPUT") == settings.player1_device &&
             value_of(read, "SFR_PLAYER2_PAD") == settings.player2_pad,
             "camera, pipeline, and custom controls reach the game together");
@@ -72,6 +74,7 @@ void malformed_values_keep_defaults() {
         "unknown=1\n# vsync=1\nno equals sign\n  audio = 0  \r\ncamera=webcam\n");
     const sfr::LauncherSettings defaults;
     require(read.camera == defaults.camera, "an unknown camera choice keeps the default");
+    require(sfr::parse_launcher_settings("camera=kinect\n").camera == "kinect", "a real Kinect is a camera choice");
     require(sfr::parse_launcher_settings("camera_device=" + std::string(200, 'x') + "\n").camera_device == defaults.camera_device,
             "a name longer than any camera has keeps the default");
     require(read.window_width == defaults.window_width && read.window_height == defaults.window_height,

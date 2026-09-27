@@ -13,6 +13,7 @@ launcher 的「攝影機」（`SFR_CAMERA`）有三種：
 | 關閉 | 空白 | 不開攝影機 | 手把 |
 | 畫面 | `picture` | 開攝影機，交給遊戲顯示 | 手把 |
 | 體感 | `motion` | 開攝影機 | 攝影機看到的身體 |
+| Kinect | `kinect` | 實體 Kinect（Windows） | Kinect 追蹤到的身體，見 [實體 Kinect](kinect-sensor.md) |
 
 「體感」時手把不再驅動玩家：兩者共用同一副骨架，不能同時來源不同，
 所以在設定頁上是一個選擇而不是兩個開關。
@@ -98,6 +99,13 @@ ONNX Runtime 與 RTMPose 都是 release 產物而不是 repository，所以由
 沒有這些檔案時 `SFR_POSE_AVAILABLE` 為 OFF，「畫面」仍然可用，「體感」則會印
 `NATIVE_CAMERA_PLAYER motion=0 reason=no-pose-model` 並退回手把。
 
+## 用身體比賽（實驗性）
+
+預設在比賽中仍由手把操作，因為 webcam 沒有深度。launcher 的「比賽也用身體操作」
+（`SFR_CAMERA_RACE=1`）打開後，第一次找到人起，比賽就和 [實體 Kinect](kinect-sensor.md)
+一樣交給遊戲自己的手勢判斷器讀攝影機的骨架：左右傾身、蹲下、跳躍這類在畫面上
+看得出來的動作有機會辨識，朝螢幕推手之類需要深度的動作則不行。尚未實際試玩。
+
 ## 兩位玩家
 
 體感開著時第一位玩家是攝影機，這時**第一支手把**就是第二位玩家。
@@ -108,4 +116,4 @@ ONNX Runtime 與 RTMPose 都是 release 產物而不是 repository，所以由
 - 攝影機的畫面還沒接到遊戲自己的 NUI 影像串流（`82768C40`），所以「畫面」
   目前只是把相機打開。
 - Android 還沒有 Camera2 的擷取實作。
-- 真正的 Kinect 感測器（走 USB）沒有做，手邊沒有機器可以試。
+- 真正的 Kinect 感測器見 [實體 Kinect](kinect-sensor.md)（Windows，`SFR_CAMERA=kinect`）。

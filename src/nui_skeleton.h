@@ -16,6 +16,10 @@ constexpr uint32_t nui_skeleton_data_offset = 48, nui_skeleton_data_size = 448;
 constexpr uint32_t nui_joint_count = 20;
 constexpr uint32_t nui_tracked = 2;  // skeleton and joint "tracked" states
 
+// A skeleton's joints in camera space (metres), in the order nui_joint
+// numbers them.
+using SkeletonJoints = std::array<std::array<float, 3>, 20>;
+
 // Joint indices (NUI_SKELETON_POSITION_INDEX).
 namespace nui_joint {
 constexpr uint32_t hip_center = 0, spine = 1, shoulder_center = 2, head = 3;
@@ -53,6 +57,17 @@ public:
     // camera space and in the order nui_joint numbers them.
     void write_joints(GuestMemory& memory, uint32_t address, uint32_t slot, uint32_t tracking_id,
                       const std::array<std::array<float, 3>, nui_joint_count>& joints) const;
+    // The same for a body a sensor tracked, with the sensor's own view of it:
+    // how sure it is of each joint (0 not tracked, 1 inferred, 2 tracked) and
+    // where the body's centre is.
+    void write_joints(GuestMemory& memory, uint32_t address, uint32_t slot, uint32_t tracking_id,
+                      const SkeletonJoints& joints, const std::array<uint32_t, nui_joint_count>& states,
+                      const std::array<float, 3>& position) const;
+    // Replaces the header's floor plane and gravity with a sensor's (after
+    // write_header). A plane of all zeros means the sensor could not see the
+    // floor, and the header keeps the emulated one.
+    static void write_floor(GuestMemory& memory, uint32_t address, const std::array<float, 4>& plane,
+                            const std::array<float, 3>& gravity);
     std::array<float, 3> hand(bool right) const { return right ? right_ : left_; }
     // After NuiIdentityIdentify completes the skeleton carries that result
     // instead of "not yet identified": the enrollment of the signed-in

@@ -45,6 +45,11 @@ What works today:
 - Playing without Kinect: the Kinect is emulated. Buttons stand in for the
   voice commands the menus understand, and the pad drives the body a race
   reads (leaning, jumping, kick dash, grabbing, tricks).
+- A real Kinect on Windows (Xbox 360 or Kinect for Windows v1, with the
+  Kinect for Windows SDK 1.8): the sensor's skeletons go to the game, which
+  reads them with its own gesture detectors, as on the console; or a webcam
+  standing in for it ([docs/kinect-sensor.md](docs/kinect-sensor.md),
+  [docs/camera-input.md](docs/camera-input.md)). Not yet tried on hardware.
 - A launcher that installs the game from your disc image and keeps its
   settings, in English or Traditional Chinese, on every platform.
 - Linux (Vulkan, SDL2), and Android (arm64-v8a) with on-screen touch controls

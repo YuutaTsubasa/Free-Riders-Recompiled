@@ -2,11 +2,13 @@
 #include "diagnostic_hooks.h"
 #include "guest_memory.h"
 #include "camera_player.h"
+#include "kinect_sensor.h"
 #include "nui_skeleton.h"
 #include "nui_speech.h"
 #include "local_profile.h"
 #include "touch_controls.h"
 #include <bit>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -34,6 +36,14 @@ std::unique_ptr<sfr::CameraPlayer> camera_player;
 bool camera_started = false;
 sfr::SkeletonJoints camera_joints{};
 bool camera_has_joints = false;
+// SFR_CAMERA=kinect: a real sensor tracks the players, as on the console.
+// Its skeletons go to the title untouched, and the race reads them through
+// the title's own detectors instead of the pad (nui_body_from_sensor).
+std::unique_ptr<sfr::KinectSensor> kinect;
+// Also set for a webcam's body when SFR_CAMERA_RACE=1 asks for it to race.
+std::atomic<bool> sensor_body{false};
+sfr::KinectFrame kinect_frame;
+sfr::KinectPlayerSlots kinect_slots;
 // A second Kinect player, driven by the second pad. The frame carries six
 // skeleton slots and the title reads them all, so a player appears simply by
 // filling another one; it is identified separately (tracking id 2).
@@ -83,6 +93,8 @@ uint64_t input_frames=0;
 }
 
 
+bool sfr::nui_body_from_sensor() { return sensor_body.load(std::memory_order_relaxed); }
+
 // NuiInitialize(flags, ?)
 SFR_HOOK(sub_8276FD88) {
     sfr::enter_function(ctx,"sub_8276FD88",0x8276FD88);
@@ -123,16 +135,64 @@ SFR_HOOK(sub_827707B0) {
     // [83E52F8C] is the race flag: the hands leave the menu cursor pose.
     const bool racing=sfr::active_memory->load<uint32_t>(0x83E52F8C) != 0;
     sfr::set_touch_racing(racing);
-    if(!camera_started) { camera_started=true; camera_player=sfr::CameraPlayer::start(); }
-    if(camera_player && camera_player->joints(camera_joints)) camera_has_joints=true;
+    if(!camera_started) {
+        camera_started=true;
+        const char* const choice=std::getenv("SFR_CAMERA");
+        if(choice && std::string_view(choice)=="kinect") {
+            std::string why;
+            kinect=sfr::KinectSensor::open(&why);
+            sensor_body.store(kinect!=nullptr);
+            // Without a sensor the pad's emulated player carries on, so a
+            // Kinect left unplugged does not leave the title unplayable.
+            std::cerr << "NATIVE_KINECT started=" << (kinect?1:0);
+            if(!kinect) std::cerr << " reason=" << why << " fallback=pad";
+            std::cerr << '\n';
+        } else {
+            camera_player=sfr::CameraPlayer::start();
+        }
+    }
+    auto& memory=*sfr::active_memory;
+    const auto elapsed=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-started);
+    if(kinect) {
+        // Both players are whoever the sensor sees; nobody in front of it is
+        // an empty frame, which the title answers the way it did on the
+        // console (asking the player to step in).
+        kinect->next(kinect_frame);
+        skeleton.update(sfr::nui_gamepad(), racing);
+        sfr::NuiSkeletonEmulation::write_header(memory,frame,++frame_number,uint64_t(elapsed.count()));
+        sfr::NuiSkeletonEmulation::write_floor(memory,frame,kinect_frame.floor_plane,kinect_frame.gravity);
+        const auto players=kinect_slots.assign(kinect_frame);
+        for(uint32_t slot=0; slot<players.size(); ++slot) {
+            const sfr::KinectBody* const body=players[slot];
+            if(!body) continue;
+            (slot?second_skeleton:skeleton).write_joints(memory,frame,slot,slot+1,body->joints,body->joint_states,
+                                                        body->position);
+        }
+        if(bool(players[1])!=second_present) {
+            second_present=bool(players[1]);
+            std::cerr << "NUI_SECOND_PLAYER present=" << second_present << " source=kinect\n";
+        }
+        ctx.r3.u64=0;
+        return;
+    }
+    if(camera_player && camera_player->joints(camera_joints) && !camera_has_joints) {
+        camera_has_joints=true;
+        // SFR_CAMERA_RACE=1 (experimental): the webcam's body races too,
+        // through the title's own detectors. It has no depth, so leaning,
+        // crouching and jumping read well and pushing towards the screen
+        // does not.
+        const char* const race=std::getenv("SFR_CAMERA_RACE");
+        if(race && *race && *race!='0') {
+            sensor_body.store(true);
+            std::cerr << "NATIVE_CAMERA_PLAYER race=body\n";
+        }
+    }
     skeleton.update(sfr::nui_gamepad(), racing);
     // A camera playing as the first player leaves the first pad free, so the
     // player beside them holds that one rather than having to plug into the
     // second socket.
     const auto second=sfr::nui_second_gamepad(camera_has_joints?0u:1u, racing);
     if(second) second_skeleton.update(*second, racing);
-    const auto elapsed=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-started);
-    auto& memory=*sfr::active_memory;
     sfr::NuiSkeletonEmulation::write_header(memory,frame,++frame_number,uint64_t(elapsed.count()));
     // The camera's body takes the first player's place once it has found
     // one; until then the pad's emulated player stands in.

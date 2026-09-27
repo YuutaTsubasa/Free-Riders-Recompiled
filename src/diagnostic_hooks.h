@@ -139,6 +139,12 @@ GamepadState nui_gamepad();
 // that is depends on who the first player is -- the second pad normally, but
 // the first pad once a camera has taken the first player's body over.
 std::optional<GamepadState> nui_second_gamepad(uint32_t user, bool racing);
+// Whether a real sensor (SFR_CAMERA=kinect, or a webcam with SFR_CAMERA_RACE=1)
+// tracks the first player's body.
+// The race then reads it through the title's own body record and gesture
+// detectors, and the "On your Gear!" measurements run as on the console,
+// instead of the pad standing in for them (nui_race_hooks.cpp).
+bool nui_body_from_sensor();
 void start_nui_skeleton_events(uint32_t event_handle);
 void stop_nui_skeleton_events();
 }

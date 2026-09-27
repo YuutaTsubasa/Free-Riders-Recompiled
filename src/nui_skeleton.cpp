@@ -142,16 +142,33 @@ void NuiSkeletonEmulation::write_slot(GuestMemory& memory, uint32_t address, uin
 
 void NuiSkeletonEmulation::write_joints(GuestMemory& memory, uint32_t address, uint32_t slot, uint32_t tracking_id,
                                         const std::array<Vector, nui_joint_count>& joints) const {
+    std::array<uint32_t, nui_joint_count> states;
+    states.fill(nui_tracked);
+    write_joints(memory, address, slot, tracking_id, joints, states, joints[nui_joint::hip_center]);
+}
+
+void NuiSkeletonEmulation::write_joints(GuestMemory& memory, uint32_t address, uint32_t slot, uint32_t tracking_id,
+                                        const SkeletonJoints& joints,
+                                        const std::array<uint32_t, nui_joint_count>& states,
+                                        const Vector& position) const {
     const uint64_t data = uint64_t(address) + nui_skeleton_data_offset + uint64_t(slot) * nui_skeleton_data_size;
     memory.store<uint32_t>(data, nui_tracked);
     memory.store<uint32_t>(data + 4, tracking_id);
     // Until identified (-1) the title runs NuiIdentityIdentify on it before
     // it may join; afterwards the guest result.
     memory.store<uint32_t>(data + 8, enrollment_);
-    store_vector(memory, data + 16, joints[nui_joint::hip_center], 1.0f);
+    store_vector(memory, data + 16, position, 1.0f);
     for (uint32_t j = 0; j < nui_joint_count; ++j) {
         store_vector(memory, data + 32 + j * 16, joints[j], 1.0f);
-        memory.store<uint32_t>(data + 352 + j * 4, nui_tracked);
+        memory.store<uint32_t>(data + 352 + j * 4, std::min(states[j], nui_tracked));
     }
+}
+
+void NuiSkeletonEmulation::write_floor(GuestMemory& memory, uint32_t address, const std::array<float, 4>& plane,
+                                       const Vector& gravity) {
+    if (plane[0] == 0.0f && plane[1] == 0.0f && plane[2] == 0.0f) return;
+    store_vector(memory, uint64_t(address) + 16, {plane[0], plane[1], plane[2]}, plane[3]);
+    if (gravity[0] != 0.0f || gravity[1] != 0.0f || gravity[2] != 0.0f)
+        store_vector(memory, uint64_t(address) + 32, gravity, 0.0f);
 }
 }

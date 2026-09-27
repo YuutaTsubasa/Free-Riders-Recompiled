@@ -80,6 +80,9 @@ add_test(NAME nui_device_status COMMAND sfr_nui_device_status_test)
 add_executable(sfr_nui_skeleton_test tests/nui_skeleton_test.cpp src/nui_skeleton.cpp src/nui_device_status.cpp src/guest_memory.cpp)
 target_include_directories(sfr_nui_skeleton_test PRIVATE src)
 add_test(NAME nui_skeleton COMMAND sfr_nui_skeleton_test)
+add_executable(sfr_kinect_sensor_test tests/kinect_sensor_test.cpp src/kinect_sensor.cpp src/kinect_sensor_none.cpp src/nui_skeleton.cpp src/guest_memory.cpp)
+target_include_directories(sfr_kinect_sensor_test PRIVATE src)
+add_test(NAME kinect_sensor COMMAND sfr_kinect_sensor_test)
 add_executable(sfr_nui_speech_test tests/nui_speech_test.cpp src/nui_speech.cpp src/guest_memory.cpp)
 target_include_directories(sfr_nui_speech_test PRIVATE src)
 add_test(NAME nui_speech COMMAND sfr_nui_speech_test)
@@ -199,6 +202,14 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 else()
     set(SFR_CAMERA_CAPTURE src/camera_capture.cpp src/camera_capture_none.cpp)
 endif()
+if(WIN32)
+    set(SFR_KINECT_SENSOR src/kinect_sensor_win32.cpp)
+else()
+    set(SFR_KINECT_SENSOR src/kinect_sensor_none.cpp)
+endif()
+# Checking a host's Kinect without starting the game (no test: it needs one).
+add_executable(sfr_kinect_probe tests/kinect_probe.cpp src/kinect_sensor.cpp ${SFR_KINECT_SENSOR})
+target_include_directories(sfr_kinect_probe PRIVATE src)
 add_executable(sfr_camera_capture_test tests/camera_capture_test.cpp src/camera_capture.cpp)
 target_include_directories(sfr_camera_capture_test PRIVATE src)
 add_test(NAME camera_capture COMMAND sfr_camera_capture_test)
@@ -294,7 +305,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui/imgui.cpp")
     set(SFR_IMGUI "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui")
     # The launcher lists the host cameras and controllers.
     set(SFR_LAUNCHER_SOURCES src/launcher_main.cpp src/launcher_settings.cpp src/input_bindings.cpp src/pad_devices.cpp src/pad_assignment.cpp src/launcher_sound.cpp src/launcher_art.cpp src/sony_gamepad.cpp
-        ${SFR_CAMERA_CAPTURE}
+        ${SFR_CAMERA_CAPTURE} src/kinect_sensor.cpp ${SFR_KINECT_SENSOR}
         ${SFR_IMGUI}/imgui.cpp ${SFR_IMGUI}/imgui_draw.cpp ${SFR_IMGUI}/imgui_tables.cpp ${SFR_IMGUI}/imgui_widgets.cpp)
     if(WIN32)
         add_executable(sfr_launcher WIN32 ${SFR_LAUNCHER_SOURCES} src/launcher_platform_win32.cpp
@@ -621,6 +632,8 @@ if(SFR_BUILD_DIAGNOSTIC)
     # The webcam standing in for the sensor, and the body it finds.
     target_sources(sfr_cpu_diagnostic PRIVATE src/camera_player.cpp src/pose_skeleton.cpp src/pose_smoothing.cpp
                    ${SFR_CAMERA_CAPTURE} ${SFR_POSE_SOURCES})
+    # A real Kinect (SFR_CAMERA=kinect), through the Kinect for Windows runtime.
+    target_sources(sfr_cpu_diagnostic PRIVATE src/kinect_sensor.cpp ${SFR_KINECT_SENSOR})
     if(SFR_POSE_AVAILABLE)
         target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_onnxruntime)
     endif()
