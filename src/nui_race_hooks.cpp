@@ -171,6 +171,14 @@ RACE_DETECTOR(822C9180, {
 RACE_BOARD_ACCELERATION(822C9A80)
 RACE_BOARD_ACCELERATION(822CAF48)
 
+// Side: B held. The original detector reads copied skeleton geometry and
+// tracked hands, which A and stick-down also supply. A false Side result
+// makes the title's group filter suppress crouch and jump (0x1203).
+RACE_DETECTOR(822CA6B0, {
+    if (b.b_held) { set_bits(entry(results) + 4, 0x400000); result = 1; }
+    else { set_bits(entry(results) + 20, 0x2000); result = 2; }
+})
+
 // Brake: B held, harder with the left stick (+80 = strength in percent).
 RACE_DETECTOR(822C9BF0, {
     const uint32_t e = entry(results);
