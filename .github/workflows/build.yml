@@ -38,7 +38,11 @@ jobs:
       - uses: actions/upload-artifact@v6
         with:
           name: launcher-windows
-          path: out/build/host/FreeRidersRecompiled.exe
+          # The launcher, and the probe that checks a real Kinect without the
+          # game (docs/kinect-sensor.md).
+          path: |
+            out/build/host/FreeRidersRecompiled.exe
+            out/build/host/sfr_kinect_probe.exe
 
   linux:
     name: Linux
