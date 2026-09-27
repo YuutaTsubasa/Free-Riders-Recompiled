@@ -51,10 +51,34 @@ bool pose_to_joints(const PoseLandmarks& given, uint32_t picture_width, uint32_t
         if (mapping->scale > 0) metres = mapping->scale + (metres - mapping->scale) * 0.1f;
         mapping->scale = metres;
         // The leading foot is the nearer one, lower in the picture. Ankles
-        // within a sixteenth of the torso of each other say nothing.
+        // within a sixteenth of the torso of each other say nothing, and
+        // neither do ankles when a foot is off the ground: a leg whose ankle
+        // is a third of a torso nearer its hip than the other's is lifted.
         const float ankles = landmarks[ankle_left].y - landmarks[ankle_right].y;
+        const float legs = (landmarks[ankle_left].y - landmarks[hip_left].y) -
+                           (landmarks[ankle_right].y - landmarks[hip_right].y);
         const bool seen = landmarks[ankle_left].score > 0.3f && landmarks[ankle_right].score > 0.3f;
-        if (seen && std::fabs(ankles) > torso_span / 16.0f) mapping->lead = ankles > 0 ? -1 : 1;
+        const bool planted = std::fabs(legs) < torso_span * 0.35f;
+        // Open shoulders: nearly as wide as they truly are, in this scale.
+        const float shoulders = std::fabs(landmarks[shoulder_left].x - landmarks[shoulder_right].x) * metres;
+        if (shoulders >= PoseMapping::open_shoulders * 2.0f * pose_shoulder_half_width) {
+            // A turn is passing: what the feet said before it no longer counts.
+            mapping->since_open = 0;
+            mapping->agreed = 0;
+            mapping->pending = 0;
+        } else {
+            ++mapping->since_open;
+        }
+        if (seen && planted && std::fabs(ankles) > torso_span / 16.0f) {
+            const int side = ankles > 0 ? -1 : 1;
+            mapping->agreed = side == mapping->pending ? mapping->agreed + 1 : 1;
+            mapping->pending = side;
+            // The first side is taken at once; a change waits for agreement,
+            // and for a turn: open shoulders not long before.
+            if (mapping->lead == 0 || (mapping->agreed >= PoseMapping::pictures_to_turn &&
+                                       mapping->since_open <= PoseMapping::turn_window))
+                mapping->lead = side;
+        }
     }
     // The picture is mirrored: a camera faces the player, and the title
     // expects the sensor's own left and right.

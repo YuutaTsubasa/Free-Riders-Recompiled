@@ -133,12 +133,23 @@ public:
     // they must point by (metres, foot ahead of ankle).
     static constexpr uint32_t frames_to_turn = 8;
     static constexpr float least_toe = 0.02f;
+    // An ankle this far above the other (metres) is a lifted foot, left out.
+    static constexpr float lifted_foot = 0.1f;
+    // Turning round passes the shoulders across the screen (facing it or
+    // turned away from it); paddling, stamping and kick boosts keep them
+    // side-on. So once the side has been told, it changes only within this
+    // many frames (1.5 s) of the shoulders having opened to this share of
+    // their span across the screen.
+    static constexpr uint32_t turn_window = 45;
+    static constexpr float open_shoulders = 0.65f;
 private:
     struct Tracked {
         uint32_t id;
         std::array<float, 3> anchor;  // where it was first found
         bool back = false;
         uint32_t streak = 0;          // frames the feet have disagreed with back
+        bool told = false;            // whether the feet have said anything yet
+        uint32_t since_open = UINT32_MAX / 2;  // frames since the shoulders opened
     };
     KinectPlacement placement_;
     std::vector<Tracked> tracked_;

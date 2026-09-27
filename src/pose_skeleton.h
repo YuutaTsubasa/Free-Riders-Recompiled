@@ -48,8 +48,22 @@ struct PoseMapping {
     float scale = 0;
     // The leading side: -1 the left (Regular), 1 the right (Goofy), 0 not
     // yet known (no depth is given until it is). Kept while the ankles are
-    // too level to tell, so it changes only when the rider turns round.
+    // too level to tell, or while a foot is lifted (a kick boost lifts one
+    // and puts it back, and a lifted front foot would look like the far
+    // one), and changed only after a few pictures agree: only when the rider
+    // turns round.
     int lead = 0;
+    int pending = 0;     // the side the last pictures pointed to
+    uint32_t agreed = 0; // how many in a row
+    static constexpr uint32_t pictures_to_turn = 6;
+    // Turning round passes the shoulders through facing the camera (or
+    // turning away from it), where they look nearly their true width;
+    // paddling and stamping keep them side-on, though a paddling foot slides
+    // nearer and so lower. So a change of side is only taken within
+    // turn_window pictures (1.5 s) of the shoulders having looked open.
+    uint32_t since_open = UINT32_MAX / 2;
+    static constexpr uint32_t turn_window = 45;
+    static constexpr float open_shoulders = 0.65f;
 };
 bool pose_to_joints(const PoseLandmarks& landmarks, uint32_t picture_width, uint32_t picture_height,
                     SkeletonJoints& joints, bool picture_is_mirrored = false, PoseMapping* mapping = nullptr);

@@ -171,7 +171,26 @@ void a_turn_gives_the_shoulders_depth() {
     // Facing the screen, the shoulders look their true width: no gap.
     require(sfr::pose_to_joints(standing(), 640, 480, joints, false, &regular) && near(gap(joints), 0.0f, 0.02f),
             "facing the camera, both shoulders are at one distance");
-    // Turned round (switch): the right ankle is lower now, the right leads.
+    // A kick boost lifting the front foot high: its ankle rises far above
+    // the other, which must not read as the far foot.
+    sfr::PoseLandmarks kick = rider(2, 0);
+    kick[ankle_left].y = 450 - 70;
+    kick[knee_left].y = 300;
+    for (int i = 0; i < 10; ++i) require(sfr::pose_to_joints(kick, 640, 480, joints, false, &regular), "a kick maps");
+    require(regular.lead == -1, "a lifted foot does not change the leading side");
+    // Paddling: the back foot slides nearer, so lower, for longer than a few
+    // pictures, but the shoulders stay side-on: no switch. (Riding side-on
+    // for a while first, so the facing picture above is long past.)
+    for (int i = 0; i < 50; ++i) require(sfr::pose_to_joints(rider(2, 0), 640, 480, joints, false, &regular), "riding maps");
+    for (int i = 0; i < 60; ++i) require(sfr::pose_to_joints(rider(2, -20), 640, 480, joints, false, &regular), "a paddle maps");
+    require(regular.lead == -1, "a paddling foot sliding nearer is not a turn");
+    // Turned round (switch): the shoulders pass through facing the camera,
+    // then the right ankle is lower, the right leads once a few agree.
+    require(sfr::pose_to_joints(standing(), 640, 480, joints, false, &regular), "the turn passes the front");
+    for (uint32_t i = 1; i < sfr::PoseMapping::pictures_to_turn; ++i) {
+        require(sfr::pose_to_joints(rider(2, -20), 640, 480, joints, false, &regular), "a switch maps");
+        require(regular.lead == -1, "a picture or two of a turn is not a switch yet");
+    }
     require(sfr::pose_to_joints(rider(2, -20), 640, 480, joints, false, &regular) && regular.lead == 1 &&
                 gap(joints) < -0.3f,
             "after a switch the right shoulder is the nearer one");

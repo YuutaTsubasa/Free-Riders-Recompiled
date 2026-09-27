@@ -64,16 +64,36 @@ void KinectPlacementTransform::apply(KinectFrame& frame) {
         // sees a profile in either stance, and nothing is changed.
         using namespace nui_joint;
         if (std::fabs(s) > 0.5f) {
-            const float toes = 0.5f * ((body.joints[foot_left][0] - body.joints[ankle_left][0]) +
-                                       (body.joints[foot_right][0] - body.joints[ankle_right][0]));
+            // A kick boost lifts a foot and puts it back, and a lifted foot
+            // dangles: only a foot on the ground says where the toes point.
+            const float left_toes = body.joints[foot_left][0] - body.joints[ankle_left][0];
+            const float right_toes = body.joints[foot_right][0] - body.joints[ankle_right][0];
+            const float lift = body.joints[ankle_left][1] - body.joints[ankle_right][1];  // > 0: the left is up
+            const float toes = lift > lifted_foot ? right_toes : lift < -lifted_foot ? left_toes
+                                                                                     : 0.5f * (left_toes + right_toes);
             const float towards_sensor = toes * (s > 0 ? 1.0f : -1.0f);
+            // The shoulders' line, measured and not named, so a swap does not
+            // matter: across the screen (x) when the rider faces it or turns
+            // away, along it (z) when side-on.
+            const float across = body.joints[shoulder_right][0] - body.joints[shoulder_left][0];
+            const float along = body.joints[shoulder_right][2] - body.joints[shoulder_left][2];
+            const float span = std::sqrt(across * across + along * along);
+            if (span > 0.1f && std::fabs(across) >= open_shoulders * span) {
+                // A turn is passing: what the feet said before it no longer counts.
+                entry->since_open = 0;
+                entry->streak = 0;
+            } else {
+                ++entry->since_open;
+            }
             if (std::fabs(towards_sensor) >= least_toe) {
                 const bool back = towards_sensor < 0;
                 entry->streak = back == entry->back ? 0 : entry->streak + 1;
-                if (entry->streak >= frames_to_turn) {
+                const bool may_turn = !entry->told || entry->since_open <= turn_window;
+                if (entry->streak >= frames_to_turn && may_turn) {
                     entry->back = back;
                     entry->streak = 0;
                 }
+                if (entry->streak == 0) entry->told = true;
             }
         }
         if (entry->back) {

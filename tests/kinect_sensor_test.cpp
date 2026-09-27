@@ -212,6 +212,16 @@ int main() {
             side.apply(frame);
             require(!side.sees_back(3) && frame.bodies[0].joint_states[hand_left] == 1,
                     "a chest towards the sensor keeps the tracker's left and right");
+            // Turning round passes the shoulders across the screen: seen from
+            // the right sensor, one behind the other along its line of sight.
+            const auto turning = [&] {
+                sfr::KinectFrame open = rider(0.0f);
+                open.bodies[0].joints[shoulder_left] = {0.0f, 0.4f, 1.8f};
+                open.bodies[0].joints[shoulder_right] = {0.0f, 0.4f, 2.2f};
+                return open;
+            };
+            frame = turning();
+            side.apply(frame);
             for (uint32_t i = 1; i < sfr::KinectPlacementTransform::frames_to_turn; ++i) {
                 frame = rider(0.08f);
                 side.apply(frame);
@@ -225,12 +235,39 @@ int main() {
             frame = rider(0.005f);
             side.apply(frame);
             require(side.sees_back(3), "feet too level to tell leave the side as it was");
+            // Paddling or stamping: the feet may point wrong for a while, but
+            // the shoulders never open across the screen, so nothing turns.
+            // (Riding a while first, so the turn above is long past.)
+            for (uint32_t i = 0; i < 50; ++i) {
+                frame = rider(0.005f);
+                side.apply(frame);
+            }
+            for (uint32_t i = 0; i < 3 * sfr::KinectPlacementTransform::frames_to_turn; ++i) {
+                frame = rider(-0.08f);
+                side.apply(frame);
+            }
+            require(side.sees_back(3), "feet alone, with the shoulders side-on, are not a turn");
+            // Turning round passes the shoulders across the screen: seen from
+            // the right sensor, one behind the other along its line of sight.
+            frame = turning();
+            side.apply(frame);
             for (uint32_t i = 0; i < sfr::KinectPlacementTransform::frames_to_turn; ++i) {
                 frame = rider(-0.08f);
                 side.apply(frame);
             }
             require(!side.sees_back(3) && frame.bodies[0].joint_states[hand_left] == 1,
                     "turning back to the sensor ends the swap");
+
+            // A kick boost: one foot lifted, dangling with its toes the other
+            // way. Only the planted foot counts, and nothing turns.
+            for (uint32_t i = 0; i < 2 * sfr::KinectPlacementTransform::frames_to_turn; ++i) {
+                frame = rider(-0.08f);
+                auto& kicking = frame.bodies[0];
+                kicking.joints[ankle_right] = {0.0f, -0.6f, 2.0f};  // lifted 30 cm
+                kicking.joints[foot_right] = {0.0f, -0.7f, 2.0f + 0.3f};  // toes swung away
+                side.apply(frame);
+            }
+            require(!side.sees_back(3), "a lifted, dangling foot does not turn the player round");
 
             // In front, a profile in either stance: nothing is swapped.
             sfr::KinectPlacementTransform ahead(sfr::KinectPlacement::behind);
