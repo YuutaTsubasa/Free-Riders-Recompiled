@@ -168,7 +168,8 @@ void run() {
     sfr::GuestMemory m;
     sfr::active_memory = &m;
     m.map(box, 0x5000);
-    m.map(0x83E51000, 0x2000);
+    // Include the title globals with alignment valid on 16 KiB-page hosts.
+    m.map(0x83E50000, 0x4000);
     m.store<uint32_t>(nui_box_global, box);
     m.store<uint32_t>(box + 0x78, original);
     m.store<uint32_t>(race_flag_global, 1);
