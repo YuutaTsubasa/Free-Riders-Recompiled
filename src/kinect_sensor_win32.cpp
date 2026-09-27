@@ -82,6 +82,8 @@ public:
         if (library_) FreeLibrary(library_);
     }
 
+    const char* model() const override { return "Kinect v1"; }
+
     bool start(std::string* why) {
         library_ = LoadLibraryW(L"Kinect10.dll");
         if (!library_) { if (why) *why = "no-runtime"; return false; }
@@ -163,7 +165,7 @@ private:
             }
             const auto now = std::chrono::steady_clock::now();
             if (now - reported >= std::chrono::seconds(5)) {
-                std::cerr << "NATIVE_KINECT frames=" << frames << " with_body=" << tracked
+                std::cerr << "NATIVE_KINECT model=v1 frames=" << frames << " with_body=" << tracked
                           << " bodies=" << frame.bodies.size() << '\n';
                 reported = now;
                 frames = tracked = 0;
@@ -185,12 +187,18 @@ private:
 
 }
 
+std::unique_ptr<KinectSensor> open_kinect_v2(std::string* why);  // kinect_v2_win32.cpp
+
 bool KinectSensor::supported() { return true; }
 
 std::unique_ptr<KinectSensor> KinectSensor::open(std::string* why) {
-    auto sensor = std::make_unique<WindowsKinect>();
-    if (!sensor->start(why)) return nullptr;
-    return sensor;
+    // The Xbox 360 kind first: its runtime answers at once whether a sensor
+    // is there, where v2's takes a moment to tell.
+    std::string v1_why, v2_why;
+    if (auto sensor = std::make_unique<WindowsKinect>(); sensor->start(&v1_why)) return sensor;
+    if (auto sensor = open_kinect_v2(&v2_why)) return sensor;
+    if (why) *why = kinect_open_failure(v1_why, v2_why);
+    return nullptr;
 }
 
 }

@@ -45,8 +45,8 @@ What works today:
 - Playing without Kinect: the Kinect is emulated. Buttons stand in for the
   voice commands the menus understand, and the pad drives the body a race
   reads (leaning, jumping, kick dash, grabbing, tricks).
-- A real Kinect on Windows (Xbox 360 or Kinect for Windows v1, with the
-  Kinect for Windows SDK 1.8): the sensor's skeletons go to the game, which
+- A real Kinect on Windows (Xbox 360 / Kinect for Windows v1 with the Kinect
+  for Windows SDK 1.8, or Kinect v2 with SDK 2.0): the sensor's skeletons go to the game, which
   reads them with its own gesture detectors, as on the console; or a webcam
   standing in for it ([docs/kinect-sensor.md](docs/kinect-sensor.md),
   [docs/camera-input.md](docs/camera-input.md)). Not yet tried on hardware.

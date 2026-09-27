@@ -35,6 +35,26 @@
 5. 站在感測器前約 1.5～3 公尺、全身入鏡，開始遊戲。log 會有 `NATIVE_KINECT started=1`，
    之後每五秒一行 `NATIVE_KINECT frames=… with_body=… bodies=…`。
 
+## Kinect v2（Xbox One 版）
+
+1. 需要 **Kinect v2**（Xbox One 版需另購 *Kinect Adapter for Windows*，副廠也可）與
+   電腦上的 **USB 3.0** 連接埠（Intel 或 Renesas 晶片的控制器較穩，部分 AMD 控制器有相容性問題）。
+2. 安裝 [Kinect for Windows SDK 2.0](https://www.microsoft.com/download/details.aspx?id=44561)，
+   可以先用 SDK Browser 裡的 *Body Basics* 確認骨架正常。
+3. launcher 一樣選 **Kinect**：先找 Xbox 360 版，找不到再找 v2，會用第一台找到的。
+   log 會寫 `NATIVE_KINECT started=1 model=Kinect v2`。
+
+v2 有 25 個關節，前 20 個與第一代同名同順序，只有一處不同：第一代的「肩中心」
+對應 v2 的 SpineShoulder（20），而不是位置更高的 Neck（2）；指尖與拇指（21～24）不用。
+身體中心用 SpineBase。座標系與第一代相同（公尺、+x 朝玩家右手、+z 離開感測器），
+所以不用換算。v2 SDK 沒有第一代的 `NuiTransformSmooth`，關節直接交給遊戲；
+v2 本身比第一代穩定，實測若覺得抖再加平滑。
+
+程式在 [`kinect_v2_win32.cpp`](../src/kinect_v2_win32.cpp)：執行時才載入 `Kinect20.dll`，
+COM 介面依 SDK 2.0 的 `Kinect.h` 宣告到用得到的最後一個方法為止（vtable 只看順序）。
+關節對應與「兩種感測器都失敗時回報哪個原因」在 [`kinect_sensor.cpp`](../src/kinect_sensor.cpp)，
+有單元測試。
+
 不開遊戲也可以檢查：`sfr_kinect_probe [秒數]` 會印出追蹤到的人與右手位置。
 
 找不到感測器或執行階段時（`NATIVE_KINECT started=0 reason=…`），遊戲會退回手把
@@ -69,14 +89,14 @@
 
 - **Linux**：Kinect 第一代沒有骨架追蹤器可用，但核心的 `gspca_kinect` 驅動會把
   它的彩色鏡頭變成一般的 `/dev/videoN`，可以用「體感」（webcam）模式讀它。
-- **Kinect v2（Xbox One 版）**：尚未支援（需要 `Kinect20.dll` 的 COM 介面，25 個
-  關節要對應到 20 個）。
 
 ## 還沒驗證的
 
 這台開發機沒有 Kinect，也沒有遊戲光碟：資料結構大小由編譯期檢查確認
-（`NUI_SKELETON_DATA` 436 bytes、`NUI_SKELETON_FRAME` 2664 bytes），欄位分配與
-框架寫入有單元測試（`kinect_sensor` CTest），但**實機遊玩還沒試過**。
+（`NUI_SKELETON_DATA` 436 bytes、`NUI_SKELETON_FRAME` 2664 bytes、v2 `Joint` 20 bytes），
+欄位分配、v2 關節對應與框架寫入有單元測試（`kinect_sensor` CTest），Windows 版以
+mingw 編譯連結過，但**兩種感測器都還沒在實機上試過**。v2 的 COM 方法順序若與 SDK
+不符，`sfr_kinect_probe` 會讀不到骨架或當掉，那是最先要看的地方。
 特別需要確認的：
 
 - 選單的手部游標位置是否對得上（模擬玩家的右手在 x=0.175 為畫面中央）。

@@ -145,7 +145,8 @@ SFR_HOOK(sub_827707B0) {
             // Without a sensor the pad's emulated player carries on, so a
             // Kinect left unplugged does not leave the title unplayable.
             std::cerr << "NATIVE_KINECT started=" << (kinect?1:0);
-            if(!kinect) std::cerr << " reason=" << why << " fallback=pad";
+            if(kinect) std::cerr << " model=" << kinect->model();
+            else std::cerr << " reason=" << why << " fallback=pad";
             std::cerr << '\n';
         } else {
             camera_player=sfr::CameraPlayer::start();

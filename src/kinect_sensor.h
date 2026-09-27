@@ -19,7 +19,11 @@ namespace sfr {
 //
 // SFR_CAMERA=kinect asks for it. A Kinect for Xbox 360 (with its USB power
 // adapter) or a Kinect for Windows v1 both work, with the Kinect for Windows
-// Runtime 1.8 installed. Other platforms have no skeleton tracker for it;
+// SDK 1.8 installed. So does the newer Kinect v2 (Xbox One or Kinect for
+// Windows v2, with its adapter and SDK 2.0, Kinect20.dll): the same camera
+// space, and 25 joints of which the 20 the title knows are taken (see
+// kinect_v2_body). The first sensor found is used, the older kind first.
+// Other platforms have no skeleton tracker for either;
 // on Linux the kernel's gspca_kinect driver shows the sensor's colour camera
 // as a webcam, which SFR_CAMERA=motion can read instead.
 
@@ -37,7 +41,7 @@ struct KinectFrame {
     // to gravity (straight up); all zero when it could not tell.
     std::array<float, 4> floor_plane{};
     std::array<float, 3> gravity{};
-    std::vector<KinectBody> bodies;  // at most two: the sensor tracks two fully
+    std::vector<KinectBody> bodies;  // the fully tracked ones: two on a v1, up to six on a v2
 };
 
 class KinectSensor {
@@ -51,7 +55,30 @@ public:
     static std::unique_ptr<KinectSensor> open(std::string* why = nullptr);
     // Whether this build can talk to a sensor at all.
     static bool supported();
+    // "Kinect v1" or "Kinect v2", for the log.
+    virtual const char* model() const = 0;
 };
+
+// Kinect v2's joints, in its JointType order: the first twenty are the v1
+// joints in the same order, except that v2 puts its neck (2) above the
+// shoulders and adds a spine point between them (20, SpineShoulder), which
+// is where v1's shoulder centre sits. 21..24 are the fingertips and thumbs.
+constexpr uint32_t kinect_v2_joint_count = 25;
+namespace kinect_v2_joint {
+constexpr uint32_t spine_base = 0, spine_mid = 1, neck = 2, spine_shoulder = 20;
+}
+struct KinectV2Joint {
+    std::array<float, 3> position{};  // camera space, metres, as v1's
+    uint32_t state = 0;               // 0 not tracked, 1 inferred, 2 tracked
+};
+// A v2 body as the v1 skeleton the title reads.
+void kinect_v2_body(const std::array<KinectV2Joint, kinect_v2_joint_count>& joints, uint32_t tracking_id,
+                    KinectBody& body);
+
+// Why no sensor opened, from why each kind failed ("no-runtime",
+// "no-sensor", ...): a runtime that is installed says more than one that is
+// not, so it is its reason that counts; with neither, "no-runtime".
+std::string kinect_open_failure(const std::string& v1, const std::string& v2);
 
 // Which of the tracked bodies play as the title's two Kinect players. The
 // title follows a player by the slot and the tracking id it was identified

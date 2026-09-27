@@ -76,7 +76,7 @@ enum Text {
     CameraLabel, CameraHint, CameraOff, CameraPicture, CameraMotion, CameraDevice, CameraDeviceHint, CameraNone,
     CameraTest, CameraTesting, CameraWorks, CameraSilent, CameraClosed, CameraMirror, CameraMirrorHint,
     CameraRace, CameraRaceHint, CameraKinect, KinectRow, KinectRowHint, KinectWorks, KinectSilent, KinectMissing,
-    KinectNoRuntime, KinectNoSensor, KinectFailed, KinectDownload, KinectInstallHint,
+    KinectNoRuntime, KinectNoSensor, KinectFailed, KinectDownload, KinectDownloadV2, KinectInstallHint,
     ImageDirectory, ImageDirectoryHint, AssetDirectory, AssetDirectoryHint, Browse, Found, Missing, FilesHint,
     StartGame, Quit, Defaults,
     MissingFiles, MissingGame, LaunchFailed, Ready,
@@ -157,17 +157,18 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
      "攝影機追蹤到的身體也用於比賽：傾身轉彎、蹲下、跳躍。webcam 沒有深度資訊，因此朝螢幕方向的動作無法辨識。"},
     {"Kinect", "Kinect"},
     {"Kinect sensor", "Kinect 感測器"},
-    {"A real Kinect (Xbox 360 or Kinect for Windows v1) tracks you as the console did. Needs the Kinect for Windows SDK 1.8 (runtime and drivers).",
-     "由實體 Kinect（Xbox 360 版或 Kinect for Windows 第一代）像主機一樣追蹤你的身體。需要安裝 Kinect for Windows SDK 1.8（含執行階段與驅動程式）。"},
+    {"A real Kinect tracks you as the console did: an Xbox 360 Kinect (Kinect for Windows SDK 1.8) or a Kinect v2 for Xbox One (SDK 2.0). The first one found is used.",
+     "由實體 Kinect 像主機一樣追蹤你的身體：Xbox 360 版（需 Kinect for Windows SDK 1.8）或 Xbox One 版 Kinect v2（需 SDK 2.0）。會使用第一台找到的。"},
     {"Kinect is working", "Kinect 運作中"},
     {"Kinect opened, but sends nothing", "Kinect 已開啟，但沒有資料"},
     {"No Kinect found", "找不到 Kinect"},
-    {"Kinect SDK 1.8 is not installed", "尚未安裝 Kinect SDK 1.8"},
+    {"No Kinect SDK is installed", "尚未安裝 Kinect SDK"},
     {"No Kinect connected", "沒有連接 Kinect"},
     {"Kinect found, but it will not start", "找到 Kinect，但無法啟動"},
-    {"Download the SDK", "下載 SDK"},
-    {"An Xbox 360 Kinect needs the full Kinect for Windows SDK 1.8 (the Runtime alone refuses it). Install it, plug the sensor in through its power adapter, then test again. If it still will not start, close other programs using the Kinect.",
-     "Xbox 360 版 Kinect 需要完整的 Kinect for Windows SDK 1.8（只裝 Runtime 會被拒絕）。安裝後，用電源轉接線接上感測器再測試一次。若仍無法啟動，請關閉其他正在使用 Kinect 的程式。"},
+    {"SDK 1.8 (Xbox 360)", "SDK 1.8（Xbox 360 版）"},
+    {"SDK 2.0 (Kinect v2)", "SDK 2.0（Kinect v2）"},
+    {"An Xbox 360 Kinect needs the full Kinect for Windows SDK 1.8 (the Runtime alone refuses it); a Kinect v2 needs SDK 2.0 and a USB 3.0 port. Install the one for your sensor, plug it in through its adapter, then test again. If it still will not start, close other programs using the Kinect.",
+     "Xbox 360 版 Kinect 需要完整的 Kinect for Windows SDK 1.8（只裝 Runtime 會被拒絕）；Kinect v2 需要 SDK 2.0 與 USB 3.0 連接埠。請安裝對應的 SDK，用轉接器接上感測器後再測試一次。若仍無法啟動，請關閉其他正在使用 Kinect 的程式。"},
     {"Game code image", "遊戲程式映像"},
     {"The game's decoded code and data (complete.txt, image.bin).", "解碼後的遊戲程式與資料（complete.txt、image.bin）。"},
     {"Game data", "遊戲資料"},
@@ -1717,10 +1718,16 @@ struct Launcher {
             });
             // Anything short of a working sensor: what to install and check.
             if (state == KinectTrial::no_runtime || state == KinectTrial::no_sensor || state == KinectTrial::failed) {
-                const float download_width = ImGui::CalcTextSize(tr(KinectDownload)).x + ImGui::GetStyle().FramePadding.x * 4;
-                setting_row(tr(trial[int(state)]), tr(KinectInstallHint), download_width, scale, [&] {
-                    if (ImGui::Button(tr(KinectDownload), ImVec2(download_width, 0)))
+                const float padding = ImGui::GetStyle().FramePadding.x * 4;
+                const float v1_width = ImGui::CalcTextSize(tr(KinectDownload)).x + padding;
+                const float v2_width = ImGui::CalcTextSize(tr(KinectDownloadV2)).x + padding;
+                setting_row(tr(trial[int(state)]), tr(KinectInstallHint),
+                            v1_width + v2_width + ImGui::GetStyle().ItemSpacing.x, scale, [&] {
+                    if (ImGui::Button(tr(KinectDownload), ImVec2(v1_width, 0)))
                         sfr::launcher::open_url("https://www.microsoft.com/download/details.aspx?id=40278");
+                    ImGui::SameLine();
+                    if (ImGui::Button(tr(KinectDownloadV2), ImVec2(v2_width, 0)))
+                        sfr::launcher::open_url("https://www.microsoft.com/download/details.aspx?id=44561");
                 });
             }
         } else if (settings.camera != "off") {

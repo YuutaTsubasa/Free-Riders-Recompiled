@@ -81,6 +81,34 @@ int main() {
                 "inferred joints stay inferred");
         require(memory.load<uint32_t>(address + sfr::nui_skeleton_data_offset) == 0, "the empty slot stays empty");
 
+        // Kinect v2: its first twenty joints are v1's, but v1's shoulder
+        // centre is v2's spine-shoulder (20), not its neck (2).
+        std::array<sfr::KinectV2Joint, sfr::kinect_v2_joint_count> v2{};
+        for (uint32_t j = 0; j < sfr::kinect_v2_joint_count; ++j) v2[j] = {{float(j), 0.5f, 2.0f}, 2};
+        v2[sfr::nui_joint::hand_left].state = 1;
+        v2[sfr::kinect_v2_joint::spine_shoulder].state = 7;
+        sfr::KinectBody from_v2;
+        sfr::kinect_v2_body(v2, 42, from_v2);
+        require(from_v2.tracking_id == 42, "a v2 body keeps its tracking id");
+        require(from_v2.joints[sfr::nui_joint::shoulder_center][0] == float(sfr::kinect_v2_joint::spine_shoulder),
+                "v1's shoulder centre comes from v2's spine-shoulder");
+        require(from_v2.joint_states[sfr::nui_joint::shoulder_center] == sfr::nui_tracked,
+                "a joint state past tracked is read as tracked");
+        for (uint32_t j = 0; j < sfr::nui_joint_count; ++j)
+            if (j != sfr::nui_joint::shoulder_center)
+                require(from_v2.joints[j][0] == float(j), "the other joints keep their places");
+        require(from_v2.joint_states[sfr::nui_joint::hand_left] == 1, "an inferred v2 joint stays inferred");
+        require(from_v2.position[0] == float(sfr::kinect_v2_joint::spine_base), "the body's centre is its spine base");
+
+        // Why neither sensor opened: the reason of a runtime that is there.
+        require(sfr::kinect_open_failure("no-runtime", "no-runtime") == "no-runtime", "nothing installed");
+        require(sfr::kinect_open_failure("no-sensor", "no-runtime") == "no-sensor", "only SDK 1.8, no sensor");
+        require(sfr::kinect_open_failure("no-runtime", "no-sensor") == "no-sensor", "only SDK 2.0, no sensor");
+        require(sfr::kinect_open_failure("no-sensor", "initialize-0x80070005") == "initialize-0x80070005",
+                "a v2 that is there but will not start says more than a missing v1");
+        require(sfr::kinect_open_failure("initialize-0x8007048F", "no-sensor") == "initialize-0x8007048F",
+                "a v1 that will not start says more than a missing v2");
+
         std::string why;
         if (!sfr::KinectSensor::supported())
             require(!sfr::KinectSensor::open(&why) && !why.empty(), "a platform without a runtime says why");
