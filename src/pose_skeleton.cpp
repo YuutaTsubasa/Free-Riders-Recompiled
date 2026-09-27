@@ -19,7 +19,7 @@ Point between(const Point& from, const Point& to, float part) {
 }
 
 bool pose_to_joints(const PoseLandmarks& given, uint32_t picture_width, uint32_t picture_height,
-                    SkeletonJoints& joints, bool picture_is_mirrored) {
+                    SkeletonJoints& joints, bool picture_is_mirrored, float* scale) {
     if (!picture_width || !picture_height) return false;
     using namespace pose_point;
     // A mirrored picture is turned back first: every point moves to the other
@@ -38,13 +38,21 @@ bool pose_to_joints(const PoseLandmarks& given, uint32_t picture_width, uint32_t
     const float torso = (std::min)((std::min)(landmarks[shoulder_left].score, landmarks[shoulder_right].score),
                                    (std::min)(landmarks[hip_left].score, landmarks[hip_right].score));
     if (torso <= 0) return false;
-    const float shoulder_span = std::fabs(landmarks[shoulder_left].x - landmarks[shoulder_right].x);
-    if (shoulder_span < 1.0f) return false;  // too small to scale by
-
-    // Metres per picture pixel, so that the shoulders come out the width the
-    // emulated player's are. The picture is mirrored: a camera faces the
-    // player, and the title expects the sensor's own left and right.
-    const float metres = pose_shoulder_half_width * 2.0f / shoulder_span;
+    // Metres per picture pixel, so that the torso comes out the length the
+    // emulated player's is (see pose_skeleton.h for why not the shoulders).
+    const float torso_x = (landmarks[shoulder_left].x + landmarks[shoulder_right].x -
+                           landmarks[hip_left].x - landmarks[hip_right].x) * 0.5f;
+    const float torso_y = (landmarks[shoulder_left].y + landmarks[shoulder_right].y -
+                           landmarks[hip_left].y - landmarks[hip_right].y) * 0.5f;
+    const float torso_span = std::sqrt(torso_x * torso_x + torso_y * torso_y);
+    if (torso_span < 4.0f) return false;  // too small to scale by
+    float metres = pose_torso_length / torso_span;
+    if (scale) {
+        if (*scale > 0) metres = *scale + (metres - *scale) * 0.1f;
+        *scale = metres;
+    }
+    // The picture is mirrored: a camera faces the player, and the title
+    // expects the sensor's own left and right.
     const Point centre{(landmarks[shoulder_left].x + landmarks[shoulder_right].x +
                         landmarks[hip_left].x + landmarks[hip_right].x) * 0.25f,
                        (landmarks[hip_left].y + landmarks[hip_right].y) * 0.5f, 0};

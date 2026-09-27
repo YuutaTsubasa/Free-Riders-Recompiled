@@ -18,12 +18,14 @@ sfr::PoseLandmarks standing() {
     const auto put = [&](uint32_t point, float x, float y) { landmarks[point] = {x, y, 0.9f}; };
     put(nose, 320, 120);
     // A camera faces the player, so the player's right is the picture's left.
-    put(shoulder_left, 360, 170);
-    put(shoulder_right, 280, 170);
-    put(elbow_left, 370, 230);
-    put(elbow_right, 270, 230);
-    put(wrist_left, 375, 290);
-    put(wrist_right, 265, 290);
+    // Shoulders about three quarters as wide as the torso is long, as
+    // people's are (the torso, 130 px, is what the picture is scaled by).
+    put(shoulder_left, 369, 170);
+    put(shoulder_right, 271, 170);
+    put(elbow_left, 379, 230);
+    put(elbow_right, 261, 230);
+    put(wrist_left, 384, 290);
+    put(wrist_right, 256, 290);
     put(hip_left, 345, 300);
     put(hip_right, 295, 300);
     put(knee_left, 348, 380);
@@ -100,8 +102,39 @@ void what_is_refused() {
     require(!sfr::pose_to_joints(nothing, 640, 480, joints), "no confidence, no skeleton");
     require(!sfr::pose_to_joints(standing(), 0, 480, joints), "an empty picture is refused");
     sfr::PoseLandmarks squashed = standing();
-    squashed[sfr::pose_point::shoulder_left].x = squashed[sfr::pose_point::shoulder_right].x;
-    require(!sfr::pose_to_joints(squashed, 640, 480, joints), "shoulders at one point cannot be scaled by");
+    for (const uint32_t point : {sfr::pose_point::hip_left, sfr::pose_point::hip_right})
+        squashed[point].y = squashed[sfr::pose_point::shoulder_left].y;
+    require(!sfr::pose_to_joints(squashed, 640, 480, joints), "hips level with the shoulders cannot be scaled by");
+}
+
+// A board is ridden side-on: from the front the shoulders are one behind
+// the other. The body keeps its height, which the shoulders alone lost.
+void a_side_on_rider_keeps_its_size() {
+    using namespace sfr::pose_point;
+    sfr::PoseLandmarks side = standing();
+    side[shoulder_left].x = 322;
+    side[shoulder_right].x = 318;
+    side[hip_left].x = 322;
+    side[hip_right].x = 318;
+    sfr::SkeletonJoints front{}, turned{};
+    require(sfr::pose_to_joints(standing(), 640, 480, front), "facing the camera maps");
+    require(sfr::pose_to_joints(side, 640, 480, turned), "side-on maps too");
+    namespace joint = sfr::nui_joint;
+    require(near(turned[joint::head][1] - turned[joint::ankle_left][1],
+                 front[joint::head][1] - front[joint::ankle_left][1]),
+            "side-on, the body is as tall as facing the camera");
+    require(near(front[joint::shoulder_center][1] - front[joint::hip_center][1], sfr::pose_torso_length),
+            "the torso comes out the emulated player's length");
+
+    // The scale follows slowly: a sudden half-length torso (a bend towards
+    // the camera) moves it a tenth of the way.
+    float scale = 0;
+    require(sfr::pose_to_joints(standing(), 640, 480, front, false, &scale) && scale > 0, "the scale starts");
+    const float settled = scale;
+    sfr::PoseLandmarks bent = standing();
+    for (const uint32_t point : {shoulder_left, shoulder_right}) bent[point].y = 235;
+    require(sfr::pose_to_joints(bent, 640, 480, turned, false, &scale), "a bent body maps");
+    require(near(scale, settled * 1.1f, settled * 0.01f), "one picture moves the scale a tenth of the way");
 }
 }
 
@@ -111,6 +144,7 @@ int main() {
         a_raised_arm_raises_the_hand();
         a_mirrored_picture_comes_out_the_same_way_round();
         what_is_refused();
+        a_side_on_rider_keeps_its_size();
         std::cout << "Pose skeleton checks passed\n";
         return 0;
     } catch (const std::exception& error) {
