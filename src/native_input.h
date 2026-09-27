@@ -44,6 +44,9 @@ GamepadState merge_gamepads(const GamepadState& first, const GamepadState& secon
 // Big-endian XINPUT_STATE: packet number, then XINPUT_GAMEPAD.
 void write_xinput_state(GuestMemory& memory, uint32_t address, uint32_t packet, const GamepadState& state);
 
+struct InputBindings;
+enum class PlayerDevice : uint8_t;
+
 class NativeInput {
 public:
     // pad(user) reads a host controller; keyboard() reads the fallback keys
@@ -59,9 +62,10 @@ public:
     // The merged state of user 0 (pad, keyboard, script) or a host pad; null
     // when that user has no controller.
     std::optional<GamepadState> current(uint32_t user) const;
-    // The controller alone, with nothing merged into it: null when that
-    // player is not holding one. User 0's current() is keyboard-backed and so
-    // never null, which says nothing about whether anybody is there.
+    // The configured controller alone, with its bindings applied and nothing
+    // merged into it: null for keyboard/off slots or an absent controller.
+    // User 0's current() is always connected, which says nothing about whether
+    // anybody is there.
     std::optional<GamepadState> controller(uint32_t user) const;
     // XamInputSetState: forward rumble motor speeds to a host pad when present.
     // User 0 is always connected (keyboard-backed), so it always succeeds.
@@ -74,10 +78,19 @@ public:
     static NativeInput sdl(std::function<void*()> focus_window, std::function<double()> script_clock = {});
     // windows() on Windows, sdl() elsewhere.
     static NativeInput host(std::function<void*()> focus_window, std::function<double()> script_clock = {});
+    // Configure an input slot without changing the release's supported game modes.
+    void set_player(uint32_t user, PlayerDevice device, std::shared_ptr<const InputBindings> pad,
+                    std::function<GamepadState()> keyboard = {});
 private:
     void attach_script(std::function<double()> script_clock);
     std::function<std::optional<GamepadState>(uint32_t)> pad_;
     std::function<GamepadState()> keyboard_;
+    struct Player {
+        uint8_t device = 0;
+        std::shared_ptr<const InputBindings> pad;
+        std::function<GamepadState()> keyboard;
+    };
+    std::array<Player, 4> players_{};
     std::function<GamepadState()> script_ = [] { return GamepadState{}; };
     std::function<bool(uint32_t, uint16_t, uint16_t)> vibrate_ = [](uint32_t, uint16_t, uint16_t) { return false; };
     // Held only over last_ and packets_. Indirect because a NativeInput is

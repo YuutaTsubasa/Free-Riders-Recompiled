@@ -2,6 +2,7 @@
 #include "native_presentation.h"
 
 #include "plume_render_interface.h"
+#include <volk.h>
 
 #ifdef _WIN32
 #include "plume_d3d12.h"
@@ -33,6 +34,96 @@ bool rejects_with(Operation operation) {
 // The native-handle checks are D3D12's; the behaviour checks run on both
 // backends (SFR_GRAPHICS=vulkan).
 bool d3d12() { return sfr::selected_graphics_backend() == sfr::GraphicsBackend::d3d12; }
+
+// Exercise the real swap-chain path against a surface with fewer optional
+// usages. A strict driver rejects unsupported flags instead of ignoring them.
+struct RestrictedSurface {
+    inline static PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR get_capabilities;
+    inline static PFN_vkCreateSwapchainKHR create_swapchain;
+    inline static PFN_vkCmdCopyImage copy_image;
+    inline static VkImageUsageFlags allowed_usage;
+    inline static VkImageUsageFlags reported_usage;
+    inline static unsigned creates, rejected, copies;
+    inline static unsigned queries, fail_query;
+
+    static VKAPI_ATTR VkResult VKAPI_CALL capabilities(
+        VkPhysicalDevice device, VkSurfaceKHR surface, VkSurfaceCapabilitiesKHR* caps) {
+        if (++queries == fail_query) return VK_ERROR_SURFACE_LOST_KHR;
+        const auto result = get_capabilities(device, surface, caps);
+        if (result == VK_SUCCESS) {
+            caps->supportedUsageFlags &= allowed_usage;
+            reported_usage = caps->supportedUsageFlags;
+        }
+        return result;
+    }
+    static VKAPI_ATTR VkResult VKAPI_CALL create(
+        VkDevice device, const VkSwapchainCreateInfoKHR* info,
+        const VkAllocationCallbacks* allocator, VkSwapchainKHR* swapchain) {
+        ++creates;
+        if (info->imageUsage & ~reported_usage) {
+            ++rejected;
+            return VK_ERROR_UNKNOWN;
+        }
+        return create_swapchain(device, info, allocator, swapchain);
+    }
+    static VKAPI_ATTR void VKAPI_CALL copy(
+        VkCommandBuffer command, VkImage source, VkImageLayout source_layout,
+        VkImage destination, VkImageLayout destination_layout, uint32_t count, const VkImageCopy* regions) {
+        ++copies;
+        copy_image(command, source, source_layout, destination, destination_layout, count, regions);
+    }
+    explicit RestrictedSurface(VkImageUsageFlags usage, unsigned fail = 0) {
+        get_capabilities = vkGetPhysicalDeviceSurfaceCapabilitiesKHR;
+        create_swapchain = vkCreateSwapchainKHR;
+        copy_image = vkCmdCopyImage;
+        allowed_usage = usage;
+        reported_usage = 0;
+        creates = rejected = copies = 0;
+        queries = 0;
+        fail_query = fail;
+        vkGetPhysicalDeviceSurfaceCapabilitiesKHR = capabilities;
+        vkCreateSwapchainKHR = create;
+        vkCmdCopyImage = copy;
+    }
+    ~RestrictedSurface() {
+        vkGetPhysicalDeviceSurfaceCapabilitiesKHR = get_capabilities;
+        vkCreateSwapchainKHR = create_swapchain;
+        vkCmdCopyImage = copy_image;
+    }
+};
+
+void vulkan_swapchain_respects_surface_usage() {
+    if (d3d12()) return;
+    sfr::NativeGraphics graphics;
+    graphics.initialize();
+    for (const auto usage : {VkImageUsageFlags(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT),
+                            VkImageUsageFlags(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)}) {
+        RestrictedSurface surface(usage);
+        sfr::NativePresentation presentation(graphics, 320, 240);
+        require(RestrictedSurface::creates == 1 && RestrictedSurface::rejected == 0,
+                "swap-chain creation only requests supported usages");
+        sfr::NativeClear clear{};
+        clear.color = true;
+        clear.color_value = {1, 0, 0, 1};
+        presentation.clear(clear);
+        presentation.present();
+        graphics.wait_idle();
+        require(RestrictedSurface::copies == ((RestrictedSurface::reported_usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) ? 1u : 0u),
+                "presentation copies only when the swap-chain images support transfer destination usage");
+    }
+}
+
+void vulkan_failed_surface_query_does_not_create_swapchain() {
+    if (d3d12()) return;
+    sfr::NativeGraphics graphics;
+    graphics.initialize();
+    // The wrapper's initial query succeeds; the query immediately before
+    // creating the images fails, e.g. because the surface was lost.
+    RestrictedSurface surface(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, 2);
+    require(rejects_with<std::runtime_error>([&] { sfr::NativePresentation p(graphics, 320, 240); }),
+            "failed surface query stops presentation initialization");
+    require(RestrictedSurface::creates == 0, "failed surface query never submits guessed capabilities to the driver");
+}
 
 void invalid_dimensions_are_rejected_before_a_window_exists() {
     sfr::NativeGraphics graphics;
@@ -212,6 +303,8 @@ void depth_stencil_clear_executes_on_native_attachment() {
 
 int main() {
     try {
+        vulkan_swapchain_respects_surface_usage();
+        vulkan_failed_surface_query_does_not_create_swapchain();
         invalid_dimensions_are_rejected_before_a_window_exists();
         creates_hidden_fixed_size_window_and_native_resources();
         full_color_clears_reach_gpu_memory();

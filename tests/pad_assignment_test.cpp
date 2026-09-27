@@ -53,6 +53,77 @@ void nothing_moves_when_nothing_changes() {
     require(pads.pad_of(0) == sony && pads.pad_of(1) == 0, "asking again does not renumber anyone");
 }
 
+// A player who names the controller they want gets that one, wherever the
+// host lists it -- which is the whole point of naming it.
+void a_player_can_ask_for_one_controller() {
+    sfr::PadAssignment pads;
+    pads.prefer(0, sony);
+    pads.update(std::vector<uint64_t>{0, sony});
+    require(pads.pad_of(0) == sony, "the controller asked for is theirs");
+    require(pads.pad_of(1) == 0, "and the other one goes to the next player");
+
+    // Taken off whoever else had it.
+    sfr::PadAssignment taken;
+    taken.update(std::vector<uint64_t>{0, sony});
+    require(taken.pad_of(0) == 0, "the host's order to begin with");
+    taken.prefer(1, 0);
+    taken.update(std::vector<uint64_t>{0, sony});
+    require(taken.pad_of(1) == 0 && taken.pad_of(0) == sony, "asking for it moves it, and the first player takes the other");
+
+    // While it is unplugged that player waits rather than taking a stranger's.
+    sfr::PadAssignment waiting;
+    waiting.prefer(0, sony);
+    waiting.update(std::vector<uint64_t>{0});
+    require(waiting.pad_of(0) == sfr::PadAssignment::no_pad, "a player who asked for one that is not here waits");
+    require(waiting.pad_of(1) == 0, "and the pad that is here belongs to somebody who did not ask");
+    waiting.update(std::vector<uint64_t>{0, sony});
+    require(waiting.pad_of(0) == sony, "and takes it the moment it arrives");
+
+    // Nobody else is given a controller somebody has asked for.
+    sfr::PadAssignment reserved;
+    reserved.prefer(1, sony);
+    reserved.update(std::vector<uint64_t>{sony});
+    require(reserved.pad_of(0) == sfr::PadAssignment::no_pad && reserved.pad_of(1) == sony,
+            "a controller somebody asked for is not handed to anybody else");
+
+    // Taking the request back does not pull the controller out of that
+    // player's hands: a controller keeps its number while it stays
+    // connected. It goes back to the host's order once it is unplugged.
+    reserved.prefer(1, sfr::PadAssignment::no_pad);
+    reserved.update(std::vector<uint64_t>{sony});
+    require(reserved.pad_of(1) == sony, "the controller stays with the player holding it");
+    reserved.update(std::vector<uint64_t>{});
+    reserved.update(std::vector<uint64_t>{sony});
+    require(reserved.pad_of(0) == sony, "and after a reconnection it is the host's order again");
+}
+
+void disabled_slots_do_not_receive_or_reserve_controllers() {
+    sfr::PadAssignment pads;
+    pads.enable(0, false);
+    pads.update(std::vector<uint64_t>{sony});
+    require(pads.pad_of(0) == sfr::PadAssignment::no_pad && pads.pad_of(1) == sony,
+            "a keyboard-only first slot leaves the lone pad for automatic player two");
+    pads.prefer(0, sony);
+    pads.update(std::vector<uint64_t>{sony});
+    require(pads.pad_of(1) == sony, "a disabled slot's stale preference does not steal or reserve a pad");
+
+    sfr::PadAssignment changed;
+    changed.prefer(0, sony);
+    changed.update(std::vector<uint64_t>{sony});
+    changed.enable(0, false);
+    changed.update(std::vector<uint64_t>{sony});
+    require(changed.pad_of(0) == sfr::PadAssignment::no_pad && changed.pad_of(1) == sony,
+            "disabling an assigned slot releases its pad to another enabled slot");
+    changed.enable(0, true);
+    changed.update(std::vector<uint64_t>{sony});
+    require(changed.pad_of(0) == sony, "re-enabling the slot restores its stored preference");
+    changed.enable(0, false);
+    changed.enable(1, false);
+    changed.update(std::vector<uint64_t>{sony});
+    require(changed.pad_of(0) == sfr::PadAssignment::no_pad && changed.pad_of(1) == sfr::PadAssignment::no_pad,
+            "multiple disabled slots remain unassigned");
+}
+
 void only_four_can_play() {
     sfr::PadAssignment pads;
     const std::vector<uint64_t> five = {0, 1, 2, 3, sony};
@@ -68,6 +139,8 @@ int main() {
         a_second_pad_joins_beside_the_first();
         a_pad_that_goes_gives_its_number_back();
         nothing_moves_when_nothing_changes();
+        a_player_can_ask_for_one_controller();
+        disabled_slots_do_not_receive_or_reserve_controllers();
         only_four_can_play();
         std::cout << "Pad assignment checks passed\n";
         return 0;
