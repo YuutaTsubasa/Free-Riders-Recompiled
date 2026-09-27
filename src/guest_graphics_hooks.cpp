@@ -242,18 +242,8 @@ static uint64_t frame_stream_bytes=0;
 // index buffer, turning a cut strip into triangles, and gathering vertices.
 static uint64_t frame_indices=0;
 static double frame_index_ms=0, frame_cut_ms=0, frame_gather_ms=0;
-// Cycles this thread actually ran for, beside the wall clock above: a loop
-// that takes far longer than it executes is waiting for a core, not working.
-static uint64_t frame_index_cycles=0, frame_gather_cycles=0;
 // The rest of a draw: its two constant blocks, and recording it.
 static double frame_constants_ms=0, frame_record_ms=0, frame_draw_ms=0;
-static uint64_t thread_cycles() {
-#ifdef _WIN32
-    uint64_t cycles=0;
-    if(QueryThreadCycleTime(GetCurrentThread(),&cycles)) return cycles;
-#endif
-    return 0;
-}
 
 // SFR_SKIP_DRAWS=1 drops every draw before any work, including gathering its
 // vertices: what a frame costs with no renderer at all.
@@ -411,7 +401,6 @@ SFR_HOOK(sub_824E65A0) {
     frame_stream_bytes=0;
     frame_indices=0;
     frame_index_ms=frame_cut_ms=frame_gather_ms=0;
-    frame_index_cycles=frame_gather_cycles=0;
     frame_constants_ms=frame_record_ms=frame_draw_ms=0;
     ++sfr::present_count;
     // SFR_MEMORY_DUMP=P1,P2,... (investigation): at those presents, every
@@ -1008,7 +997,6 @@ SFR_HOOK(sub_824F56E8) {
     const uint8_t* index_bytes=memory.base()+indices;
     frame_indices+=count;
     const auto index_start=std::chrono::steady_clock::now();
-    const uint64_t index_cycles=thread_cycles();
     static thread_local std::vector<uint32_t> order;
     order.resize(count);
     const sfr::IndexScan scan=sfr::decode_indices(index_bytes,count,wide,base_vertex,restart_enabled,order.data());
@@ -1017,7 +1005,6 @@ SFR_HOOK(sub_824F56E8) {
     if(lowest<=highest && highest>=vertex_count)
         throw sfr::RuntimeStop("native-draw",highest,"index exceeds the stream 0 vertex buffer");
     frame_index_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-index_start).count();
-    frame_index_cycles+=thread_cycles()-index_cycles;
     if(lowest>highest) return;  // restart indices only
     // Only the vertices the indices reach are located and checked: the title
     // binds streams of megabytes and draws small pieces of them, and checking
@@ -1034,13 +1021,11 @@ SFR_HOOK(sub_824F56E8) {
         const uint64_t block=uint64_t(highest-lowest+1);
         if(block<=4*order.size() && used<=0x800000) {
             const auto copy_start=std::chrono::steady_clock::now();
-            const uint64_t copy_cycles=thread_cycles();
             // Read in place (native_draw swaps it into the upload ring). The
             // indices keep their stream numbering; the base vertex location
             // moves the block back to the start.
             const std::span<const uint8_t> window(used_bytes,size_t(used));
             frame_gather_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-copy_start).count();
-            frame_gather_cycles+=thread_cycles()-copy_cycles;
             native_draw(ctx,0x824F56E8,device,primitive,uint32_t(block),window,stream.stride,order,-int32_t(lowest),
                         stream.physical+lowest*stream.stride);
             return;
