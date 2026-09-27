@@ -115,9 +115,15 @@ bool GuestGraphics::set_viewport(uint32_t device,uint32_t descriptor) {
     const int64_t right=x+integer(viewport.width),bottom=y+integer(viewport.height);
     if(right>INT32_MAX || bottom>INT32_MAX)
         unsupported(descriptor,"signed viewport endpoint overflow is unsupported");
-    // Inside the surface it is being set on, which is not always the
-    // presentation (attachment_size above).
-    const auto [surface_width,surface_height]=attachment_size(memory_,device,attachment);
+    // Offscreen targets currently alias the physical framebuffer, including
+    // full-frame resolves and screen-space shader coordinates. Keep origin-zero
+    // passes in that same space: clamping their default 0xFFFF extent to a tiny
+    // bloom target also changes the viewport saved/restored by later passes.
+    // Offset split views still need the guest surface boundary; otherwise the
+    // right half of an 880-wide target extends from x=440 all the way to 1280.
+    const auto [surface_width,surface_height]=(x==0 && y==0)
+        ? std::pair{native.width(),native.height()}
+        : attachment_size(memory_,device,attachment);
     int64_t width=std::min<int64_t>(surface_width,right)-x;
     int64_t height=std::min<int64_t>(surface_height,bottom)-y;
     if(width<0 || height<0) width=height=0;

@@ -39,6 +39,9 @@ struct LauncherSettings {
     // it is a setting: with it wrong, left and right are the wrong way
     // round and the cursor runs off the side of the screen.
     bool camera_mirror = false;   // SFR_CAMERA_MIRROR
+    // Windows motion mode: show the skeleton submitted to the game in a
+    // separate window, without a camera image (SFR_CAMERA_DEBUG).
+    bool camera_debug = false;
     // Controls (input_bindings.h). The devices each player uses, and how
     // their keys and pad buttons are arranged, as "a=Z,b=X,..." lines. An
     // empty line means the defaults, so a settings file written before any

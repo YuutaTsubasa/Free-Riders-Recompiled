@@ -1,6 +1,7 @@
 #include "nui_skeleton.h"
 #include "guest_memory.h"
 #include "nui_player_routing.h"
+#include <bit>
 #include <iostream>
 #include <stdexcept>
 
@@ -101,6 +102,16 @@ void menu_rearm_scope() {
     routing.observe_menu_page(0, 4, 1);
     routing.update(memory, first, second, {}, idle, false, true);
     require(first.hand(true)[1] == active[1], "camera page changes must not rearm the emulated hand");
+    routing.observe_menu_page(1,20,58);
+    routing.observe_menu_page(1,21,58,true);
+    routing.update(memory,first,second,{},sideways,false,true);
+    for(unsigned i=0;i<40;++i) routing.update(memory,first,second,{},idle,false,true);
+    require(second.hand(true)[1]>0.4f,"P1 camera mode must preserve P2's Gear cursor rearm and acknowledgement");
+    routing.observe_menu_page(1,21,58,false);
+    routing.update(memory,first,second,{},idle,false,true);
+    require(second.hand(true)[1]<0.3f,"P2 must finish its raise independently while P1 uses camera");
+    routing.update(memory,first,second,sideways,idle,false,false,true);
+    require(first.hand(true)[1]>0.4f,"camera-to-controller handoff must rearm P1's menu hand before stick input");
     routing.observe_menu_page(0, 5, 1);
     sfr::GamepadState trick; trick.thumb_ry = 32767;
     routing.update(memory, first, second, trick, idle, true, false);
@@ -239,7 +250,48 @@ void guest_player_order() {
     memory.store<uint32_t>(body1 + 768, data0);
     routing.update(memory, slot0, slot1, {}, idle, false, false);
     routing.update(memory, slot0, slot1, {}, idle, false, true);
-    require(!routing.reversed(), "camera joints must retain their existing slot ownership");
+    require(routing.reversed(), "camera P1 must follow the guest binding instead of forcing skeleton slot zero");
+    std::array<std::array<float,3>,sfr::nui_joint_count> camera{};
+    for(uint32_t joint=0;joint<sfr::nui_joint_count;++joint)
+        camera[joint]={float(joint)*0.03f,float(joint)*0.05f,2.0f+float(joint)*0.02f};
+    const auto verify_camera=[&](uint32_t camera_slot,bool second_present) {
+        sfr::NuiSkeletonEmulation::write_header(memory,frame,2,0);
+        routing.write_slots(memory,frame,slot0,slot1,second_present,&camera);
+        const auto data=frame+sfr::nui_skeleton_data_offset+camera_slot*sfr::nui_skeleton_data_size;
+        require(memory.load<uint32_t>(data)==sfr::nui_tracked &&
+                memory.load<uint32_t>(data+4)==camera_slot+1 &&
+                memory.load<uint32_t>(data+12)==camera_slot,
+                "camera routing must preserve the bound slot's tracking identity and user index");
+        require(memory.load<uint32_t>(data+8)==(camera_slot? sfr::NuiSkeletonEmulation::guest : 0u),
+                "camera routing must preserve the slot's enrollment");
+        for(uint32_t joint=0;joint<sfr::nui_joint_count;++joint)
+            for(uint32_t axis=0;axis<3;++axis)
+                require(memory.load<uint32_t>(data+32+16*joint+4*axis)==std::bit_cast<uint32_t>(camera[joint][axis]),
+                        "all camera XYZ coordinates must reach logical P1 unchanged");
+        const uint32_t other_slot=1-camera_slot;
+        const auto other=frame+sfr::nui_skeleton_data_offset+other_slot*sfr::nui_skeleton_data_size;
+        require(memory.load<uint32_t>(other)==(second_present?sfr::nui_tracked:0u),
+                "camera routing must not duplicate a body when the other controller disconnects");
+        if(second_present) {
+            const auto hand=(other_slot?slot1:slot0).hand(true);
+            for(uint32_t axis=0;axis<3;++axis)
+                require(memory.load<uint32_t>(other+32+16*sfr::nui_joint::hand_right+4*axis)==std::bit_cast<uint32_t>(hand[axis]),
+                        "the other logical player must retain its own pad-driven hand");
+        }
+    };
+    verify_camera(1,true);
+    routing.update(memory,slot0,slot1,{},std::nullopt,false,true);
+    verify_camera(1,false);
+    memory.store<uint32_t>(manager+120,0);
+    routing.update(memory,slot0,slot1,{},std::nullopt,true,true);
+    verify_camera(1,false);
+    memory.store<uint32_t>(manager+120,body0);
+    memory.store<uint32_t>(body0+768,data0);
+    memory.store<uint32_t>(body1+768,data1);
+    routing.update(memory,slot0,slot1,{},idle,false,true);
+    verify_camera(0,true);
+    memory.store<uint32_t>(body0+768,data1);
+    memory.store<uint32_t>(body1+768,data0);
     first = {}; first.thumb_rx = 32767;
     routing.update(memory, slot0, slot1, first, idle, false, false);
     for (unsigned i = 0; i < 30; ++i) routing.update(memory, slot0, slot1, {}, idle, false, false);

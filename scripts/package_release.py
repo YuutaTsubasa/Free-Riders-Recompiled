@@ -94,6 +94,22 @@ def desktop_files(platform, build, pack):
     return files
 
 
+def camera_files(root):
+    """Windows MediaPipe bundle. Missing runtime, model or licence is fatal."""
+    files = []
+    for name in ('onnxruntime.dll', 'onnxruntime_providers_shared.dll'):
+        files.append((name, need(root / 'onnxruntime/lib' / name)))
+    for name in ('pose_estimation_mediapipe_2023mar.onnx', 'person_detection_mediapipe_2023mar.onnx'):
+        files.append(('pose/' + name, need(root / 'mediapipe' / name)))
+    for inside, source in (
+        ('ONNXRuntime-MIT.txt', 'onnxruntime/LICENSE'),
+        ('ONNXRuntime-ThirdPartyNotices.txt', 'onnxruntime/ThirdPartyNotices.txt'),
+        ('MediaPipe-Apache-2.0.txt', 'mediapipe/LICENSE'),
+    ):
+        files.append(('licenses/' + inside, need(root / source)))
+    return files
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('platform', choices=('windows', 'linux', 'android'))
@@ -102,7 +118,10 @@ def main():
     parser.add_argument('--pack', type=Path, default=ROOT / 'out/shaders/shaders.pack',
                         help='shaders.pack to include (pass "" for none)')
     parser.add_argument('--output', type=Path, default=ROOT / 'out/release')
+    parser.add_argument('--camera', action='store_true', help='bundle Windows MediaPipe models and ONNX Runtime')
     args = parser.parse_args()
+    if args.camera and args.platform != 'windows':
+        parser.error('--camera currently packages the Windows runtime only')
     pack = args.pack if args.pack and str(args.pack) else None
 
     licenses = [('licenses/' + name, need(source))
@@ -126,6 +145,10 @@ def main():
     else:
         build = args.build or (ROOT / 'out/build/host' if args.platform == 'windows' else Path.home() / 'sfr-build')
         files = desktop_files(args.platform, build, pack) + licenses
+        if args.camera:
+            files += camera_files(ROOT / 'tools/onnx')
+            files.append(('Camera-input.md', need(ROOT / 'docs/camera-input.md')))
+            readme += b'\nCamera motion: enable Camera > Motion in the launcher. Models and runtime are included.\nSkeleton debug window is optional. Camera controls 1P; controller input takes priority.\n'
         if args.platform == 'windows':
             out = args.output / (name + '.zip')
             with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as archive:

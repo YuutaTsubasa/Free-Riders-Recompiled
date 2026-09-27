@@ -10,14 +10,14 @@ namespace sfr {
 // The twenty joints a NUI skeleton carries, in camera space (metres), made
 // from the seventeen points the pose model finds in a picture.
 //
-// A webcam gives no depth, so every joint stands at one distance and only
-// moves across and up and down. The picture is scaled so that the shoulders
-// come out as wide as the emulated player's, which keeps the title's gesture
-// detectors in the range they were tuned against by the pad emulation.
+// World landmarks retain the model's relative XYZ, centred on the hips at
+// pose_distance. The full 3D shoulder span sets one uniform scale. Image-only
+// models keep the legacy flat-depth mapping and image shoulder-width scale.
 using SkeletonJoints = std::array<std::array<float, 3>, nui_joint_count>;
 
-// False when the model was not confident enough about the torso for the rest
-// to mean anything, and the joints are left alone.
+// False when torso confidence, world coordinates or scale are invalid;
+// the joints are left alone. World points must be complete, finite and within
+// ten metres of their origin, with a shoulder span of 0.05 to 2 metres.
 //
 // A camera faces the player, so the player's right hand is on the picture's
 // left, and the sensor's +x -- the side the title's cursor centre sits on --

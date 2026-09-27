@@ -1098,9 +1098,13 @@ SFR_HOOK(sub_824F6DC8) {
 
 SFR_HOOK(sub_824E96C8) {
     sfr::enter_function(ctx,"sub_824E96C8",0x824E96C8);
+    // Sample viewport requests/results without enabling per-draw graphics
+    // logging. One presented frame per second retains every pass in it.
+    static const bool viewport_log=[] {const char* t=std::getenv("SFR_VIEWPORT_LOG");return t && *t=='1';}();
+    const bool trace=sfr::graphics_trace() || (viewport_log && sfr::present_count%60==0);
     if(sfr::active_memory) {
         sfr::active_memory->check(ctx.r4.u32,24);
-        if(sfr::graphics_trace()) {
+        if(trace) {
             std::cerr << "NATIVE_VIEWPORT_REQUEST address=0x" << std::hex << ctx.r4.u32 << " words=";
             for(uint32_t offset=0;offset<24;offset+=4)
                 std::cerr << (offset?",":"") << sfr::active_memory->load<uint32_t>(uint64_t(ctx.r4.u32)+offset);
@@ -1108,7 +1112,7 @@ SFR_HOOK(sub_824E96C8) {
         }
     }
     const bool updated=graphics().set_viewport(ctx.r3.u32,ctx.r4.u32);
-    if(!sfr::graphics_trace()) return;
+    if(!trace) return;
     const auto& v=graphics().presentation().raster_state().viewport();
     std::cerr << "NATIVE_VIEWPORT source=0x824e96c8 x=" << v.x << " y=" << v.y
               << " width=" << v.width << " height=" << v.height

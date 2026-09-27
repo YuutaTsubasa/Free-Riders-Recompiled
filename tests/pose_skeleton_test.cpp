@@ -4,6 +4,7 @@
 #include <utility>
 #include <iostream>
 #include <stdexcept>
+#include <limits>
 
 namespace {
 void require(bool value, const char* message) {
@@ -103,6 +104,102 @@ void what_is_refused() {
     squashed[sfr::pose_point::shoulder_left].x = squashed[sfr::pose_point::shoulder_right].x;
     require(!sfr::pose_to_joints(squashed, 640, 480, joints), "shoulders at one point cannot be scaled by");
 }
+
+sfr::PoseLandmarks standing_world() {
+    auto landmarks = standing();
+    for (auto& point : landmarks) {
+        point.world = {(point.x - 320.0f) * 0.005f, (point.y - 300.0f) * 0.005f, 0.0f};
+        point.has_world = true;
+    }
+    return landmarks;
+}
+
+void world_depth_survives_reaching_and_retracting() {
+    namespace p = sfr::pose_point;
+    namespace j = sfr::nui_joint;
+    auto body = standing_world();
+    body[p::shoulder_right].world[2] = -0.1f;
+    body[p::shoulder_left].world[2] = -0.1f;
+    body[p::elbow_right].world[2] = -0.25f;
+    body[p::wrist_right].world[2] = -0.5f;
+    body[p::ankle_right].world[2] = 0.2f;
+    sfr::SkeletonJoints forward{}, back{};
+    require(sfr::pose_to_joints(body, 640, 480, forward), "world body maps");
+    require(near(forward[j::hand_right][2], 2.05f, 0.0001f), "forward hand retains measured depth");
+    require(near(forward[j::wrist_right][2], 2.0725f, 0.0001f), "inferred wrist interpolates depth");
+    require(near(forward[j::spine][2], 2.455f, 0.0001f), "spine interpolates torso depth");
+    require(near(forward[j::foot_right][2], 2.6f, 0.0001f), "foot depth follows its ankle");
+    require(near(forward[j::hip_center][0], 0, 0.0001f) && near(forward[j::hip_center][1], 0, 0.0001f) &&
+            near(forward[j::hip_center][2], sfr::pose_distance, 0.0001f), "hips anchor the body in all axes");
+    body[p::wrist_right].world[2] = 0.2f;
+    require(sfr::pose_to_joints(body, 640, 480, back), "retracted body maps");
+    require(near(back[j::hand_right][2], 2.68f, 0.0001f), "retracted hand retains measured depth");
+}
+
+void world_scale_uses_the_full_shoulder_distance() {
+    namespace p = sfr::pose_point;
+    auto body = standing_world();
+    body[p::shoulder_left].world = {0.12f, -0.65f, 0.16f};
+    body[p::shoulder_right].world = {-0.12f, -0.65f, -0.16f};
+    // An edge-on body can have no image-space shoulder separation.
+    body[p::shoulder_right].x = body[p::shoulder_left].x;
+    body[p::wrist_right].world[2] = -0.5f;
+    sfr::SkeletonJoints joints{}, translated{};
+    require(sfr::pose_to_joints(body, 640, 480, joints), "rotated 3D shoulders still define scale");
+    require(near(joints[sfr::nui_joint::hand_right][2], 2.05f, 0.0001f), "rotation does not amplify reaching depth");
+    for (auto& point : body) {
+        point.world[0] += 0.4f;
+        point.world[1] -= 0.2f;
+        point.world[2] += 0.3f;
+    }
+    require(sfr::pose_to_joints(body, 640, 480, translated), "translated world body maps");
+    for (size_t joint = 0; joint < joints.size(); ++joint)
+        for (size_t axis = 0; axis < 3; ++axis)
+            require(near(joints[joint][axis], translated[joint][axis], 0.0001f), "world origin does not change the anchored skeleton");
+}
+
+void world_mirroring_preserves_body_identity_and_depth() {
+    using namespace sfr::pose_point;
+    auto body = standing_world();
+    body[wrist_right].world = {-0.35f, -0.8f, -0.5f};
+    auto mirrored = body;
+    for (auto& point : mirrored) { point.x = 640.0f - point.x; point.world[0] = -point.world[0]; }
+    for (const auto& pair : {std::pair{shoulder_left, shoulder_right}, {elbow_left, elbow_right},
+                            {wrist_left, wrist_right}, {hip_left, hip_right}, {knee_left, knee_right},
+                            {ankle_left, ankle_right}, {eye_left, eye_right}, {ear_left, ear_right}})
+        std::swap(mirrored[pair.first], mirrored[pair.second]);
+    sfr::SkeletonJoints normal{}, corrected{};
+    require(sfr::pose_to_joints(body, 640, 480, normal), "world reference maps");
+    require(sfr::pose_to_joints(mirrored, 640, 480, corrected, true), "mirrored world body maps");
+    for (size_t joint = 0; joint < normal.size(); ++joint)
+        for (size_t axis = 0; axis < 3; ++axis)
+            require(near(normal[joint][axis], corrected[joint][axis], 0.0001f), "mirror correction preserves XYZ and body identity");
+}
+
+void invalid_world_does_not_replace_the_last_skeleton() {
+    namespace p = sfr::pose_point;
+    sfr::SkeletonJoints original{};
+    for (auto& point : original) point = {7, 8, 9};
+    const auto refused = [&](const sfr::PoseLandmarks& body) {
+        auto joints = original;
+        require(!sfr::pose_to_joints(body, 640, 480, joints), "invalid world pose is refused");
+        require(joints == original, "invalid input leaves every output joint untouched");
+    };
+    for (const float invalid : {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(), 100.0f}) {
+        auto body = standing_world();
+        body[p::wrist_right].world[2] = invalid;
+        refused(body);
+    }
+    auto body = standing_world();
+    body[p::ear_left].has_world = false;
+    refused(body);
+    body = standing_world();
+    body[p::shoulder_right].world = body[p::shoulder_left].world;
+    refused(body);
+    body = standing_world();
+    body[p::hip_left].score = std::numeric_limits<float>::quiet_NaN();
+    refused(body);
+}
 }
 
 int main() {
@@ -111,6 +208,10 @@ int main() {
         a_raised_arm_raises_the_hand();
         a_mirrored_picture_comes_out_the_same_way_round();
         what_is_refused();
+        world_depth_survives_reaching_and_retracting();
+        world_scale_uses_the_full_shoulder_distance();
+        world_mirroring_preserves_body_identity_and_depth();
+        invalid_world_does_not_replace_the_last_skeleton();
         std::cout << "Pose skeleton checks passed\n";
         return 0;
     } catch (const std::exception& error) {

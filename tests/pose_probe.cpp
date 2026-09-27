@@ -3,8 +3,11 @@
 //   sfr_pose_probe [picture.bmp]
 #include "camera_capture.h"
 #include "pose_estimator.h"
+#include "pose_skeleton.h"
 
 #include <chrono>
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -86,8 +89,35 @@ int main(int argc, char** argv) {
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
     std::cout << "picture " << frame.width << 'x' << frame.height << " body=" << found << " in " << milliseconds
               << " ms\n";
-    for (uint32_t point = 0; point < sfr::pose_point::count; ++point)
+    for (uint32_t point = 0; point < sfr::pose_point::count; ++point) {
         std::cout << "  " << name_of(point) << ' ' << landmarks[point].x << ',' << landmarks[point].y << " score "
-                  << landmarks[point].score << '\n';
+                  << landmarks[point].score;
+        if (landmarks[point].has_world)
+            std::cout << " world=" << landmarks[point].world[0] << ',' << landmarks[point].world[1] << ',' << landmarks[point].world[2];
+        std::cout << '\n';
+    }
+    // Optional actual-model regression: same public test photo over time,
+    // followed by a blank frame and reacquisition. No webcam is opened here.
+    if (argc >= 3 && std::string_view(argv[2]) == "--check-3d") {
+        if (!found || !landmarks[0].has_world) return 6;
+        const auto begin=std::chrono::steady_clock::now();
+        for (int n=0;n<30;++n) {
+            sfr::SkeletonJoints joints;
+            if (!estimator->estimate(frame,landmarks)) {std::cerr<<"lost tracking at iteration "<<n<<'\n';return 7;}
+            if (!sfr::pose_to_joints(landmarks,frame.width,frame.height,joints)) {std::cerr<<"rejected mapping at iteration "<<n<<'\n';return 7;}
+            float low=10,high=-10;
+            for (const auto& joint : joints) {
+                for (float value : joint) if (!std::isfinite(value)) return 8;
+                low=std::min(low,joint[2]);high=std::max(high,joint[2]);
+            }
+            if (high-low<.1f) return 9;
+            if (n==29) std::cout << "game_z_range=" << low << ',' << high << '\n';
+        }
+        std::cout << "tracked_mean_ms=" << std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count()/30 << '\n';
+        auto blank=frame;std::fill(blank.bgra.begin(),blank.bgra.end(),0);
+        if (estimator->estimate(blank,landmarks)) return 10;
+        if (!estimator->estimate(frame,landmarks)) return 11;
+        std::cout << "3D model check passed: 30 tracked poses, non-flat game Z, loss and reacquisition\n";
+    }
     return found ? 0 : 5;
 }

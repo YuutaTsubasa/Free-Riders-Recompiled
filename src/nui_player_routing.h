@@ -31,26 +31,41 @@ public:
     bool slot_present(uint32_t slot, bool second_present) const {
         return second_present || slot == (reversed_ ? 1u : 0u);
     }
+    // Camera input replaces logical P1's joints, just as P1's pad gestures
+    // follow that player's binding. Keep each slot's tracking ID/enrollment.
+    void write_slots(GuestMemory& memory, uint32_t frame,
+                     const NuiSkeletonEmulation& slot0, const NuiSkeletonEmulation& slot1,
+                     bool second_present,
+                     const std::array<std::array<float,3>,nui_joint_count>* camera = nullptr) const {
+        for(uint32_t slot=0;slot<2;++slot) {
+            if(!slot_present(slot,second_present)) continue;
+            const auto& skeleton=slot==0?slot0:slot1;
+            if(camera && slot==(reversed_?1u:0u)) skeleton.write_joints(memory,frame,slot,slot+1,*camera);
+            else skeleton.write_slot(memory,frame,slot,slot+1);
+        }
+    }
     void update(const GuestMemory& memory, NuiSkeletonEmulation& slot0, NuiSkeletonEmulation& slot1,
                 const GamepadState& first, const std::optional<GamepadState>& second,
-                bool racing, bool camera) {
-        if (camera) reversed_ = false;
-        else if (const auto order = guest_order(memory, second.has_value())) reversed_ = *order;
+                bool racing, bool camera, bool controller_handoff = false) {
+        if (const auto order = guest_order(memory, second.has_value())) reversed_ = *order;
         // An incomplete binding during a page/Loading transition does not
         // reverse the last known assignment. Race body input stays indexed
         // by logical player; these are only that player's skeleton gestures.
         auto& first_skeleton = reversed_ ? slot1 : slot0;
         auto& second_skeleton = reversed_ ? slot0 : slot1;
+        if(controller_handoff && !racing) first_skeleton.rearm_menu();
         // A transient P2 disconnect must not consume the page transition.
-        // Race/camera modes discard menu requests so they cannot replay later.
+        // Camera discards P1's menu requests only. P2's controller still
+        // needs its own Gear rearm/acknowledgement while P1 uses camera.
         const auto rearm = (racing || camera || second)
             ? rearm_.exchange(0, std::memory_order_relaxed) : 0u;
-        if (!racing && !camera && second) {
-            if (rearm & 1) first_skeleton.rearm_menu();
+        if (!racing && second) {
+            if (!camera && (rearm & 1)) first_skeleton.rearm_menu();
             if (rearm & 2) second_skeleton.rearm_menu();
         }
-        if (racing || camera) cursor_pending_.store(0,std::memory_order_relaxed);
-        const uint32_t pending=(!racing && !camera && second)
+        if (racing) cursor_pending_.store(0,std::memory_order_relaxed);
+        else if (camera) cursor_pending_.fetch_and(~1u,std::memory_order_relaxed);
+        const uint32_t pending=(!racing && second)
             ? cursor_pending_.load(std::memory_order_relaxed) : 0u;
         first_skeleton.update(first, racing, second.has_value(),(pending & 1)!=0);
         if (second) second_skeleton.update(*second, racing, true,(pending & 2)!=0);

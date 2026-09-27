@@ -4,6 +4,7 @@
 #include <bit>
 #include <cmath>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -23,7 +24,12 @@ constexpr uint32_t nui_box_global = 0x83E52F88, race_flag_global = 0x83E52F8C;
 constexpr uint32_t injected = 0x71730000, reader = 0x82918418;
 uint32_t manager_rebind_object = 0, manager_rebind_record = 0;
 unsigned original_calls = 0;
+uint32_t original_overthrow_result = 99;
+uint32_t original_kick_bits = 0;
 bool consumer_throws = false;
+bool camera_active = false;
+uint64_t camera_sequence=0;
+uint64_t camera_now=1000000000;
 uint32_t consumed_record = 0;
 }
 
@@ -36,6 +42,9 @@ uint32_t consumed_record = 0;
 
 namespace sfr {
 GuestMemory* active_memory = nullptr;
+bool camera_motion_active() { return harness::camera_active; }
+uint64_t camera_pose_generation() { return harness::camera_sequence; }
+uint64_t camera_motion_clock_ns() { return harness::camera_now; }
 GamepadState nui_gamepad() { return harness::first; }
 std::optional<GamepadState> second_player_pad() { return harness::second; }
 void enter_function_observed(PPCContext&, const char*, uint32_t) {}
@@ -71,6 +80,7 @@ PPC_FUNC(__imp__sub_822C6200) {
 }
 #define ORIGINAL(address) PPC_FUNC(__imp__sub_##address) { ++harness::original_calls; ctx.r3.u64 = 99; }
 ORIGINAL(822C9050)
+ORIGINAL(822B60F8)
 ORIGINAL(822C8778)
 ORIGINAL(822CB840)
 ORIGINAL(822C8650)
@@ -80,14 +90,20 @@ ORIGINAL(822CAF48)
 ORIGINAL(822CA6B0)
 ORIGINAL(822C9BF0)
 ORIGINAL(822CB0B8)
-ORIGINAL(822CA518)
-ORIGINAL(822CBD28)
+PPC_FUNC(__imp__sub_822CA518) {
+    ++harness::original_calls;
+    auto& m=*sfr::active_memory;
+    const uint32_t e=m.load<uint32_t>(ctx.r5.u32)+84*m.load<uint32_t>(ctx.r5.u32+8);
+    m.store<uint32_t>(e+4,m.load<uint32_t>(e+4)|harness::original_kick_bits);
+    ctx.r3.u64=harness::original_kick_bits==0x1000000?1:harness::original_kick_bits?0:99;
+}
+PPC_FUNC(__imp__sub_822CBD28) { __imp__sub_822CA518(ctx,base); }
 ORIGINAL(822CA810)
 ORIGINAL(822CBF30)
 ORIGINAL(822CAC90)
 ORIGINAL(822C9938)
 ORIGINAL(822CC2D0)
-ORIGINAL(822CC590)
+PPC_FUNC(__imp__sub_822CC590) { ++harness::original_calls; ctx.r3.u64=harness::original_overthrow_result; }
 ORIGINAL(822CCD98)
 ORIGINAL(822CD068)
 ORIGINAL(822CDDB0)
@@ -120,7 +136,7 @@ void bind(unsigned source, unsigned object, uint32_t record) {
     mem().store<uint32_t>(objects + object * 16, vtable);
     mem().store<uint32_t>(objects + object * 16 + 4, record);
 }
-void frame() { invoke("sub_82438930"); }
+void frame() { ++camera_sequence;camera_now+=16666667;invoke("sub_82438930"); }
 void consume(unsigned source) {
     PPCContext ctx;
     ctx.r3.u64 = sources + source * 4;
@@ -138,6 +154,9 @@ bool braking(unsigned source) {
     return invoke("sub_822C9BF0", source) == 1;
 }
 void begin() {
+    original_kick_bits=0;
+    mem().store<uint32_t>(0x83E516A0,0);
+    camera_active = false;
     mem().store<uint32_t>(race_flag_global, 0);
     frame();
     first = {};
@@ -368,6 +387,294 @@ void side() {
     reset_results();
     require(invoke("sub_822CA6B0", 0) == 2, "A must not produce Side and suppress crouch/jump");
 }
+void camera_detectors() {
+    camera_active = true;
+    first.buttons = sfr::gamepad_button::a | sfr::gamepad_button::b;
+    frame();
+    for (const char* detector_name : {"sub_822CA518", "sub_822C9938", "sub_822CB9B8"}) {
+        reset_results();
+        const auto before = original_calls;
+        require(invoke(detector_name, 0) == 99 && original_calls == before + 1,
+                "camera P1 must delegate each gesture, including the special grouped route, to its original detector");
+        require(mem().load<uint32_t>(selected + 4) == 0x20 && mem().load<uint32_t>(selected + 20) == 0x8,
+                "ignored P1 pad must not add gesture result bits before camera detection");
+    }
+}
+void camera_motion_controls() {
+    camera_active=true;first={};second=sfr::GamepadState{};
+    // Actual game trace: +4 is 1 during normal play, not 1/60 seconds.
+    constexpr uint32_t title_clock=0x1000D000, title_step=0x1000D100;
+    mem().store<uint32_t>(0x83E516A0,title_clock);
+    mem().store<uint32_t>(title_clock+24,title_step);
+    mem().store<uint32_t>(title_step+4,std::bit_cast<uint32_t>(1.f));
+    mem().store<uint32_t>(title_step+40,std::bit_cast<uint32_t>(1.f));
+    const auto posture=[&](float side,float pitch,float height) {
+        for(auto [offset,point]:{std::pair{0u,std::array{0.f,0.f,-2.5f}},
+            std::pair{32u,std::array{-side,.5f,-2.5f+pitch}},
+            std::pair{224u,std::array{-.1f,-height,-2.5f}},
+            std::pair{288u,std::array{.1f,-height,-2.5f}}})
+            for(uint32_t a=0;a<3;++a)mem().store<uint32_t>(original+offset+a*4,std::bit_cast<uint32_t>(point[a]));
+        for(int i=0;i<60;++i)frame();
+    };
+    posture(0,.1f,.8f);consume(0);
+    require(f(injected+640)==1 && f(injected+644)==1,"camera missing depth data must not become a rightward lean");
+    posture(-.3f,.1f,.8f);consume(0);
+    require(f(injected+644)>f(injected+640),"camera left tilt must steer left at live reader");
+    require(f(injected+32)==.3f && f(injected+4)==0,"camera bridge preserves joint XYZ");
+    posture(.3f,.1f,.8f);consume(0);
+    require(f(injected+640)>f(injected+644),"camera right tilt must steer right at live reader");
+    posture(0,.1f,.8f);reset_results();
+    require(invoke("sub_822C9A80",0)!=1,"neutral camera pose must not Boost");
+    posture(0,.4f,.8f);reset_results();
+    require(invoke("sub_822C9A80",0)==1 && (mem().load<uint32_t>(selected+4)&0x8000),"deliberate camera lean triggers Boost");
+    posture(0,.4f,.5f);reset_results();
+    require(invoke("sub_822C8778",0)==1,"camera compression crouches");
+    require(invoke("sub_822CA6B0",0)==2,"camera crouch must not be filtered out by Side");
+    require(invoke("sub_822C9A80",0)!=1,"camera crouch cannot Boost");
+    reset_results();require(invoke("sub_822C8778",1)!=1,"camera crouch never reaches P2");
+    mem().store<uint32_t>(original+228,std::bit_cast<uint32_t>(-.8f));
+    mem().store<uint32_t>(original+292,std::bit_cast<uint32_t>(-.8f));
+    int jumps=0;
+    for(int i=0;i<60;++i){frame();reset_results();if(invoke("sub_822C9050",0)==1)++jumps;}
+    require(jumps==1,"camera recovery emits exactly one jump at detector boundary");
+    posture(0,.1f,.8f);
+    mem().store<uint32_t>(original+40,std::bit_cast<uint32_t>(-2.0f));
+    frame(); // One new forward observation, followed by a stalled camera.
+    for(int i=0;i<30;++i){camera_now+=16666667;invoke("sub_82438930");}
+    reset_results();
+    require(invoke("sub_822C9A80",0)!=1 && invoke("sub_822C9050",0)!=1,
+            "manager ticks with an unchanged camera generation cannot produce Boost or jump");
+}
+void camera_brake_facing() {
+    camera_active=true;first={};
+    const auto point=[&](uint32_t offset,float x,float y,float z) {
+        for(auto [a,v]:{std::pair{0u,x},std::pair{4u,y},std::pair{8u,z}})
+            mem().store<uint32_t>(original+offset+a,std::bit_cast<uint32_t>(v));
+    };
+    point(0,0,0,-2.5f);point(32,0,.5f,-2.4f);
+    point(224,-.1f,-.8f,-2.5f);point(288,.1f,-.8f,-2.5f);
+    point(64,.18f,.5f,-2.5f);point(128,-.18f,.5f,-2.5f);
+    point(192,.125f,0,-2.5f);point(256,-.125f,0,-2.5f);
+    frame();reset_results();
+    require(invoke("sub_822CA6B0",0)==2 && invoke("sub_822C9BF0",0)==2,"uncalibrated camera cannot brake");
+    for(int i=0;i<60;++i)frame();reset_results();
+    require(invoke("sub_822CA6B0",0)==99 && invoke("sub_822C9BF0",0)==99,
+            "qualified frontal camera stance preserves original Side and brake detectors");
+    point(192,.02f,0,-2.375f);point(256,-.02f,0,-2.625f);
+    frame();reset_results();
+    require(invoke("sub_822CA6B0",0)==2 && invoke("sub_822C9BF0",0)==2,
+            "pelvis still sideways must suppress false frontal knee brake");
+}
+void camera_wave_priority() {
+    camera_active=true;first={};second=sfr::GamepadState{};
+    original_kick_bits=0x1000000; // Would fire if the original detector were allowed through.
+    const auto point=[&](uint32_t offset,float x,float y,float z) {
+        for(auto [a,v]:{std::pair{0u,x},std::pair{4u,y},std::pair{8u,z}})
+            mem().store<uint32_t>(original+offset+a,std::bit_cast<uint32_t>(v));
+    };
+    point(0,0,0,-2.5f);point(32,0,.5f,-2.4f);
+    point(224,-.1f,-.8f,-2.5f);point(288,.1f,-.8f,-2.5f);
+    point(64,.18f,.5f,-2.5f);point(128,-.18f,.5f,-2.5f);
+    point(192,.125f,0,-2.5f);point(256,-.125f,0,-2.5f);
+    point(80,.25f,.28f,-2.5f);point(96,.25f,.1f,-2.4f);
+    point(144,-.25f,.28f,-2.5f);point(160,-.25f,.1f,-2.4f);
+    for(int i=0;i<60;++i)frame();
+    for(int i=0;i<45;++i) {
+        point(32,0,.5f,-2.1f);point(160,-.25f+.18f*std::sin(i*.4f),.35f,-2.3f);frame();reset_results();
+        require(invoke("sub_822C9A80",0)!=1 && invoke("sub_822CAF48",0)!=1 &&
+                invoke("sub_822CA6B0",0)==2 && invoke("sub_822C9BF0",0)==2,
+                "camera wave must suppress both Boost routes, Side and brake");
+        mem().store<uint32_t>(detector+72,0x0156789A);
+        require(invoke("sub_822CA518",0)==2 && mem().load<uint32_t>(detector+72)==0x0056789A,
+                "wave clears Kick byte state without damaging adjacent bytes");
+        mem().store<uint32_t>(detector+72,2);
+        require(invoke("sub_822CBD28",0)==2 && mem().load<uint32_t>(detector+72)==0,
+                "wave clears the entire big-endian Dash word state");
+        require((mem().load<uint32_t>(selected+4)&0x1C00000)==0,
+                "waving cannot gain kick bits or the shared kick priority flag");
+        require(invoke("sub_822CC590",0)==99,"wave must preserve original throw detector");
+    }
+    second->buttons=sfr::gamepad_button::b;frame();reset_results();
+    require(invoke("sub_822C9BF0",1)==1,"P1 waving cannot inhibit P2 brake");
+    original_kick_bits=0;
+}
+void camera_kick_balance() {
+    camera_active=true;first={};second=sfr::GamepadState{};
+    const auto point=[&](uint32_t offset,float x,float y,float z) {
+        for(auto [a,v]:{std::pair{0u,x},std::pair{4u,y},std::pair{8u,z}})
+            mem().store<uint32_t>(original+offset+a,std::bit_cast<uint32_t>(v));
+    };
+    point(0,0,0,-2.5f);point(32,0,.5f,-2.4f);
+    point(224,-.1f,-.8f,-2.5f);point(288,.1f,-.8f,-2.5f);
+    point(208,-.1f,-.4f,-2.5f);point(272,.1f,-.4f,-2.5f);
+    point(64,.18f,.5f,-2.5f);point(128,-.18f,.5f,-2.5f);
+    point(192,-.125f,0,-2.5f);point(256,.125f,0,-2.5f);
+    point(80,.25f,.28f,-2.5f);point(96,.25f,.1f,-2.4f);
+    point(144,-.25f,.28f,-2.5f);point(160,-.25f,.1f,-2.4f);
+    for(int i=0;i<60;++i)frame();
+    point(144,-.25f,.55f,-2.5f);point(160,-.25f,.8f,-2.4f); // Balance with a raised hand.
+    point(288,.1f,-.8f,-2.38f);point(272,.1f,-.4f,-2.44f);
+    for(int i=0;i<5;++i)frame();
+    for(const char* name:{"sub_822CA518","sub_822CBD28"}) {
+        original_kick_bits=0x800000;reset_results();
+        require(invoke(name,0)==0 && (mem().load<uint32_t>(selected+4)&0xC00000)==0xC00000,
+                "confirmed foot sweep preserves original Ready despite balancing hands");
+        original_kick_bits=0x1000000;reset_results();
+        require(invoke(name,0)==1 && (mem().load<uint32_t>(selected+4)&0x1400000)==0x1400000,
+                "confirmed foot sweep permits original kick release despite balancing hands");
+        require(invoke("sub_822C9BF0",0)==2,"balancing hands must still suppress false braking");
+    }
+    point(288,.1f,-.8f,-2.5f);point(272,.1f,-.4f,-2.5f);
+    for(int i=0;i<90;++i)frame();reset_results();
+    require(invoke("sub_822CA518",0)==2 && (mem().load<uint32_t>(selected+4)&0x1C00000)==0,
+            "expired foot evidence restores wave protection without releasing a kick");
+    original_kick_bits=0;
+}
+void camera_kick_priority() {
+    camera_active=true;first={};frame();
+    // Original group 822C5BB0 drops kick/brake bits unless the shared
+    // 0x400000 priority bit is present. It suppresses charge/jump otherwise.
+    const auto filtered=[](uint32_t f) {return f&((f&0x400000)?~0x1203u:~0x1800100u);};
+    for(const char* name:{"sub_822CA518","sub_822CBD28"}) {
+        for(uint32_t phase:{0x800000u,0x1000000u}) {
+            reset_results();original_kick_bits=phase;
+            const auto result=invoke(name,0);
+            require(result==(phase==0x1000000?1u:0u),"camera retains original kick prepare/release return value");
+            invoke("sub_822CA6B0",0);invoke("sub_822C9BF0",0);
+            const auto bits=mem().load<uint32_t>(selected+4);
+            require((filtered(bits)&phase)==phase,"recognized camera kick must survive the original group filter");
+            require((bits&0x100)==0,"kick priority cannot synthesize braking");
+        }
+        original_kick_bits=0;reset_results();invoke(name,0);
+        require((mem().load<uint32_t>(selected+4)&0x400000)==0,"no kick cannot synthesize a priority flag");
+    }
+    original_kick_bits=0x1000000;reset_results();invoke("sub_822CA518",1);
+    require((mem().load<uint32_t>(selected+4)&0x1C00000)==0,"camera kick cannot leak into P2");
+    original_kick_bits=0;
+}
+void camera_upper_throw() {
+    camera_active=true;first={};second=sfr::GamepadState{};
+    const auto point=[&](uint32_t offset,float x,float y,float z) {
+        for(auto [a,v]:{std::pair{0u,x},std::pair{4u,y},std::pair{8u,z}})
+            mem().store<uint32_t>(original+offset+a,std::bit_cast<uint32_t>(v));
+    };
+    point(0,0,0,-2.5f);point(32,0,.5f,-2.4f);
+    point(224,-.1f,-.8f,-2.5f);point(288,.1f,-.8f,-2.5f);
+    point(64,.18f,.5f,-2.5f);point(128,-.18f,.5f,-2.5f);
+    point(192,.125f,0,-2.5f);point(256,-.125f,0,-2.5f);
+    point(80,.25f,.28f,-2.5f);point(96,.25f,.1f,-2.4f);
+    point(144,-.25f,.28f,-2.5f);point(160,-.25f,.1f,-2.4f);
+    for(int i=0;i<60;++i)frame();
+    const auto prepare=[&] {
+        point(144,-.25f,.38f,-2.5f);point(160,-.25f,.6f,-2.22f);frame();
+    };
+    const auto release=[&] {point(160,-.25f,.38f,-2.1f);frame();};
+    const auto clear=[&] {reset_results();mem().store<uint32_t>(selected+20,0x40);};
+    prepare();release();clear();
+    invoke("sub_822CC590",1);
+    require(mem().load<uint32_t>(selected+20)==0x40,"P2 does not receive P1 upper throw");
+    mem().store<uint32_t>(detector+72,1);mem().store<uint32_t>(detector+76,1);
+    require(invoke("sub_822CC590",0)==1 && mem().load<uint32_t>(selected+20)==0x48,
+            "camera upper throw reaches original item flag and preserves other bits");
+    require(mem().load<uint32_t>(detector+72)==0 && mem().load<uint32_t>(detector+76)==0,
+            "fallback clears both original arm words");
+    clear();require(invoke("sub_822CC590",0)==99 && mem().load<uint32_t>(selected+20)==0x40,
+            "second detector call cannot resend a consumed upper throw");
+    prepare();release();original_overthrow_result=1;
+    invoke("sub_822CC590",0);original_overthrow_result=99;clear();
+    require(invoke("sub_822CC590",0)==99 && mem().load<uint32_t>(selected+20)==0x40,
+            "original successful throw consumes fallback without a second event");
+    prepare();camera_active=false;frame();camera_active=true;release();clear();
+    require(invoke("sub_822CC590",0)==99,"camera ownership loss discards prepared upper throw");
+}
+void camera_actor_trace() {
+    camera_active=true;
+    constexpr uint32_t actor=box+0xA000,owner=box+0xC000,res=box+0xE000;
+    constexpr uint32_t ring_entries=box+0xE100,state=box+0xE500,animation=box+0xE700,data=box+0xE800;
+    mem().store<uint32_t>(actor+1680,owner);
+    // The actor field is deliberately not a pointer: owner indirection matters.
+    mem().store<uint32_t>(actor+3208,0x41980000);
+    mem().store<uint32_t>(owner+3220,res);mem().store<uint32_t>(owner+3208,animation);
+    mem().store<uint32_t>(owner+3212,state);mem().store<uint32_t>(animation+12,data);
+    mem().store<uint32_t>(data+44,19);mem().store<uint32_t>(state+400,6);
+    mem().store<uint32_t>(res+16,ring_entries);mem().store<uint32_t>(res+24,0);mem().store<uint32_t>(res+28,1);
+    mem().store<uint32_t>(ring_entries+4,0x7000);mem().store<uint32_t>(ring_entries+84+4,2);
+    mem().store<uint32_t>(res+36,2);mem().store<uint32_t>(res+40,0xFFFFFFFF);
+#ifdef _WIN32
+    _putenv_s("SFR_CAMERA_RACE_TRACE","1");
+#else
+    setenv("SFR_CAMERA_RACE_TRACE","1",1);
+#endif
+    std::ostringstream log;auto* old=std::cerr.rdbuf(log.rdbuf());
+    PPCContext ctx;ctx.r3.u64=actor;
+    try {hooks().at("sub_822B60F8")(ctx,mem().base());}
+    catch(...) {std::cerr.rdbuf(old);throw;}
+    std::cerr.rdbuf(old);
+    require(ctx.r3.u32==99 && log.str().find("written=0x7000 flags=0x2")!=std::string::npos &&
+            log.str().find("anim=19 state=6")!=std::string::npos,
+            "actor diagnostic follows owner and distinct writer/consumer entries without changing guest result");
+}
+void camera_body_fields() {
+    camera_active = true;
+    first.buttons = sfr::gamepad_button::a | sfr::gamepad_button::b;
+    first.thumb_lx = -32768;
+    constexpr uint32_t brake_marker = 0x1357, lean_marker = 0x3F400000;
+    mem().store<uint32_t>(original + 268, brake_marker);
+    mem().store<uint32_t>(original + 644, lean_marker);
+    frame();
+    require(mem().load<uint32_t>(injected + 268) == brake_marker &&
+            mem().load<uint32_t>(injected + 644) == lean_marker,
+            "camera P1 manager must preserve the title body fields instead of writing pad controls");
+    bind(4, 4, original);
+    for (unsigned source : {0u, 4u}) {
+        const uint32_t record = source == 0 ? injected : original;
+        reset_results();
+        require(invoke("sub_822C9BF0", source) == 2, "unqualified camera stance must gate brake across body aliases");
+        require(mem().load<uint32_t>(record + 268) == brake_marker && mem().load<uint32_t>(record + 644) == lean_marker,
+                "resolving the camera P1 detector source must not write pad fields");
+        consume(source);
+        require(consumed_record == record && f(record + 640)>=1 && f(record+644)>=1 &&
+                mem().load<uint32_t>(record + 268) == brake_marker,
+                "camera live reader fills only positive lean ratios and preserves joint fields");
+    }
+}
+void camera_keeps_second_pad() {
+    camera_active = true;
+    first = {};
+    second->buttons = sfr::gamepad_button::b;
+    second->thumb_lx = 32767;
+    frame();
+    const auto before = original_calls;
+    require(braking(1) && original_calls == before, "camera P1 must leave P2 braking on its own pad");
+    consume(1);
+    require(consumed_record == other && mem().load<uint32_t>(other + 268) == 1 && f(other + 640) > f(other + 644),
+            "camera P1 must leave P2 live body fields on its own pad");
+    second->buttons = sfr::gamepad_button::a; frame();
+    second->buttons = 0; frame();
+    reset_results();
+    require(invoke("sub_822C9050", 1) == 1, "P2 A release must still jump while camera controls P1");
+}
+void camera_returns_to_pad() {
+    first.buttons = sfr::gamepad_button::a; frame();
+    camera_active = true;
+    frame(); // A remains held but camera ownership must clear the pad history.
+    camera_active = false;
+    first.buttons = sfr::gamepad_button::b;
+    first.thumb_lx = -32768;
+    frame();
+    require(mem().load<uint32_t>(injected + 268) == 1,
+            "returning to P1 pad must restore manager body overrides");
+    reset_results();
+    require(invoke("sub_822C9050", 0) == 2 && (mem().load<uint32_t>(selected + 4) & 0x200) == 0,
+            "returning from camera must not jump from an ignored A release or pre-camera pad history");
+    require(braking(0), "returning to P1 pad must restore detector overrides");
+    consume(0);
+    require(f(injected + 644) > f(injected + 640), "returning to P1 pad must restore live-reader lean overrides");
+    first.buttons = sfr::gamepad_button::a; frame();
+    first.buttons = 0; frame();
+    reset_results();
+    require(invoke("sub_822C9050", 0) == 1, "a new P1 pad A press and release must jump after camera handoff");
+}
 }
 int main() {
     using namespace harness;
@@ -392,7 +699,13 @@ int main() {
         {"exit while manager missing", exit_while_manager_missing},
         {"live reader scope", live_reader_scope},
         {"independent actions", independent_actions},
-        {"exit and reentry", lifecycle}, {"Side override", side}
+        {"exit and reentry", lifecycle}, {"Side override", side},
+        {"camera motion controls", camera_motion_controls}, {"camera waving priority", camera_wave_priority}, {"camera frontal brake qualification", camera_brake_facing}, {"camera original detectors", camera_detectors}, {"camera body fields", camera_body_fields},
+        {"camera upper throw", camera_upper_throw},
+        {"camera kick group priority", camera_kick_priority},
+        {"camera kick balance", camera_kick_balance},
+        {"camera actor trace", camera_actor_trace},
+        {"camera with independent P2", camera_keeps_second_pad}, {"camera return to pad", camera_returns_to_pad}
     };
     for (auto [name, test] : cases) {
         try { begin(); test(); std::cout << "PASS " << name << '\n'; }
