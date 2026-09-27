@@ -7,6 +7,10 @@
 
 - `NativeGraphics` 依 `SFR_GRAPHICS` 建立 Plume 的 D3D12 或 Vulkan 介面，整個程序只選一次
   （著色器快取依它準備 DXIL 或 SPIR-V）。
+- 選 D3D12 時會先照 Plume 的條件逐一測試顯示卡（能建立 `ID3D12Device8`、回答 Shader Model
+  查詢）；一張都不行就自動改用 Vulkan。`game.log` 會為每張卡記一行 `NATIVE_GRAPHICS_D3D12_PROBE`
+  （失敗的 HRESULT），改用時記 `NATIVE_GRAPHICS_FALLBACK`。曾有一台 RTX 3080 Ti 加
+  Trigger 6 USB 外接顯示卡的電腦 D3D12 失敗而 Vulkan 正常，懷疑是 USB 顯示驅動干擾。
 - Plume 的 Vulkan 交換鏈在第一次 `resize()` 才建立影像，所以顯示端建構時就呼叫一次；
   取得影像與呈現用 semaphore 串起來（D3D12 不需要）。Vulkan 版預設開啟垂直同步，這裡改成和
   D3D12 一樣預設關閉（`SFR_VSYNC=1` 開啟）。
