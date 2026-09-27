@@ -65,6 +65,42 @@ bool convert_camera_pixels(CameraPixels format, std::span<const uint8_t> source,
     return true;
 }
 
+bool convert_camera_yuv420(const CameraYuvPlanes& planes, uint32_t width, uint32_t height, uint32_t rotation,
+                           CameraFrame& frame) {
+    if (!width || !height || width % 2 || height % 2 || rotation % 90 || rotation >= 360) return false;
+    if (planes.y_row < width || !planes.uv_pixel || planes.uv_row < (width / 2 - 1) * planes.uv_pixel + 1)
+        return false;
+    const uint64_t luma = uint64_t(height - 1) * planes.y_row + width;
+    const uint64_t chroma = uint64_t(height / 2 - 1) * planes.uv_row + uint64_t(width / 2 - 1) * planes.uv_pixel + 1;
+    if (planes.y.size() < luma || planes.u.size() < chroma || planes.v.size() < chroma) return false;
+
+    const bool sideways = rotation == 90 || rotation == 270;
+    const uint32_t out_width = sideways ? height : width, out_height = sideways ? width : height;
+    frame.width = out_width;
+    frame.height = out_height;
+    frame.bgra.assign(size_t(out_width) * out_height * 4, 0);
+    uint8_t* const out = frame.bgra.data();
+    for (uint32_t oy = 0; oy < out_height; ++oy)
+        for (uint32_t ox = 0; ox < out_width; ++ox) {
+            // The source pixel that lands here once turned clockwise.
+            uint32_t sx = ox, sy = oy;
+            if (rotation == 90) { sx = oy; sy = height - 1 - ox; }
+            else if (rotation == 180) { sx = width - 1 - ox; sy = height - 1 - oy; }
+            else if (rotation == 270) { sx = width - 1 - oy; sy = ox; }
+            const uint64_t c = uint64_t(sy / 2) * planes.uv_row + uint64_t(sx / 2) * planes.uv_pixel;
+            write_pixel(out + (size_t(oy) * out_width + ox) * 4, planes.y[uint64_t(sy) * planes.y_row + sx],
+                        planes.u[c], planes.v[c]);
+        }
+    return true;
+}
+
+uint32_t camera_upright_rotation(uint32_t sensor_orientation, bool front_facing, uint32_t display_rotation) {
+    sensor_orientation %= 360;
+    display_rotation %= 360;
+    return front_facing ? (sensor_orientation + display_rotation) % 360
+                        : (sensor_orientation + 360 - display_rotation) % 360;
+}
+
 CameraCapture::~CameraCapture() = default;
 
 size_t camera_device_index(const std::vector<std::string>& names, const std::string& wanted) {

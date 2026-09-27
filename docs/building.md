@@ -27,6 +27,13 @@ prebuilt DXC, Plume, Dear ImGui, SDL) into `tools/`:
 python scripts/bootstrap.py
 ```
 
+For the webcam's motion input (optional), fetch ONNX Runtime and the RTMPose
+model into `tools/onnx` too (`--android` adds the Android runtime):
+
+```bash
+python scripts/fetch_pose_model.py
+```
+
 `config/dependencies.lock.json` records every revision. Bootstrap never
 changes an existing checkout, and applies (and afterwards verifies) the small
 Plume patch in `patches/`.

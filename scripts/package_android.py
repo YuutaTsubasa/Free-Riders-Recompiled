@@ -64,6 +64,8 @@ def main():
     parser.add_argument('--output', default=str(ROOT / 'out' / 'android' / 'FreeRidersRecompiled.apk'))
     parser.add_argument('--abi', action='append', help='only these ABIs (default: every built one)')
     parser.add_argument('--pack', help='a shaders.pack to carry as an asset (LauncherActivity copies it out)')
+    parser.add_argument('--pose', help='the RTMPose model to carry as an asset, for the camera motion input '
+                                       '(LauncherActivity copies it to pose/rtmpose.onnx)')
     parser.add_argument('--min-sdk', type=int, default=MIN_SDK,
                         help='minimum API level, matching the native build (default: 28)')
     args = parser.parse_args()
@@ -119,6 +121,8 @@ def main():
                 apk.write(library, 'lib/%s/%s' % (abi, library.name), compress_type=zipfile.ZIP_STORED)
         if args.pack:
             apk.write(args.pack, 'assets/shaders.pack', compress_type=zipfile.ZIP_DEFLATED)
+        if args.pose:
+            apk.write(args.pose, 'assets/pose/rtmpose.onnx', compress_type=zipfile.ZIP_DEFLATED)
     aligned = work / 'aligned.apk'
     run(tool(build_tools, 'zipalign'), '-f', '-P', '16', '4', unsigned, aligned)
 

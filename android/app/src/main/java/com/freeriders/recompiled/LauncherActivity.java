@@ -31,7 +31,48 @@ public class LauncherActivity extends SDLActivity {
     @Override
     protected void onCreate(Bundle state) {
         copyBundledShaderPack();
+        copyBundledPoseModel();
         super.onCreate(state);
+    }
+
+    // The camera's motion input reads pose/rtmpose.onnx beside the game's
+    // files (src/pose_estimator_onnx.cpp). An APK that carries the model
+    // (scripts/package_android.py --pose) puts it there once per install.
+    private void copyBundledPoseModel() {
+        File directory = getExternalFilesDir(null);
+        if (directory == null) return;
+        File folder = new File(directory, "pose");
+        File model = new File(folder, "rtmpose.onnx");
+        File marker = new File(folder, "rtmpose.onnx.bundled");
+        String version;
+        try {
+            version = Long.toString(getPackageManager().getPackageInfo(getPackageName(), 0).lastUpdateTime);
+        } catch (Exception error) {
+            return;
+        }
+        String copied = "";
+        try (InputStream in = new FileInputStream(marker)) {
+            byte[] text = new byte[64];
+            int length = Math.max(in.read(text), 0);
+            copied = new String(text, 0, length, "UTF-8");
+        } catch (Exception missing) {
+        }
+        if (model.exists() && copied.equals(version)) return;
+        if (!folder.isDirectory() && !folder.mkdirs()) return;
+        File partial = new File(folder, "rtmpose.onnx.partial");
+        try (InputStream in = getAssets().open("pose/rtmpose.onnx"); OutputStream out = new FileOutputStream(partial)) {
+            byte[] buffer = new byte[1 << 16];
+            for (int read; (read = in.read(buffer)) > 0; ) out.write(buffer, 0, read);
+        } catch (Exception error) {
+            partial.delete();
+            return;  // an APK without the model: the pad stays in charge
+        }
+        model.delete();
+        if (!partial.renameTo(model)) return;
+        try (OutputStream out = new FileOutputStream(marker)) {
+            out.write(version.getBytes("UTF-8"));
+        } catch (Exception ignored) {
+        }
     }
 
     // A release APK carries shaders.pack (scripts/package_android.py --pack).

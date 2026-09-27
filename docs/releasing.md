@@ -8,10 +8,18 @@ anything from `private/` or `game/`. GitHub Actions cannot make a release: it
 has no disc, and must never be given one.
 
 What a release does contain, beside the launcher: the recompiled game
-(`sfr_cpu_diagnostic`), the `shaders.pack` translated so far, the licences
-and, on Windows, the shader tools that translate shaders the pack lacks.
+(`sfr_cpu_diagnostic`), the `shaders.pack` translated so far, the licences,
+ONNX Runtime and the RTMPose model for the webcam's motion input, and, on
+Windows, the shader tools that translate shaders the pack lacks.
 
 ## 1. Build
+
+Fetch the pose runtime and model on each machine that builds (the Android
+build takes them from the machine that runs `build_android.sh`):
+
+```bash
+python scripts/fetch_pose_model.py            # add --android where the APK is built
+```
 
 On Windows, from a clean tree at the commit being released:
 
@@ -46,7 +54,8 @@ python scripts/package_release.py android --version 0.1.0
 ```
 
 Each prints the SHA-256 of what it wrote to `out/release/`. The script stops
-when a licence file is missing; the DirectX Shader Compiler's texts are kept in
+when a licence file, the pose runtime or the model is missing (`--no-pose`
+leaves the motion input out); the DirectX Shader Compiler's texts are kept in
 `packaging/licenses/` because dxc-bin ships none.
 
 ## 3. Check

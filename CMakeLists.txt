@@ -194,9 +194,14 @@ add_executable(sfr_touch_controls_test tests/touch_controls_test.cpp src/touch_c
 target_include_directories(sfr_touch_controls_test PRIVATE src)
 add_test(NAME touch_controls COMMAND sfr_touch_controls_test)
 # The webcam standing in for the Kinect sensor: Media Foundation on Windows,
-# nothing yet elsewhere (the setting then has no effect).
+# V4L2 on Linux, the NDK's Camera2 on Android (the phone's own cameras),
+# nothing elsewhere (the setting then has no effect).
+set(SFR_CAMERA_LIBRARIES)
 if(WIN32)
     set(SFR_CAMERA_CAPTURE src/camera_capture.cpp src/camera_capture_win32.cpp)
+elseif(ANDROID)
+    set(SFR_CAMERA_CAPTURE src/camera_capture.cpp src/camera_capture_android.cpp)
+    set(SFR_CAMERA_LIBRARIES camera2ndk mediandk)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(SFR_CAMERA_CAPTURE src/camera_capture.cpp src/camera_capture_v4l2.cpp)
 else()
@@ -216,19 +221,29 @@ add_test(NAME camera_capture COMMAND sfr_camera_capture_test)
 # Checking a host's camera without starting the game (no test: it needs one).
 add_executable(sfr_camera_probe tests/camera_probe.cpp ${SFR_CAMERA_CAPTURE})
 target_include_directories(sfr_camera_probe PRIVATE src)
+target_link_libraries(sfr_camera_probe PRIVATE ${SFR_CAMERA_LIBRARIES})
 # Finding a body in a camera picture: ONNX Runtime and the pinned RTMPose
 # model (tools/onnx, fetched by scripts/fetch_pose_model.py). Without them
 # the camera can still give the title a picture, but not drive the player.
-set(SFR_ONNX_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/tools/onnx/onnxruntime")
-# The fetched runtime is a host library, not an Android NDK build.
-if(NOT ANDROID AND EXISTS "${SFR_ONNX_ROOT}/include/onnxruntime_cxx_api.h")
+# The host's runtime, or on Android the one fetched for each ABI (--android).
+if(ANDROID)
+    set(SFR_ONNX_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/tools/onnx/onnxruntime-android")
+    set(SFR_ONNX_LIBRARY "${SFR_ONNX_ROOT}/lib/${ANDROID_ABI}/libonnxruntime.so")
+elseif(WIN32)
+    set(SFR_ONNX_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/tools/onnx/onnxruntime")
+    set(SFR_ONNX_LIBRARY "${SFR_ONNX_ROOT}/lib/onnxruntime.lib")
+else()
+    set(SFR_ONNX_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/tools/onnx/onnxruntime")
+    set(SFR_ONNX_LIBRARY "${SFR_ONNX_ROOT}/lib/libonnxruntime.so")
+endif()
+if(EXISTS "${SFR_ONNX_ROOT}/include/onnxruntime_cxx_api.h" AND EXISTS "${SFR_ONNX_LIBRARY}")
     set(SFR_POSE_AVAILABLE ON)
     add_library(sfr_onnxruntime INTERFACE)
     target_include_directories(sfr_onnxruntime INTERFACE "${SFR_ONNX_ROOT}/include")
-    if(WIN32)
-        target_link_libraries(sfr_onnxruntime INTERFACE "${SFR_ONNX_ROOT}/lib/onnxruntime.lib")
-    else()
-        target_link_libraries(sfr_onnxruntime INTERFACE "${SFR_ONNX_ROOT}/lib/libonnxruntime.so")
+    target_link_libraries(sfr_onnxruntime INTERFACE "${SFR_ONNX_LIBRARY}")
+    if(NOT WIN32 AND NOT ANDROID)
+        # A release keeps libonnxruntime.so.1 beside the program.
+        target_link_options(sfr_onnxruntime INTERFACE "LINKER:-rpath,$ORIGIN")
     endif()
     set(SFR_POSE_SOURCES src/pose_estimator.cpp src/pose_estimator_onnx.cpp)
 else()
@@ -319,7 +334,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui/imgui.cpp")
             # liblauncher.so, run by LauncherActivity (android/).
             add_library(sfr_launcher SHARED ${SFR_LAUNCHER_SOURCES})
             set_target_properties(sfr_launcher PROPERTIES OUTPUT_NAME launcher)
-            target_link_libraries(sfr_launcher PRIVATE android log)
+            target_link_libraries(sfr_launcher PRIVATE android log ${SFR_CAMERA_LIBRARIES})
         else()
             add_executable(sfr_launcher ${SFR_LAUNCHER_SOURCES})
             set_target_properties(sfr_launcher PROPERTIES OUTPUT_NAME FreeRidersRecompiled)
@@ -615,7 +630,7 @@ if(SFR_BUILD_DIAGNOSTIC)
         add_library(sfr_cpu_diagnostic SHARED src/android_main.cpp)
         set_target_properties(sfr_cpu_diagnostic PROPERTIES OUTPUT_NAME main)
         set_source_files_properties(src/diagnostic_main.cpp PROPERTIES COMPILE_DEFINITIONS main=sfr_game_main)
-        target_link_libraries(sfr_cpu_diagnostic PRIVATE android log)
+        target_link_libraries(sfr_cpu_diagnostic PRIVATE android log ${SFR_CAMERA_LIBRARIES})
         # The NDK hardens every translation unit by default. The guest code is
         # thirty thousand generated functions with large frames that only ever
         # touch the checked guest memory, so the canaries and the fortified

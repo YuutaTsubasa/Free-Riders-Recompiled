@@ -53,7 +53,8 @@ What works today:
 - A launcher that installs the game from your disc image and keeps its
   settings, in English or Traditional Chinese, on every platform.
 - Linux (Vulkan, SDL2), and Android (arm64-v8a) with on-screen touch controls
-  and tilt steering.
+  and tilt steering; the phone's own camera can stand in for the Kinect
+  ([docs/camera-input.md](docs/camera-input.md)).
 
 Known limits:
 

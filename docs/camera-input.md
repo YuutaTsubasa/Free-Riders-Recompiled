@@ -21,8 +21,9 @@ launcher 的「攝影機」（`SFR_CAMERA`）有三種：
 ## 從畫面到骨架
 
 1. [`camera_capture`](../src/camera_capture.h)：Windows 走 Media Foundation，
-   Linux 走 V4L2，要求 640x480。相機給的很少是 BGRA，所以 YUY2 與 NV12
-   在 [`convert_camera_pixels`](../src/camera_capture.cpp) 換算（BT.601）。
+   Linux 走 V4L2，Android 走 NDK 的 Camera2（見下方），要求 640x480。相機給的很少是
+   BGRA，所以 YUY2 與 NV12 在 [`convert_camera_pixels`](../src/camera_capture.cpp)
+   換算（BT.601），Android 的 YUV_420_888 在 `convert_camera_yuv420` 換算並轉正。
 2. [`pose_estimator`](../src/pose_estimator.h)：ONNX Runtime 跑 RTMPose-t，
    輸入 192x256，輸出 SimCC 的兩條機率分布（x 與 y 各自一維，split ratio 2.0），
    取峰值得到 17 個 COCO 關節點。單執行緒，這台機器上一次約 7.5 ms。
@@ -90,14 +91,50 @@ out/build/host/sfr_pose_probe [out.bmp]     # 對相機或那張圖找人
 
 ONNX Runtime 與 RTMPose 都是 release 產物而不是 repository，所以由
 [`scripts/fetch_pose_model.py`](../scripts/fetch_pose_model.py) 以 SHA-256 釘住版本，
-解壓到 git 忽略的 `tools/onnx`。兩者都**沒有**隨本專案散布：
+解壓到 git 忽略的 `tools/onnx`：
+
+```
+python scripts/fetch_pose_model.py            # 這台電腦的 runtime（Windows 或 Linux x64）與模型
+python scripts/fetch_pose_model.py --android  # 再加上 Android（arm64-v8a、x86_64）的 runtime
+```
 
 - ONNX Runtime 1.30.0：MIT（Microsoft）
-- RTMPose-t：Apache 2.0（OpenMMLab）
+- RTMPose-t：Apache 2.0（OpenMMLab；模型壓縮檔裡沒有授權檔，用 MMPose v1.3.2 的 LICENSE）
 
-要把它們放進發行版的話，發行版就必須一併帶上這兩份授權條款。
+**發行版會帶上它們**（[`package_release.py`](../scripts/package_release.py)）：
+程式旁邊放 `onnxruntime.dll`／`libonnxruntime.so.1`，模型放 `pose/rtmpose.onnx`，
+兩份授權條款與 ONNX Runtime 的 ThirdPartyNotices 放 `licenses/`。缺檔時打包會停下，
+提示先執行上面的腳本；確定不要體感輸入時可以加 `--no-pose`。Linux 的遊戲執行檔以
+`$ORIGIN` 為 RUNPATH，所以會先找自己旁邊的 `libonnxruntime.so.1`。
+
+Android 的 APK 由 [`build_android.sh`](../scripts/build_android.sh) 把各 ABI 的
+`libonnxruntime.so` 放進 `lib/<abi>/`、模型放進 `assets/pose/rtmpose.onnx`，
+LauncherActivity 每次安裝後第一次啟動時把模型複製到外部檔案資料夾的 `pose/`
+（遊戲的工作目錄），和 `shaders.pack` 的做法一樣。
+
 沒有這些檔案時 `SFR_POSE_AVAILABLE` 為 OFF，「畫面」仍然可用，「體感」則會印
 `NATIVE_CAMERA_PLAYER motion=0 reason=no-pose-model` 並退回手把。
+
+## Android：手機自己的鏡頭
+
+[`camera_capture_android.cpp`](../src/camera_capture_android.cpp) 用 NDK 的 Camera2
+與 AImageReader 讀 YUV_420_888（最接近 640x480 的尺寸）：
+
+- **清單**：系統列出的每一顆鏡頭，名字是「Back camera 0 (78°)」這樣：朝向、系統的
+  鏡頭編號、長邊的視角（由感測器寬度與最短焦距算出）。視角越大，玩家可以站得越近。
+  有些手機把超廣角藏在「邏輯鏡頭」裡、不單獨列給 App，那種手機只選得到主鏡頭。
+- **權限**：第一次開鏡頭時才用 SDL 跳出系統的相機權限詢問（launcher 的「測試」
+  按鈕就會觸發），從不開攝影機的玩家不會被問。
+- **轉正**：手機感測器是橫著裝的，依 `SENSOR_ORIENTATION`、鏡頭朝向與螢幕目前的
+  轉向（SDL 的 display orientation）算出順時針要轉幾度
+  （[`camera_upright_rotation`](../src/camera_capture.h)），轉換時一併轉好。
+  Camera2 給的前鏡頭畫面本身不是鏡像的，所以不需要打開「畫面左右相反」。
+
+**建議的擺法**：手機接電視（USB-C 轉 HDMI 或投影），放在電視旁、背面超廣角朝向玩家；
+或把手機立在電視旁用前鏡頭。只看手機螢幕的話，站到能全身入鏡的距離就太小了。
+
+這台開發機沒有 Android NDK 與手機：轉換、旋轉與轉正角度有單元測試
+（`camera_capture` CTest），NDK 那一層還沒在實機上跑過。
 
 ## 用身體比賽（實驗性）
 
@@ -115,5 +152,4 @@ ONNX Runtime 與 RTMPose 都是 release 產物而不是 repository，所以由
 
 - 攝影機的畫面還沒接到遊戲自己的 NUI 影像串流（`82768C40`），所以「畫面」
   目前只是把相機打開。
-- Android 還沒有 Camera2 的擷取實作。
 - 真正的 Kinect 感測器見 [實體 Kinect](kinect-sensor.md)（Windows，`SFR_CAMERA=kinect`）。
