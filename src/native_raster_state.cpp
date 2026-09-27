@@ -32,10 +32,12 @@ NativeRasterState::NativeRasterState(NativeGraphics& graphics, uint32_t target_w
         auto* native_device = static_cast<plume::D3D12Device*>(&graphics.device());
         if (!native_device->d3d)
             throw std::runtime_error("native raster state requires an available D3D12 device");
+        // A runtime older than OPTIONS13 (Windows 10's own, without the
+        // Agility SDK) does not know the query: it cannot flip depth either.
         D3D12_FEATURE_DATA_D3D12_OPTIONS13 options{};
-        if (FAILED(native_device->d3d->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS13, &options, sizeof(options))))
-            throw std::runtime_error("failed to query D3D12 inverted viewport depth support");
-        inverted_depth = options.InvertedViewportDepthFlipsZSupported != FALSE;
+        inverted_depth = SUCCEEDED(native_device->d3d->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS13, &options,
+                                                                            sizeof(options))) &&
+                         options.InvertedViewportDepthFlipsZSupported != FALSE;
     }
 #endif
 
