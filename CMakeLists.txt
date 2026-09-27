@@ -209,9 +209,15 @@ else()
 endif()
 if(WIN32)
     set(SFR_KINECT_SENSOR src/kinect_sensor_win32.cpp src/kinect_v2_win32.cpp)
+    set(SFR_VOICE src/voice_commands.cpp src/voice_commands_win32.cpp)
 else()
     set(SFR_KINECT_SENSOR src/kinect_sensor_none.cpp)
+    set(SFR_VOICE src/voice_commands.cpp src/voice_commands_none.cpp)
 endif()
+# The Kinect's voice commands, through the host's speech recognizer.
+add_executable(sfr_voice_commands_test tests/voice_commands_test.cpp src/voice_commands.cpp src/voice_commands_none.cpp)
+target_include_directories(sfr_voice_commands_test PRIVATE src)
+add_test(NAME voice_commands COMMAND sfr_voice_commands_test)
 # Checking a host's Kinect without starting the game (no test: it needs one).
 add_executable(sfr_kinect_probe tests/kinect_probe.cpp src/kinect_sensor.cpp ${SFR_KINECT_SENSOR})
 target_include_directories(sfr_kinect_probe PRIVATE src)
@@ -330,7 +336,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui/imgui.cpp")
     set(SFR_IMGUI "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui")
     # The launcher lists the host cameras and controllers.
     set(SFR_LAUNCHER_SOURCES src/launcher_main.cpp src/launcher_settings.cpp src/input_bindings.cpp src/pad_devices.cpp src/pad_assignment.cpp src/launcher_sound.cpp src/launcher_art.cpp src/sony_gamepad.cpp
-        ${SFR_CAMERA_CAPTURE} src/kinect_sensor.cpp ${SFR_KINECT_SENSOR}
+        ${SFR_CAMERA_CAPTURE} src/kinect_sensor.cpp ${SFR_KINECT_SENSOR} ${SFR_VOICE}
         ${SFR_IMGUI}/imgui.cpp ${SFR_IMGUI}/imgui_draw.cpp ${SFR_IMGUI}/imgui_tables.cpp ${SFR_IMGUI}/imgui_widgets.cpp)
     if(WIN32)
         add_executable(sfr_launcher WIN32 ${SFR_LAUNCHER_SOURCES} src/launcher_platform_win32.cpp
@@ -658,7 +664,7 @@ if(SFR_BUILD_DIAGNOSTIC)
     target_sources(sfr_cpu_diagnostic PRIVATE src/camera_player.cpp src/pose_skeleton.cpp src/pose_smoothing.cpp
                    ${SFR_CAMERA_CAPTURE} ${SFR_POSE_SOURCES})
     # A real Kinect (SFR_CAMERA=kinect), through the Kinect for Windows runtime.
-    target_sources(sfr_cpu_diagnostic PRIVATE src/kinect_sensor.cpp ${SFR_KINECT_SENSOR})
+    target_sources(sfr_cpu_diagnostic PRIVATE src/kinect_sensor.cpp ${SFR_KINECT_SENSOR} ${SFR_VOICE})
     if(SFR_POSE_AVAILABLE)
         target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_onnxruntime)
     endif()

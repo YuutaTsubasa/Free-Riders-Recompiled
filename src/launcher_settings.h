@@ -48,6 +48,10 @@ struct LauncherSettings {
     // "behind-left", "left" or "front-left" (kinect_sensor.h). A board is
     // ridden side-on, so the side the chest faces sees the whole body.
     std::string kinect_placement = "front";  // SFR_KINECT_PLACEMENT
+    // Voice commands through the host's speech recognizer and the default
+    // microphone (a Kinect's array, made the default, is heard), in English
+    // or Traditional Chinese; the pad's buttons still say them too.
+    bool voice = false;  // SFR_VOICE
     // Controls (input_bindings.h). The devices each player uses, and how
     // their keys and pad buttons are arranged, as "a=Z,b=X,..." lines. An
     // empty line means the defaults, so a settings file written before any

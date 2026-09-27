@@ -37,6 +37,7 @@ void settings_round_trip() {
     settings.camera_mirror = true;
     settings.camera_race = true;
     settings.kinect_placement = "right";
+    settings.voice = true;
     settings.player1_device = "keyboard";
     settings.player2_device = "gamepad";
     settings.player1_gamepad = "Controller #1";
@@ -60,7 +61,7 @@ void settings_round_trip() {
             read.player1_pad == settings.player1_pad && read.player2_pad == settings.player2_pad,
             "both players' controls survive a round trip alongside camera and pipeline settings");
     require(value_of(read, "SFR_CAMERA") == "motion" && value_of(read, "SFR_CAMERA_DEVICE") == settings.camera_device &&
-            value_of(read, "SFR_CAMERA_MIRROR") == "1" && value_of(read, "SFR_CAMERA_RACE") == "1" && value_of(read, "SFR_KINECT_PLACEMENT") == "right" &&
+            value_of(read, "SFR_CAMERA_MIRROR") == "1" && value_of(read, "SFR_CAMERA_RACE") == "1" && value_of(read, "SFR_KINECT_PLACEMENT") == "right" && value_of(read, "SFR_VOICE") == "1" && read.voice &&
             value_of(read, "SFR_GPU_PIPELINE") == "0" &&
             value_of(read, "SFR_PLAYER1_INPUT") == settings.player1_device &&
             value_of(read, "SFR_PLAYER2_PAD") == settings.player2_pad,

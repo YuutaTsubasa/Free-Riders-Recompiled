@@ -62,6 +62,7 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         else if (key == "camera_device" && value.size() <= 128) settings.camera_device = value;
         else if (key == "camera_mirror") read_flag(value, settings.camera_mirror);
         else if (key == "camera_race") read_flag(value, settings.camera_race);
+        else if (key == "voice") read_flag(value, settings.voice);
         else if (key == "kinect_placement" &&
                  (value == "front" || value == "front-right" || value == "right" || value == "behind-right" ||
                   value == "behind" || value == "behind-left" || value == "left" || value == "front-left"))
@@ -106,6 +107,7 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "camera_mirror=" << s.camera_mirror << '\n'
         << "camera_race=" << s.camera_race << '\n'
         << "kinect_placement=" << s.kinect_placement << '\n'
+        << "voice=" << s.voice << '\n'
         << "player1_device=" << s.player1_device << '\n'
         << "player2_device=" << s.player2_device << '\n'
         << "player1_gamepad=" << s.player1_gamepad << '\n'
@@ -176,6 +178,7 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         {"SFR_CAMERA_MIRROR", s.camera_mirror ? "1" : "0"},
         {"SFR_CAMERA_RACE", s.camera_race ? "1" : "0"},
         {"SFR_KINECT_PLACEMENT", s.kinect_placement},
+        {"SFR_VOICE", s.voice ? "1" : ""},
         // Controls: who plays with what, and which button does what. Empty
         // removes the variable, and the game then uses its own defaults.
         {"SFR_PLAYER1_INPUT", s.player1_device},

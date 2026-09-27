@@ -140,7 +140,15 @@ COM 介面依 SDK 2.0 的 `Kinect.h` 宣告到用得到的最後一個方法為�
 - [`nui_race_hooks.cpp`](../src/nui_race_hooks.cpp)：有實體感測器時
   （`nui_body_from_sensor()`），比賽**不**換掉身體紀錄、**不**覆寫手勢判斷器，
   也**不**跳過「On your Gear!」的身體量測——全部交還給遊戲原本的程式。
-- 語音指令仍由手把按鍵代替（START／A／B…），見 [用手把操作選單](pad-menus.md)。
+- **語音指令**：launcher 的「語音指令」（`SFR_VOICE=1`，Windows）用 Windows 語音辨識（SAPI）
+  聽預設麥克風。Kinect 的麥克風陣列在 Windows 上就是一個錄音裝置，設成預設就會用它。
+  [`voice_commands.cpp`](../src/voice_commands.cpp) 列出聽的詞：遊戲詞彙的 start、ok、back、
+  next、up／down／left／right、pause（遊戲的 `pauseopen`，比賽中說 start 也是）、restart、
+  replay、main menu，以及繁體中文的開始、好／確定、返回、下一步、往上…、暫停、重來、重播、
+  主選單。只接受辨識器有一般以上信心的結果，免得雜音變成指令；聽到的詞像按鍵一樣寫進
+  遊戲的語音欄位（input+5440），手把按鍵照樣可用。`SFR_VOICE_LANGUAGE` 可指定辨識器語言
+  （409 英文、404 繁中），預設用系統的；辨識器說不出的詞（例如中文辨識器遇到英文）會被略過。
+  log：`NATIVE_VOICE started phrases=…`、`NUI_VOICE heard=… word=…`。尚未實機測試。
 
 ## 其他平台
 

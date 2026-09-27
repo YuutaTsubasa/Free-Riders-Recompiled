@@ -32,6 +32,7 @@
 #include "launcher_platform.h"
 #include "camera_capture.h"
 #include "kinect_sensor.h"
+#include "voice_commands.h"
 #include "launcher_settings.h"
 #include "input_bindings.h"
 #include "pad_devices.h"
@@ -77,7 +78,7 @@ enum Text {
     CameraTest, CameraTesting, CameraWorks, CameraSilent, CameraClosed, CameraMirror, CameraMirrorHint,
     CameraRace, CameraRaceHint, CameraKinect, KinectRow, KinectRowHint, KinectWorks, KinectSilent, KinectMissing,
     KinectNoRuntime, KinectNoSensor, KinectFailed, KinectDownload, KinectDownloadV2, KinectInstallHint,
-    KinectPlacementLabel, KinectPlacementHint, PlacementScreen, PlacementPlayer, PlacementSensor, PlacementChest,
+    VoiceLabel, VoiceHint, KinectPlacementLabel, KinectPlacementHint, PlacementScreen, PlacementPlayer, PlacementSensor, PlacementChest,
     PlacementFront, PlacementFrontRight, PlacementRight, PlacementBehindRight, PlacementBehind, PlacementBehindLeft,
     PlacementLeft, PlacementFrontLeft,
     ImageDirectory, ImageDirectoryHint, AssetDirectory, AssetDirectoryHint, Browse, Found, Missing, FilesHint,
@@ -172,6 +173,9 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"SDK 2.0 (Kinect v2)", "SDK 2.0（Kinect v2）"},
     {"An Xbox 360 Kinect needs the full Kinect for Windows SDK 1.8 (the Runtime alone refuses it); a Kinect v2 needs SDK 2.0 and a USB 3.0 port. Install the one for your sensor, plug it in through its adapter, then test again. If it still will not start, close other programs using the Kinect.",
      "Xbox 360 版 Kinect 需要完整的 Kinect for Windows SDK 1.8（只裝 Runtime 會被拒絕）；Kinect v2 需要 SDK 2.0 與 USB 3.0 連接埠。請安裝對應的 SDK，用轉接器接上感測器後再測試一次。若仍無法啟動，請關閉其他正在使用 Kinect 的程式。"},
+    {"Voice commands", "語音指令"},
+    {"Say the Kinect's commands again: start, OK, back, next, pause... in English or Chinese (開始、確定、返回、下一步、暫停…). Uses Windows speech recognition and the default microphone: make the Kinect's microphone array the default recording device to use it.",
+     "恢復 Kinect 的語音指令：start、OK、back、next、pause……英文或中文都可以（開始、確定、返回、下一步、暫停…）。使用 Windows 語音辨識與預設麥克風：要用 Kinect 的麥克風陣列，請把它設為預設錄音裝置。"},
     {"Sensor placement", "感應器位置"},
     {"Seen from above: click where the Kinect stands. A board is ridden side-on, so the side your chest faces sees your whole body: the right for Regular (left foot forward), the left for Goofy. A diagonal also sees an arm reaching behind your back. When you switch stance, the side sensor sees your back; your feet tell which way you face, and left and right are put right again.",
      "俯視圖：點選 Kinect 放置的位置。滑板是側身站的，放在胸口朝向的那一側能看到全身：Regular（左腳在前）放右邊，Goofy 放左邊。斜角位置也看得到往背後伸的手。轉身切換站姿時，側邊的感應器會看到背部，程式會從腳尖方向判斷你面向哪邊，自動把左右換回來。"},
@@ -1905,6 +1909,8 @@ struct Launcher {
                 setting_row(tr(CameraRace), tr(CameraRaceHint), switch_width, scale,
                             [&] { toggle("##camera_race", &settings.camera_race); });
         }
+        if (sfr::VoiceRecognizer::supported())
+            setting_row(tr(VoiceLabel), tr(VoiceHint), switch_width, scale, [&] { toggle("##voice", &settings.voice); });
 #ifdef _WIN32  // elsewhere the game always draws with Vulkan
         setting_row(tr(VulkanLabel), tr(VulkanHint), switch_width, scale, [&] { toggle("##vulkan", &settings.vulkan); });
 #endif

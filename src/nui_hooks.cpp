@@ -5,6 +5,7 @@
 #include "kinect_sensor.h"
 #include "nui_skeleton.h"
 #include "nui_speech.h"
+#include "voice_commands.h"
 #include "local_profile.h"
 #include "touch_controls.h"
 #include <bit>
@@ -318,6 +319,28 @@ SFR_HOOK(sub_82494658) {
         memory.store<uint32_t>(uint64_t(input)+5448,2);
         std::cerr << "NUI_SAID word=" << entry.second << " present=" << sfr::present_count << '\n';
         return;
+    }
+    // SFR_VOICE=1: the player's own voice, through the host's speech
+    // recognizer (a Kinect's microphone array is one to Windows). A phrase
+    // heard is the title's word, as a button would be; the pad still works.
+    static std::unique_ptr<sfr::VoiceRecognizer> voice=[]() -> std::unique_ptr<sfr::VoiceRecognizer> {
+        const char* wanted=std::getenv("SFR_VOICE");
+        if(!wanted || !*wanted || *wanted=='0') return nullptr;
+        std::string why;
+        auto recognizer=sfr::VoiceRecognizer::open(sfr::voice_phrases(),&why);
+        if(!recognizer) std::cerr << "NATIVE_VOICE started=0 reason=" << why << '\n';
+        return recognizer;
+    }();
+    if(std::string phrase; voice && voice->next(phrase)) {
+        const auto title_word=sfr::title_word_for(phrase,racing);
+        if(!title_word.empty()) {
+            memory.check_write(uint64_t(input)+5440,12);
+            memory.store<uint32_t>(uint64_t(input)+5440,sfr::NuiSpeechEmulation::say(memory,title_word));
+            memory.store<uint32_t>(uint64_t(input)+5444,0x3F800000u);
+            memory.store<uint32_t>(uint64_t(input)+5448,2);
+            std::cerr << "NUI_VOICE heard=\"" << phrase << "\" word=" << title_word << " racing=" << racing << '\n';
+            return;
+        }
     }
     const auto word=sfr::NuiSpeechEmulation::hear(spoken,racing);
     if(word==sfr::NuiSpeechEmulation::Word::none) return;
