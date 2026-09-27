@@ -128,13 +128,58 @@ void a_side_on_rider_keeps_its_size() {
 
     // The scale follows slowly: a sudden half-length torso (a bend towards
     // the camera) moves it a tenth of the way.
-    float scale = 0;
-    require(sfr::pose_to_joints(standing(), 640, 480, front, false, &scale) && scale > 0, "the scale starts");
-    const float settled = scale;
+    sfr::PoseMapping mapping;
+    require(sfr::pose_to_joints(standing(), 640, 480, front, false, &mapping) && mapping.scale > 0, "the scale starts");
+    const float settled = mapping.scale;
     sfr::PoseLandmarks bent = standing();
     for (const uint32_t point : {shoulder_left, shoulder_right}) bent[point].y = 235;
-    require(sfr::pose_to_joints(bent, 640, 480, turned, false, &scale), "a bent body maps");
-    require(near(scale, settled * 1.1f, settled * 0.01f), "one picture moves the scale a tenth of the way");
+    require(sfr::pose_to_joints(bent, 640, 480, turned, false, &mapping), "a bent body maps");
+    require(near(mapping.scale, settled * 1.1f, settled * 0.01f), "one picture moves the scale a tenth of the way");
+}
+
+// How far the rider has turned: side-on, one shoulder is a shoulder's width
+// behind the other; opened towards the screen, less; facing it, not at all.
+// The leading (nearer) side is the one whose ankle is lower in the picture.
+void a_turn_gives_the_shoulders_depth() {
+    using namespace sfr::pose_point;
+    namespace joint = sfr::nui_joint;
+    const auto rider = [](float shoulder_half_span, float left_ankle_lower) {
+        sfr::PoseLandmarks body = standing();
+        body[shoulder_left].x = 320 + shoulder_half_span;
+        body[shoulder_right].x = 320 - shoulder_half_span;
+        body[hip_left].x = 320 + shoulder_half_span * 0.5f;
+        body[hip_right].x = 320 - shoulder_half_span * 0.5f;
+        body[ankle_left].y = 450 + left_ankle_lower;
+        return body;
+    };
+    const auto gap = [](const sfr::SkeletonJoints& j) {
+        return j[joint::shoulder_right][2] - j[joint::shoulder_left][2];  // > 0: the left is nearer
+    };
+    sfr::SkeletonJoints joints{};
+    sfr::PoseMapping regular;
+    require(sfr::pose_to_joints(rider(2, 20), 640, 480, joints, false, &regular) && regular.lead == -1,
+            "the lower left ankle makes the left the leading side");
+    require(near(gap(joints), 2 * sfr::pose_shoulder_half_width, 0.03f),
+            "side-on, the right shoulder is a shoulder's width behind the left");
+    require(near(joints[joint::shoulder_center][2], sfr::pose_distance), "the body stays where it stood");
+    require(joints[joint::hand_left][2] < joints[joint::hand_right][2], "each arm goes with its shoulder");
+    // Opened a little towards the screen: the shoulders look wider.
+    require(sfr::pose_to_joints(rider(24, 0), 640, 480, joints, false, &regular) && regular.lead == -1,
+            "level ankles keep the leading side");
+    const float opened = gap(joints);
+    require(opened > 0.1f && opened < 2 * sfr::pose_shoulder_half_width - 0.03f, "opened, the gap is smaller");
+    // Facing the screen, the shoulders look their true width: no gap.
+    require(sfr::pose_to_joints(standing(), 640, 480, joints, false, &regular) && near(gap(joints), 0.0f, 0.02f),
+            "facing the camera, both shoulders are at one distance");
+    // Turned round (switch): the right ankle is lower now, the right leads.
+    require(sfr::pose_to_joints(rider(2, -20), 640, 480, joints, false, &regular) && regular.lead == 1 &&
+                gap(joints) < -0.3f,
+            "after a switch the right shoulder is the nearer one");
+    // Until a leading side is known, nothing is given depth.
+    sfr::PoseMapping unknown;
+    require(sfr::pose_to_joints(rider(2, 0), 640, 480, joints, false, &unknown) && unknown.lead == 0 &&
+                near(gap(joints), 0.0f, 0.001f),
+            "with the ankles level from the start, the body stays flat");
 }
 }
 
@@ -145,6 +190,7 @@ int main() {
         a_mirrored_picture_comes_out_the_same_way_round();
         what_is_refused();
         a_side_on_rider_keeps_its_size();
+        a_turn_gives_the_shoulders_depth();
         std::cout << "Pose skeleton checks passed\n";
         return 0;
     } catch (const std::exception& error) {

@@ -33,7 +33,7 @@ struct CameraPlayer::Impl {
         auto reported = std::chrono::steady_clock::now();
         auto last_picture = reported;
         double spent = 0;
-        float scale = 0;  // metres per pixel, followed slowly (pose_to_joints)
+        PoseMapping mapping;  // the scale and leading side, carried along (pose_to_joints)
         while (!stop.stop_requested()) {
             if (!camera->next(frame)) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
@@ -48,10 +48,10 @@ struct CameraPlayer::Impl {
                 // Smoothed where the model read them, before the picture
                 // becomes metres: the wandering is a picture's wandering.
                 smoothing.smooth(landmarks, interval);
-                body = pose_to_joints(landmarks, frame.width, frame.height, mapped, mirrored, &scale);
+                body = pose_to_joints(landmarks, frame.width, frame.height, mapped, mirrored, &mapping);
             } else {
                 smoothing.forget();
-                scale = 0;  // whoever comes next is measured afresh
+                mapping = {};  // whoever comes next is measured afresh
             }
             spent += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
             ++estimates;

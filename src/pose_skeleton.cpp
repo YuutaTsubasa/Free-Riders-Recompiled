@@ -19,7 +19,7 @@ Point between(const Point& from, const Point& to, float part) {
 }
 
 bool pose_to_joints(const PoseLandmarks& given, uint32_t picture_width, uint32_t picture_height,
-                    SkeletonJoints& joints, bool picture_is_mirrored, float* scale) {
+                    SkeletonJoints& joints, bool picture_is_mirrored, PoseMapping* mapping) {
     if (!picture_width || !picture_height) return false;
     using namespace pose_point;
     // A mirrored picture is turned back first: every point moves to the other
@@ -47,9 +47,14 @@ bool pose_to_joints(const PoseLandmarks& given, uint32_t picture_width, uint32_t
     const float torso_span = std::sqrt(torso_x * torso_x + torso_y * torso_y);
     if (torso_span < 4.0f) return false;  // too small to scale by
     float metres = pose_torso_length / torso_span;
-    if (scale) {
-        if (*scale > 0) metres = *scale + (metres - *scale) * 0.1f;
-        *scale = metres;
+    if (mapping) {
+        if (mapping->scale > 0) metres = mapping->scale + (metres - mapping->scale) * 0.1f;
+        mapping->scale = metres;
+        // The leading foot is the nearer one, lower in the picture. Ankles
+        // within a sixteenth of the torso of each other say nothing.
+        const float ankles = landmarks[ankle_left].y - landmarks[ankle_right].y;
+        const bool seen = landmarks[ankle_left].score > 0.3f && landmarks[ankle_right].score > 0.3f;
+        if (seen && std::fabs(ankles) > torso_span / 16.0f) mapping->lead = ankles > 0 ? -1 : 1;
     }
     // The picture is mirrored: a camera faces the player, and the title
     // expects the sensor's own left and right.
@@ -89,6 +94,28 @@ bool pose_to_joints(const PoseLandmarks& given, uint32_t picture_width, uint32_t
     joints[joint::wrist_left] = between(joints[joint::elbow_left], joints[joint::hand_left], 0.9f);
     joints[joint::foot_right] = {joints[joint::ankle_right][0], joints[joint::ankle_right][1] - 0.05f, pose_distance - 0.08f};
     joints[joint::foot_left] = {joints[joint::ankle_left][0], joints[joint::ankle_left][1] - 0.05f, pose_distance - 0.08f};
+
+    // How far one side is behind the other, from how much narrower than
+    // their true width the shoulders and the hips look: the nearer side is
+    // the leading one, and each arm and leg goes with its shoulder or hip.
+    if (mapping && mapping->lead != 0) {
+        const auto gap = [](float half_width, float seen_span) {
+            const float width = half_width * 2.0f;
+            return std::sqrt((std::max)(0.0f, width * width - seen_span * seen_span));
+        };
+        const float shoulders = gap(pose_shoulder_half_width,
+                                    std::fabs(joints[joint::shoulder_right][0] - joints[joint::shoulder_left][0]));
+        const float hips = gap(pose_hip_half_width, std::fabs(joints[joint::hip_right][0] - joints[joint::hip_left][0]));
+        const float left_side = mapping->lead < 0 ? -0.5f : 0.5f;  // the left comes nearer when it leads
+        for (const uint32_t j : {joint::shoulder_left, joint::elbow_left, joint::wrist_left, joint::hand_left})
+            joints[j][2] += left_side * shoulders;
+        for (const uint32_t j : {joint::shoulder_right, joint::elbow_right, joint::wrist_right, joint::hand_right})
+            joints[j][2] -= left_side * shoulders;
+        for (const uint32_t j : {joint::hip_left, joint::knee_left, joint::ankle_left, joint::foot_left})
+            joints[j][2] += left_side * hips;
+        for (const uint32_t j : {joint::hip_right, joint::knee_right, joint::ankle_right, joint::foot_right})
+            joints[j][2] -= left_side * hips;
+    }
     joints[joint::hip_center] = middle(joints[joint::hip_left], joints[joint::hip_right]);
     joints[joint::shoulder_center] = middle(joints[joint::shoulder_left], joints[joint::shoulder_right]);
     joints[joint::spine] = between(joints[joint::hip_center], joints[joint::shoulder_center], 0.5f);
