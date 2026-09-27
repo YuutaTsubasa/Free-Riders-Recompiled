@@ -52,6 +52,7 @@
 #include "guest_wait.h"
 #include "guest_threads.h"
 #include "native_input.h"
+#include "input_trace.h"
 #include "native_audio.h"
 #include "guest_printf.h"
 #include "native_presentation.h"
@@ -139,9 +140,9 @@ static uint64_t calls = 0;
 static std::unique_ptr<NativeInput> native_input;
 // The input queries are answered without the permit (permit_free below),
 // so several guest threads may count them at once.
-static std::atomic<uint64_t> input_queries{0}, hid_queries{0}, keystroke_queries{0};
+static std::atomic<uint64_t> hid_queries{0}, keystroke_queries{0};
 static uint64_t critical_region_calls = 0, printf_calls = 0;
-static std::atomic<uint32_t> last_input_packet{0};
+static InputTrace input_trace;
 static NativeInput& input() {
     if (!native_input)
         native_input = std::make_unique<NativeInput>(NativeInput::host([]() -> void* {
@@ -1112,10 +1113,10 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         if ((flags & ~1u) || !output)
             throw RuntimeStop("native-input", flags, "unsupported XamInputGetState flags or null state");
         ctx.r3.u64 = input().get_state(*active_memory, user, output);
-        // Polled every frame: log only the first query and every state change.
+        // Polled every frame: each player's first query and state changes.
+        // A missing second controller must not reset the first player's packet.
         const uint32_t packet = ctx.r3.u32 == xinput_success ? active_memory->load<uint32_t>(output) : 0;
-        const uint32_t previous = last_input_packet.exchange(packet);
-        if (input_queries++ == 0 || packet != previous) {
+        if (input_trace.changed(user, ctx.r3.u32, packet)) {
             std::cerr << "NATIVE_INPUT user=" << user << " status=0x" << std::hex << ctx.r3.u32;
             if (ctx.r3.u32 == xinput_success)
                 std::cerr << " packet=" << std::dec << packet << " buttons=0x" << std::hex
