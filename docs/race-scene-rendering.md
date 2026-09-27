@@ -56,6 +56,23 @@ word=0 value=0x370`，多重取樣型別 1），真機由顯示縮放器拉伸�
 
 ## 仍然是近似的地方
 
+### 2026-09-27：修復 2P viewport 修改造成的單人回歸
+
+將所有 viewport 都限制到 guest surface 後，單人比賽的 default `65535×65535`
+請求變成 880×720，後製則變成 110×90、55×45。但 screen-space shader 與 resolve
+仍使用整張 1280×720 framebuffer，造成右側黑邊與嚴重過曝。關閉 Camera 的相同
+自動教學流程也可重現，與 Camera 的輸入接手無關。
+
+目前保留別名後端的相容處理：原點為 `(0,0)` 的 viewport 以實體 framebuffer 為上限，
+有位移的 viewport 才使用 guest surface 邊界。明確請求的 880-wide Loading 與
+440-wide 左半畫面不放大；右半從 x=440 開始的過大請求仍截止於 880，避免恢復
+先前 840-wide 的錯誤。兩者的 host scissor 都限制在實體 framebuffer 內。
+這不是完整的離屏 target 實作；未來需要一併統一 target、resolve 與 shader 座標。
+
+回歸測試包含小型 foreign target 的全畫面 clear/readback、Reset 後全畫面恢復、
+Loading 明確尺寸、左右分割與超出主機大小的 surface。Vulkan、D3D12 的
+`guest_graphics`、`native_raster_state`、`native_presentation` 測試均通過。
+
 - 解析出來的複本一律是**整個框架緩衝**的大小，不是解析區域，也不會縮小；縮圖鏈因此
   不是真的縮圖。
 - 深度解析（陰影貼圖）沒有複製出來。

@@ -39,33 +39,56 @@ PoseSmoothing PoseSmoothing::from_environment() {
 void PoseSmoothing::forget() {
     for (auto& point : points_)
         for (auto& axis : point) axis.started = false;
+    for (auto& point : world_points_)
+        for (auto& axis : point) axis.started = false;
+}
+
+void PoseSmoothing::smooth_axis(Axis& axis, float& value, double interval, float speed_coefficient) {
+    if (!std::isfinite(value)) {
+        axis.started = false;
+        return;
+    }
+    if (!axis.started) {
+        axis = {value, 0.0f, true};
+        return;
+    }
+    const float speed = float((double(value) - double(axis.value)) / interval);
+    if (!std::isfinite(speed)) {
+        axis = {value, 0.0f, true};
+        return;
+    }
+    const float speed_weight = smoothing_factor(speed_cutoff, interval);
+    axis.speed += speed_weight * (speed - axis.speed);
+    const float cutoff = cutoff_at_rest_ + speed_coefficient * std::fabs(axis.speed);
+    const float weight = smoothing_factor(cutoff, interval);
+    axis.value += weight * (value - axis.value);
+    value = axis.value;
 }
 
 void PoseSmoothing::smooth(PoseLandmarks& landmarks, double interval_seconds) {
     if (cutoff_at_rest_ <= 0) return;
     // A gap means the player was away, or the camera stalled: what was
     // remembered says nothing about where they are now.
-    if (interval_seconds <= 0 || interval_seconds > 0.5) {
+    if (!std::isfinite(interval_seconds) || interval_seconds <= 0 || interval_seconds > 0.5) {
         forget();
-        if (interval_seconds <= 0) return;
+        if (!std::isfinite(interval_seconds) || interval_seconds <= 0) return;
     }
     for (uint32_t point = 0; point < pose_point::count; ++point) {
         float* const values[2] = {&landmarks[point].x, &landmarks[point].y};
         for (uint32_t which = 0; which < 2; ++which) {
-            Axis& axis = points_[point][which];
-            float& value = *values[which];
-            if (!axis.started) {
-                axis = {value, 0.0f, true};
-                continue;
-            }
-            const float speed = float((double(value) - double(axis.value)) / interval_seconds);
-            const float speed_weight = smoothing_factor(speed_cutoff, interval_seconds);
-            axis.speed += speed_weight * (speed - axis.speed);
-            const float cutoff = cutoff_at_rest_ + speed_coefficient_ * std::fabs(axis.speed);
-            const float weight = smoothing_factor(cutoff, interval_seconds);
-            axis.value += weight * (value - axis.value);
-            value = axis.value;
+            smooth_axis(points_[point][which], *values[which], interval_seconds, speed_coefficient_);
         }
+        auto& landmark = landmarks[point];
+        bool valid_world = landmark.has_world && std::isfinite(landmark.score) && landmark.score > 0;
+        for (const float value : landmark.world)
+            valid_world = valid_world && std::isfinite(value) && std::fabs(value) <= 10.0f;
+        if (!valid_world) {
+            for (auto& axis : world_points_[point]) axis.started = false;
+            landmark.has_world = false;
+            continue;
+        }
+        for (uint32_t axis = 0; axis < 3; ++axis)
+            smooth_axis(world_points_[point][axis], landmark.world[axis], interval_seconds, speed_coefficient_ * 250.0f);
     }
 }
 

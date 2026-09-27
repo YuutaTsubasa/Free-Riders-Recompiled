@@ -29,6 +29,9 @@ unsigned original_side_calls = 0, manager_calls = 0;
 
 namespace sfr {
 GuestMemory* active_memory = nullptr;
+bool camera_motion_active() { return false; }
+uint64_t camera_pose_generation() { return 0; }
+uint64_t camera_motion_clock_ns() { return 0; }
 std::optional<GamepadState> second_player_pad() { return std::nullopt; }
 GamepadState nui_gamepad() { return harness::input; }
 void enter_function_observed(PPCContext&, const char*, uint32_t) {}
@@ -63,6 +66,7 @@ PPC_FUNC(__imp__sub_822CA6B0) {
 #define UNUSED_ORIGINAL(address) PPC_FUNC(__imp__sub_##address) { \
     throw std::runtime_error("unexpected original detector " #address); }
 UNUSED_ORIGINAL(822C9050)
+UNUSED_ORIGINAL(822B60F8)
 UNUSED_ORIGINAL(822C8778)
 UNUSED_ORIGINAL(822CB840)
 UNUSED_ORIGINAL(822C8650)

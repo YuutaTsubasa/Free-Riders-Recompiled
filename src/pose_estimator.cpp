@@ -41,6 +41,8 @@ void decode_simcc(const float* simcc_x, const float* simcc_y, uint32_t points, u
         const auto [x_bin, x_score] = best(row_x, width_bins);
         const auto [y_bin, y_score] = best(row_y, height_bins);
         PoseLandmark& landmark = landmarks[point];
+        landmark.world = {};
+        landmark.has_world = false;
         landmark.score = (std::min)(x_score, y_score);
         landmark.x = crop.origin_x + float(x_bin) / split_ratio * crop.scale_x;
         landmark.y = crop.origin_y + float(y_bin) / split_ratio * crop.scale_y;

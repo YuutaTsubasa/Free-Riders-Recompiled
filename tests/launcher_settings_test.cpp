@@ -66,6 +66,36 @@ void settings_round_trip() {
             "non-ASCII directories survive a round trip");
 }
 
+void camera_debug_settings() {
+    const sfr::LauncherSettings defaults;
+    require(sfr::format_launcher_settings(defaults).find("camera_debug=0\n") != std::string::npos,
+            "the skeleton debug window defaults to off");
+    for (const char* flag : {"1", "true"}) {
+        const auto enabled = sfr::parse_launcher_settings(std::string("camera=motion\ncamera_debug=") + flag + "\n");
+        const auto saved = sfr::format_launcher_settings(enabled);
+        require(saved.find("camera_debug=1\n") != std::string::npos,
+                "the debug preference survives a save");
+        require(sfr::format_launcher_settings(sfr::parse_launcher_settings(saved)) == saved,
+                "the debug preference survives reloading");
+    }
+    for (const char* flag : {"0", "false", "invalid"}) {
+        const auto disabled = sfr::parse_launcher_settings(std::string("camera_debug=") + flag + "\n");
+        require(sfr::format_launcher_settings(disabled).find("camera_debug=0\n") != std::string::npos,
+                "false or invalid debug flags keep debugging off");
+    }
+    for (const char* camera : {"off", "picture", "motion"}) {
+        for (const char* flag : {"0", "1"}) {
+            const auto settings = sfr::parse_launcher_settings(std::string("camera=") + camera + "\ncamera_debug=" + flag + "\n");
+            std::string expected = "0";
+#ifdef _WIN32
+            if (settings.camera == "motion" && std::string(flag) == "1") expected = "1";
+#endif
+            require(value_of(settings, "SFR_CAMERA_DEBUG") == expected,
+                    "debugging explicitly overrides the inherited environment and requires Windows motion mode plus opt-in");
+        }
+    }
+}
+
 void malformed_values_keep_defaults() {
     const auto read = sfr::parse_launcher_settings(
         "window_width=12\nwindow_height=abc\nvolume=101\nfullscreen=maybe\nrace_render_every=9\n"
@@ -187,6 +217,7 @@ void directories_are_found_and_checked() {
 int main() {
     try {
         settings_round_trip();
+        camera_debug_settings();
         malformed_values_keep_defaults();
         environment_follows_settings();
         directories_are_found_and_checked();

@@ -19,7 +19,8 @@ namespace sfr {
 class PoseSmoothing {
 public:
     // Hz, and Hz per pixel a second. A cutoff of zero passes the points
-    // through untouched. The defaults are SFR_POSE_SMOOTHING and
+    // through untouched. World XYZ uses the same tuning at 250 pixels/metre.
+    // The defaults are SFR_POSE_SMOOTHING and
     // SFR_POSE_SMOOTHING_BETA.
     static PoseSmoothing from_environment();
     PoseSmoothing(float cutoff_at_rest, float speed_coefficient);
@@ -34,8 +35,10 @@ private:
         float value = 0, speed = 0;
         bool started = false;
     };
+    void smooth_axis(Axis& axis, float& value, double interval, float speed_coefficient);
     float cutoff_at_rest_, speed_coefficient_;
     std::array<std::array<Axis, 2>, pose_point::count> points_{};
+    std::array<std::array<Axis, 3>, pose_point::count> world_points_{};
 };
 
 }

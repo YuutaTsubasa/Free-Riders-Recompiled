@@ -20,6 +20,10 @@ constexpr uint32_t count = 17;
 // One point, in the camera picture's pixels, with the model's confidence.
 struct PoseLandmark {
     float x = 0, y = 0, score = 0;
+    // Hip-relative metres, oriented like the image: +X right, +Y down,
+    // +Z away from the camera. Legacy image-only models leave this absent.
+    std::array<float, 3> world{};
+    bool has_world = false;
 };
 using PoseLandmarks = std::array<PoseLandmark, pose_point::count>;
 
