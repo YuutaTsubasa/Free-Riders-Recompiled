@@ -1,10 +1,13 @@
 #include "native_input.h"
+#include "input_bindings.h"
 #include "pad_assignment.h"
+#include "pad_devices.h"
 #include "sony_gamepad.h"
 #include "touch_controls.h"
 #include "guest_memory.h"
 #include <algorithm>
 #include <chrono>
+#include <iostream>
 #include <cstdlib>
 #include <iterator>
 #include <memory>
@@ -123,15 +126,52 @@ GamepadState scripted_gamepad(const std::string& script, double seconds) {
 
 NativeInput::NativeInput(std::function<std::optional<GamepadState>(uint32_t)> pad,
                          std::function<GamepadState()> keyboard)
-    : pad_(std::move(pad)), keyboard_(std::move(keyboard)) {}
+    : pad_(std::move(pad)), keyboard_(std::move(keyboard)) {
+    // The first player has the keyboard behind their pad, as they always
+    // have; the others are pads only until somebody says otherwise.
+    players_[0].device = uint8_t(PlayerDevice::both);
+    for (size_t user = 1; user < players_.size(); ++user) players_[user].device = uint8_t(PlayerDevice::gamepad);
+}
+
+void NativeInput::set_player(uint32_t user, PlayerDevice device, std::shared_ptr<const InputBindings> pad,
+                             std::function<GamepadState()> keyboard) {
+    if (user >= players_.size()) return;
+    players_[user] = {uint8_t(device), std::move(pad), std::move(keyboard)};
+}
+
+namespace {
+bool uses_pad(uint8_t device) {
+    const PlayerDevice which = PlayerDevice(device);
+    return which == PlayerDevice::both || which == PlayerDevice::gamepad;
+}
+bool uses_keyboard(uint8_t device) {
+    const PlayerDevice which = PlayerDevice(device);
+    return which == PlayerDevice::both || which == PlayerDevice::keyboard;
+}
+}
 
 std::optional<GamepadState> NativeInput::current(uint32_t user) const {
-    std::optional<GamepadState> state = pad_(user);
-    if (user == 0) state = merge_gamepads(merge_gamepads(state.value_or(GamepadState{}), keyboard_()), script_());
+    const Player& player = players_[user < players_.size() ? user : 0];
+    std::optional<GamepadState> state = controller(user);
+    if (uses_keyboard(player.device)) {
+        // The first player's keyboard is the one the factory always made;
+        // anybody else brings their own.
+        const auto& keys = user == 0 ? keyboard_ : player.keyboard;
+        if (keys) state = merge_gamepads(state.value_or(GamepadState{}), keys());
+    }
+    if (user == 0) state = merge_gamepads(state.value_or(GamepadState{}), script_());
+    // The title polls user 0 every frame and stops when it is not there, so
+    // that user stays connected even with every device taken away.
+    if (user == 0 && !state) state = GamepadState{};
     return state;
 }
 
-std::optional<GamepadState> NativeInput::controller(uint32_t user) const { return pad_(user); }
+std::optional<GamepadState> NativeInput::controller(uint32_t user) const {
+    if (user >= players_.size() || !uses_pad(players_[user].device)) return std::nullopt;
+    auto state = pad_(user);
+    if (state && players_[user].pad) state = remap_pad(*players_[user].pad, *state);
+    return state;
+}
 
 uint32_t NativeInput::get_state(GuestMemory& memory, uint32_t user, uint32_t output) {
     if (user > 3) throw RuntimeStop("native-input", user, "unsupported XamInputGetState user index");
@@ -153,6 +193,29 @@ uint32_t NativeInput::set_vibration(uint32_t user, uint16_t left_motor, uint16_t
     return pad || user == 0 ? xinput_success : xinput_not_connected;
 }
 
+namespace {
+// The Controls settings, as the launcher hands them over: which devices a
+// player uses and how their keys and pad buttons are arranged
+// (input_bindings.h). Nothing set means what this always did.
+struct PlayerSetup {
+    PlayerDevice device = PlayerDevice::both;
+    std::shared_ptr<InputBindings> bindings;
+    std::string gamepad;  // the controller asked for by name, or empty
+};
+PlayerSetup player_setup(uint32_t user) {
+    const std::string prefix = user == 0 ? "SFR_PLAYER1_" : "SFR_PLAYER2_";
+    PlayerSetup setup;
+    setup.bindings = std::make_shared<InputBindings>(default_bindings(user));
+    if (const char* text = std::getenv((prefix + "KEYS").c_str()); text && *text) read_keys(text, *setup.bindings);
+    if (const char* text = std::getenv((prefix + "PAD").c_str()); text && *text) read_pad(text, *setup.bindings);
+    const char* device = std::getenv((prefix + "INPUT").c_str());
+    setup.device = player_device_from_name(device ? device : "",
+                                           user == 0 ? PlayerDevice::both : PlayerDevice::gamepad);
+    if (const char* text = std::getenv((prefix + "GAMEPAD").c_str()); text && *text) setup.gamepad = text;
+    return setup;
+}
+}
+
 #ifdef _WIN32
 namespace {
 // The host's controllers, each keeping the player number it was given
@@ -160,9 +223,12 @@ namespace {
 // rather than a stand-in for player one, which is what let a second pad take
 // player one away from it.
 struct WindowsPads {
-    static constexpr uint64_t sony_pad = 100;
+    static constexpr uint64_t sony_pad = sony_pad_id;
     std::mutex mutex;
     PadAssignment assignment;
+    // The controller each player asked for by name, if they did
+    // (pad_devices.h); empty means whichever the host lists first.
+    std::array<std::string, PadAssignment::players> wanted;
     std::chrono::steady_clock::time_point looked{};
     bool ever_looked = false;
 
@@ -174,13 +240,33 @@ struct WindowsPads {
         if (ever_looked && now - looked < std::chrono::milliseconds(250)) return;
         looked = now;
         ever_looked = true;
+        const std::vector<PadDevice> devices = connected_pads();
         std::vector<uint64_t> connected;
-        for (uint32_t slot = 0; slot < PadAssignment::players; ++slot) {
-            XINPUT_STATE native{};
-            if (XInputGetState(slot, &native) == ERROR_SUCCESS) connected.push_back(slot);
-        }
-        if (sony::latest()) connected.push_back(sony_pad);
+        for (const PadDevice& device : devices) connected.push_back(device.id);
+        for (uint32_t player = 0; player < PadAssignment::players; ++player)
+            assignment.prefer(player, pad_with_name(wanted[player]));
         assignment.update(connected);
+        announce(devices);
+    }
+
+    // Who ended up with what, printed whenever it changes -- the names here
+    // are the ones the launcher offers and settings.ini keeps.
+    std::array<uint64_t, PadAssignment::players> announced{~uint64_t(0), ~uint64_t(0), ~uint64_t(0), ~uint64_t(0)};
+    bool ever_announced = false;
+    void announce(const std::vector<PadDevice>& devices) {
+        std::array<uint64_t, PadAssignment::players> now{};
+        for (uint32_t player = 0; player < PadAssignment::players; ++player) now[player] = assignment.pad_of(player);
+        if (ever_announced && now == announced) return;
+        ever_announced = true;
+        announced = now;
+        for (uint32_t player = 0; player < PadAssignment::players; ++player) {
+            if (now[player] == PadAssignment::no_pad) continue;
+            const char* name = "?";
+            for (const PadDevice& device : devices)
+                if (device.id == now[player]) name = device.name.c_str();
+            std::cerr << "NATIVE_PAD player=" << (player + 1) << " name=\"" << name << "\""
+                      << (wanted[player].empty() ? " chosen=order" : " chosen=asked") << char(10);
+        }
     }
 
     std::optional<GamepadState> read(uint32_t player) {
@@ -212,12 +298,23 @@ struct WindowsPads {
 NativeInput NativeInput::windows(std::function<void*()> focus_window, std::function<double()> script_clock) {
     const auto pads = std::make_shared<WindowsPads>();
     auto pad = [pads](uint32_t user) -> std::optional<GamepadState> { return pads->read(user); };
-    auto keyboard = [focus_window = std::move(focus_window)]() {
-        void* window = focus_window ? focus_window() : nullptr;
-        if (!window || GetForegroundWindow() != static_cast<HWND>(window)) return GamepadState{};
-        return keyboard_gamepad([](int key) { return (GetAsyncKeyState(key) & 0x8000) != 0; });
+    // One reader per player, each with that player's own keys.
+    const auto focus = std::make_shared<std::function<void*()>>(std::move(focus_window));
+    const auto reader = [focus](std::shared_ptr<const InputBindings> bindings) {
+        return [focus, bindings]() {
+            void* window = *focus ? (*focus)() : nullptr;
+            if (!window || GetForegroundWindow() != static_cast<HWND>(window)) return GamepadState{};
+            return keyboard_state(*bindings, [](int key) { return (GetAsyncKeyState(key) & 0x8000) != 0; });
+        };
     };
-    NativeInput input(pad, keyboard);
+    const PlayerSetup first = player_setup(0), second = player_setup(1);
+    pads->wanted[0] = first.gamepad;
+    pads->wanted[1] = second.gamepad;
+    pads->assignment.enable(0, uses_pad(uint8_t(first.device)));
+    pads->assignment.enable(1, uses_pad(uint8_t(second.device)));
+    NativeInput input(pad, reader(first.bindings));
+    input.set_player(0, first.device, first.bindings);
+    input.set_player(1, second.device, second.bindings, reader(second.bindings));
     input.attach_script(std::move(script_clock));
     input.vibrate_ = [pads](uint32_t user, uint16_t left, uint16_t right) {
         return pads->vibrate(user, left, right);
@@ -238,6 +335,9 @@ struct SdlPads {
     std::mutex mutex;
     std::vector<std::pair<SDL_JoystickID, SDL_GameController*>> open;
     PadAssignment assignment;
+    // The controller each player asked for by name (pad_devices.h).
+    std::array<std::string, PadAssignment::players> wanted;
+    bool wanted_changed = false;
     int joysticks = -1;
 
     // Opens what is new, closes what has gone (caller holds the mutex).
@@ -245,7 +345,8 @@ struct SdlPads {
         const int count = SDL_NumJoysticks();
         const bool detached = std::any_of(open.begin(), open.end(),
                                           [](const auto& pad) { return !SDL_GameControllerGetAttached(pad.second); });
-        if (count == joysticks && !detached) return;
+        if (count == joysticks && !detached && !wanted_changed) return;
+        wanted_changed = false;
         joysticks = count;
         for (auto& pad : open)
             if (!SDL_GameControllerGetAttached(pad.second)) {
@@ -265,6 +366,8 @@ struct SdlPads {
             }
             connected.push_back(uint64_t(id));
         }
+        for (uint32_t player = 0; player < PadAssignment::players; ++player)
+            assignment.prefer(player, pad_with_name(wanted[player]));
         assignment.update(connected);
     }
 
@@ -313,7 +416,19 @@ GamepadState read_sdl_pad(SDL_GameController* pad) {
 // keyboard_gamepad's Windows virtual keys as SDL scancodes.
 SDL_Scancode scancode(int key) {
     if (key >= 'A' && key <= 'Z') return SDL_Scancode(SDL_SCANCODE_A + (key - 'A'));
+    if (key >= '1' && key <= '9') return SDL_Scancode(SDL_SCANCODE_1 + (key - '1'));
+    if (key >= 0x61 && key <= 0x69) return SDL_Scancode(SDL_SCANCODE_KP_1 + (key - 0x61));
+    if (key >= 0x70 && key <= 0x7B) return SDL_Scancode(SDL_SCANCODE_F1 + (key - 0x70));
     switch (key) {
+    case '0': return SDL_SCANCODE_0;
+    case 0x10: return SDL_SCANCODE_LSHIFT;
+    case 0x11: return SDL_SCANCODE_LCTRL;
+    case 0x12: return SDL_SCANCODE_LALT;
+    case 0x14: return SDL_SCANCODE_CAPSLOCK;
+    case 0x21: return SDL_SCANCODE_PAGEUP;
+    case 0x22: return SDL_SCANCODE_PAGEDOWN;
+    case 0x23: return SDL_SCANCODE_END;
+    case 0x24: return SDL_SCANCODE_HOME;
     case 0x25: return SDL_SCANCODE_LEFT;
     case 0x26: return SDL_SCANCODE_UP;
     case 0x27: return SDL_SCANCODE_RIGHT;
@@ -323,6 +438,25 @@ SDL_Scancode scancode(int key) {
     case 0x20: return SDL_SCANCODE_SPACE;
     case 0x08: return SDL_SCANCODE_BACKSPACE;
     case 0x1B: return SDL_SCANCODE_ESCAPE;
+    case 0x2D: return SDL_SCANCODE_INSERT;
+    case 0x2E: return SDL_SCANCODE_DELETE;
+    case 0x60: return SDL_SCANCODE_KP_0;
+    case 0x6A: return SDL_SCANCODE_KP_MULTIPLY;
+    case 0x6B: return SDL_SCANCODE_KP_PLUS;
+    case 0x6D: return SDL_SCANCODE_KP_MINUS;
+    case 0x6E: return SDL_SCANCODE_KP_PERIOD;
+    case 0x6F: return SDL_SCANCODE_KP_DIVIDE;
+    case 0xBA: return SDL_SCANCODE_SEMICOLON;
+    case 0xBB: return SDL_SCANCODE_EQUALS;
+    case 0xBC: return SDL_SCANCODE_COMMA;
+    case 0xBD: return SDL_SCANCODE_MINUS;
+    case 0xBE: return SDL_SCANCODE_PERIOD;
+    case 0xBF: return SDL_SCANCODE_SLASH;
+    case 0xC0: return SDL_SCANCODE_GRAVE;
+    case 0xDB: return SDL_SCANCODE_LEFTBRACKET;
+    case 0xDC: return SDL_SCANCODE_BACKSLASH;
+    case 0xDD: return SDL_SCANCODE_RIGHTBRACKET;
+    case 0xDE: return SDL_SCANCODE_APOSTROPHE;
     default: return SDL_SCANCODE_UNKNOWN;
     }
 }
@@ -339,20 +473,40 @@ NativeInput NativeInput::sdl(std::function<void*()> focus_window, std::function<
         if (!controller) return std::nullopt;
         return read_sdl_pad(controller);
     };
-    auto keyboard = [focus_window = std::move(focus_window)]() {
-        // The on-screen touch controls (touch_controls.h) count as the keyboard.
-        const GamepadState touch = touch_controls_active() ? touch_gamepad() : GamepadState{};
-        void* window = focus_window ? focus_window() : nullptr;
-        if (!window || SDL_GetKeyboardFocus() != static_cast<SDL_Window*>(window)) return touch;
-        const Uint8* keys = SDL_GetKeyboardState(nullptr);
-        return merge_gamepads(touch, keyboard_gamepad([keys](int key) {
-            const SDL_Scancode code = scancode(key);
-            // Android's Back button is Escape (B) as well.
-            if (key == 0x1B && keys[SDL_SCANCODE_AC_BACK]) return true;
-            return code != SDL_SCANCODE_UNKNOWN && keys[code] != 0;
-        }));
+    // One reader per player, each with that player's own keys. Only the
+    // first player's carries the on-screen touch controls: they are one pair
+    // of hands on one phone.
+    const auto focus = std::make_shared<std::function<void*()>>(std::move(focus_window));
+    const auto reader = [focus](std::shared_ptr<const InputBindings> bindings, bool touching) {
+        return [focus, bindings, touching]() {
+            const GamepadState touch = touching && touch_controls_active() ? touch_gamepad() : GamepadState{};
+            void* window = *focus ? (*focus)() : nullptr;
+            if (!window || SDL_GetKeyboardFocus() != static_cast<SDL_Window*>(window)) return touch;
+            const Uint8* keys = SDL_GetKeyboardState(nullptr);
+            return merge_gamepads(touch, keyboard_state(*bindings, [keys](int key) {
+                const SDL_Scancode code = scancode(key);
+                // Android's Back button is Escape (B) as well.
+                if (key == 0x1B && keys[SDL_SCANCODE_AC_BACK]) return true;
+                if (key == 0x10 && keys[SDL_SCANCODE_RSHIFT]) return true;
+                if (key == 0x11 && keys[SDL_SCANCODE_RCTRL]) return true;
+                if (key == 0x12 && keys[SDL_SCANCODE_RALT]) return true;
+                if (key == 0x0D && keys[SDL_SCANCODE_KP_ENTER]) return true;
+                return code != SDL_SCANCODE_UNKNOWN && keys[code] != 0;
+            }));
+        };
     };
-    NativeInput input(pad, keyboard);
+    const PlayerSetup first = player_setup(0), second = player_setup(1);
+    {
+        std::lock_guard lock(pads->mutex);
+        pads->wanted[0] = first.gamepad;
+        pads->wanted[1] = second.gamepad;
+        pads->assignment.enable(0, uses_pad(uint8_t(first.device)));
+        pads->assignment.enable(1, uses_pad(uint8_t(second.device)));
+        pads->wanted_changed = true;
+    }
+    NativeInput input(pad, reader(first.bindings, true));
+    input.set_player(0, first.device, first.bindings);
+    input.set_player(1, second.device, second.bindings, reader(second.bindings, false));
     input.attach_script(std::move(script_clock));
     input.vibrate_ = [pads, controllers](uint32_t user, uint16_t left, uint16_t right) {
         if (!controllers) return false;

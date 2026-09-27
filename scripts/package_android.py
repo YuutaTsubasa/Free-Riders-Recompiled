@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 PROJECT = ROOT / 'android' / 'app' / 'src' / 'main'
 SDL_JAVA = ROOT / 'tools' / 'SDL' / 'android-project' / 'app' / 'src' / 'main' / 'java'
 MIN_SDK, TARGET_SDK = 28, 35
-VERSION_CODE, VERSION_NAME = 3, '0.1.2'
+VERSION_CODE, VERSION_NAME = 4, '0.1.3'
 
 
 def version_key(path):
@@ -100,9 +100,14 @@ def main():
         + [str(p) for p in (work / 'gen').rglob('*.java')]
     run(jdk_tool('javac'), '-nowarn', '-Xlint:-options', '-source', '11', '-target', '11', '-encoding', 'UTF-8',
         '-classpath', android_jar, '-d', work / 'classes', *sources)
-    classes = [str(p) for p in (work / 'classes').rglob('*.class')]
+    # One archive avoids cmd.exe's command-line limit when d8.bat is run
+    # from a deeply nested checkout such as a release worktree.
+    classes = work / 'classes.jar'
+    with zipfile.ZipFile(classes, 'w') as archive:
+        for path in sorted((work / 'classes').rglob('*.class')):
+            archive.write(path, path.relative_to(work / 'classes').as_posix())
     run(tool(build_tools, 'd8'), '--release', '--min-api', args.min_sdk, '--lib', android_jar,
-        '--output', work / 'dex', *classes)
+        '--output', work / 'dex', classes)
 
     unsigned = work / 'unsigned.apk'
     shutil.copy(work / 'base.apk', unsigned)
