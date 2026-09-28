@@ -382,7 +382,7 @@ SFR_HOOK(sub_82918418) {
     // update and this read: a sensor's first player gets its lean again here.
     if (sensor_steering && live_race_source && record && record == sensor_record &&
         memory().load<uint32_t>(live_race_source) == object) {
-        write_camera_lean(record);
+        write_camera_lean(record,sensor_lean_scale());
         return;
     }
     if (pad_racing() && live_race_source && record &&

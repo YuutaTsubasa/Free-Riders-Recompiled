@@ -47,7 +47,11 @@ void call_indirect(PPCContext&, uint8_t*, uint32_t) {
 }
 }
 
-PPC_FUNC(__imp__sub_822C6200) {}
+// The race consumer reads its body through the shared accessor (vtable[1]).
+PPC_FUNC(__imp__sub_822C6200) {
+    ctx.r3.u64 = sfr::active_memory->load<uint32_t>(ctx.r3.u32);
+    harness::hooks().at("sub_82918418")(ctx, base);
+}
 PPC_FUNC(__imp__sub_82918418) { ctx.r3.u64 = sfr::active_memory->load<uint32_t>(ctx.r3.u32 + 4); }
 PPC_FUNC(__imp__sub_82438930) { ++harness::manager_calls; }
 
@@ -262,6 +266,19 @@ void run() {
     const auto [right, left] = lean_pair();
     require(right > 1.5f && left == 1.f, "a sensor body's roll leans the race one way");
     require(right == 4.5f, "a sensor body's full lean uses the title's whole lean range");
+    // The depth view's worker can refill the pair before the race consumer
+    // reads it through the accessor, which writes the full lean again.
+    constexpr uint32_t source = detector + 0x800, object = detector + 0x900;
+    m.store<uint32_t>(source, object);
+    m.store<uint32_t>(object + 4, original);
+    m.store<uint32_t>(original + 640, std::bit_cast<uint32_t>(1.f));
+    m.store<uint32_t>(original + 644, std::bit_cast<uint32_t>(1.f));
+    {
+        PPCContext ctx;
+        ctx.r3.u64 = source;
+        hooks().at("sub_822C6200")(ctx, m.base());
+    }
+    require(lean_pair() == std::pair{4.5f, 1.f}, "the race consumer must read the sensor's full lean");
     put(32, 0.3f, 0.5f, 2.2f);
     for (int i = 0; i < 60; ++i) { ++kinect_sequence; frame(0); }
     require(lean_pair().first == 1.f && lean_pair().second > 1.5f, "and the other roll the other way");
