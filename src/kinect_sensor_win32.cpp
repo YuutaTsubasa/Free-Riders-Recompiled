@@ -10,9 +10,11 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <mutex>
 #include <stop_token>
+#include <string_view>
 #include <thread>
 #include <type_traits>
 
@@ -103,7 +105,19 @@ public:
         get(smooth_, "NuiTransformSmooth");  // optional: frames go unsmoothed without it
         int sensors = 0;
         if (FAILED(count(&sensors)) || sensors < 1) { if (why) *why = "no-sensor"; return false; }
-        if (const HRESULT result = initialize(nui_initialize_flag_uses_skeleton); FAILED(result)) {
+        // SFR_KINECT_V1_FLAGS (NuiInitialize's flags, default skeleton only)
+        // and SFR_KINECT_V1_READ ("event": read when the frame event fires;
+        // "wait": let NuiSkeletonGetNextFrame wait for the frame) are there
+        // to find, on a sensor that signals frames but hands over no data
+        // (E_NUI_FRAME_NO_DATA), which way it does hand them over.
+        DWORD flags = nui_initialize_flag_uses_skeleton;
+        if (const char* text = std::getenv("SFR_KINECT_V1_FLAGS"); text && *text)
+            flags = DWORD(std::strtoul(text, nullptr, 0)) | nui_initialize_flag_uses_skeleton;
+        const char* read = std::getenv("SFR_KINECT_V1_READ");
+        wait_in_sdk_ = read && std::string_view(read) == "wait";
+        std::cerr << "NATIVE_KINECT_OPEN model=v1 flags=0x" << std::hex << flags << std::dec
+                  << " read=" << (wait_in_sdk_ ? "wait" : "event") << std::endl;
+        if (const HRESULT result = initialize(flags); FAILED(result)) {
             // E_NUI_DEVICE_NOT_READY and the like: unpowered, or in use.
             if (why) *why = "initialize-" + hresult(result);
             return false;
@@ -147,16 +161,18 @@ private:
             std::cerr << "NATIVE_KINECT model=v1 frames=" << frames << " with_body=" << tracked
                       << " bodies=" << frame.bodies.size() << " empty_waits=" << waits << " failed=" << failures;
             if (failures) std::cerr << " last_error=" << hresult(last_failure);
-            if (!frames) std::cerr << " (no skeleton frames: close any other program using the Kinect)";
+            if (!frames && !failures) std::cerr << " (no skeleton frames: close any other program using the Kinect)";
             std::cerr << std::endl;
             reported = now;
             frames = tracked = waits = failures = 0;
         };
         while (!stop.stop_requested()) {
             report();
-            if (WaitForSingleObject(event_, 100) != WAIT_OBJECT_0) { ++waits; continue; }
-            ResetEvent(event_);
-            if (const HRESULT result = next_frame_(0, &raw); FAILED(result)) {
+            if (!wait_in_sdk_) {
+                if (WaitForSingleObject(event_, 100) != WAIT_OBJECT_0) { ++waits; continue; }
+                ResetEvent(event_);
+            }
+            if (const HRESULT result = next_frame_(wait_in_sdk_ ? 100 : 0, &raw); FAILED(result)) {
                 ++failures;
                 last_failure = result;
                 continue;
@@ -190,6 +206,7 @@ private:
     HMODULE library_ = nullptr;
     HANDLE event_ = nullptr;
     bool initialized_ = false;
+    bool wait_in_sdk_ = false;
     NuiShutdown shutdown_ = nullptr;
     NuiSkeletonGetNextFrame next_frame_ = nullptr;
     NuiTransformSmooth smooth_ = nullptr;
