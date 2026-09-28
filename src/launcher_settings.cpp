@@ -62,10 +62,6 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         else if (key == "camera_device" && value.size() <= 128) settings.camera_device = value;
         else if (key == "camera_mirror") read_flag(value, settings.camera_mirror);
         else if (key == "voice") read_flag(value, settings.voice);
-        else if (key == "kinect_placement" &&
-                 (value == "front" || value == "front-right" || value == "right" || value == "behind-right" ||
-                  value == "behind" || value == "behind-left" || value == "left" || value == "front-left"))
-            settings.kinect_placement = value;
         else if (key == "camera_debug") read_flag(value, settings.camera_debug);
         else if (key == "avatar_model") settings.avatar_model = utf8_path(value);
         else if (key == "player1_device" && (value == "both" || value == "gamepad" || value == "keyboard"))
@@ -106,7 +102,6 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "camera=" << s.camera << '\n'
         << "camera_device=" << s.camera_device << '\n'
         << "camera_mirror=" << s.camera_mirror << '\n'
-        << "kinect_placement=" << s.kinect_placement << '\n'
         << "voice=" << s.voice << '\n'
         << "camera_debug=" << s.camera_debug << '\n'
         << "avatar_model=" << path_utf8(s.avatar_model) << '\n'
@@ -186,7 +181,6 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         {"SFR_CAMERA", s.camera == "off" ? "" : s.camera},
         {"SFR_CAMERA_DEVICE", s.camera_device},
         {"SFR_CAMERA_MIRROR", s.camera_mirror ? "1" : "0"},
-        {"SFR_KINECT_PLACEMENT", s.kinect_placement},
         {"SFR_VOICE", s.voice ? "1" : ""},
         {"SFR_AVATAR", s.avatar_model.empty() ? "0" : "1"},
         {"SFR_AVATAR_MODEL", path_utf8(resolved_avatar_model(s, directory))},

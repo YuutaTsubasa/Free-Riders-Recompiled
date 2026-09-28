@@ -65,6 +65,14 @@ DETECTORS = [
 CONTEXT = [
     (0x82438930, 'Kinect manager update (fills the body record)'),
     (0x822B72E0, 'race preparation ("On your Gear!")'),
+    # The depth view: on the console it turns the sensor's depth image into
+    # the +640 / +644 lean pair (and whatever else the crouch needs).
+    (0x82439530, 'depth view update'),
+    (0x824395E8, 'Kinect frame thread (waits for skeleton and depth frames)'),
+    (0x82438CC8, 'depth view object creation (main thread)'),
+    (0x82438268, 'depth view object step (vtable[0] every fourth frame, or a job)'),
+    (0x82439998, 'depth view: per-player pass one'),
+    (0x82439D80, 'depth view: per-player pass two (into the manager at +3424 + 800 per player)'),
 ]
 MAPPING = re.compile(r'\{\s*0x([0-9A-Fa-f]+),\s*[A-Za-z_][A-Za-z0-9_]*\s*\},')
 
@@ -344,6 +352,22 @@ def main():
     parser.add_argument('--functions', type=Path,
                         help='ppc_func_mapping.cpp of the generated game (default: the first under out/recomp)')
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--extra', type=lambda text: int(text, 16), action='append', default=[],
+                        metavar='ADDRESS', help='another function to disassemble (hex), for example a '
+                        'vtable entry a trace printed; may be given more than once')
+    parser.add_argument('--containing', type=lambda text: int(text, 16), action='append', default=[],
+                        metavar='ADDRESS', help='disassemble the function that contains this address (hex), '
+                        'for example the LR of a STOP')
+    parser.add_argument('--stores', type=lambda text: [int(v) for v in text.split(',')], default=None,
+                        metavar='OFFSETS', help='list every function that stores to all these displacements '
+                        '(decimal, comma-separated), for example 640,644 (the lean pair), and disassemble '
+                        'the first twelve')
+    parser.add_argument('--calls-into', dest='calls_into', default=None, metavar='LOW-HIGH',
+                        help='list every call (bl) into this address range (hex), by callee, for example '
+                        '82760000-82780000 (the NUI library the title links)')
+    parser.add_argument('--vtable', type=lambda text: int(text, 16), action='append', default=[],
+                        metavar='ADDRESS', help='a vtable in the image (hex): disassemble its first eight '
+                        'entries that are functions, for example 821A8768 (the Kinect image stream object)')
     args = parser.parse_args()
     if not (args.dump / 'complete.txt').is_file():
         parser.error('image dump has no completion marker')
@@ -351,7 +375,60 @@ def main():
     if not mapping or not mapping.is_file():
         parser.error('no ppc_func_mapping.cpp found: pass --functions')
     image = Image(args.dump)
-    text = report(image, function_ends(mapping.read_text()), DETECTORS + CONTEXT)
+    ends = function_ends(mapping.read_text())
+    extra = [(address, 'requested with --extra') for address in args.extra]
+    starts = sorted(ends)
+    for address in args.containing:
+        start = max((candidate for candidate in starts if candidate <= address), default=None)
+        if start is not None:
+            extra.append((start, f'contains 0x{address:08X}'))
+    for table in args.vtable:
+        for index in range(8):
+            entry = image.value(table + 4 * index, 'u32')
+            if entry in ends:
+                extra.append((entry, f'vtable 0x{table:08X} entry {index}'))
+    found = []
+    if args.stores:
+        wanted = set(args.stores)
+        for start, end in ends.items():
+            if end - start > 0x10000 or not image.contains(start):
+                continue
+            seen = set()
+            for address in range(start, end, 4):
+                if not image.contains(address):
+                    break
+                w = image.word(address)
+                if (w >> 26) in STORES:
+                    seen.add(signed16(w & 0xFFFF))
+            if wanted <= seen:
+                found.append(start)
+        extra += [(start, 'stores to ' + ','.join(map(str, args.stores))) for start in found[:12]]
+    text = report(image, ends, DETECTORS + CONTEXT + extra)
+    if args.calls_into:
+        low, high = (int(part, 16) for part in args.calls_into.split('-'))
+        starts = sorted(ends)
+        callers = {}
+        for start in starts:
+            end = ends[start]
+            if end - start > 0x10000 or not image.contains(start):
+                continue
+            for address in range(start, end, 4):
+                if not image.contains(address):
+                    break
+                w = image.word(address)
+                if (w >> 26) == 18 and (w & 3) == 1:  # bl
+                    offset = w & 0x03FFFFFC
+                    if offset & 0x02000000:
+                        offset -= 0x04000000
+                    target = (address + offset) & 0xFFFFFFFF
+                    if low <= target < high and not (low <= start < high):
+                        callers.setdefault(target, set()).add(start)
+        text += f'\n\n## Calls from the title into 0x{low:08X}-0x{high:08X}\n\n'
+        text += '\n'.join(f'- 0x{target:08X} from ' + ', '.join(f'0x{c:08X}' for c in sorted(found))
+                           for target, found in sorted(callers.items())) + '\n'
+    if args.stores:
+        text += '\n\n## Functions storing to ' + ','.join(map(str, args.stores)) + '\n\n' + \
+            '\n'.join(f'- 0x{start:08X}' for start in found) + '\n'
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(text, encoding='utf-8')
     print(f'{args.output}: {len(DETECTORS)} detectors and {len(CONTEXT)} related functions')

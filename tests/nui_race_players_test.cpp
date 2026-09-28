@@ -47,6 +47,7 @@ uint64_t camera_pose_generation() { return harness::camera_sequence; }
 uint64_t camera_motion_clock_ns() { return harness::camera_now; }
 GamepadState nui_gamepad() { return harness::first; }
 bool nui_body_from_sensor() { return false; }
+uint64_t kinect_frame_generation() { return 0; }
 std::optional<GamepadState> second_player_pad() { return harness::second; }
 void enter_function_observed(PPCContext&, const char*, uint32_t) {}
 void guest_checkpoint_permit() {}

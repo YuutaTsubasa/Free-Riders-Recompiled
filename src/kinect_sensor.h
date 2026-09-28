@@ -31,6 +31,9 @@ namespace sfr {
 // One body the sensor is tracking fully.
 struct KinectBody {
     uint32_t tracking_id = 0;                  // the sensor's, stable while tracked
+    // Where the sensor put it among its skeletons; its pixels in the depth
+    // image carry this plus one as their player index.
+    uint32_t sensor_index = 0;
     std::array<float, 3> position{};           // the skeleton's centre
     SkeletonJoints joints{};                   // nui_joint order
     std::array<uint32_t, nui_joint_count> joint_states{};  // 0 not, 1 inferred, 2 tracked
@@ -45,9 +48,29 @@ struct KinectFrame {
     std::vector<KinectBody> bodies;  // the fully tracked ones: two on a v1, up to six on a v2
 };
 
+// One image from the sensor's cameras, rows packed, in host byte order:
+// depth_and_player is 16 bits a pixel (the depth in millimetres shifted up
+// three, the player index 1..6 in the low three bits, as the console's NUI
+// has it), colour 32 bits a pixel (B, G, R, unused).
+enum class KinectImageKind : uint8_t { depth_and_player = 0, colour = 1 };
+struct KinectImage {
+    uint64_t number = 0;  // counts from one; 0 means nothing has arrived
+    uint32_t width = 0, height = 0, bytes_per_pixel = 0;
+    std::vector<uint8_t> pixels;
+};
+
 class KinectSensor {
 public:
     virtual ~KinectSensor();
+    // The newest image of one camera, if there is one newer than
+    // image.number. A Kinect v1 opens its cameras unless SFR_KINECT_DEPTH=0;
+    // others have none.
+    virtual bool image(KinectImageKind, KinectImage&) { return false; }
+    // The sensor's tilt motor, in degrees above level (a Kinect v1 turns
+    // from -27 to 27). False when the sensor has no motor or will not say.
+    virtual bool elevation(int& degrees) { (void)degrees; return false; }
+    // Turns the motor; the SDK asks for no more than a turn a second.
+    virtual bool set_elevation(int degrees) { (void)degrees; return false; }
     // The newest frame, if one has arrived since the last call. False leaves
     // the frame alone.
     virtual bool next(KinectFrame& frame) = 0;
@@ -76,84 +99,19 @@ struct KinectV2Joint {
 void kinect_v2_body(const std::array<KinectV2Joint, kinect_v2_joint_count>& joints, uint32_t tracking_id,
                     KinectBody& body);
 
+// Turns a frame so that its gravity points straight down. Skeleton space is
+// the sensor's own: a sensor tilted up at the player (set low, as under a
+// TV) sees them leaning back, and the title measures a stance leaning back.
+// The sensor's accelerometer gives the frame's up (gravity); the bodies and
+// the floor are turned about the sensor so that up is +y, and the frame's
+// gravity becomes (0, 1, 0). A tilt beyond 30 degrees, or a frame without
+// gravity, is left alone. Returns the tilt taken out, in degrees.
+float kinect_level(KinectFrame& frame);
+
 // Why no sensor opened, from why each kind failed ("no-runtime",
 // "no-sensor", ...): a runtime that is installed says more than one that is
 // not, so it is its reason that counts; with neither, "no-runtime".
 std::string kinect_open_failure(const std::string& v1, const std::string& v2);
-
-// Where the sensor stands around the player, seen from above with the
-// screen ahead. The title was made for a sensor at the screen, but a board is
-// ridden side-on, so a sensor at the side the chest faces sees the whole
-// body instead of its profile; in a room that is wide but shallow it is also
-// the only place far enough away. Straight to one side, an arm reaching
-// behind the back is hidden by the body; a sensor at a diagonal still sees
-// the chest and sees round to that arm. Whatever the placement, the skeleton
-// the title reads is turned to look as if the sensor stood at the screen
-// (KinectPlacementTransform).
-enum class KinectPlacement : uint8_t {
-    front, front_right, right, behind_right, behind, behind_left, left, front_left
-};
-// SFR_KINECT_PLACEMENT: "front" (or nothing), "front-right", "right",
-// "behind-right", "behind", "behind-left", "left" or "front-left".
-KinectPlacement kinect_placement_from(const char* text);
-const char* kinect_placement_name(KinectPlacement placement);
-// Clockwise from the screen, seen from above: 0 in front, 90 on the
-// player's right, 180 behind, 270 on the left.
-float kinect_placement_degrees(KinectPlacement placement);
-
-// Turns bodies seen from elsewhere into the front sensor's camera space.
-// Each body is placed where the emulated player stands (pose_distance in
-// front of the sensor), measured from where it was when the sensor first
-// found it: that point stays fixed, so stepping and leaning still move the
-// body as they would have in front of a sensor at the screen.
-//
-// A skeleton tracker takes the body it sees to be facing it. In front and
-// behind, a side-on rider shows a profile either way (behind a Regular rider
-// is in front of a Goofy one), so nothing is wrong there. At the sides and
-// diagonals the sensor sees the chest in one stance and the back in the
-// other, and players switch stance mid-race: seeing a back, the tracker
-// calls the left arm the right. Which it sees is told by the feet: a foot
-// joint sits ahead of its ankle, towards the toes, and the toes point where
-// the chest does. Both feet together do not depend on which the tracker
-// called left, as their places are measured, not guessed. When the chest
-// has faced away from the sensor for a few frames, the pairs are swapped
-// back, until it has faced it again as long.
-class KinectPlacementTransform {
-public:
-    explicit KinectPlacementTransform(KinectPlacement placement = KinectPlacement::front) : placement_(placement) {}
-    KinectPlacement placement() const { return placement_; }
-    // In place, for every body of the frame. A front sensor's frame is left
-    // exactly as it came; the others lose the sensor's floor plane, which
-    // no longer describes the turned space.
-    void apply(KinectFrame& frame);
-    // Whether the sensor is taken to see this body's back (and its left and
-    // right are being swapped back).
-    bool sees_back(uint32_t tracking_id) const;
-    // Frames the feet must agree before the side is changed, and the least
-    // they must point by (metres, foot ahead of ankle).
-    static constexpr uint32_t frames_to_turn = 8;
-    static constexpr float least_toe = 0.02f;
-    // An ankle this far above the other (metres) is a lifted foot, left out.
-    static constexpr float lifted_foot = 0.1f;
-    // Turning round passes the shoulders across the screen (facing it or
-    // turned away from it); paddling, stamping and kick boosts keep them
-    // side-on. So once the side has been told, it changes only within this
-    // many frames (1.5 s) of the shoulders having opened to this share of
-    // their span across the screen.
-    static constexpr uint32_t turn_window = 45;
-    static constexpr float open_shoulders = 0.65f;
-private:
-    struct Tracked {
-        uint32_t id;
-        std::array<float, 3> anchor;  // where it was first found
-        bool back = false;
-        uint32_t streak = 0;          // frames the feet have disagreed with back
-        bool told = false;            // whether the feet have said anything yet
-        uint32_t since_open = UINT32_MAX / 2;  // frames since the shoulders opened
-    };
-    KinectPlacement placement_;
-    std::vector<Tracked> tracked_;
-};
 
 // Which of the tracked bodies play as the title's two Kinect players. The
 // title follows a player by the slot and the tracking id it was identified

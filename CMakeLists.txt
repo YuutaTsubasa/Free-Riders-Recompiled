@@ -83,7 +83,8 @@ add_test(NAME nui_device_status COMMAND sfr_nui_device_status_test)
 add_executable(sfr_nui_skeleton_test tests/nui_skeleton_test.cpp src/nui_skeleton.cpp src/nui_device_status.cpp src/guest_memory.cpp)
 target_include_directories(sfr_nui_skeleton_test PRIVATE src)
 add_test(NAME nui_skeleton COMMAND sfr_nui_skeleton_test)
-add_executable(sfr_kinect_sensor_test tests/kinect_sensor_test.cpp src/kinect_sensor.cpp src/kinect_sensor_none.cpp src/nui_skeleton.cpp src/guest_memory.cpp)
+add_executable(sfr_kinect_sensor_test tests/kinect_sensor_test.cpp src/kinect_sensor.cpp src/kinect_sensor_none.cpp src/nui_skeleton.cpp src/guest_memory.cpp
+    src/kinect_preview.cpp)
 target_include_directories(sfr_kinect_sensor_test PRIVATE src)
 add_test(NAME kinect_sensor COMMAND sfr_kinect_sensor_test)
 add_executable(sfr_nui_menu_players_test tests/nui_menu_players_test.cpp src/nui_skeleton.cpp src/guest_memory.cpp)
@@ -370,6 +371,9 @@ add_test(NAME native_audio COMMAND sfr_native_audio_test)
 add_executable(sfr_launcher_settings_test tests/launcher_settings_test.cpp src/launcher_settings.cpp)
 target_include_directories(sfr_launcher_settings_test PRIVATE src)
 add_test(NAME launcher_settings COMMAND sfr_launcher_settings_test)
+add_executable(sfr_text_wrap_test tests/text_wrap_test.cpp src/text_wrap.cpp)
+target_include_directories(sfr_text_wrap_test PRIVATE src)
+add_test(NAME text_wrap COMMAND sfr_text_wrap_test)
 add_executable(sfr_camera_debug_test tests/camera_debug_test.cpp src/camera_debug.cpp)
 target_include_directories(sfr_camera_debug_test PRIVATE src)
 add_test(NAME camera_debug COMMAND sfr_camera_debug_test)
@@ -403,11 +407,12 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui/imgui.cpp")
     # The launcher lists the host cameras and controllers.
     set(SFR_LAUNCHER_SOURCES src/launcher_main.cpp src/launcher_settings.cpp src/input_bindings.cpp src/pad_devices.cpp src/pad_assignment.cpp src/launcher_sound.cpp src/launcher_art.cpp src/sony_gamepad.cpp
         ${SFR_CAMERA_CAPTURE} src/kinect_sensor.cpp ${SFR_KINECT_SENSOR} ${SFR_VOICE}
+        src/kinect_preview.cpp src/kinect_preview_window.cpp src/camera_debug.cpp src/text_wrap.cpp
         ${SFR_IMGUI}/imgui.cpp ${SFR_IMGUI}/imgui_draw.cpp ${SFR_IMGUI}/imgui_tables.cpp ${SFR_IMGUI}/imgui_widgets.cpp)
     if(WIN32)
         add_executable(sfr_launcher WIN32 ${SFR_LAUNCHER_SOURCES} src/launcher_platform_win32.cpp
             ${SFR_IMGUI}/backends/imgui_impl_win32.cpp ${SFR_IMGUI}/backends/imgui_impl_dx11.cpp)
-        target_link_libraries(sfr_launcher PRIVATE sfr_installer winmm imm32 d3d11 dxgi d3dcompiler hid setupapi ole32 shell32 xinput)
+        target_link_libraries(sfr_launcher PRIVATE sfr_installer winmm imm32 d3d11 dxgi d3dcompiler hid setupapi ole32 shell32 xinput gdi32)
         set_target_properties(sfr_launcher PROPERTIES OUTPUT_NAME FreeRidersRecompiled)
     else()
         set(SFR_LAUNCHER_SOURCES ${SFR_LAUNCHER_SOURCES} src/launcher_platform_sdl.cpp

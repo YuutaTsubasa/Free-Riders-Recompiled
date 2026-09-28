@@ -152,6 +152,9 @@ std::optional<GamepadState> nui_second_gamepad(uint32_t user, bool racing);
 // instead of the pad or the camera's motion standing in for them
 // (nui_race_hooks.cpp).
 bool nui_body_from_sensor();
+// Advances with each new frame from that sensor (0 without one): the race
+// steers from its bodies only when a frame is new (nui_race_hooks.cpp).
+uint64_t kinect_frame_generation();
 // The second player's pad as the Kinect emulation last read it, for the race
 // hooks. Empty when there is no second player.
 std::optional<GamepadState> second_player_pad();

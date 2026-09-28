@@ -13,6 +13,10 @@
 #include "local_profile.h"
 #include "touch_controls.h"
 #include <bit>
+#include <algorithm>
+#include <unordered_map>
+#include <mutex>
+#include <initializer_list>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -48,9 +52,16 @@ bool camera_has_joints = false;
 // the title's own detectors instead of the pad (nui_body_from_sensor).
 std::unique_ptr<sfr::KinectSensor> kinect;
 std::atomic<bool> sensor_body{false};
+std::atomic<uint64_t> kinect_generation{0};  // kinect_frame_generation
 sfr::KinectFrame kinect_frame;
-sfr::KinectPlayerSlots kinect_slots;
-sfr::KinectPlacementTransform kinect_placement;  // SFR_KINECT_PLACEMENT
+// A real Kinect's skeletons reach the title as the sensor gives them: in the
+// sensor's own six slots, under its own tracking ids, so the depth image's
+// player index (slot + 1) marks the same people and a person who steps back
+// in is a new skeleton the title identifies again, as on the console. Each
+// id's identity is what NuiIdentityIdentify answered for it; unidentified
+// (-1) until then. Written by the identity hook, read by the skeleton hook.
+std::mutex kinect_identity_lock;
+std::unordered_map<uint32_t,uint32_t> kinect_identities;  // sensor tracking id -> enrollment
 sfr::CameraInputSelection camera_selection;
 std::atomic<bool> camera_input_active{false};
 std::atomic<uint64_t> camera_pose_counter{0};
@@ -114,6 +125,7 @@ uint64_t input_frames=0;
 
 
 bool sfr::nui_body_from_sensor() { return sensor_body.load(std::memory_order_relaxed); }
+uint64_t sfr::kinect_frame_generation() { return kinect_generation.load(std::memory_order_relaxed); }
 
 // NuiInitialize(flags, ?)
 SFR_HOOK(sub_8276FD88) {
@@ -147,6 +159,213 @@ SFR_HOOK(sub_8276FEE0) {
     ctx.r3.u64=0;
 }
 
+// The Kinect's cameras, as the title's image stream object (vtable
+// 821A8768, built by 82437F38) uses them: it opens a stream, then every
+// fourth frame (82438578) asks NuiImageStreamGetNextFrame for a frame with a
+// 10 ms wait, copies the frame's texture (NUI_IMAGE_FRAME +20) into its own
+// with 82438328 -- the depth coloured by player index for the screen, and
+// the raw depth and player index into its buffer (+72) for the depth view's
+// silhouettes (82439530), which steer the race and more -- and releases it.
+// The library is not initialized here, so the originals fail and the object
+// is thrown away. With a real Kinect (unless SFR_KINECT_DEPTH=0) these give it the
+// sensor's frames instead: type 0 depth and player index at resolution 1
+// (320x240), type 1 colour at resolution 2 (640x480), in a texture made the
+// way the object makes its own, so everything after is the title's code.
+namespace {
+struct ImageStream {
+    uint32_t type = 0, resolution = 0, width = 0, height = 0, bytes_per_pixel = 0, format = 0;
+    uint32_t texture = 0, frame = 0;  // guest: the frame's texture, and NUI_IMAGE_FRAME + locked rect
+    sfr::KinectImage image;           // the last one handed over
+};
+constexpr uint32_t image_stream_handle = 0x4E554900u;  // | type
+ImageStream image_streams[2];
+
+bool kinect_images_wanted() {
+    static const bool wanted=[] {
+        const char* camera=std::getenv("SFR_CAMERA");
+        const char* depth=std::getenv("SFR_KINECT_DEPTH");
+        return camera && std::string_view(camera)=="kinect" && !(depth && *depth=='0');
+    }();
+    return wanted;
+}
+
+ImageStream* image_stream(uint32_t handle) {
+    if((handle&~1u)!=image_stream_handle) return nullptr;
+    ImageStream& stream=image_streams[handle&1u];
+    return stream.texture ? &stream : nullptr;
+}
+
+// Calls a guest function with up to eight arguments and returns r3.
+uint32_t call_guest8(PPCContext& ctx, uint8_t* base, void (*function)(PPCContext&, uint8_t*),
+                     std::initializer_list<uint32_t> arguments) {
+    PPCContext saved=ctx;
+    PPCRegister* registers[]={&ctx.r3,&ctx.r4,&ctx.r5,&ctx.r6,&ctx.r7,&ctx.r8,&ctx.r9,&ctx.r10};
+    size_t i=0;
+    for(const uint32_t value:arguments) registers[i++]->u64=value;
+    function(ctx,base);
+    const uint32_t result=ctx.r3.u32;
+    ctx=saved;
+    return result;
+}
+}
+
+// NuiImageStreamOpen(image type, resolution, frame flags, frame limit, next
+// frame event, stream handle out).
+PPC_FUNC_IMPL(__imp__sub_82768C40);
+SFR_HOOK(sub_82768C40) {
+    sfr::enter_function(ctx,"sub_82768C40",0x82768C40);
+    const uint32_t type=ctx.r3.u32,resolution=ctx.r4.u32,flags=ctx.r5.u32,limit=ctx.r6.u32,event=ctx.r7.u32,
+                   handle=ctx.r8.u32;
+    const bool ours=kinect_images_wanted() && handle && ((type==0 && resolution==1) || (type==1 && resolution==2));
+    if(ours) {
+        auto& memory=*sfr::active_memory;
+        ImageStream& stream=image_streams[type];
+        if(!stream.texture) {
+            // The object's own formats and sizes (82437F38).
+            stream.type=type; stream.resolution=resolution;
+            stream.width=type==0?320:640; stream.height=type==0?240:480;
+            stream.bytes_per_pixel=type==0?2:4;
+            stream.format=type==0?0x28280044u:0x28280086u;
+            // The frame and the locked rect it is filled through, from the
+            // title's allocator, as the object's own memory is.
+            const uint32_t heap=memory.load<uint32_t>(0x83E5160C);
+            PPCContext saved=ctx;
+            ctx.r3.u64=heap; ctx.r4.u64=64; ctx.r5.u64=16;
+            sfr::call_indirect(ctx,base,memory.load<uint32_t>(memory.load<uint32_t>(heap)+16));
+            stream.frame=ctx.r3.u32;
+            ctx=saved;
+            stream.texture=stream.frame?call_guest8(ctx,base,sub_824F3EA0,
+                {stream.width,stream.height,1,1,0,stream.format,1,3}):0;
+            if(stream.frame) for(uint32_t i=0;i<64;i+=4) memory.store<uint32_t>(stream.frame+i,0);
+        }
+        if(stream.texture) {
+            memory.store<uint32_t>(handle,image_stream_handle|type);
+            ctx.r3.u64=0;
+        } else ctx.r3.u64=0x8007000Eu;  // E_OUTOFMEMORY
+    } else __imp__sub_82768C40(ctx,base);
+    std::cerr<<"NUI_IMAGE_STREAM_OPEN type="<<type<<" resolution="<<resolution<<" flags=0x"<<std::hex<<flags
+             <<" limit="<<std::dec<<limit<<" event=0x"<<std::hex<<event<<" result=0x"<<ctx.r3.u32<<std::dec
+             <<" backend="<<(ours?"kinect":"original");
+    if(ours) std::cerr<<" texture=0x"<<std::hex<<image_streams[type].texture<<std::dec;
+    std::cerr<<'\n';
+}
+
+// NuiImageStreamGetNextFrame(stream, wait ms, frame out): the sensor's
+// newest image, written into the stream's texture as the console's would be
+// (big-endian pixels: 16-bit depth and player index; colour as X8R8G8B8).
+PPC_FUNC_IMPL(__imp__sub_82767148);
+SFR_HOOK(sub_82767148) {
+    sfr::enter_function(ctx,"sub_82767148",0x82767148);
+    ImageStream* stream=image_stream(ctx.r3.u32);
+    if(!stream) { __imp__sub_82767148(ctx,base); return; }
+    const uint32_t out=ctx.r5.u32;
+    if(!out) { ctx.r3.u64=0x80004003u; return; }  // E_POINTER
+    const auto kind=stream->type==0?sfr::KinectImageKind::depth_and_player:sfr::KinectImageKind::colour;
+    // Every five seconds, how many frames of each camera the title asked for
+    // and got (the depth ones make the race's lean).
+    static uint32_t asked[2]{},given[2]{};
+    static auto reported=std::chrono::steady_clock::now();
+    ++asked[stream->type&1];
+    if(const auto now=std::chrono::steady_clock::now(); now-reported>=std::chrono::seconds(5)) {
+        std::cerr<<"NUI_IMAGE_FRAMES depth="<<given[0]<<'/'<<asked[0]<<" colour="<<given[1]<<'/'<<asked[1]<<'\n';
+        asked[0]=asked[1]=given[0]=given[1]=0;
+        reported=now;
+    }
+    if(!kinect || !kinect->image(kind,stream->image) || stream->image.width!=stream->width ||
+       stream->image.height!=stream->height || stream->image.bytes_per_pixel!=stream->bytes_per_pixel) {
+        ctx.r3.u64=0x83010001u;  // E_NUI_FRAME_NO_DATA: the title tries again later
+        return;
+    }
+    ++given[stream->type&1];
+    auto& memory=*sfr::active_memory;
+    const uint32_t rect=stream->frame+32;  // D3DLOCKED_RECT: pitch, bits
+    call_guest8(ctx,base,sub_824F3CF0,{stream->texture,0,rect,0,0});
+    const uint32_t pitch=memory.load<uint32_t>(rect),bits=memory.load<uint32_t>(rect+4);
+    if(bits && pitch>=stream->width*stream->bytes_per_pixel) {
+        const uint8_t* pixel=stream->image.pixels.data();
+        for(uint32_t y=0;y<stream->height;++y) {
+            const uint32_t row=bits+y*pitch;
+            if(stream->type==0) {
+                // Depth and player index as the sensor gave them: the index is
+                // the skeleton slot + 1, and the skeletons keep their slots.
+                for(uint32_t x=0;x<stream->width;++x,pixel+=2)
+                    memory.store<uint16_t>(row+x*2,uint16_t(pixel[0]|pixel[1]<<8));
+            } else {
+                for(uint32_t x=0;x<stream->width;++x,pixel+=4)
+                    memory.store<uint32_t>(row+x*4,0xFF000000u|uint32_t(pixel[2])<<16|uint32_t(pixel[1])<<8|pixel[0]);
+            }
+        }
+    }
+    call_guest8(ctx,base,sub_824F22A0,{stream->texture,0});
+    // NUI_IMAGE_FRAME: time stamp, frame number, type, resolution, texture.
+    const uint64_t milliseconds=uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+    memory.store<uint32_t>(stream->frame,uint32_t(milliseconds>>32));
+    memory.store<uint32_t>(stream->frame+4,uint32_t(milliseconds));
+    memory.store<uint32_t>(stream->frame+8,uint32_t(stream->image.number));
+    memory.store<uint32_t>(stream->frame+12,stream->type);
+    memory.store<uint32_t>(stream->frame+16,stream->resolution);
+    memory.store<uint32_t>(stream->frame+20,stream->texture);
+    memory.store<uint32_t>(out,stream->frame);
+    static uint32_t described=0;
+    if(described++<4)
+        std::cerr<<"NUI_IMAGE_FRAME type="<<stream->type<<" number="<<stream->image.number<<" pitch="<<pitch
+                 <<" bits=0x"<<std::hex<<bits<<std::dec<<'\n';
+    ctx.r3.u64=0;
+}
+
+// Texture LockRect (texture, level, locked rect, rect, flags). A lock with
+// D3DLOCK_READONLY (0x10) answers on the console with the texture's cached
+// physical view (0xC0000000 up, 0x20000000 below the 0xE0000000 one). Only
+// the 0xE0000000 view exists here (physical_memory.h), so such a lock is
+// made without the flag: the same memory, where it is mapped. The Kinect's
+// image stream object is what reads textures this way -- the frame it is
+// given, and its own copies (8243EF28, for the camera image) -- and nothing
+// did before its streams opened.
+PPC_FUNC_IMPL(__imp__sub_824F3CF0);
+SFR_HOOK(sub_824F3CF0) {
+    sfr::enter_function(ctx,"sub_824F3CF0",0x824F3CF0);
+    if(ctx.r7.u32&0x10) {
+        static uint32_t noted=0;
+        if(noted++<4) std::cerr<<"NATIVE_TEXTURE_LOCK_READONLY texture=0x"<<std::hex<<ctx.r3.u32<<" flags=0x"<<ctx.r7.u32
+                               <<" lr=0x"<<ctx.lr<<std::dec<<" view=0xE0000000\n";
+        ctx.r7.u64&=~uint64_t(0x10);
+    }
+    __imp__sub_824F3CF0(ctx,base);
+}
+
+// NuiImageStreamReleaseFrame(stream, frame): the stream keeps its frame.
+PPC_FUNC_IMPL(__imp__sub_82767458);
+SFR_HOOK(sub_82767458) {
+    sfr::enter_function(ctx,"sub_82767458",0x82767458);
+    if(!image_stream(ctx.r3.u32)) { __imp__sub_82767458(ctx,base); return; }
+    ctx.r3.u64=0;
+}
+
+// One of a real Kinect's skeletons in its own slot of the frame
+// (NUI_SKELETON_DATA: state, tracking id, enrollment, user index, position,
+// 20 joints, their states).
+// The user index (+12) is the signed-in user the skeleton plays as, 0..3:
+// the menus' player slot takes an identified player only with one below 4
+// (82491458), and the save is that user's. It is not the skeleton's slot.
+void write_kinect_body(sfr::GuestMemory& memory, uint32_t frame, const sfr::KinectBody& body, uint32_t enrollment,
+                       uint32_t user) {
+    const uint64_t data=uint64_t(frame)+sfr::nui_skeleton_data_offset+uint64_t(body.sensor_index)*sfr::nui_skeleton_data_size;
+    const auto vector=[&](uint64_t address,const std::array<float,3>& v) {
+        for(uint32_t i=0;i<3;++i) memory.store<uint32_t>(address+4*i,std::bit_cast<uint32_t>(v[i]));
+        memory.store<uint32_t>(address+12,std::bit_cast<uint32_t>(1.0f));
+    };
+    memory.store<uint32_t>(data,sfr::nui_tracked);
+    memory.store<uint32_t>(data+4,body.tracking_id);
+    memory.store<uint32_t>(data+8,enrollment);
+    memory.store<uint32_t>(data+12,user);
+    vector(data+16,body.position);
+    for(uint32_t j=0;j<sfr::nui_joint_count;++j) {
+        vector(data+32+j*16,body.joints[j]);
+        memory.store<uint32_t>(data+352+j*4,std::min(body.joint_states[j],sfr::nui_tracked));
+    }
+}
+
 // NuiSkeletonGetNextFrame(timeout ms, frame): one emulated player.
 SFR_HOOK(sub_827707B0) {
     sfr::enter_function(ctx,"sub_827707B0",0x827707B0);
@@ -165,11 +384,7 @@ SFR_HOOK(sub_827707B0) {
             // Without a sensor the pad's emulated player carries on, so a
             // Kinect left unplugged does not leave the title unplayable.
             std::cerr << "NATIVE_KINECT started=" << (kinect?1:0);
-            if(kinect) {
-                kinect_placement=sfr::KinectPlacementTransform(sfr::kinect_placement_from(std::getenv("SFR_KINECT_PLACEMENT")));
-                std::cerr << " model=" << kinect->model()
-                          << " placement=" << sfr::kinect_placement_name(kinect_placement.placement());
-            }
+            if(kinect) std::cerr << " model=" << kinect->model();
             else std::cerr << " reason=" << why << " fallback=pad";
             std::cerr << '\n';
         } else {
@@ -185,26 +400,73 @@ SFR_HOOK(sub_827707B0) {
         auto& memory=*sfr::active_memory;
         const auto elapsed=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-started);
         // Turned once per new frame: the last one is kept as it was turned.
-        if(kinect->next(kinect_frame)) kinect_placement.apply(kinect_frame);
+        if(kinect->next(kinect_frame)) {
+            // Levelling turns the bodies, which the console never did: it is
+            // for the skeleton-only fallback (SFR_KINECT_DEPTH=0), and
+            // SFR_KINECT_LEVEL=1 or 0 chooses either way.
+            static const bool level=[]{
+                const char* t=std::getenv("SFR_KINECT_LEVEL");
+                if(t && *t) return *t!='0';
+                const char* depth=std::getenv("SFR_KINECT_DEPTH");
+                return depth && *depth=='0';
+            }();
+            const float gravity_y=kinect_frame.gravity[1];
+            const float tilt=level?sfr::kinect_level(kinect_frame):0.0f;
+            const uint64_t generation=kinect_generation.fetch_add(1,std::memory_order_relaxed)+1;
+            // Every three seconds, what reaches the title: the tilt taken
+            // out and the first body's centre line and hands, with the hands'
+            // tracking states (2 tracked, 1 inferred, 0 not).
+            if(generation%90==1) {
+                std::ostringstream line;
+                line<<"NATIVE_KINECT_BODY frame="<<generation<<" gravity_y="<<gravity_y<<" level="<<tilt
+                    <<" bodies="<<kinect_frame.bodies.size();
+                if(!kinect_frame.bodies.empty()) {
+                    const auto& body=kinect_frame.bodies.front();
+                    const auto point=[&](const char* name,uint32_t joint) {
+                        const auto& p=body.joints[joint];
+                        line<<' '<<name<<'='<<p[0]<<','<<p[1]<<','<<p[2];
+                    };
+                    point("hip",sfr::nui_joint::hip_center);
+                    point("shoulders",sfr::nui_joint::shoulder_center);
+                    point("head",sfr::nui_joint::head);
+                    point("hand_l",sfr::nui_joint::hand_left);
+                    point("hand_r",sfr::nui_joint::hand_right);
+                    line<<" hand_states="<<body.joint_states[sfr::nui_joint::hand_left]<<','
+                        <<body.joint_states[sfr::nui_joint::hand_right];
+                }
+                std::cerr<<line.str()<<'\n';
+            }
+        }
         sfr::publish_second_player_pad(std::nullopt);
         sfr::NuiSkeletonEmulation::write_header(memory,frame,++frame_number,uint64_t(elapsed.count()));
         sfr::NuiSkeletonEmulation::write_floor(memory,frame,kinect_frame.floor_plane,kinect_frame.gravity);
-        const auto players=kinect_slots.assign(kinect_frame);
-        // Which side of the first player a side sensor is taken to see: the
-        // line to look for when checking a stance switch on real hardware.
-        static bool saw_back=false;
-        if(players[0] && kinect_placement.sees_back(players[0]->tracking_id)!=saw_back) {
-            saw_back=!saw_back;
-            std::cerr << "NATIVE_KINECT sees=" << (saw_back?"back":"chest") << " frame=" << frame_number << '\n';
+        {
+            std::lock_guard guard(kinect_identity_lock);
+            // Ids the sensor no longer tracks are gone: whoever steps in next
+            // is a new skeleton.
+            std::erase_if(kinect_identities,[&](const auto& entry) {
+                return std::none_of(kinect_frame.bodies.begin(),kinect_frame.bodies.end(),
+                                    [&](const sfr::KinectBody& body) { return body.tracking_id==entry.first; });
+            });
+            // The profile is user 0; everyone else a user after it, in the
+            // sensor's order, as the pads' players were 1, 2 and 3.
+            uint32_t next_user=1;
+            for(const sfr::KinectBody& body:kinect_frame.bodies) {
+                if(body.sensor_index>=6) continue;
+                const auto known=kinect_identities.find(body.tracking_id);
+                const uint32_t enrollment=known==kinect_identities.end()?sfr::NuiSkeletonEmulation::unidentified:known->second;
+                const uint32_t user=enrollment==0?0u:std::min(next_user++,3u);
+                write_kinect_body(memory,frame,body,enrollment,user);
+            }
         }
-        for(uint32_t slot=0; slot<players.size(); ++slot) {
-            const sfr::KinectBody* const body=players[slot];
-            if(!body) continue;
-            (slot?second_skeleton:skeleton).write_joints(memory,frame,slot,slot+1,body->joints,body->joint_states,
-                                                        body->position);
-        }
-        if(bool(players[1])!=second_present) {
-            second_present=bool(players[1]);
+        static std::vector<uint32_t> seen;
+        for(const sfr::KinectBody& body:kinect_frame.bodies)
+            if(std::find(seen.begin(),seen.end(),body.tracking_id)==seen.end())
+                std::cerr << "NATIVE_KINECT_ENTER tracking_id=" << body.tracking_id << " slot=" << body.sensor_index << '\n';
+        seen.clear();
+        for(const sfr::KinectBody& body:kinect_frame.bodies) seen.push_back(body.tracking_id);
+        if((kinect_frame.bodies.size()>=2)!=second_present) {
+            second_present=kinect_frame.bodies.size()>=2;
             std::cerr << "NUI_SECOND_PLAYER present=" << second_present << " source=kinect\n";
         }
         ctx.r3.u64=0;
@@ -308,10 +570,22 @@ SFR_HOOK(sub_82764620) {
     memory.store<uint32_t>(uint64_t(message)+4,tracking_id);
     // Only the first player is the signed-in profile; a second one joins as
     // an unenrolled guest, as a friend standing beside the sensor would.
-    const bool profile=tracking_id<=1 && sfr::profile_for(0)!=nullptr;
+    bool profile=false;
+    if(kinect) {
+        // The sensor's own ids: the signed-in profile is whoever is identified
+        // while nobody tracked holds it; everyone else is a guest.
+        std::lock_guard guard(kinect_identity_lock);
+        profile=sfr::profile_for(0)!=nullptr &&
+                std::none_of(kinect_identities.begin(),kinect_identities.end(),[&](const auto& entry) {
+                    return entry.first!=tracking_id && entry.second==0;
+                });
+        kinect_identities[tracking_id]=profile?0u:sfr::NuiSkeletonEmulation::guest;
+    } else {
+        profile=tracking_id<=1 && sfr::profile_for(0)!=nullptr;
+        (tracking_id>=2?second_skeleton:skeleton).identify(profile?0u:sfr::NuiSkeletonEmulation::guest);
+    }
     const uint32_t enrollment=profile?0u:sfr::NuiSkeletonEmulation::guest;
     memory.store<uint32_t>(uint64_t(message)+12,enrollment);
-    (tracking_id>=2?second_skeleton:skeleton).identify(enrollment);
     std::cerr << "NUI_IDENTITY_IDENTIFY tracking_id=" << tracking_id << " callback=0x" << std::hex << callback
               << " context=0x" << context << std::dec << " result=" << (profile?"profile":"guest") << '\n';
     if(callback) {
@@ -769,6 +1043,19 @@ SFR_HOOK(sub_82439530) {
         static uint32_t skipped=0;
         if(skipped++<4) std::cerr << "NUI_DEPTH_VIEW_SKIPPED manager=0x" << std::hex << ctx.r3.u32 << std::dec << '\n';
         return;
+    }
+    // Once: what the console's depth stream would feed (the object's size
+    // and buffer, and its vtable[0], which fetches a frame).
+    static bool described=false;
+    if(!described) {
+        described=true;
+        auto& m=*sfr::active_memory;
+        const uint32_t view=m.load<uint32_t>(uint64_t(ctx.r3.u32)+7736),vtable=m.load<uint32_t>(view);
+        std::cerr<<"NUI_DEPTH_VIEW object=0x"<<std::hex<<view<<" vtable=0x"<<vtable<<" fetch=0x"
+                 <<(vtable?m.load<uint32_t>(vtable):0)<<std::dec<<" open="<<unsigned(m.load<uint8_t>(uint64_t(view)+77))
+                 <<" enabled="<<unsigned(m.load<uint8_t>(uint64_t(ctx.r3.u32)+7756))
+                 <<" width="<<m.load<uint32_t>(uint64_t(view)+48)<<" height="<<m.load<uint32_t>(uint64_t(view)+52)
+                 <<" buffer=0x"<<std::hex<<m.load<uint32_t>(uint64_t(view)+72)<<std::dec<<'\n';
     }
     __imp__sub_82439530(ctx,base);
 }
