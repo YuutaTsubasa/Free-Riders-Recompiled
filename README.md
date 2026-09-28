@@ -137,6 +137,12 @@ the phone steers in a race. Details: [docs/race-controls.md](docs/race-controls.
 
 ## Camera motion input
 
+![Camera-controlled gameplay alongside the live skeleton debug window](docs/images/camera-input-skeleton.png)
+
+*Gameplay and the skeleton delivered to the game, cropped from the same
+recording frame and arranged side by side. The debug window shows front and
+side views of the joints, without displaying the webcam image.*
+
 The Windows v0.2.0 release includes the models and runtime for webcam motion
 input. Select **Camera > Motion** in the launcher and keep your whole body
 in view. **Skeleton debug window** opens front and side views of the joints
@@ -166,6 +172,10 @@ Setup, gestures, source builds and limitations:
 Starting with v0.3.0, you can use your own **VRM 0.x / VRM 1.0** model for the
 in-game **AVATAR** rider. Camera motion input is optional; controllers and
 keyboard controls work with the model too.
+
+![A custom VRM model riding an Extreme Gear during a race](docs/images/custom-vrm-gameplay.png)
+
+*A custom VRM model replacing the in-game AVATAR rider.*
 
 1. Open the launcher's **Advanced** tab and find **Avatar model**.
 2. Choose **Browse** and select a `.vrm` or binary `.glb` file. Desktop users
