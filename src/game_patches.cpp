@@ -2,6 +2,9 @@
 #include "diagnostic_hooks.h"
 #include "guest_memory.h"
 #include "native_input.h"
+#include "avatar_state.h"
+#include "avatar_transform.h"
+#include <bit>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -265,4 +268,134 @@ SFR_CONCURRENT_HOOK(sub_82750C40) {
             text << offset << ':' << sfr::active_memory->load<uint32_t>(uint64_t(job)+offset) << ' ';
         std::cerr << text.str() << std::dec << '\n';
     } catch(...) {}
+}
+
+// The avatar's parts. Six functions walk the same structure, which the
+// title keeps at [avatar+0x2FC40]: the buffer XamAvatarGetAssets filled, read
+// as a pointer to a count of parts. Each of them forms that address from r3.
+//
+// Without a real avatar system there are no assets, so for some of these
+// objects the first link is null and the walk reads address zero, stopping
+// the run (docs/avatar.md). An avatar with no parts has nothing for them to
+// do, so they are skipped -- the character stays in the race with nothing
+// drawn for it, which is what an empty avatar is.
+//
+// 823B9B50 is left alone: it is the one that builds the structure.
+namespace {
+bool avatar_has_parts(uint32_t avatar) {
+    if(!sfr::active_memory || !avatar) return true;
+    try {
+        const uint32_t list=sfr::active_memory->load<uint32_t>(uint64_t(avatar)+0x2FC40);
+        if(!list) return false;
+        const uint32_t entry=sfr::active_memory->load<uint32_t>(list);
+        if(!entry) return false;
+        return sfr::active_memory->load<uint32_t>(entry)!=0;
+    } catch(...) { return true; }  // unreadable is not ours to judge
+}
+
+void note_avatar_skip(uint32_t address) {
+    static std::atomic<uint64_t> skipped{0};
+    const uint64_t count=skipped.fetch_add(1,std::memory_order_relaxed)+1;
+    if((count&(count-1))==0)
+        std::cerr << "GAME_PATCH avatar_without_parts function=0x" << std::hex << address << std::dec
+                  << " skipped=" << count << char(10);
+}
+}
+
+#define SFR_AVATAR_PART_WALK(address) \
+    PPC_FUNC_IMPL(__imp__sub_##address); \
+    SFR_HOOK(sub_##address) { \
+        sfr::enter_function(ctx,"sub_" #address,0x##address); \
+        if(!avatar_has_parts(ctx.r3.u32)) { note_avatar_skip(0x##address); return; } \
+        __imp__sub_##address(ctx,base); \
+    }
+
+PPC_FUNC_IMPL(__imp__sub_823B9D60);
+SFR_HOOK(sub_823B9D60) {
+    sfr::enter_function(ctx, "sub_823B9D60", 0x823B9D60);
+    if (!avatar_has_parts(ctx.r3.u32)) {
+        const uint32_t avatar = ctx.r3.u32;
+        auto& memory = *sfr::active_memory;
+        const uint32_t header = memory.load<uint32_t>(uint64_t(avatar) + 0x2FC40);
+        // A real zero-count header is safe for the original routine. Keep its
+        // overlapped reset and body-size classification after the empty loop.
+        if (!header || !memory.readable(header, 12) || memory.load<uint32_t>(uint64_t(header) + 8) != 0) {
+            note_avatar_skip(0x823B9D60);
+            // 823B9D80 clears seven words before touching the parts header;
+            // 823B9E6C returns true even when the parts count is zero.
+            for (uint32_t offset = 12; offset <= 36; offset += 4)
+                memory.store<uint32_t>(uint64_t(avatar) + offset, 0);
+            ctx.r3.u64 = 1;
+            return;
+        }
+    }
+    __imp__sub_823B9D60(ctx, base);
+}
+
+PPC_FUNC_IMPL(__imp__sub_823B9F00);
+SFR_HOOK(sub_823B9F00) {
+    sfr::enter_function(ctx, "sub_823B9F00", 0x823B9F00);
+    if (!avatar_has_parts(ctx.r3.u32)) {
+        note_avatar_skip(0x823B9F00);
+        ctx.r3.u64 = 1;  // the empty-loop return at 823BA01C
+        return;
+    }
+    __imp__sub_823B9F00(ctx, base);
+}
+
+SFR_AVATAR_PART_WALK(823BA028)
+SFR_AVATAR_PART_WALK(823BA468)
+SFR_AVATAR_PART_WALK(823BAFE0)
+SFR_AVATAR_PART_WALK(823BB2E8)
+
+PPC_FUNC_IMPL(__imp__sub_823B97A8);
+SFR_HOOK(sub_823B97A8) {
+    sfr::enter_function(ctx, "sub_823B97A8", 0x823B97A8);
+    // The main camera's Avatar draw (the other caller is the shadow pass).
+    // r5/r6/r7 are row-major world, view, projection. Copy before the guest
+    // returns: these point into temporary draw state, not permanent storage.
+    if (ctx.lr == 0x822AB04C && ctx.r9.u32 == 0 && sfr::active_memory) {
+        const auto& memory = *sfr::active_memory;
+        const uint32_t rider = sfr::single_player_avatar_racer(memory);
+        if (rider && memory.readable(uint64_t(rider) + 3208, 4)) {
+            const uint32_t character = memory.load<uint32_t>(uint64_t(rider) + 3208);
+            if (character && memory.readable(uint64_t(character) + 8, 4) &&
+                memory.load<uint32_t>(uint64_t(character) + 8) == ctx.r3.u32 &&
+                memory.readable(ctx.r5.u32, 64) && memory.readable(ctx.r6.u32, 64) &&
+                memory.readable(ctx.r7.u32, 64)) {
+                sfr::AvatarFrameTransform frame;
+                for (uint32_t i = 0; i < 16; ++i) {
+                    frame.world[i] = std::bit_cast<float>(memory.load<uint32_t>(uint64_t(ctx.r5.u32) + i * 4));
+                    frame.view[i] = std::bit_cast<float>(memory.load<uint32_t>(uint64_t(ctx.r6.u32) + i * 4));
+                    frame.projection[i] = std::bit_cast<float>(memory.load<uint32_t>(uint64_t(ctx.r7.u32) + i * 4));
+                }
+                sfr::avatar_frame_transforms.publish(frame);
+            }
+        }
+    }
+    static const bool trace = [] {
+        const char* text = std::getenv("SFR_TRACE_AVATAR");
+        return text && *text && *text != '0';
+    }();
+    static unsigned traced = 0;
+    if (trace && traced < 4 && sfr::active_memory) {
+        const auto& memory = *sfr::active_memory;
+        const uint32_t rider = sfr::single_player_avatar_racer(memory);
+        if (rider) {
+            ++traced;
+            std::ostringstream text;
+            text << "AVATAR_MATRICES object=0x" << std::hex << ctx.r3.u32
+                 << " rider=0x" << rider << " lr=0x" << ctx.lr << std::dec
+                 << " camera=" << ctx.r9.u32;
+            for (const auto pointer : {ctx.r5.u32, ctx.r6.u32, ctx.r7.u32}) {
+                text << " matrix=";
+                if (memory.readable(pointer, 64))
+                    for (uint32_t i = 0; i < 16; ++i)
+                        text << (i ? "," : "") << std::bit_cast<float>(memory.load<uint32_t>(uint64_t(pointer) + i * 4));
+                else text << "unreadable";
+            }
+            std::cerr << text.str() << '\n';
+        }
+    }
+    __imp__sub_823B97A8(ctx, base);
 }

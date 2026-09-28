@@ -49,6 +49,17 @@ public:
     // that area is stretched to the window, as a console's scaler does; zero
     // presents the whole framebuffer.
     void present(uint32_t area_width = 0, uint32_t area_height = 0);
+    // Draws the player's own model (SFR_AVATAR_MODEL) into the frame the
+    // game has just finished. Called before the frame is presented -- and
+    // before a screenshot reads it, since the game clears the frame at the
+    // start of the next one.
+    //
+    // Only a race gets one: the model stands where the game's own rider
+    // stands, so in a menu it would stand in front of the menu. It is loaded
+    // whenever this is first called, race or not, because reading a model
+    // and its pictures takes seconds and the start of a race is the worst
+    // moment to spend them. SFR_AVATAR_MODEL_ALWAYS=1 draws it everywhere.
+    void draw_player_model(bool avatar_racing);
     // The area the last present stretched, or the framebuffer size.
     [[nodiscard]] std::pair<uint32_t, uint32_t> presented_area() const noexcept;
     // Records commands against the color/depth framebuffer with the current

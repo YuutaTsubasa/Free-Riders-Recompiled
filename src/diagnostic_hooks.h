@@ -5,6 +5,7 @@
 #include "integer_arithmetic.h"
 #include "store_halfword_update.h"
 #include "store_float_single_update.h"
+#include "vector_compare_bounds.h"
 #include "load_halfword_update.h"
 #include "memory_update_forms.h"
 #include "vector_integer.h"
