@@ -362,6 +362,9 @@ def main():
                         metavar='OFFSETS', help='list every function that stores to all these displacements '
                         '(decimal, comma-separated), for example 640,644 (the lean pair), and disassemble '
                         'the first twelve')
+    parser.add_argument('--calls-into', dest='calls_into', default=None, metavar='LOW-HIGH',
+                        help='list every call (bl) into this address range (hex), by callee, for example '
+                        '82760000-82780000 (the NUI library the title links)')
     parser.add_argument('--vtable', type=lambda text: int(text, 16), action='append', default=[],
                         metavar='ADDRESS', help='a vtable in the image (hex): disassemble its first eight '
                         'entries that are functions, for example 821A8768 (the Kinect image stream object)')
@@ -401,6 +404,28 @@ def main():
                 found.append(start)
         extra += [(start, 'stores to ' + ','.join(map(str, args.stores))) for start in found[:12]]
     text = report(image, ends, DETECTORS + CONTEXT + extra)
+    if args.calls_into:
+        low, high = (int(part, 16) for part in args.calls_into.split('-'))
+        starts = sorted(ends)
+        callers = {}
+        for start in starts:
+            end = ends[start]
+            if end - start > 0x10000 or not image.contains(start):
+                continue
+            for address in range(start, end, 4):
+                if not image.contains(address):
+                    break
+                w = image.word(address)
+                if (w >> 26) == 18 and (w & 3) == 1:  # bl
+                    offset = w & 0x03FFFFFC
+                    if offset & 0x02000000:
+                        offset -= 0x04000000
+                    target = (address + offset) & 0xFFFFFFFF
+                    if low <= target < high and not (low <= start < high):
+                        callers.setdefault(target, set()).add(start)
+        text += f'\n\n## Calls from the title into 0x{low:08X}-0x{high:08X}\n\n'
+        text += '\n'.join(f'- 0x{target:08X} from ' + ', '.join(f'0x{c:08X}' for c in sorted(found))
+                           for target, found in sorted(callers.items())) + '\n'
     if args.stores:
         text += '\n\n## Functions storing to ' + ','.join(map(str, args.stores)) + '\n\n' + \
             '\n'.join(f'- 0x{start:08X}' for start in found) + '\n'

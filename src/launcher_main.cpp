@@ -42,6 +42,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <climits>
 #include <chrono>
 #include <cfloat>
 #include <cmath>
@@ -78,7 +79,7 @@ enum Text {
     CameraTest, CameraTesting, CameraWorks, CameraSilent, CameraClosed, CameraMirror, CameraMirrorHint,
     CameraKinect, KinectRow, KinectRowHint, KinectWorks, KinectSilent, KinectMissing,
     KinectNoRuntime, KinectNoSensor, KinectFailed, KinectDownload, KinectDownloadV2, KinectInstallHint,
-    VoiceLabel, VoiceHint,
+    VoiceLabel, VoiceHint, KinectAngleLabel, KinectAngleHint, KinectAngleUp, KinectAngleDown, KinectAngleNone,
     CameraDebug, CameraDebugHint,
     ImageDirectory, ImageDirectoryHint, AssetDirectory, AssetDirectoryHint, Browse, Found, Missing, FilesHint,
     StartGame, Quit, Defaults,
@@ -173,6 +174,12 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Voice commands", "語音指令"},
     {"Say the Kinect's commands again: start, OK, back, next, pause... in English or Chinese (開始、確定、返回、下一步、暫停…). Uses Windows speech recognition and the default microphone: make the Kinect's microphone array the default recording device to use it.",
      "恢復 Kinect 的語音指令：start、OK、back、next、pause……英文或中文都可以（開始、確定、返回、下一步、暫停…）。使用 Windows 語音辨識與預設麥克風：要用 Kinect 的麥克風陣列，請把它設為預設錄音裝置。"},
+    {"Sensor angle", "感應器角度"},
+    {"Tilts the Kinect up or down with its motor, five degrees a press (from -27 to 27 degrees). Aim it so your whole body, feet included, is in view where you stand. The sensor keeps the angle until it loses power.",
+     "用 Kinect 的馬達把感應器往上或往下轉，每按一次 5 度（-27 到 27 度）。調到站在遊玩位置時全身（包括腳）都在畫面裡。斷電前感應器會維持這個角度。"},
+    {"Up", "往上"},
+    {"Down", "往下"},
+    {"No motor", "無法調整"},
     {"Skeleton debug window", "骨架 Debug 視窗"},
     {"Shows only the skeleton received by the game, in front and side views, with no camera image. Closing this window does not stop the game. Changes apply on the next game launch.",
      "僅顯示遊戲收到的骨架，提供正面與側面視圖，不顯示攝影機影像。關閉此視窗不會停止遊戲。設定會在下次啟動遊戲時套用。"},
@@ -987,6 +994,30 @@ struct Launcher {
     enum class KinectTrial { none, looking, working, silent, no_runtime, no_sensor, failed };
     std::atomic<KinectTrial> kinect_trial{KinectTrial::none};
     std::jthread kinect_trial_worker;
+    // The tilt motor: the angle last read (unknown until a button is used,
+    // or no_motor), and whether a turn is under way.
+    static constexpr int angle_unknown = INT_MIN, angle_no_motor = INT_MIN + 1;
+    std::atomic<int> kinect_angle{angle_unknown};
+    std::atomic<bool> kinect_turning{false};
+    std::jthread kinect_angle_worker;
+    void turn_kinect(int step) {
+        kinect_turning.store(true);
+        kinect_angle_worker = std::jthread([this, step] {
+            std::string why;
+            auto sensor = sfr::KinectSensor::open(&why);
+            int angle = 0;
+            if (sensor && sensor->elevation(angle) && sensor->set_elevation(angle + step)) {
+                // The motor takes about a second, and asks not to be turned
+                // more often than that.
+                std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+                if (!sensor->elevation(angle)) angle = angle_unknown;
+                kinect_angle.store(angle);
+            } else {
+                kinect_angle.store(sensor ? angle_no_motor : angle_unknown);
+            }
+            kinect_turning.store(false);
+        });
+    }
     // The launcher slides in (appear rises to 1) and out before the game
     // starts (leaving, appear falls to 0).
     float appear = 0.0f, page_fade = 0.0f;
@@ -1788,6 +1819,27 @@ struct Launcher {
                 }
                 ImGui::EndDisabled();
             });
+            // The tilt motor, a step at a time.
+            {
+                const float padding = ImGui::GetStyle().FramePadding.x * 4;
+                const float up_width = ImGui::CalcTextSize(tr(KinectAngleUp)).x + padding;
+                const float down_width = ImGui::CalcTextSize(tr(KinectAngleDown)).x + padding;
+                const float value_width = (std::max)(ImGui::CalcTextSize("-27°").x, ImGui::CalcTextSize(tr(KinectAngleNone)).x);
+                const float spacing = ImGui::GetStyle().ItemSpacing.x;
+                setting_row(tr(KinectAngleLabel), tr(KinectAngleHint), up_width + down_width + value_width + spacing * 2, scale, [&] {
+                    const bool turning = kinect_turning.load();
+                    ImGui::BeginDisabled(turning);
+                    if (ImGui::Button(tr(KinectAngleUp), ImVec2(up_width, 0))) turn_kinect(5);
+                    ImGui::SameLine();
+                    if (ImGui::Button(tr(KinectAngleDown), ImVec2(down_width, 0))) turn_kinect(-5);
+                    ImGui::EndDisabled();
+                    ImGui::SameLine();
+                    const int angle = kinect_angle.load();
+                    if (turning) ImGui::TextUnformatted("...");
+                    else if (angle == angle_no_motor) ImGui::TextUnformatted(tr(KinectAngleNone));
+                    else if (angle != angle_unknown) ImGui::Text("%d°", angle);
+                });
+            }
             // Anything short of a working sensor: what to install and check.
             if (state == KinectTrial::no_runtime || state == KinectTrial::no_sensor || state == KinectTrial::failed) {
                 const float padding = ImGui::GetStyle().FramePadding.x * 4;

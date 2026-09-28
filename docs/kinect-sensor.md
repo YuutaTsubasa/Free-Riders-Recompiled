@@ -191,3 +191,14 @@ mingw 編譯連結過。Kinect for Xbox 360（v1）已在實機上讀到骨架�
   時就是設定檔，否則是訪客；編號不再被追蹤就忘掉。log：`NATIVE_KINECT_ENTER tracking_id= slot=`。
 
 原本的做法（把被追蹤的人重新排到第 1、2 格、編號固定 1、2）只留給手把與 webcam 的模擬玩家。
+
+### 仰角與平滑
+
+- 啟動器 Kinect 設定的「感應器角度」：「往上」「往下」每按一次用 Kinect 的馬達轉 5 度（SDK 的
+  `NuiCameraElevationSetAngle`，−27～27 度；SDK 要求馬達一秒最多轉一次，按鈕在轉動時停用）。
+  感應器斷電前會維持角度。遊戲中轉動會記錄 `NATIVE_KINECT_ELEVATION set= result=`。
+- 骨架平滑：之前每一幀都先用 SDK 的 `NuiTransformSmooth` 平滑。主機的執行環境交給遊戲的是
+  未平滑的骨架，要不要平滑由遊戲自己決定（`NuiTransformSmooth` 也在它連結的 NUI 函式庫裡），
+  所以現在預設不平滑（`NATIVE_KINECT_OPEN ... smooth=0`）；`SFR_KINECT_SMOOTH=1` 恢復。
+  遊戲是否自己呼叫平滑，可以用
+  `scripts/analyse_detectors.py ... --calls-into 82760000-82780000` 列出遊戲呼叫 NUI 函式庫的每一處來查。

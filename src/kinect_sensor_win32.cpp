@@ -9,6 +9,7 @@
 #include <windows.h>
 #include <unknwn.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -95,6 +96,9 @@ struct NuiImageFrame {
 using NuiImageStreamOpen = HRESULT(WINAPI*)(int32_t, int32_t, DWORD, DWORD, HANDLE, HANDLE*);
 using NuiImageStreamGetNextFrame = HRESULT(WINAPI*)(HANDLE, DWORD, const NuiImageFrame**);
 using NuiImageStreamReleaseFrame = HRESULT(WINAPI*)(HANDLE, const NuiImageFrame*);
+using NuiCameraElevationGetAngle = HRESULT(WINAPI*)(LONG*);
+using NuiCameraElevationSetAngle = HRESULT(WINAPI*)(LONG);
+constexpr LONG nui_camera_elevation_limit = 27;
 
 struct ImageStream {
     int32_t type, resolution;
@@ -145,6 +149,8 @@ public:
             return false;
         }
         get(smooth_, "NuiTransformSmooth");  // optional: frames go unsmoothed without it
+        get(elevation_get_, "NuiCameraElevationGetAngle");  // optional too: the tilt motor
+        get(elevation_set_, "NuiCameraElevationSetAngle");
         int sensors = 0;
         if (FAILED(count(&sensors)) || sensors < 1) { if (why) *why = "no-sensor"; return false; }
         // Frames are read by letting NuiSkeletonGetNextFrame wait for them.
@@ -167,7 +173,8 @@ public:
         const char* read = std::getenv("SFR_KINECT_V1_READ");
         wait_in_sdk_ = !(read && std::string_view(read) == "event");
         std::cerr << "NATIVE_KINECT_OPEN model=v1 flags=0x" << std::hex << flags << std::dec
-                  << " read=" << (wait_in_sdk_ ? "wait" : "event") << std::endl;
+                  << " read=" << (wait_in_sdk_ ? "wait" : "event") << " smooth=" << (smooth_frames_ && smooth_ ? 1 : 0)
+                  << std::endl;
         if (const HRESULT result = initialize(flags); FAILED(result)) {
             // E_NUI_DEVICE_NOT_READY and the like: unpowered, or in use.
             if (why) *why = "initialize-" + hresult(result);
@@ -189,6 +196,21 @@ public:
             }
         worker_ = std::jthread([this](std::stop_token stop) { run(stop); });
         return true;
+    }
+
+    bool elevation(int& degrees) override {
+        LONG angle = 0;
+        if (!elevation_get_ || FAILED(elevation_get_(&angle))) return false;
+        degrees = int(angle);
+        return true;
+    }
+
+    bool set_elevation(int degrees) override {
+        if (!elevation_set_) return false;
+        const LONG angle = std::clamp(LONG(degrees), -nui_camera_elevation_limit, nui_camera_elevation_limit);
+        const HRESULT result = elevation_set_(angle);
+        std::cerr << "NATIVE_KINECT_ELEVATION set=" << angle << " result=" << hresult(result) << std::endl;
+        return SUCCEEDED(result);
     }
 
     bool image(KinectImageKind kind, KinectImage& out) override {
@@ -246,7 +268,7 @@ private:
                 last_failure = result;
                 continue;
             }
-            if (smooth_) smooth_(&raw, &smoothing);
+            if (smooth_ && smooth_frames_) smooth_(&raw, &smoothing);
             frame.floor_plane = {raw.floor_clip_plane.x, raw.floor_clip_plane.y, raw.floor_clip_plane.z,
                                  raw.floor_clip_plane.w};
             frame.gravity = {raw.normal_to_gravity.x, raw.normal_to_gravity.y, raw.normal_to_gravity.z};
@@ -311,6 +333,17 @@ private:
     NuiShutdown shutdown_ = nullptr;
     NuiSkeletonGetNextFrame next_frame_ = nullptr;
     NuiTransformSmooth smooth_ = nullptr;
+    // The console's runtime hands the title its frames as tracked, and the
+    // title smooths them itself if it wants to (NuiTransformSmooth is part of
+    // the NUI library it links); smoothing here as well would add a frame of
+    // latency on top. SFR_KINECT_SMOOTH=1 smooths anyway, for sfr_kinect_probe
+    // or a jittery sensor.
+    bool smooth_frames_ = [] {
+        const char* value = std::getenv("SFR_KINECT_SMOOTH");
+        return value && *value == '1';
+    }();
+    NuiCameraElevationGetAngle elevation_get_ = nullptr;
+    NuiCameraElevationSetAngle elevation_set_ = nullptr;
     NuiImageStreamOpen image_open_ = nullptr;
     NuiImageStreamGetNextFrame image_next_ = nullptr;
     NuiImageStreamReleaseFrame image_release_ = nullptr;

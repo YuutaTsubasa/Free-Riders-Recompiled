@@ -66,6 +66,11 @@ public:
     // image.number. A Kinect v1 opens its cameras unless SFR_KINECT_DEPTH=0;
     // others have none.
     virtual bool image(KinectImageKind, KinectImage&) { return false; }
+    // The sensor's tilt motor, in degrees above level (a Kinect v1 turns
+    // from -27 to 27). False when the sensor has no motor or will not say.
+    virtual bool elevation(int& degrees) { (void)degrees; return false; }
+    // Turns the motor; the SDK asks for no more than a turn a second.
+    virtual bool set_elevation(int degrees) { (void)degrees; return false; }
     // The newest frame, if one has arrived since the last call. False leaves
     // the frame alone.
     virtual bool next(KinectFrame& frame) = 0;
