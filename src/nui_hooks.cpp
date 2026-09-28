@@ -345,7 +345,11 @@ SFR_HOOK(sub_82767458) {
 // One of a real Kinect's skeletons in its own slot of the frame
 // (NUI_SKELETON_DATA: state, tracking id, enrollment, user index, position,
 // 20 joints, their states).
-void write_kinect_body(sfr::GuestMemory& memory, uint32_t frame, const sfr::KinectBody& body, uint32_t enrollment) {
+// The user index (+12) is the signed-in user the skeleton plays as, 0..3:
+// the menus' player slot takes an identified player only with one below 4
+// (82491458), and the save is that user's. It is not the skeleton's slot.
+void write_kinect_body(sfr::GuestMemory& memory, uint32_t frame, const sfr::KinectBody& body, uint32_t enrollment,
+                       uint32_t user) {
     const uint64_t data=uint64_t(frame)+sfr::nui_skeleton_data_offset+uint64_t(body.sensor_index)*sfr::nui_skeleton_data_size;
     const auto vector=[&](uint64_t address,const std::array<float,3>& v) {
         for(uint32_t i=0;i<3;++i) memory.store<uint32_t>(address+4*i,std::bit_cast<uint32_t>(v[i]));
@@ -354,7 +358,7 @@ void write_kinect_body(sfr::GuestMemory& memory, uint32_t frame, const sfr::Kine
     memory.store<uint32_t>(data,sfr::nui_tracked);
     memory.store<uint32_t>(data+4,body.tracking_id);
     memory.store<uint32_t>(data+8,enrollment);
-    memory.store<uint32_t>(data+12,body.sensor_index);
+    memory.store<uint32_t>(data+12,user);
     vector(data+16,body.position);
     for(uint32_t j=0;j<sfr::nui_joint_count;++j) {
         vector(data+32+j*16,body.joints[j]);
@@ -444,11 +448,15 @@ SFR_HOOK(sub_827707B0) {
                 return std::none_of(kinect_frame.bodies.begin(),kinect_frame.bodies.end(),
                                     [&](const sfr::KinectBody& body) { return body.tracking_id==entry.first; });
             });
+            // The profile is user 0; everyone else a user after it, in the
+            // sensor's order, as the pads' players were 1, 2 and 3.
+            uint32_t next_user=1;
             for(const sfr::KinectBody& body:kinect_frame.bodies) {
                 if(body.sensor_index>=6) continue;
                 const auto known=kinect_identities.find(body.tracking_id);
-                write_kinect_body(memory,frame,body,
-                                  known==kinect_identities.end()?sfr::NuiSkeletonEmulation::unidentified:known->second);
+                const uint32_t enrollment=known==kinect_identities.end()?sfr::NuiSkeletonEmulation::unidentified:known->second;
+                const uint32_t user=enrollment==0?0u:std::min(next_user++,3u);
+                write_kinect_body(memory,frame,body,enrollment,user);
             }
         }
         static std::vector<uint32_t> seen;
