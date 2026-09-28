@@ -134,12 +134,33 @@ private:
         constexpr NuiTransformSmoothParameters smoothing{0.5f, 0.5f, 0.5f, 0.05f, 0.04f};
         NuiSkeletonFrame raw{};
         KinectFrame frame;
-        uint64_t frames = 0, tracked = 0;
+        uint64_t frames = 0, tracked = 0, waits = 0, failures = 0;
+        HRESULT last_failure = S_OK;
         auto reported = std::chrono::steady_clock::now();
+        // Every five seconds, frames or not: a sensor that opens but sends
+        // nothing (in use by another program, short of power, on a USB
+        // controller it does not get on with) says so instead of staying
+        // silent.
+        const auto report = [&] {
+            const auto now = std::chrono::steady_clock::now();
+            if (now - reported < std::chrono::seconds(5)) return;
+            std::cerr << "NATIVE_KINECT model=v1 frames=" << frames << " with_body=" << tracked
+                      << " bodies=" << frame.bodies.size() << " empty_waits=" << waits << " failed=" << failures;
+            if (failures) std::cerr << " last_error=" << hresult(last_failure);
+            if (!frames) std::cerr << " (no skeleton frames: close any other program using the Kinect)";
+            std::cerr << std::endl;
+            reported = now;
+            frames = tracked = waits = failures = 0;
+        };
         while (!stop.stop_requested()) {
-            if (WaitForSingleObject(event_, 100) != WAIT_OBJECT_0) continue;
+            report();
+            if (WaitForSingleObject(event_, 100) != WAIT_OBJECT_0) { ++waits; continue; }
             ResetEvent(event_);
-            if (FAILED(next_frame_(0, &raw))) continue;
+            if (const HRESULT result = next_frame_(0, &raw); FAILED(result)) {
+                ++failures;
+                last_failure = result;
+                continue;
+            }
             if (smooth_) smooth_(&raw, &smoothing);
             frame.floor_plane = {raw.floor_clip_plane.x, raw.floor_clip_plane.y, raw.floor_clip_plane.z,
                                  raw.floor_clip_plane.w};
@@ -162,13 +183,6 @@ private:
                 std::lock_guard guard(lock_);
                 frame.number = latest_.number + 1;
                 latest_ = frame;
-            }
-            const auto now = std::chrono::steady_clock::now();
-            if (now - reported >= std::chrono::seconds(5)) {
-                std::cerr << "NATIVE_KINECT model=v1 frames=" << frames << " with_body=" << tracked
-                          << " bodies=" << frame.bodies.size() << '\n';
-                reported = now;
-                frames = tracked = 0;
             }
         }
     }
