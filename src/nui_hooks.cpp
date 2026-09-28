@@ -149,6 +149,33 @@ SFR_HOOK(sub_8276FEE0) {
     ctx.r3.u64=0;
 }
 
+// NuiImageStreamOpen(image type, resolution, frame flags, frame limit, next
+// frame event, stream handle out), called by the depth view's constructor
+// (82437F38) with type 0 (depth and player index) at resolution 1
+// (320x240). The library is not initialized here, so the original fails and
+// the constructor throws the depth view away: the title then computes no
+// silhouette, which on the console gives the race its lean and more. With a
+// real Kinect, SFR_KINECT_DEPTH=1 opens it (frames come next; see
+// docs/kinect-sensor.md).
+PPC_FUNC_IMPL(__imp__sub_82768C40);
+SFR_HOOK(sub_82768C40) {
+    sfr::enter_function(ctx,"sub_82768C40",0x82768C40);
+    static const bool depth=[] {
+        const char* camera=std::getenv("SFR_CAMERA");
+        const char* wanted=std::getenv("SFR_KINECT_DEPTH");
+        return camera && std::string_view(camera)=="kinect" && wanted && *wanted=='1';
+    }();
+    const uint32_t type=ctx.r3.u32,resolution=ctx.r4.u32,flags=ctx.r5.u32,limit=ctx.r6.u32,event=ctx.r7.u32,
+                   handle=ctx.r8.u32;
+    if(depth && handle) {
+        sfr::active_memory->store<uint32_t>(handle,0x4E554944u);  // any nonzero handle
+        ctx.r3.u64=0;
+    } else __imp__sub_82768C40(ctx,base);
+    std::cerr<<"NUI_IMAGE_STREAM_OPEN type="<<type<<" resolution="<<resolution<<" flags=0x"<<std::hex<<flags
+             <<" limit="<<std::dec<<limit<<" event=0x"<<std::hex<<event<<" result=0x"<<ctx.r3.u32<<std::dec
+             <<" backend="<<(depth?"kinect":"original")<<'\n';
+}
+
 // NuiSkeletonGetNextFrame(timeout ms, frame): one emulated player.
 SFR_HOOK(sub_827707B0) {
     sfr::enter_function(ctx,"sub_827707B0",0x827707B0);

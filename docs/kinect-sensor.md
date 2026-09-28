@@ -194,3 +194,17 @@ mingw 編譯連結過。Kinect for Xbox 360（v1）已在實機上讀到骨架�
 
 - 選單的手部游標位置是否對得上（模擬玩家的右手在 x=0.175 為畫面中央）。
 - 比賽中遊戲自己的判斷器在真實骨架上的反應，以及「On your Gear!」量測能否完成。
+
+## 深度串流（進行中）
+
+主機上遊戲除了骨架，還讀 Kinect 的深度影像加玩家遮罩（每像素 16 位元：高 13 位元深度、
+低 3 位元玩家編號，320×240，與 SDK 1.8 的 `NUI_IMAGE_TYPE_DEPTH_AND_PLAYER_INDEX` 相同，
+只差位元組順序）。深度檢視物件（Kinect 管理器 +7736，建構在 `82437F38`）開啟串流
+`NuiImageStreamOpen`（`82768C40`，類型 0、解析度 1），建立 4 張材質與 +72 的緩衝區；
+深度檢視（`82439530`）再對每位玩家跑 `82439998`、`82439D80`，算出輪廓資料，比賽的傾斜
+（+640／+644）等由此而來。函式庫沒有初始化時開啟會失敗，建構函式就丟掉物件，所以之前
+一直沒有深度資料（`NUI_DEPTH_VIEW_SKIPPED`）。
+
+`SFR_KINECT_DEPTH=1`（且 `SFR_CAMERA=kinect`）讓開啟成功（`NUI_IMAGE_STREAM_OPEN ... backend=kinect`），
+物件建立後印出一次 `NUI_DEPTH_VIEW object= vtable= fetch=`；取幀（`fetch`）與真實深度資料
+是下一步。
