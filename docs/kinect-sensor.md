@@ -205,6 +205,7 @@ mingw 編譯連結過。Kinect for Xbox 360（v1）已在實機上讀到骨架�
 （+640／+644）等由此而來。函式庫沒有初始化時開啟會失敗，建構函式就丟掉物件，所以之前
 一直沒有深度資料（`NUI_DEPTH_VIEW_SKIPPED`）。
 
-`SFR_KINECT_DEPTH=1`（且 `SFR_CAMERA=kinect`）讓開啟成功（`NUI_IMAGE_STREAM_OPEN ... backend=kinect`），
+遊戲也用同一個類別（函式表 `0x821A8768`）開彩色串流（類型 1、解析度 2，640×480、每像素 4 bytes）。
+`SFR_KINECT_DEPTH=1`（且 `SFR_CAMERA=kinect`）讓兩者都開啟成功（`NUI_IMAGE_STREAM_OPEN ... backend=kinect`），
 物件建立後印出一次 `NUI_DEPTH_VIEW object= vtable= fetch=`；取幀（`fetch`）與真實深度資料
 是下一步。

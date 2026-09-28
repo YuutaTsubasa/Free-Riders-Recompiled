@@ -355,6 +355,9 @@ def main():
     parser.add_argument('--extra', type=lambda text: int(text, 16), action='append', default=[],
                         metavar='ADDRESS', help='another function to disassemble (hex), for example a '
                         'vtable entry a trace printed; may be given more than once')
+    parser.add_argument('--vtable', type=lambda text: int(text, 16), action='append', default=[],
+                        metavar='ADDRESS', help='a vtable in the image (hex): disassemble its first eight '
+                        'entries that are functions, for example 821A8768 (the Kinect image stream object)')
     args = parser.parse_args()
     if not (args.dump / 'complete.txt').is_file():
         parser.error('image dump has no completion marker')
@@ -362,8 +365,14 @@ def main():
     if not mapping or not mapping.is_file():
         parser.error('no ppc_func_mapping.cpp found: pass --functions')
     image = Image(args.dump)
+    ends = function_ends(mapping.read_text())
     extra = [(address, 'requested with --extra') for address in args.extra]
-    text = report(image, function_ends(mapping.read_text()), DETECTORS + CONTEXT + extra)
+    for table in args.vtable:
+        for index in range(8):
+            entry = image.value(table + 4 * index, 'u32')
+            if entry in ends:
+                extra.append((entry, f'vtable 0x{table:08X} entry {index}'))
+    text = report(image, ends, DETECTORS + CONTEXT + extra)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(text, encoding='utf-8')
     print(f'{args.output}: {len(DETECTORS)} detectors and {len(CONTEXT)} related functions')

@@ -155,8 +155,8 @@ SFR_HOOK(sub_8276FEE0) {
 // (320x240). The library is not initialized here, so the original fails and
 // the constructor throws the depth view away: the title then computes no
 // silhouette, which on the console gives the race its lean and more. With a
-// real Kinect, SFR_KINECT_DEPTH=1 opens it (frames come next; see
-// docs/kinect-sensor.md).
+// real Kinect, SFR_KINECT_DEPTH=1 opens it and the colour stream (frames
+// come next; see docs/kinect-sensor.md).
 PPC_FUNC_IMPL(__imp__sub_82768C40);
 SFR_HOOK(sub_82768C40) {
     sfr::enter_function(ctx,"sub_82768C40",0x82768C40);
@@ -167,7 +167,9 @@ SFR_HOOK(sub_82768C40) {
     }();
     const uint32_t type=ctx.r3.u32,resolution=ctx.r4.u32,flags=ctx.r5.u32,limit=ctx.r6.u32,event=ctx.r7.u32,
                    handle=ctx.r8.u32;
-    if(depth && handle) {
+    // Type 1 is the colour camera (resolution 2, 640x480, four bytes a
+    // pixel), which the title opens as well through the same object class.
+    if(depth && handle && (type==0 || type==1)) {
         sfr::active_memory->store<uint32_t>(handle,0x4E554944u);  // any nonzero handle
         ctx.r3.u64=0;
     } else __imp__sub_82768C40(ctx,base);
