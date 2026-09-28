@@ -30,7 +30,7 @@ Free Riders Recompiled 是以靜態重編譯製作的 Xbox 360 版《Sonic Free 
 - Windows 上可接實體 Kinect（Xbox 360 版／Kinect for Windows 第一代需安裝 Kinect for Windows
   SDK 1.8；Xbox One 版 Kinect v2 需安裝 SDK 2.0）：感測器的骨架直接交給遊戲，由遊戲自己的手勢判斷器讀取，和主機上一樣；也可以用 webcam
   代替（[docs/kinect-sensor.md](docs/kinect-sensor.md)、[docs/camera-input.md](docs/camera-input.md)）。
-  尚未實機測試。
+  已在 Windows 10 上用 Xbox 360 版 Kinect（SDK 1.8）實際跑完比賽；Kinect v2 尚未實機測試。
 - 各平台都有啟動器：從光碟映像檔安裝遊戲並保存設定，支援英文與繁體中文（右上角可切換）。
 - Linux（Vulkan、SDL2），以及 Android（arm64-v8a）的觸控按鈕與傾斜轉彎；手機本身的鏡頭也能當作 webcam
   （Android 鏡頭擷取，尚未實機測試）。

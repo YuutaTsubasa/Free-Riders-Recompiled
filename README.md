@@ -51,7 +51,9 @@ What works today:
   for Windows SDK 1.8, or Kinect v2 with SDK 2.0): the sensor's skeletons go to the game, which
   reads them with its own gesture detectors, as on the console; or a webcam
   standing in for it ([docs/kinect-sensor.md](docs/kinect-sensor.md),
-  [docs/camera-input.md](docs/camera-input.md)). Not yet tried on hardware.
+  [docs/camera-input.md](docs/camera-input.md)). Played through races with an
+  Xbox 360 Kinect (SDK 1.8) on Windows 10; the Kinect v2 path is not yet tried
+  on hardware.
 - A launcher that installs the game from your disc image and keeps its
   settings, in English or Traditional Chinese, on every platform.
 - Linux (Vulkan, SDL2), and Android (arm64-v8a) with on-screen touch controls
