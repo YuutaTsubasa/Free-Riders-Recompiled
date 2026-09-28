@@ -2350,6 +2350,16 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         std::cerr << "RESULT XamAvatarInitialize status=0xffffffff backend=no-avatars lr=0x" << std::hex << ctx.lr << std::dec << '\n';
         return;
     }
+    if (std::string_view(name) == "__imp__XamAvatarManifestGetBodyType") {
+        // XamAvatarManifestGetBodyType(manifest): XAVATAR_BODY_TYPE, 1 male,
+        // 2 female. Choosing the Avatar rider asks it of the manifest the
+        // title holds, which no avatar system has filled here: answer male
+        // rather than stop the game.
+        std::cerr << "RESULT XamAvatarManifestGetBodyType manifest=0x" << std::hex << ctx.r3.u32
+                  << " body=1 backend=no-avatars lr=0x" << ctx.lr << std::dec << '\n';
+        ctx.r3.u64 = 1;
+        return;
+    }
     if (std::string_view(name) == "__imp__XamAvatarShutdown") {
         std::cerr << "RESULT XamAvatarShutdown backend=no-avatars\n";
         return;
