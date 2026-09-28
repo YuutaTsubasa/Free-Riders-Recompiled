@@ -27,6 +27,9 @@ target_link_libraries(sfr_installer PRIVATE XenonUtils)
 add_executable(sfr_image_dump src/image_dump.cpp)
 target_link_libraries(sfr_image_dump PRIVATE sfr_installer)
 include(CTest)
+add_executable(sfr_shader_pack_format_test tests/shader_pack_format_test.cpp)
+target_include_directories(sfr_shader_pack_format_test PRIVATE src)
+add_test(NAME shader_pack_format COMMAND sfr_shader_pack_format_test)
 # Host platform: Windows kernel objects and threads, or their POSIX
 # counterparts (portable_waitables emulates the objects).
 if(WIN32)

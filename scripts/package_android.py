@@ -15,6 +15,7 @@ import subprocess
 import sys
 import zipfile
 from pathlib import Path
+from shader_pack_format import checked_shader_pack
 
 ROOT = Path(__file__).resolve().parent.parent
 PROJECT = ROOT / 'android' / 'app' / 'src' / 'main'
@@ -67,6 +68,8 @@ def main():
     parser.add_argument('--min-sdk', type=int, default=MIN_SDK,
                         help='minimum API level, matching the native build (default: 28)')
     args = parser.parse_args()
+    if args.pack:
+        checked_shader_pack(Path(args.pack))
     if args.min_sdk < MIN_SDK:
         parser.error('--min-sdk must be at least 28')
 
