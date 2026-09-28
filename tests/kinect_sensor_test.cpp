@@ -1,5 +1,6 @@
 #include "guest_memory.h"
 #include "kinect_sensor.h"
+#include "kinect_preview.h"
 #include "pose_skeleton.h"
 #include <bit>
 #include <cmath>
@@ -102,6 +103,16 @@ int main() {
                 require(from_v2.joints[j][0] == float(j), "the other joints keep their places");
         require(from_v2.joint_states[sfr::nui_joint::hand_left] == 1, "an inferred v2 joint stays inferred");
         require(from_v2.position[0] == float(sfr::kinect_v2_joint::spine_base), "the body's centre is its spine base");
+
+        // The preview's projections: a point straight ahead is the image's
+        // centre, and up is towards the top.
+        {
+            const auto centre = sfr::kinect_depth_point({0.0f, 0.0f, 2.0f});
+            require(centre.visible && near(centre.x, 160.0f) && near(centre.y, 120.0f), "straight ahead is the depth centre");
+            const auto up = sfr::kinect_colour_point({0.0f, 0.5f, 2.0f});
+            require(up.visible && near(up.x, 320.0f) && up.y < 240.0f, "up is towards the colour image's top");
+            require(!sfr::kinect_depth_point({0.0f, 0.0f, 0.0f}).visible, "a point at the sensor is nowhere");
+        }
 
         // Why neither sensor opened: the reason of a runtime that is there.
         require(sfr::kinect_open_failure("no-runtime", "no-runtime") == "no-runtime", "nothing installed");

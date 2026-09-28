@@ -202,3 +202,12 @@ mingw 編譯連結過。Kinect for Xbox 360（v1）已在實機上讀到骨架�
   所以現在預設不平滑（`NATIVE_KINECT_OPEN ... smooth=0`）；`SFR_KINECT_SMOOTH=1` 恢復。
   遊戲是否自己呼叫平滑，可以用
   `scripts/analyse_detectors.py ... --calls-into 82760000-82780000` 列出遊戲呼叫 NUI 函式庫的每一處來查。
+
+### 預覽視窗
+
+啟動器 Kinect 設定的「預覽」→「開啟預覽」開一個視窗（[`kinect_preview_window.cpp`](../src/kinect_preview_window.cpp)，
+僅 Windows）：左邊彩色影像、右邊深度影像（玩家依骨架位置上色），兩者都疊上追蹤到的骨架
+（深度照 SDK 的 `NuiTransformSkeletonToDepthImage` 投影，精確；彩色用標稱焦距，兩顆鏡頭相距幾公分，
+是近似對齊），上方列出每個人的編號、骨架位置、距離與「腳是否在畫面內」（腳關節被追蹤到才算）。
+SDK 一個程式只能開一次 Kinect，所以預覽開著時，角度按鈕透過預覽的連線轉動、測試按鈕停用；
+按「開始遊戲」會先關閉預覽，把 Kinect 讓給遊戲。

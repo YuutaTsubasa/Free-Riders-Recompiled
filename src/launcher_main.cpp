@@ -32,6 +32,7 @@
 #include "launcher_platform.h"
 #include "camera_capture.h"
 #include "kinect_sensor.h"
+#include "kinect_preview.h"
 #include "voice_commands.h"
 #include "launcher_settings.h"
 #include "input_bindings.h"
@@ -80,6 +81,7 @@ enum Text {
     CameraKinect, KinectRow, KinectRowHint, KinectWorks, KinectSilent, KinectMissing,
     KinectNoRuntime, KinectNoSensor, KinectFailed, KinectDownload, KinectDownloadV2, KinectInstallHint,
     VoiceLabel, VoiceHint, KinectAngleLabel, KinectAngleHint, KinectAngleUp, KinectAngleDown, KinectAngleNone,
+    KinectPreviewLabel, KinectPreviewHint, KinectPreviewOpen, KinectPreviewClose,
     CameraDebug, CameraDebugHint,
     ImageDirectory, ImageDirectoryHint, AssetDirectory, AssetDirectoryHint, Browse, Found, Missing, FilesHint,
     StartGame, Quit, Defaults,
@@ -180,6 +182,11 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Up", "往上"},
     {"Down", "往下"},
     {"No motor", "無法調整"},
+    {"Preview", "預覽"},
+    {"Opens a window with what the Kinect sees: its colour and depth cameras with the skeletons it tracks, and whether your feet are in view. Use it with the angle buttons; it closes when the game starts.",
+     "開啟一個視窗顯示 Kinect 看到的畫面：彩色與深度影像，加上它追蹤到的骨架，以及腳是否在畫面內。可搭配角度按鈕使用；開始遊戲時會自動關閉。"},
+    {"Open preview", "開啟預覽"},
+    {"Close preview", "關閉預覽"},
     {"Skeleton debug window", "骨架 Debug 視窗"},
     {"Shows only the skeleton received by the game, in front and side views, with no camera image. Closing this window does not stop the game. Changes apply on the next game launch.",
      "僅顯示遊戲收到的骨架，提供正面與側面視圖，不顯示攝影機影像。關閉此視窗不會停止遊戲。設定會在下次啟動遊戲時套用。"},
@@ -1000,11 +1007,17 @@ struct Launcher {
     std::atomic<int> kinect_angle{angle_unknown};
     std::atomic<bool> kinect_turning{false};
     std::jthread kinect_angle_worker;
+    // The preview window, when open, holds the Kinect (one session a
+    // process): the tilt buttons turn it through the preview's sensor.
+    std::unique_ptr<sfr::KinectPreviewWindow> kinect_preview;
     void turn_kinect(int step) {
         kinect_turning.store(true);
-        kinect_angle_worker = std::jthread([this, step] {
+        std::shared_ptr<sfr::KinectSensor> shared = kinect_preview ? kinect_preview->sensor() : nullptr;
+        const bool previewing = kinect_preview != nullptr;
+        kinect_angle_worker = std::jthread([this, step, shared, previewing] {
             std::string why;
-            auto sensor = sfr::KinectSensor::open(&why);
+            std::shared_ptr<sfr::KinectSensor> sensor = shared;
+            if (!sensor && !previewing) sensor = sfr::KinectSensor::open(&why);
             int angle = 0;
             if (sensor && sensor->elevation(angle) && sensor->set_elevation(angle + step)) {
                 // The motor takes about a second, and asks not to be turned
@@ -1085,6 +1098,8 @@ struct Launcher {
 
     void launch_now() {
         leaving = false;
+        // The game opens the Kinect itself.
+        kinect_preview.reset();
         sfr::save_launcher_settings(settings_file, settings);
         game = sfr::launcher::start_game(settings, directory, log_file);
         if (!game) {
@@ -1799,7 +1814,7 @@ struct Launcher {
             for (const Text text : trial) test_width = (std::max)(test_width, ImGui::CalcTextSize(tr(text)).x);
             test_width += ImGui::GetStyle().FramePadding.x * 4;
             setting_row(tr(KinectRow), tr(KinectRowHint), test_width, scale, [&] {
-                ImGui::BeginDisabled(state == KinectTrial::looking);
+                ImGui::BeginDisabled(state == KinectTrial::looking || kinect_preview != nullptr);
                 if (ImGui::Button(tr(trial[int(state)]), ImVec2(test_width, 0))) {
                     kinect_trial.store(KinectTrial::looking);
                     kinect_trial_worker = std::jthread([this] {
@@ -1819,6 +1834,21 @@ struct Launcher {
                 }
                 ImGui::EndDisabled();
             });
+            // What the sensor sees, in a window of its own.
+            {
+                if (kinect_preview && kinect_preview->closed()) kinect_preview.reset();
+                const Text label = kinect_preview ? KinectPreviewClose : KinectPreviewOpen;
+                const float button = (std::max)(ImGui::CalcTextSize(tr(KinectPreviewOpen)).x,
+                                                ImGui::CalcTextSize(tr(KinectPreviewClose)).x) + ImGui::GetStyle().FramePadding.x * 4;
+                setting_row(tr(KinectPreviewLabel), tr(KinectPreviewHint), button, scale, [&] {
+                    ImGui::BeginDisabled(state == KinectTrial::looking || kinect_turning.load());
+                    if (ImGui::Button(tr(label), ImVec2(button, 0))) {
+                        if (kinect_preview) kinect_preview.reset();
+                        else kinect_preview = sfr::KinectPreviewWindow::open(language == 1);
+                    }
+                    ImGui::EndDisabled();
+                });
+            }
             // The tilt motor, a step at a time.
             {
                 const float padding = ImGui::GetStyle().FramePadding.x * 4;
