@@ -60,8 +60,8 @@ class KinectSensor {
 public:
     virtual ~KinectSensor();
     // The newest image of one camera, if there is one newer than
-    // image.number. Only a sensor started with SFR_KINECT_DEPTH=1 opens its
-    // cameras; others have none.
+    // image.number. A Kinect v1 opens its cameras unless SFR_KINECT_DEPTH=0;
+    // others have none.
     virtual bool image(KinectImageKind, KinectImage&) { return false; }
     // The newest frame, if one has arrived since the last call. False leaves
     // the frame alone.

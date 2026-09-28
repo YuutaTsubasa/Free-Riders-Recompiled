@@ -155,10 +155,11 @@ public:
         DWORD flags = nui_initialize_flag_uses_skeleton;
         if (const char* text = std::getenv("SFR_KINECT_V1_FLAGS"); text && *text)
             flags = DWORD(std::strtoul(text, nullptr, 0)) | nui_initialize_flag_uses_skeleton;
-        // SFR_KINECT_DEPTH=1: the depth (with the player index) and colour
-        // cameras as well, for the title's own depth view and camera image.
+        // The depth (with the player index) and colour cameras as well, for
+        // the title's own depth view and camera image; SFR_KINECT_DEPTH=0
+        // opens the skeleton alone.
         const char* images = std::getenv("SFR_KINECT_DEPTH");
-        const bool with_images = images && *images == '1' && get(image_open_, "NuiImageStreamOpen") &&
+        const bool with_images = !(images && *images == '0') && get(image_open_, "NuiImageStreamOpen") &&
                                  get(image_next_, "NuiImageStreamGetNextFrame") &&
                                  get(image_release_, "NuiImageStreamReleaseFrame");
         if (with_images) flags |= nui_initialize_flag_uses_depth_and_player_index | nui_initialize_flag_uses_color;

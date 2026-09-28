@@ -323,6 +323,13 @@ void run() {
 }
 
 int main() {
+    // The skeleton stand-ins below are the fallback without the sensor's
+    // depth images, which is what these checks exercise.
+#ifdef _WIN32
+    _putenv_s("SFR_KINECT_DEPTH", "0");
+#else
+    setenv("SFR_KINECT_DEPTH", "0", 1);
+#endif
     try {
         harness::run();
         std::cout << "nui race hook tests passed\n";

@@ -195,7 +195,7 @@ mingw 編譯連結過。Kinect for Xbox 360（v1）已在實機上讀到骨架�
 - 選單的手部游標位置是否對得上（模擬玩家的右手在 x=0.175 為畫面中央）。
 - 比賽中遊戲自己的判斷器在真實骨架上的反應，以及「On your Gear!」量測能否完成。
 
-## 深度串流（進行中）
+## 深度串流
 
 主機上遊戲除了骨架，還讀 Kinect 的深度影像加玩家遮罩（每像素 16 位元：高 13 位元深度、
 低 3 位元玩家編號，320×240，與 SDK 1.8 的 `NUI_IMAGE_TYPE_DEPTH_AND_PLAYER_INDEX` 相同，
@@ -221,3 +221,11 @@ mingw 編譯連結過。Kinect for Xbox 360（v1）已在實機上讀到骨架�
 有了深度影像，遊戲自己的深度檢視會算出傾斜那一對數值；`SFR_CAMERA_RACE_TRACE=1` 的
 `CAMERA_RACE_MOTION` 行以 `depth_pair=右/左` 印出它（在骨架傾斜寫入之前）。
 `SFR_KINECT_BODY_LEAN=0` 不寫骨架傾斜，直接用遊戲原本由深度算的轉向。
+
+### 預設：全部交給遊戲
+
+選 Kinect 時預設就開深度與彩色串流（`SFR_KINECT_DEPTH=0` 才只開骨架），而且**不再用骨架代替
+遊戲**：傾斜不寫入（遊戲的深度檢視自己算）、蹲下與起跳不補判斷（遊戲自己的判斷器看得到深度）、
+不做水平校正（主機不會轉動骨架）。上面「比賽轉向」「蹲下」「感測器仰角」那些骨架做法，只在
+`SFR_KINECT_DEPTH=0` 時當備援；`SFR_KINECT_BODY_LEAN`、`SFR_KINECT_BODY_GESTURES`、`SFR_KINECT_LEVEL`
+設 1 或 0 可以個別強制。

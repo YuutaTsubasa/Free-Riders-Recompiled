@@ -74,11 +74,19 @@ void write_camera_lean(uint32_t record,float scale=1.f) {
 // up to 3.5 from the depth view, so the default uses its whole range (a
 // full lean at 1 turned the board only a little). SFR_KINECT_LEAN_SCALE
 // changes it, 0.1..3.5.
-// SFR_KINECT_BODY_LEAN=0 leaves the pair as the title's depth view made it
-// (with SFR_KINECT_DEPTH=1 the depth images reach it), for comparing the
-// console's own lean with the skeleton's.
+// With the sensor's depth images reaching the title (unless
+// SFR_KINECT_DEPTH=0) its own depth view makes the lean and its own
+// detectors see the crouch, as on the console, so nothing here stands in for
+// them. Without the depth images the skeleton does, as a fallback.
+// SFR_KINECT_BODY_LEAN and SFR_KINECT_BODY_GESTURES (1 or 0) choose either way.
+bool sensor_fallback(const char* setting) {
+    const char* value=std::getenv(setting);
+    if(value && *value) return *value!='0';
+    const char* depth=std::getenv("SFR_KINECT_DEPTH");
+    return depth && *depth=='0';
+}
 bool sensor_body_lean() {
-    static const bool enabled=[] {const char* p=std::getenv("SFR_KINECT_BODY_LEAN");return !p || *p!='0';}();
+    static const bool enabled=sensor_fallback("SFR_KINECT_BODY_LEAN");
     return enabled;
 }
 // The title's own pair on the last manager update, before the body's lean.
@@ -491,11 +499,11 @@ void finish_camera_overthrow(uint32_t detector,uint32_t results,uint64_t& result
 // gives on the console, and none reaches the title here. When the original
 // does not recognize one, the first player's skeleton decides as the webcam
 // motion does (the hips dropping below the calibrated stance, then rising).
-// SFR_KINECT_BODY_GESTURES=0 leaves the originals alone.
+// Only the skeleton-only fallback does this (sensor_fallback above).
 void finish_sensor_detector(PPCContext& ctx,uint8_t* base,uint32_t address,uint32_t detector,uint32_t source,
                             uint32_t results) {
     if(address!=0x822C8778 && address!=0x822CB840 && address!=0x822C9050 && address!=0x822CA6B0)return;
-    static const bool bridge=[] {const char* p=std::getenv("SFR_KINECT_BODY_GESTURES");return !p || *p!='0';}();
+    static const bool bridge=sensor_fallback("SFR_KINECT_BODY_GESTURES");
     static const bool trace=[] {const char* p=std::getenv("SFR_CAMERA_RACE_TRACE");return p && *p=='1';}();
     if(body_of_source(ctx,base,source)!=sensor_record)return;
     const uint32_t original=ctx.r3.u32;

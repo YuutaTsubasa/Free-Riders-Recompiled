@@ -158,7 +158,7 @@ SFR_HOOK(sub_8276FEE0) {
 // the raw depth and player index into its buffer (+72) for the depth view's
 // silhouettes (82439530), which steer the race and more -- and releases it.
 // The library is not initialized here, so the originals fail and the object
-// is thrown away. With a real Kinect and SFR_KINECT_DEPTH=1 these give it the
+// is thrown away. With a real Kinect (unless SFR_KINECT_DEPTH=0) these give it the
 // sensor's frames instead: type 0 depth and player index at resolution 1
 // (320x240), type 1 colour at resolution 2 (640x480), in a texture made the
 // way the object makes its own, so everything after is the title's code.
@@ -175,7 +175,7 @@ bool kinect_images_wanted() {
     static const bool wanted=[] {
         const char* camera=std::getenv("SFR_CAMERA");
         const char* depth=std::getenv("SFR_KINECT_DEPTH");
-        return camera && std::string_view(camera)=="kinect" && depth && *depth=='1';
+        return camera && std::string_view(camera)=="kinect" && !(depth && *depth=='0');
     }();
     return wanted;
 }
@@ -359,8 +359,15 @@ SFR_HOOK(sub_827707B0) {
         const auto elapsed=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-started);
         // Turned once per new frame: the last one is kept as it was turned.
         if(kinect->next(kinect_frame)) {
-            // SFR_KINECT_LEVEL=0 keeps the sensor's own tilt.
-            static const bool level=[]{const char* t=std::getenv("SFR_KINECT_LEVEL");return !t || *t!='0';}();
+            // Levelling turns the bodies, which the console never did: it is
+            // for the skeleton-only fallback (SFR_KINECT_DEPTH=0), and
+            // SFR_KINECT_LEVEL=1 or 0 chooses either way.
+            static const bool level=[]{
+                const char* t=std::getenv("SFR_KINECT_LEVEL");
+                if(t && *t) return *t!='0';
+                const char* depth=std::getenv("SFR_KINECT_DEPTH");
+                return depth && *depth=='0';
+            }();
             const float gravity_y=kinect_frame.gravity[1];
             const float tilt=level?sfr::kinect_level(kinect_frame):0.0f;
             kinect_placement.apply(kinect_frame);
