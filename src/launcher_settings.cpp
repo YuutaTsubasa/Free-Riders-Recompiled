@@ -239,6 +239,10 @@ std::filesystem::path default_asset_directory(const std::filesystem::path& launc
 
 std::filesystem::path find_runtime_root(const std::filesystem::path& launcher_directory) {
     std::error_code error;
+    // A release remains self-contained even when extracted below a checkout.
+    // Otherwise start_game selects the ancestor's unversioned shader pack and
+    // tools instead of the compatible files shipped beside this executable.
+    if (std::filesystem::is_regular_file(launcher_directory / "shaders.pack", error)) return {};
     auto directory = launcher_directory;
     for (int level = 0; level < 6 && !directory.empty(); ++level) {
         if (std::filesystem::is_regular_file(directory / "tools/XenosRecomp/XenosRecomp/shader_common.h", error) &&

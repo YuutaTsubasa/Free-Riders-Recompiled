@@ -11,7 +11,7 @@ with the pack needs neither the translator nor a DXC for those shaders.
 The pack holds shaders taken from the local game files: like image.bin it is
 private output, never committed or distributed.
 
-Format, little-endian: b"SFRSHPK1", u32 count, then per entry u32 stage
+Format, little-endian: b"SFRSHPK2", u32 shader ABI, u32 count, then per entry u32 stage
 (0 vertex, 1 pixel), u32 specialization mask, u32 source, DXIL and SPIR-V
 sizes, followed by those bytes.
 """
@@ -20,9 +20,9 @@ import struct
 import subprocess
 import sys
 from pathlib import Path
+from shader_pack_format import SHADER_ABI, header, validate_shader_pack
 
 ROOT = Path(__file__).resolve().parents[1]
-MAGIC = b'SFRSHPK1'
 DXC = ROOT / 'tools/XenosRecomp/thirdparty/dxc-bin/bin/x64/dxc.exe'
 
 
@@ -51,7 +51,7 @@ def main():
     if args.compile_dxil and not DXC.exists():
         sys.exit(f'--compile-dxil needs {DXC}')
     entries = []
-    for folder in sorted(args.cache.glob('v8-*')):
+    for folder in sorted(args.cache.glob(f'v{SHADER_ABI}-*')):
         source = read(folder / 'original.bin')
         mask_text = read(folder / 'specialization_mask.txt').strip()
         if not source or not mask_text or (folder / 'untranslatable.txt').exists():
@@ -63,10 +63,11 @@ def main():
         if not dxil and args.compile_dxil and (folder / 'shader.hlsl').exists():
             dxil = compile_dxil(folder, stage, int(mask_text))
         entries.append((stage, int(mask_text), source, dxil, spirv))
-    out = bytearray(MAGIC + struct.pack('<I', len(entries)))
+    out = bytearray(header(len(entries)))
     for stage, mask, source, dxil, spirv in entries:
         out += struct.pack('<5I', stage, mask, len(source), len(dxil), len(spirv))
         out += source + dxil + spirv
+    validate_shader_pack(out)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     temporary = args.output.with_suffix('.pack.new')
     temporary.write_bytes(out)

@@ -92,7 +92,8 @@ bool is_asset_directory(const std::filesystem::path& directory);
 std::filesystem::path default_image_directory(const std::filesystem::path& launcher_directory);
 std::filesystem::path default_asset_directory(const std::filesystem::path& launcher_directory);
 
-// The checkout the game runs in: it translates shaders at run time with
+// A bundled shaders.pack takes priority and returns no checkout. Otherwise,
+// the checkout the game runs in: it translates shaders at run time with
 // tools/XenosRecomp/XenosRecomp/shader_common.h and
 // out/tools/shader-translator/shader_translate.exe, and caches them in
 // out/shaders/runtime, all relative to its working directory. The nearest

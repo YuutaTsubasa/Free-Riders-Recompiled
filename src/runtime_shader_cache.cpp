@@ -5,6 +5,7 @@
 #include "native_graphics.h"
 #include "vulkan_shader_source.h"
 #include "shader_inputs.h"
+#include "shader_pack_format.h"
 #include "vertex_palette.h"
 #include <algorithm>
 #include <cstdio>
@@ -192,7 +193,7 @@ uint64_t fnv1a(std::span<const uint8_t> data) {
     return hash;
 }
 
-// The shader pack (scripts/pack_shaders.py): "SFRSHPK1", u32 count, then per
+// The shader pack (scripts/pack_shaders.py): versioned ABI header, then per
 // entry u32 stage, mask, source, DXIL and SPIR-V sizes and those bytes.
 struct PackedShader {
     ShaderStage stage;
@@ -204,7 +205,10 @@ std::unordered_multimap<uint64_t, PackedShader> load_shader_pack() {
     std::unordered_multimap<uint64_t, PackedShader> pack;
     const fs::path path = setting("SFR_SHADER_PACK", "out/shaders/shaders.pack");
     const auto bytes = read_file(path);
-    if (bytes.empty()) return pack;
+    std::error_code error;
+    // Only an absent pack permits development-time translation. An existing
+    // empty/unreadable pack must fail validation like any other corrupt pack.
+    if (bytes.empty() && !fs::exists(path, error) && !error) return pack;
     size_t at = 0;
     const auto u32 = [&]() -> uint32_t {
         if (at + 4 > bytes.size()) throw RuntimeStop("shader-pack", 0, "the shader pack is truncated");
@@ -219,10 +223,12 @@ std::unordered_multimap<uint64_t, PackedShader> load_shader_pack() {
         at += size;
         return part;
     };
-    if (bytes.size() < 12 || std::string(bytes.begin(), bytes.begin() + 8) != "SFRSHPK1")
-        throw RuntimeStop("shader-pack", 0, "not a shader pack: " + path.string());
-    at = 8;
-    const uint32_t count = u32();
+    uint32_t count;
+    try { count = shader_pack_count(bytes); }
+    catch (const std::invalid_argument& error) {
+        throw RuntimeStop("shader-pack", 0, path.string() + ": " + error.what());
+    }
+    at = shader_pack_header_size;
     for (uint32_t i = 0; i < count; ++i) {
         PackedShader shader;
         const uint32_t stage = u32();
@@ -235,7 +241,9 @@ std::unordered_multimap<uint64_t, PackedShader> load_shader_pack() {
         shader.spirv = take(spirv);
         pack.emplace(fnv1a(shader.source), std::move(shader));
     }
-    std::cerr << "RUNTIME_SHADER_PACK path=" << path.string() << " shaders=" << count << '\n';
+    if (at != bytes.size()) throw RuntimeStop("shader-pack", 0, "the shader pack has trailing data");
+    std::cerr << "RUNTIME_SHADER_PACK path=" << path.string() << " abi=" << shader_abi_version
+              << " shaders=" << count << '\n';
     return pack;
 }
 
@@ -288,7 +296,8 @@ const ShaderCacheEntry& runtime_shader(ShaderStage stage, std::span<const uint8_
     // shared constants (docs/vulkan-push-constants.md).
     // "v8" loads push constant addresses as uint2 for Adreno and explicitly
     // targets Vulkan 1.2 for PhysicalStorageBuffer64.
-    std::snprintf(name, sizeof name, "v8-%016llx-%zu", static_cast<unsigned long long>(hash), source.size());
+    std::snprintf(name, sizeof name, "v%u-%016llx-%zu", shader_abi_version,
+                  static_cast<unsigned long long>(hash), source.size());
     const fs::path folder = setting("SFR_RUNTIME_SHADER_CACHE", "out/shaders/runtime") / name;
     const fs::path original = folder / "original.bin", hlsl = folder / "shader.hlsl",
                    dxil = folder / "shader.dxil", mask_file = folder / "specialization_mask.txt",

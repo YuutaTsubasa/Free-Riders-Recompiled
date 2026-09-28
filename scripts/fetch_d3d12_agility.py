@@ -31,6 +31,12 @@ PACKAGE = {
     'sha256': '08f0489281401aa430fc37322d6c3fc98a8025175aacd714c10d562f4963f1e9',
     # D3D12_SDK_VERSION of this package: the export must name exactly it.
     'sdk_version': 619,
+    # Extracted from the SHA-256-verified package above; also validate cached
+    # files so a truncated DLL is repaired instead of accepted by version.txt.
+    'files_sha256': {
+        'D3D12Core.dll': '37fa14281a58cc834076971873006feb8a8d25cddc908d1a345bda1b149ffc7d',
+        'LICENSE.txt': '5239850894610071566f7ecee0b751fde43c862032d92b99d7d0f596b3433ebd',
+    },
 }
 # (name in tools/d3d12-agility, path in the package). D3D12Core.dll is on the
 # package's list of files that may be distributed.
@@ -51,7 +57,8 @@ def digest(path):
 def present():
     version = TARGET / 'version.txt'
     return (all((TARGET / name).is_file() for name, _ in FILES) and version.is_file()
-            and version.read_text().strip() == str(PACKAGE['sdk_version']))
+            and version.read_text().strip() == str(PACKAGE['sdk_version'])
+            and all(digest(TARGET / name) == PACKAGE['files_sha256'][name] for name, _ in FILES))
 
 
 def fetch():
@@ -80,11 +87,11 @@ def fetch():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--verify-only', action='store_true', help='only check that the runtime is unpacked')
+    parser.add_argument('--verify-only', action='store_true', help='verify installed runtime and licence hashes without downloading')
     args = parser.parse_args()
     if args.verify_only:
         if not present():
-            sys.exit('D3D12 Agility SDK runtime missing: run scripts/fetch_d3d12_agility.py')
+            sys.exit('D3D12 Agility SDK runtime missing or altered: run scripts/fetch_d3d12_agility.py')
     elif fetch():
         print(f'D3D12 Agility SDK {PACKAGE["sdk_version"]} in {TARGET}')
         print('Configure again so CMake copies it beside the game.')
