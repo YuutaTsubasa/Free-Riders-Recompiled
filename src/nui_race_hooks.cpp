@@ -81,7 +81,20 @@ float sensor_lean_scale() {
     }();
     return scale;
 }
-void update_camera_motion(uint32_t record,uint64_t generation) {
+// A real Kinect's crouch: how far the hips drop below the calibrated stance
+// (SFR_KINECT_CROUCH_DEPTH metres, default 0.15), measured above a floor
+// fixed at calibration rather than the guessed ankles. The motion counts a
+// crouch at 80% of the standing height, so the floor sits five drops below
+// the hips while the stance is being learnt.
+float sensor_floor_below_hips() {
+    static const float depth=[] {
+        const char* text=std::getenv("SFR_KINECT_CROUCH_DEPTH");
+        return std::clamp(text && *text?std::strtof(text,nullptr):.15f,.05f,.35f);
+    }();
+    return depth/.2f;
+}
+float sensor_floor=0;
+void update_camera_motion(uint32_t record,uint64_t generation,bool fixed_floor=false) {
     const uint64_t now=sfr::camera_motion_clock_ns();
     const float seconds=camera_last_tick && now>camera_last_tick?float(double(now-camera_last_tick)*1e-9):1.f/60.f;
     camera_last_tick=now;
@@ -89,7 +102,12 @@ void update_camera_motion(uint32_t record,uint64_t generation) {
         return std::array{load_float(record+offset),load_float(record+offset+4),load_float(record+offset+8)};
     };
     const bool ready=camera_motion.ready();
-    camera_motion.observe({point(0),point(32),point(224),point(288),point(64),point(128),point(192),point(256),point(80),point(96),point(144),point(160),point(208),point(272)},seconds,generation);
+    sfr::CameraRacePose pose{point(0),point(32),point(224),point(288),point(64),point(128),point(192),point(256),point(80),point(96),point(144),point(160),point(208),point(272)};
+    if(fixed_floor) {
+        if(!ready)sensor_floor=pose.hip[1]-sensor_floor_below_hips();
+        pose.floor_y=sensor_floor;
+    }
+    camera_motion.observe(pose,seconds,generation);
     if(camera_motion.ready()!=ready)
         std::cerr<<"CAMERA_RACE_CALIBRATION ready="<<camera_motion.ready()<<'\n';
 }
@@ -343,7 +361,7 @@ SFR_HOOK(sub_82438930) {
         std::cerr<<"NUI_RACE_SENSOR_LEAN active="<<sensor_steering<<" record=0x"<<std::hex<<sensor_record<<std::dec<<'\n';
     if(racing && box && original_body && camera_player(0))update_camera_motion(original_body,sfr::camera_pose_generation());
     else if(sensor_steering) {
-        update_camera_motion(sensor_record,sfr::kinect_frame_generation());
+        update_camera_motion(sensor_record,sfr::kinect_frame_generation(),true);
         write_camera_lean(sensor_record,sensor_lean_scale());
     }
     else {camera_motion.reset();camera_last_tick=0;}

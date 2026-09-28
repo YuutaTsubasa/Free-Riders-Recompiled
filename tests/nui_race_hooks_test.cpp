@@ -302,6 +302,9 @@ void run() {
     require(invoke("sub_822C8778", source) == 2, "an upright sensor body does not crouch");
     put(0, 0, -0.4f, 2.2f);
     put(32, 0, 0.1f, 2.2f);
+    // Feet out of the sensor's view: its guessed ankles follow the hips.
+    put(224, -0.1f, -1.2f, 2.2f);
+    put(288, 0.1f, -1.2f, 2.2f);
     for (int i = 0; i < 30; ++i) { ++kinect_sequence; frame(0); }
     m.store<uint32_t>(selected + 4, 0);
     require(invoke("sub_822C8778", source) == 1 && (primary() & 0x7000) == 0x7000,

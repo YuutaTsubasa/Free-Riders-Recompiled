@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <optional>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -14,6 +15,10 @@ struct CameraRacePose {
     std::array<float,3> left_shoulder{},right_shoulder{},left_hip{},right_hip{};
     std::array<float,3> left_elbow{},left_wrist{},right_elbow{},right_wrist{};
     std::array<float,3> left_knee{},right_knee{};
+    // When set, the height of the hips is taken above this floor instead of
+    // the lower ankle: a real Kinect placed high rarely sees the feet, and
+    // its guessed ankles made crouches come and go.
+    std::optional<float> floor_y{};
 };
 class CameraRaceMotion {
 public:
@@ -39,8 +44,8 @@ public:
         for(const auto& point:{p.hip,p.shoulder,p.left_ankle,p.right_ankle})
             for(float v:point) if(!std::isfinite(v)){reset();return;}
         const float y=p.shoulder[1]-p.hip[1];
-        const float height=p.hip[1]-std::min(p.left_ankle[1],p.right_ankle[1]);
-        if(!std::isfinite(dt)||dt<=0||dt>.25f||y<.15f||y>1.2f||height<.25f||height>1.8f){reset();return;}
+        const float height=p.hip[1]-(p.floor_y?*p.floor_y:std::min(p.left_ankle[1],p.right_ankle[1]));
+        if(!std::isfinite(dt)||dt<=0||dt>.25f||y<.15f||y>1.2f||(!p.floor_y&&(height<.25f||height>1.8f))){reset();return;}
         arms_.update({CameraArmActivity::Arm{p.left_shoulder,p.left_elbow,p.left_wrist},
                       CameraArmActivity::Arm{p.right_shoulder,p.right_elbow,p.right_wrist}},dt);
         overthrow_.update(p.shoulder,{CameraOverthrow::Arm{p.left_shoulder,p.left_elbow,p.left_wrist},
