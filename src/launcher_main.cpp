@@ -33,6 +33,7 @@
 #include "camera_capture.h"
 #include "kinect_sensor.h"
 #include "kinect_preview.h"
+#include "text_wrap.h"
 #include "voice_commands.h"
 #include "launcher_settings.h"
 #include "input_bindings.h"
@@ -325,6 +326,18 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
 
 int language = 0;
 const char* tr(Text text) { return texts[text][language]; }
+
+// A paragraph broken into lines that fit width (pixels, from the cursor)
+// the way Chinese is set: ImGui on its own breaks only at spaces, which
+// sends a Chinese sentence after a Latin word onto a line of its own
+// (text_wrap.h).
+std::string wrapped(const char* text, float width) {
+    return sfr::wrap_text(text, (std::max)(width, 1.0f),
+                          [](const char* first, const char* last) { return ImGui::CalcTextSize(first, last).x; });
+}
+// The room left before a wrap position given as PushTextWrapPos takes it.
+float room_to(float wrap_x) { return wrap_x - ImGui::GetCursorPosX(); }
+float room() { return ImGui::GetContentRegionAvail().x; }
 
 // Whether a loaded font has Chinese glyphs (a Linux desktop may have none).
 bool chinese_available = true;
@@ -716,8 +729,9 @@ void setting_row(const char* label, const char* hint, float control_width, float
     const float lit = focus_amount(focused);
     if (hint) {
         ImGui::PushStyleColor(ImGuiCol_Text, dim_text);
-        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + width - control_width - ImGui::GetStyle().ItemSpacing.x * 2);
-        ImGui::TextUnformatted(hint);
+        const float wrap_x = ImGui::GetCursorPosX() + width - control_width - ImGui::GetStyle().ItemSpacing.x * 2;
+        ImGui::PushTextWrapPos(wrap_x);
+        ImGui::TextUnformatted(wrapped(hint, room_to(wrap_x)).c_str());
         ImGui::PopTextWrapPos();
         ImGui::PopStyleColor();
     }
@@ -1174,7 +1188,7 @@ struct Launcher {
             ImGui::TextUnformatted(tr(title));
             ImGui::PopFont();
             ImGui::PushTextWrapPos(width - 32 * scale);
-            ImGui::TextColored(dim_text, "%s", tr(text));
+            ImGui::TextColored(dim_text, "%s", wrapped(tr(text), room_to(width - 32 * scale)).c_str());
             ImGui::PopTextWrapPos();
             ImGui::Dummy(ImVec2(0, 14 * scale));
             const float button_width = 140 * scale, button_height = 44 * scale;
@@ -1665,7 +1679,7 @@ struct Launcher {
         sfr::InputBindings& player = bindings[binding_set / 2];
         ImGui::PushStyleColor(ImGuiCol_Text, dim_text);
         ImGui::PushTextWrapPos(content_width);
-        ImGui::TextUnformatted(tr(keys ? BindingsHint : SticksFixed));
+        ImGui::TextUnformatted(wrapped(tr(keys ? BindingsHint : SticksFixed), room_to(content_width)).c_str());
         ImGui::PopTextWrapPos();
         ImGui::PopStyleColor();
         ImGui::Dummy(ImVec2(0, 6 * scale));
@@ -1706,7 +1720,7 @@ struct Launcher {
         ImGui::TextUnformatted(tr(AvatarModel));
         ImGui::PopFont();
         ImGui::PushStyleColor(ImGuiCol_Text, dim_text);
-        ImGui::TextWrapped("%s", tr(AvatarModelHint));
+        ImGui::TextWrapped("%s", wrapped(tr(AvatarModelHint), room()).c_str());
         ImGui::PopStyleColor();
         if (focus_first_control) {
             focus_next();
@@ -1749,7 +1763,7 @@ struct Launcher {
         const bool missing = !settings.avatar_model.empty() && !fs::is_regular_file(sfr::resolved_avatar_model(settings, directory), error);
         if (missing || avatar_model_import_failed) {
             ImGui::PushStyleColor(ImGuiCol_Text, warning_text);
-            ImGui::TextWrapped("%s", tr(avatar_model_import_failed ? AvatarModelImportFailed : AvatarModelMissing));
+            ImGui::TextWrapped("%s", wrapped(tr(avatar_model_import_failed ? AvatarModelImportFailed : AvatarModelMissing), room()).c_str());
             ImGui::PopStyleColor();
         }
         ImGui::Dummy(ImVec2(0, 10 * scale));
@@ -1963,7 +1977,7 @@ struct Launcher {
         directory_row(tr(AssetDirectory), tr(AssetDirectoryHint), settings.asset_directory,
                       sfr::is_asset_directory(settings.asset_directory));
         ImGui::PushStyleColor(ImGuiCol_Text, dim_text);
-        if (sfr::launcher::can_pick_folders()) ImGui::TextWrapped("%s", tr(FilesHint));
+        if (sfr::launcher::can_pick_folders()) ImGui::TextWrapped("%s", wrapped(tr(FilesHint), room()).c_str());
         ImGui::PopStyleColor();
         ImGui::Dummy(ImVec2(0, 4 * scale));
         if (small_button(tr(sfr::launcher::can_pick_folders() ? InstallFromDisc : InstallFromImage), scale)) open_install_page();
@@ -1981,7 +1995,7 @@ struct Launcher {
             ImGui::Text("%s  %s", ready ? "\xE2\x97\x8F" : "\xE2\x97\x8B", tr(ready ? Found : Missing));
             ImGui::PopStyleColor();
             ImGui::PushStyleColor(ImGuiCol_Text, dim_text);
-            ImGui::TextWrapped("%s", tr(ShaderPackHint));
+            ImGui::TextWrapped("%s", wrapped(tr(ShaderPackHint), room()).c_str());
             ImGui::PopStyleColor();
             if (small_button(tr(ChoosePack), scale)) {
                 if (auto chosen = sfr::launcher::pick_path(directory, false)) {
@@ -2189,7 +2203,8 @@ struct Launcher {
         const float x = margin * scale + slide();
         ImGui::SetCursorPosX(x);
         ImGui::PushTextWrapPos(size.x - margin * scale);
-        ImGui::TextColored(dim_text, "%s", tr(sfr::launcher::can_pick_folders() ? InstallIntro : InstallIntroFile));
+        ImGui::TextColored(dim_text, "%s", wrapped(tr(sfr::launcher::can_pick_folders() ? InstallIntro : InstallIntroFile),
+                                                   room_to(size.x - margin * scale)).c_str());
         ImGui::PopTextWrapPos();
         ImGui::Dummy(ImVec2(0, 6 * scale));
         ImGui::SetCursorPosX(x);
@@ -2247,7 +2262,8 @@ struct Launcher {
             ImGui::Dummy(ImVec2(0, 4 * scale));
             ImGui::SetCursorPosX(x);
             ImGui::PushTextWrapPos(size.x - margin * scale);
-            if (install_cancelled) ImGui::TextColored(dim_text, "%s", tr(InstallCancelledText));
+            if (install_cancelled)
+                ImGui::TextColored(dim_text, "%s", wrapped(tr(InstallCancelledText), room_to(size.x - margin * scale)).c_str());
             else ImGui::TextColored(warning_text, "%s %s", tr(InstallFailed), install_error.c_str());
             ImGui::PopTextWrapPos();
         }
@@ -2366,7 +2382,7 @@ struct Launcher {
         ImGui::PopFont();
         ImGui::SetCursorPosX(x + 90 * scale);
         ImGui::PushTextWrapPos(size.x - margin * scale);
-        ImGui::TextColored(dim_text, "%s", tr(InstalledText));
+        ImGui::TextColored(dim_text, "%s", wrapped(tr(InstalledText), room_to(size.x - margin * scale)).c_str());
         ImGui::PopTextWrapPos();
         guide(size, {{Prompt::confirm, GuideSelect}, {Prompt::back, GuideBack}});
         const int pressed = actions(size, {{tr(OpenSettings), false}, {tr(StartGame), true}}, 1);

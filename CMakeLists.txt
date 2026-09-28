@@ -371,6 +371,9 @@ add_test(NAME native_audio COMMAND sfr_native_audio_test)
 add_executable(sfr_launcher_settings_test tests/launcher_settings_test.cpp src/launcher_settings.cpp)
 target_include_directories(sfr_launcher_settings_test PRIVATE src)
 add_test(NAME launcher_settings COMMAND sfr_launcher_settings_test)
+add_executable(sfr_text_wrap_test tests/text_wrap_test.cpp src/text_wrap.cpp)
+target_include_directories(sfr_text_wrap_test PRIVATE src)
+add_test(NAME text_wrap COMMAND sfr_text_wrap_test)
 add_executable(sfr_camera_debug_test tests/camera_debug_test.cpp src/camera_debug.cpp)
 target_include_directories(sfr_camera_debug_test PRIVATE src)
 add_test(NAME camera_debug COMMAND sfr_camera_debug_test)
@@ -404,7 +407,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui/imgui.cpp")
     # The launcher lists the host cameras and controllers.
     set(SFR_LAUNCHER_SOURCES src/launcher_main.cpp src/launcher_settings.cpp src/input_bindings.cpp src/pad_devices.cpp src/pad_assignment.cpp src/launcher_sound.cpp src/launcher_art.cpp src/sony_gamepad.cpp
         ${SFR_CAMERA_CAPTURE} src/kinect_sensor.cpp ${SFR_KINECT_SENSOR} ${SFR_VOICE}
-        src/kinect_preview.cpp src/kinect_preview_window.cpp src/camera_debug.cpp
+        src/kinect_preview.cpp src/kinect_preview_window.cpp src/camera_debug.cpp src/text_wrap.cpp
         ${SFR_IMGUI}/imgui.cpp ${SFR_IMGUI}/imgui_draw.cpp ${SFR_IMGUI}/imgui_tables.cpp ${SFR_IMGUI}/imgui_widgets.cpp)
     if(WIN32)
         add_executable(sfr_launcher WIN32 ${SFR_LAUNCHER_SOURCES} src/launcher_platform_win32.cpp
