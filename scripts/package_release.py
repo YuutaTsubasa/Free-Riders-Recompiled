@@ -60,6 +60,12 @@ no game data: start the launcher and install from your own disc image
 (Sonic Free Riders, USA/Europe). Source code, build instructions and the
 issue tracker: https://github.com/YuutaTsubasa/Free-Riders-Recompiled
 
+VRM Avatar: choose Advanced > Avatar model > Browse, then select AVATAR in
+the game's character menu (it must be available in your save). Restart the
+game after changing the model; Clear disables it. Camera input is optional.
+One model setting is shared by both local players. See VRM-Avatar.md for
+platform details and current animation/material limitations. No model is included.
+
 Sonic Free Riders is (c) SEGA. This project is not affiliated with or
 endorsed by SEGA or Microsoft. Licences: licenses/.
 """
@@ -150,12 +156,14 @@ def main():
         notes = args.output / (name + '-licenses.zip')
         with zipfile.ZipFile(notes, 'w', zipfile.ZIP_DEFLATED) as archive:
             archive.writestr('README.txt', readme)
+            archive.write(need(ROOT / 'docs/vrm-avatar.md'), 'VRM-Avatar.md')
             for inside, source in licenses:
                 archive.write(source, inside)
         outputs = [out, notes]
     else:
         build = args.build or (ROOT / 'out/build/host' if args.platform == 'windows' else Path.home() / 'sfr-build')
         files = desktop_files(args.platform, build, pack) + licenses
+        files.append(('VRM-Avatar.md', need(ROOT / 'docs/vrm-avatar.md')))
         if args.camera:
             files += camera_files(ROOT / 'tools/onnx')
             files.append(('Camera-input.md', need(ROOT / 'docs/camera-input.md')))

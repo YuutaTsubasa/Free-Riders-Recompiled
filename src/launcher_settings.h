@@ -42,7 +42,7 @@ struct LauncherSettings {
     // Windows motion mode: show the skeleton submitted to the game in a
     // separate window, without a camera image (SFR_CAMERA_DEBUG).
     bool camera_debug = false;
-    // Optional 1P avatar model. Empty keeps the custom avatar disabled.
+    // Optional shared local-player Avatar model. Empty keeps the custom avatar disabled.
     std::filesystem::path avatar_model;
     // Controls (input_bindings.h). The devices each player uses, and how
     // their keys and pad buttons are arranged, as "a=Z,b=X,..." lines. An

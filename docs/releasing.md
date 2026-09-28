@@ -42,9 +42,9 @@ Keep that key: Android only installs an update signed with the same one.
 ## 2. Package
 
 ```bash
-python scripts/package_release.py windows --version 0.2.0 --camera
-python scripts/package_release.py linux --version 0.2.0 --build ~/sfr-build
-python scripts/package_release.py android --version 0.2.0
+python scripts/package_release.py windows --version 0.3.0 --camera
+python scripts/package_release.py linux --version 0.3.0 --build ~/sfr-build
+python scripts/package_release.py android --version 0.3.0
 ```
 
 Each prints the SHA-256 of what it wrote to `out/release/`. The script stops
@@ -58,6 +58,12 @@ Linux and Android prebuilt releases currently omit camera motion inference;
 state this in the release notes. Update `VERSION_NAME` and monotonically
 increase `VERSION_CODE` in `scripts/package_android.py` before packaging.
 
+Desktop archives and the Android licences ZIP include `VRM-Avatar.md`.
+Use the maintained `docs/vrm-avatar.md` for that guide. Never copy a personal
+VRM, `settings.ini`, `model-path.txt` or a test save into a release. Test model
+selection, AVATAR Loading/racing and held items separately from an ordinary
+character; state any platform or mode that has not received gameplay testing.
+
 ## 3. Check
 
 Unpack the Windows archive into an empty folder **outside the checkout** (so
@@ -67,7 +73,7 @@ launcher must have no `untranslatable=1` line.
 
 ## 4. Publish
 
-Tag the commit (`v0.2.0`), push the tag, and create the GitHub release with
+Tag the commit (`v0.3.0`), push the tag, and create the GitHub release with
 the archives and their SHA-256 sums, marked as a pre-release while the game is
 incomplete. Say in the notes which disc is supported and that the game data is
 not included.
