@@ -45,9 +45,24 @@ struct KinectFrame {
     std::vector<KinectBody> bodies;  // the fully tracked ones: two on a v1, up to six on a v2
 };
 
+// One image from the sensor's cameras, rows packed, in host byte order:
+// depth_and_player is 16 bits a pixel (the depth in millimetres shifted up
+// three, the player index 1..6 in the low three bits, as the console's NUI
+// has it), colour 32 bits a pixel (B, G, R, unused).
+enum class KinectImageKind : uint8_t { depth_and_player = 0, colour = 1 };
+struct KinectImage {
+    uint64_t number = 0;  // counts from one; 0 means nothing has arrived
+    uint32_t width = 0, height = 0, bytes_per_pixel = 0;
+    std::vector<uint8_t> pixels;
+};
+
 class KinectSensor {
 public:
     virtual ~KinectSensor();
+    // The newest image of one camera, if there is one newer than
+    // image.number. Only a sensor started with SFR_KINECT_DEPTH=1 opens its
+    // cameras; others have none.
+    virtual bool image(KinectImageKind, KinectImage&) { return false; }
     // The newest frame, if one has arrived since the last call. False leaves
     // the frame alone.
     virtual bool next(KinectFrame& frame) = 0;

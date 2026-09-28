@@ -13,6 +13,7 @@
 #include "local_profile.h"
 #include "touch_controls.h"
 #include <bit>
+#include <initializer_list>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -149,33 +150,154 @@ SFR_HOOK(sub_8276FEE0) {
     ctx.r3.u64=0;
 }
 
+// The Kinect's cameras, as the title's image stream object (vtable
+// 821A8768, built by 82437F38) uses them: it opens a stream, then every
+// fourth frame (82438578) asks NuiImageStreamGetNextFrame for a frame with a
+// 10 ms wait, copies the frame's texture (NUI_IMAGE_FRAME +20) into its own
+// with 82438328 -- the depth coloured by player index for the screen, and
+// the raw depth and player index into its buffer (+72) for the depth view's
+// silhouettes (82439530), which steer the race and more -- and releases it.
+// The library is not initialized here, so the originals fail and the object
+// is thrown away. With a real Kinect and SFR_KINECT_DEPTH=1 these give it the
+// sensor's frames instead: type 0 depth and player index at resolution 1
+// (320x240), type 1 colour at resolution 2 (640x480), in a texture made the
+// way the object makes its own, so everything after is the title's code.
+namespace {
+struct ImageStream {
+    uint32_t type = 0, resolution = 0, width = 0, height = 0, bytes_per_pixel = 0, format = 0;
+    uint32_t texture = 0, frame = 0;  // guest: the frame's texture, and NUI_IMAGE_FRAME + locked rect
+    sfr::KinectImage image;           // the last one handed over
+};
+constexpr uint32_t image_stream_handle = 0x4E554900u;  // | type
+ImageStream image_streams[2];
+
+bool kinect_images_wanted() {
+    static const bool wanted=[] {
+        const char* camera=std::getenv("SFR_CAMERA");
+        const char* depth=std::getenv("SFR_KINECT_DEPTH");
+        return camera && std::string_view(camera)=="kinect" && depth && *depth=='1';
+    }();
+    return wanted;
+}
+
+ImageStream* image_stream(uint32_t handle) {
+    if((handle&~1u)!=image_stream_handle) return nullptr;
+    ImageStream& stream=image_streams[handle&1u];
+    return stream.texture ? &stream : nullptr;
+}
+
+// Calls a guest function with up to eight arguments and returns r3.
+uint32_t call_guest8(PPCContext& ctx, uint8_t* base, void (*function)(PPCContext&, uint8_t*),
+                     std::initializer_list<uint32_t> arguments) {
+    PPCContext saved=ctx;
+    PPCRegister* registers[]={&ctx.r3,&ctx.r4,&ctx.r5,&ctx.r6,&ctx.r7,&ctx.r8,&ctx.r9,&ctx.r10};
+    size_t i=0;
+    for(const uint32_t value:arguments) registers[i++]->u64=value;
+    function(ctx,base);
+    const uint32_t result=ctx.r3.u32;
+    ctx=saved;
+    return result;
+}
+}
+
 // NuiImageStreamOpen(image type, resolution, frame flags, frame limit, next
-// frame event, stream handle out), called by the depth view's constructor
-// (82437F38) with type 0 (depth and player index) at resolution 1
-// (320x240). The library is not initialized here, so the original fails and
-// the constructor throws the depth view away: the title then computes no
-// silhouette, which on the console gives the race its lean and more. With a
-// real Kinect, SFR_KINECT_DEPTH=1 opens it and the colour stream (frames
-// come next; see docs/kinect-sensor.md).
+// frame event, stream handle out).
 PPC_FUNC_IMPL(__imp__sub_82768C40);
 SFR_HOOK(sub_82768C40) {
     sfr::enter_function(ctx,"sub_82768C40",0x82768C40);
-    static const bool depth=[] {
-        const char* camera=std::getenv("SFR_CAMERA");
-        const char* wanted=std::getenv("SFR_KINECT_DEPTH");
-        return camera && std::string_view(camera)=="kinect" && wanted && *wanted=='1';
-    }();
     const uint32_t type=ctx.r3.u32,resolution=ctx.r4.u32,flags=ctx.r5.u32,limit=ctx.r6.u32,event=ctx.r7.u32,
                    handle=ctx.r8.u32;
-    // Type 1 is the colour camera (resolution 2, 640x480, four bytes a
-    // pixel), which the title opens as well through the same object class.
-    if(depth && handle && (type==0 || type==1)) {
-        sfr::active_memory->store<uint32_t>(handle,0x4E554944u);  // any nonzero handle
-        ctx.r3.u64=0;
+    const bool ours=kinect_images_wanted() && handle && ((type==0 && resolution==1) || (type==1 && resolution==2));
+    if(ours) {
+        auto& memory=*sfr::active_memory;
+        ImageStream& stream=image_streams[type];
+        if(!stream.texture) {
+            // The object's own formats and sizes (82437F38).
+            stream.type=type; stream.resolution=resolution;
+            stream.width=type==0?320:640; stream.height=type==0?240:480;
+            stream.bytes_per_pixel=type==0?2:4;
+            stream.format=type==0?0x28280044u:0x28280086u;
+            // The frame and the locked rect it is filled through, from the
+            // title's allocator, as the object's own memory is.
+            const uint32_t heap=memory.load<uint32_t>(0x83E5160C);
+            PPCContext saved=ctx;
+            ctx.r3.u64=heap; ctx.r4.u64=64; ctx.r5.u64=16;
+            sfr::call_indirect(ctx,base,memory.load<uint32_t>(memory.load<uint32_t>(heap)+16));
+            stream.frame=ctx.r3.u32;
+            ctx=saved;
+            stream.texture=stream.frame?call_guest8(ctx,base,sub_824F3EA0,
+                {stream.width,stream.height,1,1,0,stream.format,1,3}):0;
+            if(stream.frame) for(uint32_t i=0;i<64;i+=4) memory.store<uint32_t>(stream.frame+i,0);
+        }
+        if(stream.texture) {
+            memory.store<uint32_t>(handle,image_stream_handle|type);
+            ctx.r3.u64=0;
+        } else ctx.r3.u64=0x8007000Eu;  // E_OUTOFMEMORY
     } else __imp__sub_82768C40(ctx,base);
     std::cerr<<"NUI_IMAGE_STREAM_OPEN type="<<type<<" resolution="<<resolution<<" flags=0x"<<std::hex<<flags
              <<" limit="<<std::dec<<limit<<" event=0x"<<std::hex<<event<<" result=0x"<<ctx.r3.u32<<std::dec
-             <<" backend="<<(depth?"kinect":"original")<<'\n';
+             <<" backend="<<(ours?"kinect":"original");
+    if(ours) std::cerr<<" texture=0x"<<std::hex<<image_streams[type].texture<<std::dec;
+    std::cerr<<'\n';
+}
+
+// NuiImageStreamGetNextFrame(stream, wait ms, frame out): the sensor's
+// newest image, written into the stream's texture as the console's would be
+// (big-endian pixels: 16-bit depth and player index; colour as X8R8G8B8).
+PPC_FUNC_IMPL(__imp__sub_82767148);
+SFR_HOOK(sub_82767148) {
+    sfr::enter_function(ctx,"sub_82767148",0x82767148);
+    ImageStream* stream=image_stream(ctx.r3.u32);
+    if(!stream) { __imp__sub_82767148(ctx,base); return; }
+    const uint32_t out=ctx.r5.u32;
+    if(!out) { ctx.r3.u64=0x80004003u; return; }  // E_POINTER
+    const auto kind=stream->type==0?sfr::KinectImageKind::depth_and_player:sfr::KinectImageKind::colour;
+    if(!kinect || !kinect->image(kind,stream->image) || stream->image.width!=stream->width ||
+       stream->image.height!=stream->height || stream->image.bytes_per_pixel!=stream->bytes_per_pixel) {
+        ctx.r3.u64=0x83010001u;  // E_NUI_FRAME_NO_DATA: the title tries again later
+        return;
+    }
+    auto& memory=*sfr::active_memory;
+    const uint32_t rect=stream->frame+32;  // D3DLOCKED_RECT: pitch, bits
+    call_guest8(ctx,base,sub_824F3CF0,{stream->texture,0,rect,0,0});
+    const uint32_t pitch=memory.load<uint32_t>(rect),bits=memory.load<uint32_t>(rect+4);
+    if(bits && pitch>=stream->width*stream->bytes_per_pixel) {
+        const uint8_t* pixel=stream->image.pixels.data();
+        for(uint32_t y=0;y<stream->height;++y) {
+            const uint32_t row=bits+y*pitch;
+            if(stream->type==0) {
+                for(uint32_t x=0;x<stream->width;++x,pixel+=2)
+                    memory.store<uint16_t>(row+x*2,uint16_t(pixel[0]|pixel[1]<<8));
+            } else {
+                for(uint32_t x=0;x<stream->width;++x,pixel+=4)
+                    memory.store<uint32_t>(row+x*4,0xFF000000u|uint32_t(pixel[2])<<16|uint32_t(pixel[1])<<8|pixel[0]);
+            }
+        }
+    }
+    call_guest8(ctx,base,sub_824F22A0,{stream->texture,0});
+    // NUI_IMAGE_FRAME: time stamp, frame number, type, resolution, texture.
+    const uint64_t milliseconds=uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+    memory.store<uint32_t>(stream->frame,uint32_t(milliseconds>>32));
+    memory.store<uint32_t>(stream->frame+4,uint32_t(milliseconds));
+    memory.store<uint32_t>(stream->frame+8,uint32_t(stream->image.number));
+    memory.store<uint32_t>(stream->frame+12,stream->type);
+    memory.store<uint32_t>(stream->frame+16,stream->resolution);
+    memory.store<uint32_t>(stream->frame+20,stream->texture);
+    memory.store<uint32_t>(out,stream->frame);
+    static uint32_t described=0;
+    if(described++<4)
+        std::cerr<<"NUI_IMAGE_FRAME type="<<stream->type<<" number="<<stream->image.number<<" pitch="<<pitch
+                 <<" bits=0x"<<std::hex<<bits<<std::dec<<'\n';
+    ctx.r3.u64=0;
+}
+
+// NuiImageStreamReleaseFrame(stream, frame): the stream keeps its frame.
+PPC_FUNC_IMPL(__imp__sub_82767458);
+SFR_HOOK(sub_82767458) {
+    sfr::enter_function(ctx,"sub_82767458",0x82767458);
+    if(!image_stream(ctx.r3.u32)) { __imp__sub_82767458(ctx,base); return; }
+    ctx.r3.u64=0;
 }
 
 // NuiSkeletonGetNextFrame(timeout ms, frame): one emulated player.

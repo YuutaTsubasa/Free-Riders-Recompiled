@@ -206,6 +206,14 @@ mingw 編譯連結過。Kinect for Xbox 360（v1）已在實機上讀到骨架�
 一直沒有深度資料（`NUI_DEPTH_VIEW_SKIPPED`）。
 
 遊戲也用同一個類別（函式表 `0x821A8768`）開彩色串流（類型 1、解析度 2，640×480、每像素 4 bytes）。
-`SFR_KINECT_DEPTH=1`（且 `SFR_CAMERA=kinect`）讓兩者都開啟成功（`NUI_IMAGE_STREAM_OPEN ... backend=kinect`），
-物件建立後印出一次 `NUI_DEPTH_VIEW object= vtable= fetch=`；取幀（`fetch`）與真實深度資料
-是下一步。
+`SFR_KINECT_DEPTH=1`（且 `SFR_CAMERA=kinect`）接上兩條串流：
+
+- 感應器端（[`kinect_sensor_win32.cpp`](../src/kinect_sensor_win32.cpp)）：`NuiInitialize` 多加深度與彩色
+  旗標，開 SDK 的深度加玩家編號（320×240）與彩色（640×480）串流，讀骨架的迴圈順便取兩者最新一幀
+  （`NATIVE_KINECT_IMAGE_OPEN type= result=`）。
+- 遊戲端（[`nui_hooks.cpp`](../src/nui_hooks.cpp)）：模擬 `NuiImageStreamOpen`（`82768C40`）、
+  `NuiImageStreamGetNextFrame`（`82767148`）、`NuiImageStreamReleaseFrame`（`82767458`）。開啟時照物件
+  自己的格式（深度 `0x28280044`、彩色 `0x28280086`）用遊戲的 `824F3EA0` 建一張材質；取幀時把感應器
+  的影像以大端序寫進這張材質（深度 16 位元原樣、彩色 X8R8G8B8），填好 `NUI_IMAGE_FRAME`（+20 材質）
+  交給遊戲。之後的上色（`82438328`）、+72 緩衝區、輪廓計算全是遊戲自己的程式。
+  `NUI_IMAGE_STREAM_OPEN ... backend=kinect texture=`、前 4 幀的 `NUI_IMAGE_FRAME type= number=` 可確認。

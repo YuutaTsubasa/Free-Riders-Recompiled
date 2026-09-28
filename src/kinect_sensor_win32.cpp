@@ -7,8 +7,11 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <unknwn.h>
 
+#include <array>
 #include <chrono>
+#include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
@@ -16,6 +19,7 @@
 #include <stop_token>
 #include <string_view>
 #include <thread>
+#include <vector>
 #include <type_traits>
 
 // The Kinect for Windows runtime 1.8, loaded when asked for rather than
@@ -58,7 +62,44 @@ struct NuiTransformSmoothParameters {
 static_assert(sizeof(NuiSkeletonData) == 436, "NUI_SKELETON_DATA layout");
 static_assert(sizeof(NuiSkeletonFrame) == 2664, "NUI_SKELETON_FRAME layout");
 
+constexpr DWORD nui_initialize_flag_uses_depth_and_player_index = 0x00000001;
+constexpr DWORD nui_initialize_flag_uses_color = 0x00000002;
 constexpr DWORD nui_initialize_flag_uses_skeleton = 0x00000008;
+
+// NuiImageFrame.h / NuiImageCamera.h: the image streams, the same types and
+// resolutions as the console's (type 0 depth and player index, 1 colour;
+// resolution 1 is 320x240, 2 is 640x480).
+struct NuiLockedRect {
+    INT pitch;
+    INT size;
+    BYTE* bits;
+};
+struct INuiFrameTexture : IUnknown {
+    virtual int STDMETHODCALLTYPE BufferLen() = 0;
+    virtual int STDMETHODCALLTYPE Pitch() = 0;
+    virtual HRESULT STDMETHODCALLTYPE LockRect(UINT level, NuiLockedRect* locked, RECT* rect, DWORD flags) = 0;
+    virtual HRESULT STDMETHODCALLTYPE GetLevelDesc(UINT level, void* description) = 0;
+    virtual HRESULT STDMETHODCALLTYPE UnlockRect(UINT level) = 0;
+};
+struct NuiImageViewArea { int zoom; LONG center_x, center_y; };
+struct NuiImageFrame {
+    LARGE_INTEGER timestamp;
+    DWORD frame_number;
+    int32_t image_type;
+    int32_t resolution;
+    INuiFrameTexture* texture;
+    DWORD frame_flags;
+    NuiImageViewArea view_area;
+};
+using NuiImageStreamOpen = HRESULT(WINAPI*)(int32_t, int32_t, DWORD, DWORD, HANDLE, HANDLE*);
+using NuiImageStreamGetNextFrame = HRESULT(WINAPI*)(HANDLE, DWORD, const NuiImageFrame**);
+using NuiImageStreamReleaseFrame = HRESULT(WINAPI*)(HANDLE, const NuiImageFrame*);
+
+struct ImageStream {
+    int32_t type, resolution;
+    uint32_t width, height, bytes_per_pixel;
+    HANDLE handle = nullptr;
+};
 constexpr int32_t nui_skeleton_tracked = 2;
 
 using NuiGetSensorCount = HRESULT(WINAPI*)(int*);
@@ -114,6 +155,13 @@ public:
         DWORD flags = nui_initialize_flag_uses_skeleton;
         if (const char* text = std::getenv("SFR_KINECT_V1_FLAGS"); text && *text)
             flags = DWORD(std::strtoul(text, nullptr, 0)) | nui_initialize_flag_uses_skeleton;
+        // SFR_KINECT_DEPTH=1: the depth (with the player index) and colour
+        // cameras as well, for the title's own depth view and camera image.
+        const char* images = std::getenv("SFR_KINECT_DEPTH");
+        const bool with_images = images && *images == '1' && get(image_open_, "NuiImageStreamOpen") &&
+                                 get(image_next_, "NuiImageStreamGetNextFrame") &&
+                                 get(image_release_, "NuiImageStreamReleaseFrame");
+        if (with_images) flags |= nui_initialize_flag_uses_depth_and_player_index | nui_initialize_flag_uses_color;
         const char* read = std::getenv("SFR_KINECT_V1_READ");
         wait_in_sdk_ = !(read && std::string_view(read) == "event");
         std::cerr << "NATIVE_KINECT_OPEN model=v1 flags=0x" << std::hex << flags << std::dec
@@ -130,7 +178,22 @@ public:
             if (why) *why = "tracking-" + hresult(result);
             return false;
         }
+        if (with_images)
+            for (ImageStream& stream : streams_) {
+                const HRESULT result = image_open_(stream.type, stream.resolution, 0, 2, nullptr, &stream.handle);
+                if (FAILED(result)) stream.handle = nullptr;
+                std::cerr << "NATIVE_KINECT_IMAGE_OPEN type=" << stream.type << " width=" << stream.width
+                          << " height=" << stream.height << " result=" << hresult(result) << std::endl;
+            }
         worker_ = std::jthread([this](std::stop_token stop) { run(stop); });
+        return true;
+    }
+
+    bool image(KinectImageKind kind, KinectImage& out) override {
+        std::lock_guard guard(lock_);
+        const KinectImage& latest = images_[size_t(kind)];
+        if (latest.number == 0 || latest.number == out.number) return false;
+        out = latest;
         return true;
     }
 
@@ -169,6 +232,7 @@ private:
         };
         while (!stop.stop_requested()) {
             report();
+            read_images();
             if (!wait_in_sdk_) {
                 if (WaitForSingleObject(event_, 100) != WAIT_OBJECT_0) { ++waits; continue; }
                 ResetEvent(event_);
@@ -204,6 +268,35 @@ private:
         }
     }
 
+    // The newest frame of each open camera, if one has come since the last
+    // look: the SDK keeps two, so reading at the skeleton's pace keeps up.
+    void read_images() {
+        for (size_t i = 0; i < streams_.size(); ++i) {
+            ImageStream& stream = streams_[i];
+            if (!stream.handle) continue;
+            const NuiImageFrame* frame = nullptr;
+            if (FAILED(image_next_(stream.handle, 0, &frame)) || !frame) continue;
+            NuiLockedRect locked{};
+            if (frame->texture && SUCCEEDED(frame->texture->LockRect(0, &locked, nullptr, 0)) && locked.bits) {
+                const uint32_t row = stream.width * stream.bytes_per_pixel;
+                if (locked.pitch >= INT(row)) {
+                    scratch_.resize(size_t(row) * stream.height);
+                    for (uint32_t y = 0; y < stream.height; ++y)
+                        std::memcpy(scratch_.data() + size_t(y) * row, locked.bits + size_t(y) * locked.pitch, row);
+                    std::lock_guard guard(lock_);
+                    KinectImage& latest = images_[i];
+                    latest.width = stream.width;
+                    latest.height = stream.height;
+                    latest.bytes_per_pixel = stream.bytes_per_pixel;
+                    latest.pixels.swap(scratch_);
+                    ++latest.number;
+                }
+                frame->texture->UnlockRect(0);
+            }
+            image_release_(stream.handle, frame);
+        }
+    }
+
     HMODULE library_ = nullptr;
     HANDLE event_ = nullptr;
     bool initialized_ = false;
@@ -211,6 +304,12 @@ private:
     NuiShutdown shutdown_ = nullptr;
     NuiSkeletonGetNextFrame next_frame_ = nullptr;
     NuiTransformSmooth smooth_ = nullptr;
+    NuiImageStreamOpen image_open_ = nullptr;
+    NuiImageStreamGetNextFrame image_next_ = nullptr;
+    NuiImageStreamReleaseFrame image_release_ = nullptr;
+    std::array<ImageStream, 2> streams_{{{0, 1, 320, 240, 2}, {1, 2, 640, 480, 4}}};
+    std::array<KinectImage, 2> images_{};
+    std::vector<uint8_t> scratch_;
     std::mutex lock_;
     KinectFrame latest_;
     uint64_t taken_ = 0;
