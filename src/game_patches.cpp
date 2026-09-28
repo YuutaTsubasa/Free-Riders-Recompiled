@@ -351,7 +351,7 @@ SFR_AVATAR_PART_WALK(823BB2E8)
 
 PPC_FUNC_IMPL(__imp__sub_823B97A8);
 namespace {
-sfr::AvatarClipPose avatar_clip;
+std::array<sfr::AvatarClipPose, 2> avatar_clips;
 sfr::AvatarPose read_avatar_pose(const sfr::GuestMemory& memory, uint32_t animation) {
     sfr::AvatarPose pose;
     if (!animation || !memory.readable(uint64_t(animation) + 11556, 4)) return pose;
@@ -375,42 +375,64 @@ SFR_HOOK(sub_823BBCB8) {
     __imp__sub_823BBCB8(ctx, base);
     if (!sfr::active_memory) return;
     const auto& memory = *sfr::active_memory;
-    const uint32_t rider = sfr::single_player_avatar_racer(memory);
-    if (!rider || !memory.readable(uint64_t(rider) + 3208, 4)) return;
-    const uint32_t character = memory.load<uint32_t>(uint64_t(rider) + 3208);
-    if (!character || !memory.readable(uint64_t(character) + 8, 12) ||
-        memory.load<uint32_t>(uint64_t(character) + 8) != renderer ||
-        memory.load<uint32_t>(uint64_t(character) + 12) != controller ||
-        memory.load<uint32_t>(uint64_t(character) + 16) != animation) return;
-    // Preserve evaluated/blended clip output before 822A5140 computes tracked
-    // shoulder corrections against absent Xbox bind matrices (identity).
-    avatar_clip = {rider, animation, sfr::present_count.load(), read_avatar_pose(memory, animation)};
+    const auto owner = sfr::local_avatar_for_animation(memory, controller, renderer, animation);
+    if (!owner) return;
+    // Preserve evaluated/blended clip output before tracked shoulder corrections.
+    avatar_clips[owner->local_slot] = {owner->rider, animation, sfr::present_count.load(), read_avatar_pose(memory, animation), owner->manager, renderer, controller};
+}
+PPC_FUNC_IMPL(__imp__sub_823BC330);
+SFR_HOOK(sub_823BC330) {
+    sfr::enter_function(ctx, "sub_823BC330", 0x823BC330);
+    // Only the hand attachment getter used by 8227FD58. Gameplay IK and
+    // all other native palette consumers retain the original SDK matrices.
+    if (ctx.lr == 0x8227FDA4 && (ctx.r4.u32 == 33 || ctx.r4.u32 == 36) && sfr::active_memory) {
+        auto& memory = *sfr::active_memory;
+        const auto owner = sfr::local_avatar_for_animation(memory, ctx.r3.u32);
+        if (owner && memory.readable(ctx.r5.u32, 64)) {
+            auto pose = avatar_clips[owner->local_slot].current(owner->rider, owner->animation, sfr::present_count.load(), owner->manager, owner->renderer, owner->controller);
+            if (pose) {
+                pose->mirrored = memory.load<uint8_t>(uint64_t(owner->renderer) + 8) != 0;
+                if (const auto hand = sfr::avatar_hand_transform(*pose, ctx.r4.u32)) {
+                    for (uint32_t i = 0; i < 16; ++i)
+                        memory.store<uint32_t>(uint64_t(ctx.r5.u32) + i * 4, std::bit_cast<uint32_t>((*hand)[i]));
+                    static const bool trace = std::getenv("SFR_TRACE_AVATAR") != nullptr;
+                    static uint32_t traced = 0;
+                    if (trace && traced++ % 120 == 0)
+                        std::cerr << "AVATAR_HAND present=" << sfr::present_count.load() << " player=" << owner->local_slot
+                                  << " bone=" << ctx.r4.u32 << " xyz=" << (*hand)[12] << ',' << (*hand)[13] << ',' << (*hand)[14]
+                                  << " render_offset=" << std::bit_cast<float>(memory.load<uint32_t>(uint64_t(owner->rider)+208)) << ','
+                                  << std::bit_cast<float>(memory.load<uint32_t>(uint64_t(owner->rider)+212)) << ','
+                                  << std::bit_cast<float>(memory.load<uint32_t>(uint64_t(owner->rider)+216)) << '\n';
+                    return;
+                }
+            }
+        }
+    }
+    __imp__sub_823BC330(ctx, base);
 }
 SFR_HOOK(sub_823B97A8) {
     sfr::enter_function(ctx, "sub_823B97A8", 0x823B97A8);
-    // The main camera's Avatar draw (the other caller is the shadow pass).
+    // A scene camera's Avatar draw (the other caller is the shadow pass).
     // r5/r6/r7 are row-major world, view, projection. Copy before the guest
     // returns: these point into temporary draw state, not permanent storage.
-    if (ctx.lr == 0x822AB04C && ctx.r9.u32 == 0 && sfr::active_memory) {
+    if (ctx.lr == 0x822AB04C && ctx.r9.u32 < 2 && sfr::active_memory) {
         const auto& memory = *sfr::active_memory;
-        const uint32_t rider = sfr::single_player_avatar_racer(memory);
-        if (rider && memory.readable(uint64_t(rider) + 3208, 4)) {
-            const uint32_t character = memory.load<uint32_t>(uint64_t(rider) + 3208);
-            if (character && memory.readable(uint64_t(character) + 8, 4) &&
-                memory.load<uint32_t>(uint64_t(character) + 8) == ctx.r3.u32 &&
-                memory.readable(ctx.r5.u32, 64) && memory.readable(ctx.r6.u32, 64) &&
-                memory.readable(ctx.r7.u32, 64)) {
+        const auto owner = sfr::local_avatar_for_renderer(memory, ctx.r3.u32);
+        if (owner && ctx.r9.u32 < owner->local_count) {
+            const uint32_t rider = owner->rider, character = owner->character;
+            if (memory.readable(ctx.r5.u32, 64) && memory.readable(ctx.r6.u32, 64) && memory.readable(ctx.r7.u32, 64)) {
                 sfr::AvatarFrameTransform frame;
                 for (uint32_t i = 0; i < 16; ++i) {
                     frame.world[i] = std::bit_cast<float>(memory.load<uint32_t>(uint64_t(ctx.r5.u32) + i * 4));
                     frame.view[i] = std::bit_cast<float>(memory.load<uint32_t>(uint64_t(ctx.r6.u32) + i * 4));
                     frame.projection[i] = std::bit_cast<float>(memory.load<uint32_t>(uint64_t(ctx.r7.u32) + i * 4));
                 }
-                if (auto clip = avatar_clip.current(rider, ctx.r4.u32, sfr::present_count.load())) frame.pose = *clip;
+                if (auto clip = avatar_clips[owner->local_slot].current(rider, ctx.r4.u32, sfr::present_count.load(), owner->manager, owner->renderer, owner->controller)) frame.pose = *clip;
                 // BA028 reflects the completed skeleton across X for goofy.
                 if (memory.readable(uint64_t(ctx.r3.u32) + 8, 1))
                     frame.pose.mirrored = memory.load<uint8_t>(uint64_t(ctx.r3.u32) + 8) != 0;
-                sfr::avatar_frame_transforms.publish(frame);
+                frame.present = sfr::present_count.load();
+                sfr::draw_avatar_model(frame);
                 static const bool trace_pose = std::getenv("SFR_TRACE_AVATAR_POSE") != nullptr;
                 static const unsigned pose_every = [] {
                     const char* text = std::getenv("SFR_TRACE_AVATAR_POSE_EVERY");

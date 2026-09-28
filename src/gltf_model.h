@@ -2,6 +2,7 @@
 #include "image_decode.h"
 #include "avatar_pose.h"
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -57,6 +58,16 @@ struct GltfModel {
 // Recalculates current bounds while leaving the bind ground_y fixed.
 // Invalid/unrigged input returns false without changing the model.
 bool pose_gltf_model(GltfModel& model, const AvatarPose& pose);
+
+// A native bone's model-space attachment transform, encoded for row vectors.
+// Shares the mesh pose hierarchy and includes VRM facing, root motion, mirror,
+// fixed ground_y and uniform model scale, but not the racer's world transform.
+// Grip axes neutralize the authored bind rotation and exclude authored scale
+// and shear; this defines normalized humanoid axes, not verified Xbox grip
+// calibration. Native per-item offsets remain the caller's responsibility.
+// Missing bones/rigs and invalid pose/scale return nothing without mutation.
+std::optional<std::array<float, 16>> gltf_avatar_bone_transform(
+    const GltfModel& model, const AvatarPose& pose, uint32_t native_bone, float scale);
 
 // How the model should stand.
 //

@@ -302,6 +302,25 @@ static bool rendering_this_frame() {
     return sfr::present_count%every==0;
 }
 
+namespace sfr {
+std::optional<AvatarMatrix> avatar_hand_transform(const AvatarPose& pose, uint32_t bone) {
+    if (!active_guest_graphics || !active_guest_graphics->created()) return std::nullopt;
+    return active_guest_graphics->presentation().avatar_hand_transform(pose, bone);
+}
+void draw_avatar_model(const AvatarFrameTransform& frame) {
+    if (!skip_draws() && rendering_this_frame()) {
+        graphics().presentation().draw_player_model(frame);
+        if (std::getenv("SFR_TRACE_AVATAR") && frame.present % 120 == 0) {
+            const auto& v = graphics().presentation().raster_state().viewport();
+            const auto& s = graphics().presentation().raster_state().scissor();
+            std::cerr << "AVATAR_PASS present=" << frame.present << " draws=" << frame_draws << " viewport="
+                      << v.x << ',' << v.y << ',' << v.width << ',' << v.height << ',' << v.minDepth << ',' << v.maxDepth
+                      << " scissor=" << s.left << ',' << s.top << ',' << s.right << ',' << s.bottom << '\n';
+        }
+    }
+}
+}
+
 // SFR_FRAME_LIMIT=<fps>: at most that many presents a second. The title
 // steps a race a sixtieth of a second per frame and does not wait for the
 // display there, so a race that runs faster than 60 fps (drawing every
@@ -338,30 +357,8 @@ static std::vector<std::pair<uint32_t,uint32_t>> frame_callbacks;
 
 SFR_HOOK(sub_824E65A0) {
     sfr::enter_function(ctx,"sub_824E65A0",0x824E65A0);
-    // Into the frame the game has just finished, before it is read or shown.
-    // Read the live racer, not the menu's Avatar preview/body-type queries.
-    // Empty lists during loading/teardown and ordinary characters draw none.
-    if(rendering_this_frame()) {
-        const uint32_t avatar = sfr::active_memory ?
-            sfr::single_player_avatar_racer(*sfr::active_memory) : 0;
-        static const bool trace_avatar = [] {
-            const char* text = std::getenv("SFR_TRACE_AVATAR");
-            return text && *text && *text != '0';
-        }();
-        if (trace_avatar && sfr::active_memory && sfr::present_count.load() % 600 == 0) {
-            const auto& memory = *sfr::active_memory;
-            std::cerr << "AVATAR_STATE frame=" << sfr::present_count.load()
-                      << " race=" << memory.load<uint32_t>(0x83E52F8C)
-                      << " locals=" << unsigned(memory.load<uint8_t>(0x82B0569F))
-                      << " selected=" << memory.load<uint32_t>(0x83E506A0)
-                      << " rider=0x" << std::hex << avatar << std::dec << '\n';
-        }
-        graphics().presentation().draw_player_model(avatar != 0);
-    } else {
-        // Guest drawing may still publish when frame skipping is enabled.
-        // Discard this frame too, so the next rendered frame cannot reuse it.
-        sfr::avatar_frame_transforms.consume();
-    }
+    // Preload in the menu; actual geometry is drawn in the Avatar's pass.
+    graphics().presentation().prepare_player_model();
     save_screenshot();
     // Submitting the frame and waiting for it: what the CPU spends beyond
     // recording, which is where a GPU-bound frame shows up.

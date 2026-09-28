@@ -468,31 +468,84 @@ bool quaternion_matrix(const std::array<float, 4>& quaternion, bool backwards, M
     out.m[8] = 2 * (x*z + y*w); out.m[9] = 2 * (y*z - x*w); out.m[10] = 1 - 2 * (x*x + y*y);
     return true;
 }
-}
 
-bool pose_gltf_model(GltfModel& model, const AvatarPose& pose) {
-    if (!pose.valid || !model.rig || model.rig->primitives.size() != model.primitives.size()) return false;
-    const GltfRig& rig = *model.rig;
+bool evaluate_native_hierarchy(const GltfRig& rig, const AvatarPose& pose,
+                               std::vector<Matrix>& world, std::vector<Matrix>* rotations = nullptr) {
+    if (!pose.valid) return false;
     std::array<Matrix, 72> delta;
-    // Reject before touching geometry; a partially captured pose stays static.
+    // Mesh and attachment evaluation accept exactly the same capture.
     for (const float value : pose.bones[0].translation)
         if (!std::isfinite(value)) return false;
     for (size_t i = 0; i < delta.size(); ++i)
         if (!quaternion_matrix(pose.bones[i].rotation, rig.facing_backwards, delta[i])) return false;
-    for (size_t i = 0; i < model.primitives.size(); ++i)
-        if (model.primitives[i].positions.size() != rig.primitives[i].positions.size() ||
-            model.primitives[i].normals.size() != rig.primitives[i].normals.size()) return false;
-    std::vector<Matrix> world(rig.local.size());
+    world.resize(rig.local.size());
+    if (rotations) rotations->resize(rig.local.size());
     for (uint32_t node : rig.order) {
         Matrix local = rig.local[node];
+        Matrix turn;
         if (const int native = rig.native_bone[node]; native >= 0) {
             // Native deltas use the normalized humanoid axes. Convert them to
             // this authored bone's bind basis, then inherit its posed parent.
-            local = multiply(local, multiply(transpose_rotation(rig.basis[node]),
-                             multiply(delta[size_t(native)], rig.basis[node])));
+            turn = multiply(transpose_rotation(rig.basis[node]), multiply(delta[size_t(native)], rig.basis[node]));
+            local = multiply(local, turn);
         }
         world[node] = rig.parent[node] == ~0u ? local : multiply(world[rig.parent[node]], local);
+        if (rotations) {
+            // Derive axes from rotation-only locals, as for rig.basis. Taking
+            // a rotation from world[node] would retain shear from a scaled
+            // parent and could turn an identity pose into a rotated grip.
+            const Matrix local_rotation = multiply(rotation_basis(rig.local[node]), turn);
+            (*rotations)[node] = rig.parent[node] == ~0u ? local_rotation
+                : rotation_basis(multiply((*rotations)[rig.parent[node]], local_rotation));
+        }
     }
+    return true;
+}
+}
+
+std::optional<std::array<float, 16>> gltf_avatar_bone_transform(
+    const GltfModel& model, const AvatarPose& pose, uint32_t native_bone, float scale) {
+    if (!model.rig || native_bone >= pose.bones.size() || !(scale > 0) || !std::isfinite(scale) ||
+        !std::isfinite(model.ground_y)) return std::nullopt;
+    const GltfRig& rig = *model.rig;
+    const auto found = std::find(rig.native_bone.begin(), rig.native_bone.end(), int(native_bone));
+    if (found == rig.native_bone.end()) return std::nullopt;
+    const size_t node = size_t(found - rig.native_bone.begin());
+    std::vector<Matrix> world, rotations;
+    if (!evaluate_native_hierarchy(rig, pose, world, &rotations)) return std::nullopt;
+
+    // Remove the authored bind axes instead of exposing a glTF joint's local
+    // axes or a skinning matrix with inverse bind. At identity every grip has
+    // native model axes, even when the artist rotated/scaled its node.
+    Matrix grip = multiply(rotations[node], transpose_rotation(rig.basis[node]));
+    const float facing[3] = {rig.facing_backwards ? -1.f : 1.f, 1.f, rig.facing_backwards ? -1.f : 1.f};
+    const float reflection[3] = {pose.mirrored ? -1.f : 1.f, 1.f, 1.f};
+    std::array<float, 16> result{};
+    for (int column = 0; column < 3; ++column) {
+        for (int row = 0; row < 3; ++row)
+            // C * grip * C converts both normalized input axes and output
+            // axes for VRM 0; mirror reflects only the completed output.
+            result[column * 4 + row] = scale * reflection[row] * facing[row] *
+                                      grip.m[column * 4 + row] * facing[column];
+        const float position = reflection[column] * (facing[column] * world[node].m[12 + column] +
+                                                      pose.bones[0].translation[column]);
+        result[12 + column] = scale * (position - (column == 1 ? model.ground_y : 0.f));
+    }
+    // Column-major column-vector bytes equal row-major transposed row-vector
+    // bytes. Translation therefore stays at 12..14 for the native getter.
+    result[15] = 1;
+    for (float value : result) if (!std::isfinite(value)) return std::nullopt;
+    return result;
+}
+
+bool pose_gltf_model(GltfModel& model, const AvatarPose& pose) {
+    if (!model.rig || model.rig->primitives.size() != model.primitives.size()) return false;
+    const GltfRig& rig = *model.rig;
+    std::vector<Matrix> world;
+    if (!evaluate_native_hierarchy(rig, pose, world)) return false;
+    for (size_t i = 0; i < model.primitives.size(); ++i)
+        if (model.primitives[i].positions.size() != rig.primitives[i].positions.size() ||
+            model.primitives[i].normals.size() != rig.primitives[i].normals.size()) return false;
     std::vector<std::vector<Matrix>> palettes(rig.skins.size());
     for (size_t s = 0; s < rig.skins.size(); ++s) {
         const auto& skin = rig.skins[s];

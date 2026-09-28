@@ -186,7 +186,12 @@ struct NativePresentation::Impl {
     std::unique_ptr<plume::RenderShader> model_vertex, model_pixel;
     std::unique_ptr<plume::RenderPipelineLayout> model_layout;
     std::unique_ptr<plume::RenderPipeline> model_pipeline, model_double_sided_pipeline;
-    std::array<std::unique_ptr<plume::RenderBuffer>, 2> model_vertices;
+    std::unique_ptr<plume::RenderPipeline> model_reverse_pipeline, model_reverse_double_sided_pipeline;
+    // One upload buffer per draw, recycled only after the preceding frame's
+    // submission has completed. Both split-screen views can draw both riders.
+    std::array<std::vector<std::unique_ptr<plume::RenderBuffer>>, 2> model_vertices;
+    uint64_t model_present = ~uint64_t(0);
+    size_t model_draw_index = 0;
     std::array<std::unique_ptr<plume::RenderBuffer>, 2> model_indices;
     uint32_t model_vertex_slot = 0;
     bool model_animation_enabled = true;
@@ -208,15 +213,6 @@ struct NativePresentation::Impl {
     std::vector<std::unique_ptr<plume::RenderDescriptorSet>> model_picture_sets;
     std::unique_ptr<plume::RenderDescriptorSet> model_sampler;
     std::unique_ptr<plume::RenderSampler> model_sampler_object;
-    // A depth buffer of the model's own, and the game's colour with that
-    // depth attached to it. The model cannot use the game's depth buffer --
-    // see draw_model -- but it does need one: a head is half a dozen layers
-    // of skin, lips, eyelids and hair, and without depth they are drawn in
-    // whatever order they come in and the face is a patchwork.
-    std::unique_ptr<plume::RenderTexture> model_depth;
-    std::unique_ptr<plume::RenderFramebuffer> model_framebuffer;
-    uint32_t model_depth_width = 0, model_depth_height = 0;
-    bool model_framebuffer_ready();
     uint32_t model_index_count = 0;
     bool model_tried = false;
     void build_model();
@@ -347,8 +343,8 @@ struct NativePresentation::Impl {
     // readback and explicit flushes submit it.
     bool open = false;
     std::vector<std::function<void(bool)>> after_flush;
-    // Counts begun command lists: what a list has bound (NativeRenderer
-    // skips rebinding its layout and sets) lasts until the next one begins.
+    // Binding generation: new lists and custom passes both invalidate the
+    // layout/pipeline/descriptors cached by NativeRenderer.
     uint64_t list_generation = 0;
     void begin_list() {
         command_list->begin();
@@ -506,17 +502,13 @@ void NativePresentation::Impl::build_model() {
     auto& device = graphics->device();
     const uint64_t vertex_bytes = vertices.size() * sizeof(float);
     const uint64_t index_bytes = indices.size() * sizeof(uint32_t);
-    for (auto& buffer : model_vertices)
-        buffer = device.createBuffer(plume::RenderBufferDesc::UploadBuffer(vertex_bytes, plume::RenderBufferFlag::VERTEX));
+    for (auto& group : model_vertices) {
+        group.push_back(device.createBuffer(plume::RenderBufferDesc::UploadBuffer(vertex_bytes, plume::RenderBufferFlag::VERTEX)));
+        if (!group.back()) { model.reset(); return; }
+    }
     for (auto& buffer : model_indices)
         buffer = device.createBuffer(plume::RenderBufferDesc::UploadBuffer(index_bytes, plume::RenderBufferFlag::INDEX));
-    if (!model_vertices[0] || !model_vertices[1] || !model_indices[0] || !model_indices[1]) { model.reset(); return; }
-    for (auto& buffer : model_vertices) {
-        void* const at = buffer->map();
-        if (!at) { model.reset(); return; }
-        std::memcpy(at, vertices.data(), size_t(vertex_bytes));
-        buffer->unmap();
-    }
+    if (!model_indices[0] || !model_indices[1]) { model.reset(); return; }
     // A reflected skeleton reverses winding. Keep both static index orders so
     // back-face culling and SV_IsFrontFace agree with the reflected normals.
     for (auto& buffer : model_indices) {
@@ -638,16 +630,8 @@ void NativePresentation::Impl::build_model() {
         return text && *text && *text != '0';
     }();
     pipeline_desc.cullMode = flat ? plume::RenderCullMode::NONE : plume::RenderCullMode::BACK;
-    // Depth, against a buffer of the model's own (see model_depth). Not the
-    // game's: the model is drawn when the game has finished its frame, and by
-    // then that buffer belongs to whatever drew last -- a full-screen pass in
-    // the menus, something equally near in a race -- so testing against it
-    // hides the model completely rather than putting it behind the scenery.
-    // Being hidden by the track is worth having, but it needs the model drawn
-    // during the scene rather than after it.
-    //
-    // SFR_AVATAR_MODEL_NO_DEPTH=1 draws without it, which is what the model
-    // looked like before it had a buffer of its own.
+    // Share the scene depth so later scenery cannot overwrite the rider.
+    // The title uses reversed depth in races; normal viewports are also valid.
     static const bool flatten_depth = [] {
         const char* const text = std::getenv("SFR_AVATAR_MODEL_NO_DEPTH");
         return text && *text && *text != '0';
@@ -665,7 +649,13 @@ void NativePresentation::Impl::build_model() {
     model_pipeline = device.createGraphicsPipeline(pipeline_desc);
     pipeline_desc.cullMode = plume::RenderCullMode::NONE;
     model_double_sided_pipeline = device.createGraphicsPipeline(pipeline_desc);
-    if (!model_pipeline || !model_double_sided_pipeline) { model_pipeline.reset(); model.reset(); return; }
+    pipeline_desc.depthFunction = plume::RenderComparisonFunction::GREATER;
+    model_reverse_double_sided_pipeline = device.createGraphicsPipeline(pipeline_desc);
+    pipeline_desc.cullMode = flat ? plume::RenderCullMode::NONE : plume::RenderCullMode::BACK;
+    model_reverse_pipeline = device.createGraphicsPipeline(pipeline_desc);
+    if (!model_pipeline || !model_double_sided_pipeline || !model_reverse_pipeline || !model_reverse_double_sided_pipeline) {
+        model_pipeline.reset(); model.reset(); return;
+    }
     std::cerr << "NATIVE_MODEL loaded primitives=" << model->primitives.size() << " vertices=" << model->vertices
               << " triangles=" << model->triangles << " height=" << (model->highest[1] - model->lowest[1])
               << " pictures=" << model->images.size() << '\n';
@@ -673,32 +663,42 @@ void NativePresentation::Impl::build_model() {
 
 // Use this frame's actual Avatar world and camera transforms.
 void NativePresentation::Impl::draw_model(const AvatarFrameTransform& frame) {
-    if (model_animation_enabled && pose_gltf_model(*model, frame.pose)) {
-        // submit() waits the preceding submission before releasing its command
-        // list. Alternating buffers therefore never overwrite vertices still
-        // read by that submission; no additional per-frame GPU wait is needed.
-        const uint32_t next_slot = model_vertex_slot ^ 1;
-        auto* destination = static_cast<float*>(model_vertices[next_slot]->map());
-        if (!destination) return;
-        for (const auto& primitive : model->primitives) {
-            const size_t count = primitive.positions.size() / 3;
-            for (size_t vertex = 0; vertex < count; ++vertex) {
-                for (size_t axis = 0; axis < 3; ++axis) *destination++ = primitive.positions[vertex * 3 + axis];
-                for (size_t axis = 0; axis < 3; ++axis)
-                    *destination++ = primitive.normals.size() == count * 3 ? primitive.normals[vertex * 3 + axis] : (axis == 1 ? 1.f : 0.f);
-                for (size_t axis = 0; axis < 2; ++axis)
-                    *destination++ = primitive.texcoords.size() == count * 2 ? primitive.texcoords[vertex * 2 + axis] : 0.f;
-            }
-        }
-        model_vertices[next_slot]->unmap();
-        model_vertex_slot = next_slot;
-        model_mirrored = frame.pose.mirrored;
+    if (frame.present != model_present) {
+        model_present = frame.present;
+        model_vertex_slot ^= 1;
+        model_draw_index = 0;
     }
-    static const float scale = [] {
-        const char* text = std::getenv("SFR_AVATAR_MODEL_SCALE");
-        const double value = text ? std::strtod(text, nullptr) : 1.0;
-        return float(std::isfinite(value) && value > 0 && value <= 100 ? value : 1.0);
-    }();
+    auto& group = model_vertices[model_vertex_slot];
+    if (model_draw_index == group.size()) {
+        group.push_back(graphics->device().createBuffer(plume::RenderBufferDesc::UploadBuffer(
+            model->vertices * 8 * sizeof(float), plume::RenderBufferFlag::VERTEX)));
+    }
+    auto* buffer = group[model_draw_index++].get();
+    if (!buffer) return;
+    // Rebuild from bind data even on invalid poses: another player's pose
+    // must not become the fallback for this rider.
+    AvatarPose pose = frame.pose;
+    if (!model_animation_enabled || !pose.valid) { pose = {}; pose.valid = true; }
+    bool posed = pose_gltf_model(*model, pose);
+    if (!posed && model->rig) {
+        pose = {}; pose.valid = true;
+        posed = pose_gltf_model(*model, pose);
+    }
+    model_mirrored = posed && pose.mirrored;
+    auto* destination = static_cast<float*>(buffer->map());
+    if (!destination) return;
+    for (const auto& primitive : model->primitives) {
+        const size_t count = primitive.positions.size() / 3;
+        for (size_t vertex = 0; vertex < count; ++vertex) {
+            for (size_t axis = 0; axis < 3; ++axis) *destination++ = primitive.positions[vertex * 3 + axis];
+            for (size_t axis = 0; axis < 3; ++axis)
+                *destination++ = primitive.normals.size() == count * 3 ? primitive.normals[vertex * 3 + axis] : (axis == 1 ? 1.f : 0.f);
+            for (size_t axis = 0; axis < 2; ++axis)
+                *destination++ = primitive.texcoords.size() == count * 2 ? primitive.texcoords[vertex * 2 + axis] : 0.f;
+        }
+    }
+    buffer->unmap();
+    const float scale = avatar_model_scale();
     // VRM vertices are in metres, with their lowest point on the rider's
     // local origin. Use the exact Avatar world/view/projection from this frame.
     std::array<float, 28> constants{};
@@ -707,8 +707,12 @@ void NativePresentation::Impl::draw_model(const AvatarFrameTransform& frame) {
     std::copy(transform.begin(), transform.end(), constants.begin());
     constants[16] = 0.4f; constants[17] = -0.7f; constants[18] = 0.6f; constants[19] = 0.45f;
     command_list->setGraphicsPipelineLayout(model_layout.get());
-    command_list->setPipeline(model_pipeline.get());
-    const plume::RenderVertexBufferView vertex_view(plume::RenderBufferReference(model_vertices[model_vertex_slot].get(), 0),
+    const auto& viewport = raster_state->viewport();
+    const bool reversed = viewport.minDepth > viewport.maxDepth;
+    const auto* single_sided = reversed ? model_reverse_pipeline.get() : model_pipeline.get();
+    const auto* double_sided = reversed ? model_reverse_double_sided_pipeline.get() : model_double_sided_pipeline.get();
+    command_list->setPipeline(single_sided);
+    const plume::RenderVertexBufferView vertex_view(plume::RenderBufferReference(buffer, 0),
                                                     uint32_t(model->vertices * 8 * sizeof(float)));
     const plume::RenderInputSlot slot(0, sizeof(float) * 8);
     command_list->setVertexBuffers(0, &vertex_view, 1, &slot);
@@ -719,7 +723,7 @@ void NativePresentation::Impl::draw_model(const AvatarFrameTransform& frame) {
     command_list->setGraphicsDescriptorSet(model_sampler.get(), 1);
     for (const ModelPart& part : model_parts) {
         if (!part.count || part.picture >= model_picture_sets.size()) continue;
-        command_list->setPipeline(part.double_sided ? model_double_sided_pipeline.get() : model_pipeline.get());
+        command_list->setPipeline(part.double_sided ? double_sided : single_sided);
         for (int channel = 0; channel < 4; ++channel) constants[20 + size_t(channel)] = part.colour[channel];
         constants[24] = part.cutoff;
         constants[25] = part.unlit ? 1.0f : 0.0f;
@@ -1053,55 +1057,32 @@ bool NativePresentation::Impl::rebuild_surface() {
 }
 #endif
 
-// The model's own depth buffer, with the game's colour attached to it, built
-// when it is first wanted and again if the frame changes shape.
-bool NativePresentation::Impl::model_framebuffer_ready() {
-    if (model_framebuffer && model_depth_width == width && model_depth_height == height) return true;
-    model_framebuffer.reset();
-    model_depth = graphics->device().createTexture(
-        plume::RenderTextureDesc::DepthTarget(width, height, plume::RenderFormat::D32_FLOAT_S8_UINT));
-    if (!model_depth) return false;
-    const plume::RenderTexture* attachment = color.get();
-    model_framebuffer = graphics->device().createFramebuffer(
-        plume::RenderFramebufferDesc(&attachment, 1, model_depth.get()));
-    if (!model_framebuffer) return false;
-    model_depth_width = width;
-    model_depth_height = height;
-    return true;
+std::optional<std::array<float, 16>> NativePresentation::avatar_hand_transform(const AvatarPose& pose, uint32_t bone) const {
+    if (!impl_->model || !impl_->model_animation_enabled) return std::nullopt;
+    return gltf_avatar_bone_transform(*impl_->model, pose, bone, avatar_model_scale());
 }
 
-void NativePresentation::draw_player_model(bool avatar_racing) {
-    const auto frame = avatar_frame_transforms.consume();
+void NativePresentation::prepare_player_model() {
+    if (sfr::model_wanted()) impl_->build_model();
+}
+
+void NativePresentation::draw_player_model(const AvatarFrameTransform& frame) {
     if (!sfr::model_wanted()) return;
-    // Loaded whenever it is first asked for, drawn only in a race: reading a
-    // model and its pictures takes seconds, and the start of a race is the
-    // worst moment to spend them.
+    for (const auto* matrix : {&frame.world, &frame.view, &frame.projection})
+        for (float value : *matrix) if (!std::isfinite(value)) return;
+    impl_->refuse_during_gpu_wait();
     impl_->build_model();
-    if (!avatar_racing || !frame) return;
     if (!impl_->model_pipeline) return;
-    impl_->ensure_open();  // the game's own frame, already bound
-    if (!impl_->model_framebuffer_ready()) return;
-    const plume::RenderViewport viewport(0.0f, 0.0f, float(impl_->width), float(impl_->height));
-    const plume::RenderRect scissor(0, 0, int32_t(impl_->width), int32_t(impl_->height));
-    // The game's colour, the model's depth: nothing the game drew is
-    // disturbed, and the model still sorts out its own layers.
-    impl_->command_list->barriers(plume::RenderBarrierStage::GRAPHICS,
-                                  plume::RenderTextureBarrier(impl_->model_depth.get(),
-                                                              plume::RenderTextureLayout::DEPTH_WRITE));
-    impl_->command_list->setFramebuffer(impl_->model_framebuffer.get());
-    impl_->command_list->setViewports(&viewport, 1);
-    impl_->command_list->setScissors(&scissor, 1);
-    impl_->command_list->clearDepthStencil();
-    impl_->draw_model(*frame);
-    // Back to the game's own frame, which is what everything after this
-    // expects to be drawing into.
-    impl_->command_list->setFramebuffer(impl_->framebuffer.get());
+    impl_->ensure_open();
+    impl_->raster_state->apply(*impl_->command_list);
+    impl_->draw_model(frame);
+    // NativeRenderer caches layout/pipeline/descriptors/vertex bindings.
+    // Force the next title draw to restore all of them after this custom pass.
+    ++impl_->list_generation;
 }
 
 void NativePresentation::present(uint32_t area_width, uint32_t area_height) {
     impl_->refuse_during_gpu_wait();
-    // The player's own model goes into the frame the game drew, before that
-    // frame is shown or read back, so a screenshot has it too.
 
 #ifdef __ANDROID__
     // Back from the background: draw into the new surface, or skip the frame.

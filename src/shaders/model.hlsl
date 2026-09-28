@@ -1,5 +1,5 @@
-// A model of the player's own -- the VRM chosen for the Avatar -- drawn over
-// the presented frame. Positions, normals and texture coordinates come from
+// A model of the player's own -- the VRM chosen for the Avatar -- drawn in
+// the title's scene pass. Positions, normals and texture coordinates come from
 // the vertex buffer (gltf_model.h); the transform, the lighting and the
 // material's own colour are push constants, so one pipeline serves any model,
 // any part of it and any place to put it.

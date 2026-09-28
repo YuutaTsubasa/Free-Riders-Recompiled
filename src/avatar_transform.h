@@ -2,7 +2,8 @@
 #include "avatar_pose.h"
 #include <array>
 #include <cmath>
-#include <mutex>
+#include <cstdlib>
+#include <cstdint>
 #include <optional>
 
 namespace sfr {
@@ -27,27 +28,19 @@ inline AvatarMatrix avatar_model_to_clip(const AvatarMatrix& world, const Avatar
 struct AvatarFrameTransform {
     AvatarMatrix world, view, projection;
     AvatarPose pose;
+    uint64_t present = 0;
 };
 
-// Consume once per presented frame, including frames where the Avatar is
-// hidden. No previous camera/scene transform can survive into the next frame.
-class AvatarFrameTransforms {
-    std::mutex mutex_;
-    std::optional<AvatarFrameTransform> frame_;
-public:
-    void publish(const AvatarFrameTransform& frame) {
-        std::lock_guard lock(mutex_);
-        for (const auto* matrix : {&frame.world, &frame.view, &frame.projection})
-            for (float value : *matrix)
-                if (!std::isfinite(value)) { frame_.reset(); return; }
-        frame_ = frame;
-    }
-    std::optional<AvatarFrameTransform> consume() {
-        std::lock_guard lock(mutex_);
-        auto result = frame_;
-        frame_.reset();
-        return result;
-    }
-};
-inline AvatarFrameTransforms avatar_frame_transforms;
+// Called from the native character draw, while its viewport is active.
+void draw_avatar_model(const AvatarFrameTransform& frame);
+std::optional<AvatarMatrix> avatar_hand_transform(const AvatarPose& pose, uint32_t bone);
+inline float avatar_model_scale() {
+    static const float scale = [] {
+        const char* text = std::getenv("SFR_AVATAR_MODEL_SCALE");
+        const double value = text ? std::strtod(text, nullptr) : 1.0;
+        return float(std::isfinite(value) && value > 0 && value <= 100 ? value : 1.0);
+    }();
+    return scale;
+}
+
 }

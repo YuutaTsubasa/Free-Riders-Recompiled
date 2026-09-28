@@ -75,12 +75,16 @@ std::vector<uint8_t> one_triangle(const std::string& extra_node = {}, bool with_
 // A binary glTF of one skinned triangle hanging off a single bone, which the
 // VRM extension calls the spine. Everything the pose code needs and nothing
 // else: one joint, full weight, an identity bind pose.
-std::vector<uint8_t> skinned_triangle(bool vrm_one_point_oh = true, bool hierarchy = false, bool scaled_parent = false) {
-    const std::vector<float> positions = {0, 1, 0, 1, 1, 0, 0, 1, 1};
+std::vector<uint8_t> skinned_triangle(bool vrm_one_point_oh = true, bool hierarchy = false, bool scaled_parent = false,
+                                    bool hands = false) {
+    const std::vector<float> positions = hands ? std::vector<float>{0, 0, 0, 1, 0, 0, 0, 1, 0}
+                                              : std::vector<float>{0, 1, 0, 1, 1, 0, 0, 1, 1};
     const std::vector<float> normals = {0, 0, 1, 0, 0, 1, 0, 0, 1};
     const std::vector<float> weights = {1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0};
     const float diagonal = std::sqrt(0.5f);
-    const std::vector<float> bind = scaled_parent
+    const std::vector<float> bind = hands
+        ? std::vector<float>{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}
+        : scaled_parent
         ? std::vector<float>{diagonal/2, -diagonal/2, 0, 0, diagonal, diagonal, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}
         : hierarchy
         ? std::vector<float>{0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, -3, 0, 0, 1}
@@ -110,12 +114,16 @@ std::vector<uint8_t> skinned_triangle(bool vrm_one_point_oh = true, bool hierarc
     while (binary.size() % 4) binary.push_back(0);
 
     std::string json = "{\"asset\":{\"version\":\"2.0\"},";
-    json += scaled_parent
+    if (hands) {
+        json += std::string(R"("nodes":[{"mesh":0,"skin":0},{"translation":[0,2,0],"children":[2,3])") +
+            (scaled_parent ? R"(,"scale":[2,1,1])" : "") +
+            R"(},{"translation":[1,2,3],"rotation":[0,0,0.3826834323650898,0.9238795325112867]},{"translation":[-1,2,3]}],)";
+    } else json += scaled_parent
         ? R"("nodes":[{"mesh":0,"skin":0},{"scale":[2,1,1],"children":[2]},{"rotation":[0,0,0.3826834323650898,0.9238795325112867]}],)"
         : hierarchy
         ? R"("nodes":[{"mesh":0,"skin":0},{"translation":[0,2,0],"rotation":[0,0,0.7071067811865476,0.7071067811865476],"children":[2]},{"translation":[1,0,0]}],)"
         : R"("nodes":[{"mesh":0,"skin":0},{"translation":[0,0,0]}],)";
-    json += "\"skins\":[{\"joints\":[" + std::string(hierarchy ? "2" : "1") + "],\"inverseBindMatrices\":5}],";
+    json += "\"skins\":[{\"joints\":[" + std::string(hierarchy || hands ? "2" : "1") + "],\"inverseBindMatrices\":5}],";
     json += "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":1,";
     json += "\"JOINTS_0\":3,\"WEIGHTS_0\":4},\"indices\":2}]}],";
     json += "\"accessors\":[";
@@ -132,7 +140,11 @@ std::vector<uint8_t> skinned_triangle(bool vrm_one_point_oh = true, bool hierarc
     json += "{\"buffer\":0,\"byteOffset\":" + std::to_string(joints_at) + ",\"byteLength\":12},";
     json += "{\"buffer\":0,\"byteOffset\":" + std::to_string(weights_at) + ",\"byteLength\":48},";
     json += "{\"buffer\":0,\"byteOffset\":" + std::to_string(bind_at) + ",\"byteLength\":64}],";
-    json += hierarchy
+    if (hands) {
+        json += vrm_one_point_oh
+            ? R"("extensions":{"VRMC_vrm":{"humanoid":{"humanBones":{"hips":{"node":1},"leftHand":{"node":2},"rightHand":{"node":3}}}}},)"
+            : R"("extensions":{"VRM":{"humanoid":{"humanBones":[{"bone":"hips","node":1},{"bone":"leftHand","node":2},{"bone":"rightHand","node":3}]}}},)";
+    } else json += hierarchy
                 ? (vrm_one_point_oh
                     ? R"("extensions":{"VRMC_vrm":{"humanoid":{"humanBones":{"hips":{"node":1},"spine":{"node":2}}}}},)"
                     : R"("extensions":{"VRM":{"humanoid":{"humanBones":[{"bone":"hips","node":1},{"bone":"spine","node":2}]}}},)")
@@ -456,6 +468,69 @@ void native_identity_preserves_a_scaled_parent() {
     require(near(model->primitives[0].positions[2], 1) && near(model->primitives[0].normals[1], -1),
             "native rotation axes exclude inherited nonuniform scale");
 }
+
+void native_hand_transforms_match_the_rendered_pose() {
+    for (const bool newer : {false, true}) for (const bool scaled : {false, true}) {
+        auto model = sfr::read_binary_gltf(skinned_triangle(newer, true, scaled, true));
+        require(bool(model), "hand attachment fixture loads");
+        sfr::AvatarPose pose;
+        pose.valid = true;
+        auto hand = sfr::gltf_avatar_bone_transform(*model, pose, 33, 1);
+        require(bool(hand), "mapped hand has an attachment transform");
+        for (size_t row = 0; row < 3; ++row) for (size_t column = 0; column < 3; ++column)
+            require(near((*hand)[row * 4 + column], row == column ? 1.f : 0.f),
+                    "identity neutralizes authored hand rotation without inheriting nonuniform scale");
+        const float facing = newer ? 1.f : -1.f;
+        require(near((*hand)[12], facing * (scaled ? 2.f : 1.f)) && near((*hand)[13], 4 - model->ground_y) &&
+                near((*hand)[14], facing * 3), "hand origin includes hierarchy, facing and fixed grounding");
+        require(bool(sfr::gltf_avatar_bone_transform(*model, pose, 36, 1)), "right hand maps independently");
+
+        const float half = std::sqrt(0.5f);
+        pose.bones[33].rotation = {half, 0, 0, half};
+        hand = sfr::gltf_avatar_bone_transform(*model, pose, 33, 2);
+        require(hand && near((*hand)[0], 2) && near((*hand)[6], 2) && near((*hand)[9], -2) &&
+                near((*hand)[5], 0) && near((*hand)[10], 0),
+                "native X hand turn survives authored axes, VRM facing and uniform model scale");
+        pose.bones[0].rotation = {0, half, 0, half};
+        pose.bones[0].translation = {0.25f, 0.966f, -0.5f};
+        pose.bones[33].translation = {100, 200, 300};
+        for (const bool mirrored : {false, true}) {
+            pose.mirrored = mirrored;
+            hand = sfr::gltf_avatar_bone_transform(*model, pose, 33, 2);
+            require(hand && sfr::pose_gltf_model(*model, pose), "parent motion and mirror evaluate for mesh and attachment");
+            // The first vertex is exactly the hand node's origin; compare in
+            // render model space after the same fixed-ground and scale step.
+            for (int axis = 0; axis < 3; ++axis)
+                require(near((*hand)[12 + axis], 2 * (model->primitives[0].positions[axis] -
+                        (axis == 1 ? model->ground_y : 0))), "attachment origin follows the rendered hand exactly");
+            require(near((*hand)[3], 0) && near((*hand)[7], 0) && near((*hand)[11], 0) && near((*hand)[15], 1),
+                    "attachment output is a row-vector affine matrix");
+        }
+        pose.mirrored = false;
+        const auto unmirrored = sfr::gltf_avatar_bone_transform(*model, pose, 33, 2);
+        pose.mirrored = true;
+        const auto mirrored = sfr::gltf_avatar_bone_transform(*model, pose, 33, 2);
+        require(unmirrored && mirrored, "both reflection transforms available");
+        for (size_t i = 0; i < 16; ++i)
+            require(near((*mirrored)[i], (*unmirrored)[i] * (i % 4 == 0 ? -1.f : 1.f)),
+                    "mirror reflects final X basis and translation once");
+        require(!sfr::gltf_avatar_bone_transform(*model, pose, 72, 1) &&
+                !sfr::gltf_avatar_bone_transform(*model, pose, 19, 1), "invalid and unmapped bones have no transform");
+        for (float scale : {0.f, -1.f, std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()})
+            require(!sfr::gltf_avatar_bone_transform(*model, pose, 33, scale), "invalid scale is rejected");
+        pose.bones[33].rotation = {0, 0, 0, 0};
+        require(!sfr::gltf_avatar_bone_transform(*model, pose, 33, 1), "invalid quaternion rejects attachment");
+        pose = {};
+        require(!sfr::gltf_avatar_bone_transform(*model, pose, 33, 1), "unavailable pose rejects attachment");
+        pose.valid = true;
+        pose.bones[0].translation[0] = std::numeric_limits<float>::quiet_NaN();
+        require(!sfr::gltf_avatar_bone_transform(*model, pose, 33, 1), "invalid root motion rejects attachment");
+    }
+    sfr::GltfModel empty;
+    sfr::AvatarPose pose;
+    pose.valid = true;
+    require(!sfr::gltf_avatar_bone_transform(empty, pose, 33, 1), "missing rig has no attachment");
+}
 }
 
 int main(int argc, char** argv) {
@@ -492,6 +567,7 @@ int main(int argc, char** argv) {
         native_pose_updates_from_bind();
         native_pose_inherits_parents_and_authored_axes();
         native_identity_preserves_a_scaled_parent();
+        native_hand_transforms_match_the_rendered_pose();
         std::cout << "glTF model checks passed\n";
         return 0;
     } catch (const std::exception& error) {
