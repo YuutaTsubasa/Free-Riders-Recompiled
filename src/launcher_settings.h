@@ -40,11 +40,6 @@ struct LauncherSettings {
     // it is a setting: with it wrong, left and right are the wrong way
     // round and the cursor runs off the side of the screen.
     bool camera_mirror = false;   // SFR_CAMERA_MIRROR
-    // Where a real Kinect stands around the player, the screen ahead:
-    // "front", "front-right", "right", "behind-right", "behind",
-    // "behind-left", "left" or "front-left" (kinect_sensor.h). A board is
-    // ridden side-on, so the side the chest faces sees the whole body.
-    std::string kinect_placement = "front";  // SFR_KINECT_PLACEMENT
     // Voice commands through the host's speech recognizer and the default
     // microphone (a Kinect's array, made the default, is heard), in English
     // or Traditional Chinese; the pad's buttons still say them too.

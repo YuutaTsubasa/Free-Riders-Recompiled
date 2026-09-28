@@ -78,9 +78,7 @@ enum Text {
     CameraTest, CameraTesting, CameraWorks, CameraSilent, CameraClosed, CameraMirror, CameraMirrorHint,
     CameraKinect, KinectRow, KinectRowHint, KinectWorks, KinectSilent, KinectMissing,
     KinectNoRuntime, KinectNoSensor, KinectFailed, KinectDownload, KinectDownloadV2, KinectInstallHint,
-    VoiceLabel, VoiceHint, KinectPlacementLabel, KinectPlacementHint, PlacementScreen, PlacementPlayer, PlacementSensor, PlacementChest,
-    PlacementFront, PlacementFrontRight, PlacementRight, PlacementBehindRight, PlacementBehind, PlacementBehindLeft,
-    PlacementLeft, PlacementFrontLeft,
+    VoiceLabel, VoiceHint,
     CameraDebug, CameraDebugHint,
     ImageDirectory, ImageDirectoryHint, AssetDirectory, AssetDirectoryHint, Browse, Found, Missing, FilesHint,
     StartGame, Quit, Defaults,
@@ -175,21 +173,6 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Voice commands", "語音指令"},
     {"Say the Kinect's commands again: start, OK, back, next, pause... in English or Chinese (開始、確定、返回、下一步、暫停…). Uses Windows speech recognition and the default microphone: make the Kinect's microphone array the default recording device to use it.",
      "恢復 Kinect 的語音指令：start、OK、back、next、pause……英文或中文都可以（開始、確定、返回、下一步、暫停…）。使用 Windows 語音辨識與預設麥克風：要用 Kinect 的麥克風陣列，請把它設為預設錄音裝置。"},
-    {"Sensor placement", "感應器位置"},
-    {"Seen from above: click where the Kinect stands. A board is ridden side-on, so the side your chest faces sees your whole body: the right for Regular (left foot forward), the left for Goofy. A diagonal also sees an arm reaching behind your back. When you switch stance, the side sensor sees your back; your feet tell which way you face, and left and right are put right again.",
-     "俯視圖：點選 Kinect 放置的位置。滑板是側身站的，放在胸口朝向的那一側能看到全身：Regular（左腳在前）放右邊，Goofy 放左邊。斜角位置也看得到往背後伸的手。轉身切換站姿時，側邊的感應器會看到背部，程式會從腳尖方向判斷你面向哪邊，自動把左右換回來。"},
-    {"Screen", "螢幕"},
-    {"You", "玩家"},
-    {"Sensor", "感應器"},
-    {"Chest", "胸口"},
-    {"In front", "正前方"},
-    {"Front right", "右前方"},
-    {"On your right", "右側"},
-    {"Behind right", "右後方"},
-    {"Behind you", "正後方"},
-    {"Behind left", "左後方"},
-    {"On your left", "左側"},
-    {"Front left", "左前方"},
     {"Skeleton debug window", "骨架 Debug 視窗"},
     {"Shows only the skeleton received by the game, in front and side views, with no camera image. Closing this window does not stop the game. Changes apply on the next game launch.",
      "僅顯示遊戲收到的骨架，提供正面與側面視圖，不顯示攝影機影像。關閉此視窗不會停止遊戲。設定會在下次啟動遊戲時套用。"},
@@ -1498,110 +1481,6 @@ struct Launcher {
         });
     }
 
-    // The placement picker. Positions are fractions of the map; the chosen
-    // sensor is lit and looks at the player through a faint cone, and the
-    // player's chest turns towards a sensor at either side.
-    void placement_map(float width, float height) {
-        ImDrawList* draw = ImGui::GetWindowDrawList();
-        const ImVec2 origin = ImGui::GetCursorScreenPos();
-        const auto at = [&](float x, float y) { return ImVec2(origin.x + x * width, origin.y + y * height); };
-        const float s = scale;
-        draw->AddRectFilled(origin, at(1, 1), IM_COL32(255, 255, 255, 12), 10 * s);
-        draw->AddRect(origin, at(1, 1), IM_COL32(255, 255, 255, 40), 10 * s);
-        const ImU32 text = ImGui::GetColorU32(ImGuiCol_Text), dim = ImGui::GetColorU32(dim_text);
-        const auto label = [&](ImVec2 centre, const char* words, ImU32 colour) {
-            const ImVec2 size = ImGui::CalcTextSize(words);
-            draw->AddText(ImVec2(centre.x - size.x * 0.5f, centre.y - size.y * 0.5f), colour, words);
-        };
-        // The screen along the top edge.
-        draw->AddRectFilled(at(0.3f, 0.05f), at(0.7f, 0.1f), IM_COL32(200, 225, 255, 200), 3 * s);
-        label(at(0.5f, 0.155f), tr(PlacementScreen), dim);
-
-        // Eight places round the player, clockwise from the screen.
-        struct Spot { const char* value; Text name; float x, y; };
-        Spot spots[8] = {{"front", PlacementFront},          {"front-right", PlacementFrontRight},
-                         {"right", PlacementRight},          {"behind-right", PlacementBehindRight},
-                         {"behind", PlacementBehind},        {"behind-left", PlacementBehindLeft},
-                         {"left", PlacementLeft},            {"front-left", PlacementFrontLeft}};
-        for (int i = 0; i < 8; ++i) {
-            const float angle = float(i) * 3.14159265f / 4.0f;
-            spots[i].x = 0.5f + 0.4f * std::sin(angle);
-            spots[i].y = 0.58f - 0.33f * std::cos(angle);
-        }
-        const ImVec2 player = at(0.5f, 0.58f);
-        const Spot* chosen = &spots[0];
-        for (const Spot& spot : spots) if (settings.kinect_placement == spot.value) chosen = &spot;
-
-        // The chosen sensor's view of the player.
-        const ImVec2 eye = at(chosen->x, chosen->y);
-        const float dx = player.x - eye.x, dy = player.y - eye.y, length = std::sqrt(dx * dx + dy * dy);
-        const float nx = -dy / length, ny = dx / length, spread = 34 * s;
-        draw->AddTriangleFilled(eye, ImVec2(player.x + nx * spread, player.y + ny * spread),
-                                ImVec2(player.x - nx * spread, player.y - ny * spread), IM_COL32(64, 150, 255, 45));
-
-        // The player seen from above, riding side-on: the board points at the
-        // screen, the shoulders along it, the chest to one side.
-        draw->AddRectFilled(ImVec2(player.x - 9 * s, player.y - 36 * s), ImVec2(player.x + 9 * s, player.y + 36 * s),
-                            IM_COL32(255, 200, 80, 150), 9 * s);
-        draw->AddCircleFilled(ImVec2(player.x, player.y - 18 * s), 5 * s, IM_COL32(40, 40, 60, 220));
-        draw->AddCircleFilled(ImVec2(player.x, player.y + 18 * s), 5 * s, IM_COL32(40, 40, 60, 220));
-        draw->AddLine(ImVec2(player.x, player.y - 22 * s), ImVec2(player.x, player.y + 22 * s), text, 5 * s);
-        draw->AddCircleFilled(player, 9 * s, text);
-        // The chest faces the sensor's side; with the sensor in front or
-        // behind, it faces the right (Regular), the usual stance.
-        const float chest = chosen->x < 0.45f ? -1.0f : 1.0f;
-        const ImVec2 tip(player.x + chest * 34 * s, player.y);
-        draw->AddLine(ImVec2(player.x + chest * 12 * s, player.y), tip, IM_COL32(255, 120, 120, 255), 3 * s);
-        draw->AddTriangleFilled(tip, ImVec2(tip.x - chest * 8 * s, player.y - 6 * s),
-                                ImVec2(tip.x - chest * 8 * s, player.y + 6 * s), IM_COL32(255, 120, 120, 255));
-        label(ImVec2(player.x + chest * 34 * s, player.y - 14 * s), tr(PlacementChest), IM_COL32(255, 150, 150, 255));
-        label(ImVec2(player.x, player.y + 48 * s), tr(PlacementPlayer), dim);
-
-        // The four places, each a button; the chosen one lit.
-        for (const Spot& spot : spots) {
-            const ImVec2 centre = at(spot.x, spot.y);
-            const bool lit = &spot == chosen;
-            const float half = 13 * s;
-            ImGui::SetCursorScreenPos(ImVec2(centre.x - half, centre.y - half));
-            ImGui::PushID(spot.value);
-            if (ImGui::InvisibleButton("##spot", ImVec2(half * 2, half * 2))) settings.kinect_placement = spot.value;
-            const bool hovered = ImGui::IsItemHovered() || (ImGui::IsItemFocused() && nav_visible());
-            ImGui::PopID();
-            const ImU32 fill = lit ? ImGui::GetColorU32(accent) : IM_COL32(255, 255, 255, hovered ? 70 : 25);
-            // A Kinect's bar, turned to face the player.
-            const float fx = player.x - centre.x, fy = player.y - centre.y, f = std::sqrt(fx * fx + fy * fy);
-            const float ux = fx / f, uy = fy / f, bar = 12 * s, depth = 4 * s;
-            const ImVec2 corners[4] = {ImVec2(centre.x - uy * bar - ux * depth, centre.y + ux * bar - uy * depth),
-                                       ImVec2(centre.x + uy * bar - ux * depth, centre.y - ux * bar - uy * depth),
-                                       ImVec2(centre.x + uy * bar + ux * depth, centre.y - ux * bar + uy * depth),
-                                       ImVec2(centre.x - uy * bar + ux * depth, centre.y + ux * bar + uy * depth)};
-            draw->AddConvexPolyFilled(corners, 4, fill);
-            draw->AddPolyline(corners, 4, IM_COL32(255, 255, 255, lit ? 220 : 90), ImDrawFlags_Closed, 1.5f * s);
-            if (lit) {
-                // Beside a sensor in front or behind (clear of the screen's and
-                // the player's labels), elsewhere under it.
-                const bool middle = std::fabs(spot.x - 0.5f) < 0.05f;
-                const float across = ImGui::CalcTextSize(tr(PlacementSensor)).x * 0.5f + 20 * s;
-                label(middle ? ImVec2(centre.x + across, centre.y) : ImVec2(centre.x, centre.y + 24 * s),
-                      tr(PlacementSensor), ImGui::GetColorU32(accent_bright));
-            }
-        }
-        // Beside the map, in the row's left column: what to choose and why,
-        // then the choice in words.
-        const float left = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMin().x;
-        ImGui::SetCursorScreenPos(ImVec2(left, origin.y + ImGui::GetFrameHeightWithSpacing()));
-        ImGui::PushStyleColor(ImGuiCol_Text, dim_text);
-        ImGui::PushTextWrapPos(origin.x - ImGui::GetWindowPos().x - 24 * s);
-        ImGui::TextUnformatted(tr(KinectPlacementHint));
-        ImGui::PopTextWrapPos();
-        ImGui::PopStyleColor();
-        ImGui::SetCursorScreenPos(ImVec2(left, ImGui::GetCursorScreenPos().y + 6 * s));
-        ImGui::TextColored(accent_bright, "%s: %s", tr(PlacementSensor), tr(chosen->name));
-        // Whichever is taller ends the row.
-        ImGui::SetCursorScreenPos(ImVec2(left, (std::max)(origin.y + height, ImGui::GetCursorScreenPos().y) + 4 * s));
-        ImGui::Dummy(ImVec2(0, 0));
-    }
-
     void game_settings() {
         const float switch_width = ImGui::GetFrameHeight() * 1.9f;
         setting_row(tr(SkipMovies), tr(SkipMoviesHint), switch_width, scale, [&] { toggle("##movies", &settings.skip_movies); });
@@ -1909,13 +1788,6 @@ struct Launcher {
                 }
                 ImGui::EndDisabled();
             });
-            // Where the sensor stands: a room seen from above, the screen at
-            // the top, the player riding side-on in the middle, and the four
-            // places the sensor can go, one of them chosen by clicking it.
-            const float map_width = 300 * scale, map_height = 230 * scale;
-            // The hint goes beside the map (placement_map), not under it.
-            setting_row(tr(KinectPlacementLabel), nullptr, map_width, scale,
-                        [&] { placement_map(map_width, map_height); });
             // Anything short of a working sensor: what to install and check.
             if (state == KinectTrial::no_runtime || state == KinectTrial::no_sensor || state == KinectTrial::failed) {
                 const float padding = ImGui::GetStyle().FramePadding.x * 4;

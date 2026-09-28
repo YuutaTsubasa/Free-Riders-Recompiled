@@ -36,7 +36,6 @@ void settings_round_trip() {
     settings.camera = "motion";
     settings.camera_device = "e2eSoft iVCam #2";
     settings.camera_mirror = true;
-    settings.kinect_placement = "right";
     settings.voice = true;
     settings.player1_device = "keyboard";
     settings.player2_device = "gamepad";
@@ -61,7 +60,7 @@ void settings_round_trip() {
             read.player1_pad == settings.player1_pad && read.player2_pad == settings.player2_pad,
             "both players' controls survive a round trip alongside camera and pipeline settings");
     require(value_of(read, "SFR_CAMERA") == "motion" && value_of(read, "SFR_CAMERA_DEVICE") == settings.camera_device &&
-            value_of(read, "SFR_CAMERA_MIRROR") == "1" && value_of(read, "SFR_KINECT_PLACEMENT") == "right" && value_of(read, "SFR_VOICE") == "1" && read.voice &&
+            value_of(read, "SFR_CAMERA_MIRROR") == "1" && value_of(read, "SFR_VOICE") == "1" && read.voice &&
             value_of(read, "SFR_GPU_PIPELINE") == "0" &&
             value_of(read, "SFR_PLAYER1_INPUT") == settings.player1_device &&
             value_of(read, "SFR_PLAYER2_PAD") == settings.player2_pad,
@@ -131,10 +130,6 @@ void malformed_values_keep_defaults() {
     const sfr::LauncherSettings defaults;
     require(read.camera == defaults.camera, "an unknown camera choice keeps the default");
     require(sfr::parse_launcher_settings("camera=kinect\n").camera == "kinect", "a real Kinect is a camera choice");
-    require(sfr::parse_launcher_settings("kinect_placement=behind\n").kinect_placement == "behind" &&
-                sfr::parse_launcher_settings("kinect_placement=front-right\n").kinect_placement == "front-right" &&
-                sfr::parse_launcher_settings("kinect_placement=above\n").kinect_placement == "front",
-            "a Kinect placement is one of eight, front otherwise");
     require(sfr::parse_launcher_settings("camera_device=" + std::string(200, 'x') + "\n").camera_device == defaults.camera_device,
             "a name longer than any camera has keeps the default");
     require(read.window_width == defaults.window_width && read.window_height == defaults.window_height,

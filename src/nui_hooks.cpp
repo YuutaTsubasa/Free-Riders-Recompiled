@@ -52,7 +52,6 @@ std::atomic<bool> sensor_body{false};
 std::atomic<uint64_t> kinect_generation{0};  // kinect_frame_generation
 sfr::KinectFrame kinect_frame;
 sfr::KinectPlayerSlots kinect_slots;
-sfr::KinectPlacementTransform kinect_placement;  // SFR_KINECT_PLACEMENT
 sfr::CameraInputSelection camera_selection;
 std::atomic<bool> camera_input_active{false};
 std::atomic<uint64_t> camera_pose_counter{0};
@@ -338,11 +337,7 @@ SFR_HOOK(sub_827707B0) {
             // Without a sensor the pad's emulated player carries on, so a
             // Kinect left unplugged does not leave the title unplayable.
             std::cerr << "NATIVE_KINECT started=" << (kinect?1:0);
-            if(kinect) {
-                kinect_placement=sfr::KinectPlacementTransform(sfr::kinect_placement_from(std::getenv("SFR_KINECT_PLACEMENT")));
-                std::cerr << " model=" << kinect->model()
-                          << " placement=" << sfr::kinect_placement_name(kinect_placement.placement());
-            }
+            if(kinect) std::cerr << " model=" << kinect->model();
             else std::cerr << " reason=" << why << " fallback=pad";
             std::cerr << '\n';
         } else {
@@ -370,7 +365,6 @@ SFR_HOOK(sub_827707B0) {
             }();
             const float gravity_y=kinect_frame.gravity[1];
             const float tilt=level?sfr::kinect_level(kinect_frame):0.0f;
-            kinect_placement.apply(kinect_frame);
             const uint64_t generation=kinect_generation.fetch_add(1,std::memory_order_relaxed)+1;
             // Every three seconds, what reaches the title: the tilt taken
             // out and the first body's centre line and hands, with the hands'
@@ -400,13 +394,6 @@ SFR_HOOK(sub_827707B0) {
         sfr::NuiSkeletonEmulation::write_header(memory,frame,++frame_number,uint64_t(elapsed.count()));
         sfr::NuiSkeletonEmulation::write_floor(memory,frame,kinect_frame.floor_plane,kinect_frame.gravity);
         const auto players=kinect_slots.assign(kinect_frame);
-        // Which side of the first player a side sensor is taken to see: the
-        // line to look for when checking a stance switch on real hardware.
-        static bool saw_back=false;
-        if(players[0] && kinect_placement.sees_back(players[0]->tracking_id)!=saw_back) {
-            saw_back=!saw_back;
-            std::cerr << "NATIVE_KINECT sees=" << (saw_back?"back":"chest") << " frame=" << frame_number << '\n';
-        }
         for(uint32_t slot=0; slot<players.size(); ++slot) {
             const sfr::KinectBody* const body=players[slot];
             if(!body) continue;
