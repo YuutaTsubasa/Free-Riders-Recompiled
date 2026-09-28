@@ -77,8 +77,43 @@ struct KinectPreviewWindow::Impl {
     int angle = 0;
     bool has_angle = false;
     std::chrono::steady_clock::time_point angle_read{};
+    // The tilt motor, turned from the window: a turn at a time, a second
+    // or so each (the SDK asks for no more than a turn a second).
+    static constexpr int up_id = 101, down_id = 102, step = 5;
+    HWND up_button = nullptr, down_button = nullptr;
+    HFONT button_font = nullptr;
+    std::atomic<bool> turning{false}, reread_angle{false};
+    std::jthread turner;
     // Last member: joins before everything above is destroyed.
     std::jthread worker;
+
+    void turn(int degrees) {
+        std::shared_ptr<KinectSensor> source;
+        { std::lock_guard guard(lock); source = sensor; }
+        if (!source || turning.exchange(true)) return;
+        EnableWindow(up_button, FALSE);
+        EnableWindow(down_button, FALSE);
+        turner = std::jthread([this, source, degrees] {
+            int now = 0;
+            if (source->elevation(now)) source->set_elevation(now + degrees);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+            reread_angle.store(true);
+            turning.store(false);
+        });
+    }
+
+    void place_buttons(HWND window) {
+        RECT rect;
+        GetClientRect(window, &rect);
+        const int width = 96, height = 32, gap = 10, top = 12;
+        MoveWindow(down_button, rect.right - gap - width, top, width, height, TRUE);
+        MoveWindow(up_button, rect.right - 2 * (gap + width), top, width, height, TRUE);
+    }
+
+    bool sensor_ready() const {
+        std::lock_guard guard(lock);
+        return sensor != nullptr;
+    }
 
     std::wstring say(const wchar_t* english, const wchar_t* chinese_words) const {
         return chinese ? chinese_words : english;
@@ -113,7 +148,7 @@ struct KinectPreviewWindow::Impl {
             }
         }
         const auto now = std::chrono::steady_clock::now();
-        if (now - angle_read > std::chrono::seconds(1)) {
+        if (reread_angle.exchange(false) || now - angle_read > std::chrono::seconds(1)) {
             has_angle = source->elevation(angle);
             angle_read = now;
         }
@@ -198,6 +233,10 @@ struct KinectPreviewWindow::Impl {
                 y += 20;
             }
         }
+        const std::wstring keys = say(L"Tilt: buttons or Up / Down keys, 5 degrees a turn", L"調整角度：按鈕或鍵盤 ↑ ↓，每次 5 度");
+        SIZE extent{};
+        GetTextExtentPoint32W(dc, keys.c_str(), int(keys.size()), &extent);
+        text(dc, width - 20 - extent.cx, 52, turning.load() ? say(L"Turning...", L"轉動中…") : keys, dim);
         // The two cameras side by side, 4:3 each, under the text.
         const int top = 110, gap = 20;
         const int panel_width = std::max(0, (width - 3 * gap) / 2);
@@ -230,7 +269,25 @@ struct KinectPreviewWindow::Impl {
         switch (message) {
         case WM_TIMER:
             if (self->stopping.stop_requested()) DestroyWindow(window);
-            else { self->refresh(); InvalidateRect(window, nullptr, FALSE); }
+            else {
+                self->refresh();
+                const bool ready = !self->turning.load() && self->sensor_ready();
+                EnableWindow(self->up_button, ready);
+                EnableWindow(self->down_button, ready);
+                InvalidateRect(window, nullptr, FALSE);
+            }
+            return 0;
+        case WM_COMMAND:
+            if (LOWORD(wp) == up_id) self->turn(step);
+            else if (LOWORD(wp) == down_id) self->turn(-step);
+            SetFocus(window);  // keep the arrow keys for the window
+            return 0;
+        case WM_KEYDOWN:
+            if (wp == VK_UP) self->turn(step);
+            else if (wp == VK_DOWN) self->turn(-step);
+            return 0;
+        case WM_SIZE:
+            self->place_buttons(window);
             return 0;
         case WM_ERASEBKGND: return 1;
         case WM_PAINT: {
@@ -267,6 +324,16 @@ struct KinectPreviewWindow::Impl {
                                       WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 1360, 640, nullptr, nullptr,
                                       instance, this);
         if (!window) { is_closed.store(true); return; }
+        up_button = CreateWindowExW(0, L"BUTTON", chinese ? L"往上" : L"Up", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_PUSHBUTTON,
+                                    0, 0, 0, 0, window, reinterpret_cast<HMENU>(INT_PTR(up_id)), instance, nullptr);
+        down_button = CreateWindowExW(0, L"BUTTON", chinese ? L"往下" : L"Down", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_PUSHBUTTON,
+                                      0, 0, 0, 0, window, reinterpret_cast<HMENU>(INT_PTR(down_id)), instance, nullptr);
+        button_font = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                                  CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH,
+                                  chinese ? L"Microsoft JhengHei UI" : L"Segoe UI");
+        for (HWND button : {up_button, down_button})
+            if (button && button_font) SendMessageW(button, WM_SETFONT, WPARAM(button_font), TRUE);
+        place_buttons(window);
         ShowWindow(window, SW_SHOW);
         // The sensor opens once the window shows, so the window says so
         // meanwhile; a second or so for a Kinect v1.
@@ -284,6 +351,7 @@ struct KinectPreviewWindow::Impl {
             DispatchMessageW(&message);
         }
         if (IsWindow(window)) DestroyWindow(window);
+        if (button_font) DeleteObject(button_font);
         opener.join();
         // The sensor closes now unless a tilt is still using it.
         { std::lock_guard guard(lock); sensor.reset(); }

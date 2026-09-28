@@ -194,9 +194,9 @@ mingw 編譯連結過。Kinect for Xbox 360（v1）已在實機上讀到骨架�
 
 ### 仰角與平滑
 
-- 啟動器 Kinect 設定的「感應器角度」：「往上」「往下」每按一次用 Kinect 的馬達轉 5 度（SDK 的
-  `NuiCameraElevationSetAngle`，−27～27 度；SDK 要求馬達一秒最多轉一次，按鈕在轉動時停用）。
-  感應器斷電前會維持角度。遊戲中轉動會記錄 `NATIVE_KINECT_ELEVATION set= result=`。
+- 感應器角度在預覽視窗裡調整（見下方「預覽視窗」）：「往上」「往下」或鍵盤 ↑↓，每次用 Kinect 的馬達
+  轉 5 度（SDK 的 `NuiCameraElevationSetAngle`，−27～27 度；SDK 要求馬達一秒最多轉一次，轉動時按鈕停用）。
+  感應器斷電前會維持角度。
 - 骨架平滑：之前每一幀都先用 SDK 的 `NuiTransformSmooth` 平滑。主機的執行環境交給遊戲的是
   未平滑的骨架，要不要平滑由遊戲自己決定（`NuiTransformSmooth` 也在它連結的 NUI 函式庫裡），
   所以現在預設不平滑（`NATIVE_KINECT_OPEN ... smooth=0`）；`SFR_KINECT_SMOOTH=1` 恢復。
@@ -209,5 +209,6 @@ mingw 編譯連結過。Kinect for Xbox 360（v1）已在實機上讀到骨架�
 僅 Windows）：左邊彩色影像、右邊深度影像（玩家依骨架位置上色），兩者都疊上追蹤到的骨架
 （深度照 SDK 的 `NuiTransformSkeletonToDepthImage` 投影，精確；彩色用標稱焦距，兩顆鏡頭相距幾公分，
 是近似對齊），上方列出每個人的編號、骨架位置、距離與「腳是否在畫面內」（腳關節被追蹤到才算）。
-SDK 一個程式只能開一次 Kinect，所以預覽開著時，角度按鈕透過預覽的連線轉動、測試按鈕停用；
+右上角的「往上」「往下」（或 ↑↓）轉動感應器，邊看邊調到全身入鏡。SDK 一個程式只能開一次 Kinect，
+所以預覽開著時測試按鈕停用；
 按「開始遊戲」會先關閉預覽，把 Kinect 讓給遊戲。
