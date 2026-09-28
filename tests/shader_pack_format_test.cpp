@@ -19,6 +19,9 @@ int main() {
         auto wrong=good;wrong[8]=6; rejects(wrong);
         wrong=good;wrong[9]=1; rejects(wrong);
         wrong=good;wrong[0]='X'; rejects(wrong);
+        auto empty=good;
+        for (size_t i=12;i<16;++i) empty[i]=0;
+        rejects(empty);
         std::cout << "shader pack format tests passed\n";
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

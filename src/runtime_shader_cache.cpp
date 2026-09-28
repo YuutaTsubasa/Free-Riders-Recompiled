@@ -205,7 +205,10 @@ std::unordered_multimap<uint64_t, PackedShader> load_shader_pack() {
     std::unordered_multimap<uint64_t, PackedShader> pack;
     const fs::path path = setting("SFR_SHADER_PACK", "out/shaders/shaders.pack");
     const auto bytes = read_file(path);
-    if (bytes.empty()) return pack;
+    std::error_code error;
+    // Only an absent pack permits development-time translation. An existing
+    // empty/unreadable pack must fail validation like any other corrupt pack.
+    if (bytes.empty() && !fs::exists(path, error) && !error) return pack;
     size_t at = 0;
     const auto u32 = [&]() -> uint32_t {
         if (at + 4 > bytes.size()) throw RuntimeStop("shader-pack", 0, "the shader pack is truncated");

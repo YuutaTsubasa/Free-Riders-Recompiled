@@ -18,6 +18,8 @@ inline uint32_t shader_pack_count(std::span<const uint8_t> bytes) {
     };
     if (word(8) != shader_abi_version)
         throw std::invalid_argument("shader pack ABI mismatch; reinstall the complete matching release");
-    return word(12);
+    const uint32_t count = word(12);
+    if (!count) throw std::invalid_argument("shader pack contains no shaders; reinstall the complete matching release");
+    return count;
 }
 }
