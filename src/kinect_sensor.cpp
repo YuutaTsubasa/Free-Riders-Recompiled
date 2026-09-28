@@ -65,7 +65,6 @@ void kinect_v2_body(const std::array<KinectV2Joint, kinect_v2_joint_count>& join
 
 std::array<const KinectBody*, KinectPlayerSlots::players> KinectPlayerSlots::assign(const KinectFrame& frame) {
     std::array<const KinectBody*, players> chosen{};
-    entered_ = {};
     const auto find = [&](uint32_t id) -> const KinectBody* {
         for (const auto& body : frame.bodies)
             if (body.tracking_id == id) return &body;
@@ -84,8 +83,6 @@ std::array<const KinectBody*, KinectPlayerSlots::players> KinectPlayerSlots::ass
             if (!tracking_[slot]) {
                 tracking_[slot] = body.tracking_id;
                 chosen[slot] = &body;
-                ++entries_[slot];
-                entered_[slot] = true;
                 break;
             }
     }

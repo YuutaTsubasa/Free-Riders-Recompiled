@@ -13,6 +13,9 @@
 #include "local_profile.h"
 #include "touch_controls.h"
 #include <bit>
+#include <algorithm>
+#include <unordered_map>
+#include <mutex>
 #include <initializer_list>
 #include <atomic>
 #include <chrono>
@@ -51,11 +54,14 @@ std::unique_ptr<sfr::KinectSensor> kinect;
 std::atomic<bool> sensor_body{false};
 std::atomic<uint64_t> kinect_generation{0};  // kinect_frame_generation
 sfr::KinectFrame kinect_frame;
-sfr::KinectPlayerSlots kinect_slots;
-// The depth image's player index (1..6, the sensor's skeleton + 1) as the
-// title's skeleton slot + 1, four bits each, made on the skeleton thread
-// for the depth frames (KinectBody::sensor_index).
-std::atomic<uint32_t> depth_players{0};
+// A real Kinect's skeletons reach the title as the sensor gives them: in the
+// sensor's own six slots, under its own tracking ids, so the depth image's
+// player index (slot + 1) marks the same people and a person who steps back
+// in is a new skeleton the title identifies again, as on the console. Each
+// id's identity is what NuiIdentityIdentify answered for it; unidentified
+// (-1) until then. Written by the identity hook, read by the skeleton hook.
+std::mutex kinect_identity_lock;
+std::unordered_map<uint32_t,uint32_t> kinect_identities;  // sensor tracking id -> enrollment
 sfr::CameraInputSelection camera_selection;
 std::atomic<bool> camera_input_active{false};
 std::atomic<uint64_t> camera_pose_counter{0};
@@ -277,17 +283,13 @@ SFR_HOOK(sub_82767148) {
     const uint32_t pitch=memory.load<uint32_t>(rect),bits=memory.load<uint32_t>(rect+4);
     if(bits && pitch>=stream->width*stream->bytes_per_pixel) {
         const uint8_t* pixel=stream->image.pixels.data();
-        const uint32_t players=depth_players.load(std::memory_order_relaxed);
         for(uint32_t y=0;y<stream->height;++y) {
             const uint32_t row=bits+y*pitch;
             if(stream->type==0) {
-                // The player index (low three bits) renumbered to the title's
-                // skeleton slots; people who are not playing are background.
-                for(uint32_t x=0;x<stream->width;++x,pixel+=2) {
-                    const uint16_t value=uint16_t(pixel[0]|pixel[1]<<8);
-                    const uint16_t player=uint16_t((players>>(4*(value&7)))&7);
-                    memory.store<uint16_t>(row+x*2,uint16_t((value&~7u)|((value&7)?player:0)));
-                }
+                // Depth and player index as the sensor gave them: the index is
+                // the skeleton slot + 1, and the skeletons keep their slots.
+                for(uint32_t x=0;x<stream->width;++x,pixel+=2)
+                    memory.store<uint16_t>(row+x*2,uint16_t(pixel[0]|pixel[1]<<8));
             } else {
                 for(uint32_t x=0;x<stream->width;++x,pixel+=4)
                     memory.store<uint32_t>(row+x*4,0xFF000000u|uint32_t(pixel[2])<<16|uint32_t(pixel[1])<<8|pixel[0]);
@@ -338,6 +340,26 @@ SFR_HOOK(sub_82767458) {
     sfr::enter_function(ctx,"sub_82767458",0x82767458);
     if(!image_stream(ctx.r3.u32)) { __imp__sub_82767458(ctx,base); return; }
     ctx.r3.u64=0;
+}
+
+// One of a real Kinect's skeletons in its own slot of the frame
+// (NUI_SKELETON_DATA: state, tracking id, enrollment, user index, position,
+// 20 joints, their states).
+void write_kinect_body(sfr::GuestMemory& memory, uint32_t frame, const sfr::KinectBody& body, uint32_t enrollment) {
+    const uint64_t data=uint64_t(frame)+sfr::nui_skeleton_data_offset+uint64_t(body.sensor_index)*sfr::nui_skeleton_data_size;
+    const auto vector=[&](uint64_t address,const std::array<float,3>& v) {
+        for(uint32_t i=0;i<3;++i) memory.store<uint32_t>(address+4*i,std::bit_cast<uint32_t>(v[i]));
+        memory.store<uint32_t>(address+12,std::bit_cast<uint32_t>(1.0f));
+    };
+    memory.store<uint32_t>(data,sfr::nui_tracked);
+    memory.store<uint32_t>(data+4,body.tracking_id);
+    memory.store<uint32_t>(data+8,enrollment);
+    memory.store<uint32_t>(data+12,body.sensor_index);
+    vector(data+16,body.position);
+    for(uint32_t j=0;j<sfr::nui_joint_count;++j) {
+        vector(data+32+j*16,body.joints[j]);
+        memory.store<uint32_t>(data+352+j*4,std::min(body.joint_states[j],sfr::nui_tracked));
+    }
 }
 
 // NuiSkeletonGetNextFrame(timeout ms, frame): one emulated player.
@@ -414,31 +436,29 @@ SFR_HOOK(sub_827707B0) {
         sfr::publish_second_player_pad(std::nullopt);
         sfr::NuiSkeletonEmulation::write_header(memory,frame,++frame_number,uint64_t(elapsed.count()));
         sfr::NuiSkeletonEmulation::write_floor(memory,frame,kinect_frame.floor_plane,kinect_frame.gravity);
-        const auto players=kinect_slots.assign(kinect_frame);
         {
-            // The depth view looks for each player by its skeleton slot, the
-            // player index its pixels carry on the console; the sensor marks
-            // them with its own skeleton's instead.
-            uint32_t table=0;
-            for(uint32_t slot=0; slot<players.size(); ++slot)
-                if(players[slot] && players[slot]->sensor_index<6)
-                    table|=(slot+1)<<(4*(players[slot]->sensor_index+1));
-            depth_players.store(table,std::memory_order_relaxed);
-        }
-        for(uint32_t slot=0; slot<players.size(); ++slot) {
-            const sfr::KinectBody* const body=players[slot];
-            if(!body) continue;
-            auto& emulated=slot?second_skeleton:skeleton;
-            // A new body is a new skeleton, not yet identified (KinectPlayerSlots::title_id).
-            if(kinect_slots.entered(slot)) {
-                emulated.identify(sfr::NuiSkeletonEmulation::unidentified);
-                std::cerr << "NATIVE_KINECT_ENTER slot=" << slot << " tracking_id=" << kinect_slots.title_id(slot) << '\n';
+            std::lock_guard guard(kinect_identity_lock);
+            // Ids the sensor no longer tracks are gone: whoever steps in next
+            // is a new skeleton.
+            std::erase_if(kinect_identities,[&](const auto& entry) {
+                return std::none_of(kinect_frame.bodies.begin(),kinect_frame.bodies.end(),
+                                    [&](const sfr::KinectBody& body) { return body.tracking_id==entry.first; });
+            });
+            for(const sfr::KinectBody& body:kinect_frame.bodies) {
+                if(body.sensor_index>=6) continue;
+                const auto known=kinect_identities.find(body.tracking_id);
+                write_kinect_body(memory,frame,body,
+                                  known==kinect_identities.end()?sfr::NuiSkeletonEmulation::unidentified:known->second);
             }
-            emulated.write_joints(memory,frame,slot,kinect_slots.title_id(slot),body->joints,body->joint_states,
-                                  body->position);
         }
-        if(bool(players[1])!=second_present) {
-            second_present=bool(players[1]);
+        static std::vector<uint32_t> seen;
+        for(const sfr::KinectBody& body:kinect_frame.bodies)
+            if(std::find(seen.begin(),seen.end(),body.tracking_id)==seen.end())
+                std::cerr << "NATIVE_KINECT_ENTER tracking_id=" << body.tracking_id << " slot=" << body.sensor_index << '\n';
+        seen.clear();
+        for(const sfr::KinectBody& body:kinect_frame.bodies) seen.push_back(body.tracking_id);
+        if((kinect_frame.bodies.size()>=2)!=second_present) {
+            second_present=kinect_frame.bodies.size()>=2;
             std::cerr << "NUI_SECOND_PLAYER present=" << second_present << " source=kinect\n";
         }
         ctx.r3.u64=0;
@@ -542,12 +562,22 @@ SFR_HOOK(sub_82764620) {
     memory.store<uint32_t>(uint64_t(message)+4,tracking_id);
     // Only the first player is the signed-in profile; a second one joins as
     // an unenrolled guest, as a friend standing beside the sensor would.
-    // Odd tracking ids are the first player's slot (KinectPlayerSlots::title_id).
-    const bool first=(tracking_id&1)!=0;
-    const bool profile=first && sfr::profile_for(0)!=nullptr;
+    bool profile=false;
+    if(kinect) {
+        // The sensor's own ids: the signed-in profile is whoever is identified
+        // while nobody tracked holds it; everyone else is a guest.
+        std::lock_guard guard(kinect_identity_lock);
+        profile=sfr::profile_for(0)!=nullptr &&
+                std::none_of(kinect_identities.begin(),kinect_identities.end(),[&](const auto& entry) {
+                    return entry.first!=tracking_id && entry.second==0;
+                });
+        kinect_identities[tracking_id]=profile?0u:sfr::NuiSkeletonEmulation::guest;
+    } else {
+        profile=tracking_id<=1 && sfr::profile_for(0)!=nullptr;
+        (tracking_id>=2?second_skeleton:skeleton).identify(profile?0u:sfr::NuiSkeletonEmulation::guest);
+    }
     const uint32_t enrollment=profile?0u:sfr::NuiSkeletonEmulation::guest;
     memory.store<uint32_t>(uint64_t(message)+12,enrollment);
-    (first?skeleton:second_skeleton).identify(enrollment);
     std::cerr << "NUI_IDENTITY_IDENTIFY tracking_id=" << tracking_id << " callback=0x" << std::hex << callback
               << " context=0x" << context << std::dec << " result=" << (profile?"profile":"guest") << '\n';
     if(callback) {

@@ -85,13 +85,9 @@ private:
                 return std::nullopt;
             ids[player] = memory.load<uint32_t>(uint64_t(data) + 4);
         }
-        // Odd ids are skeleton slot 0's, even ones slot 1's (a real Kinect
-        // gives a body that steps back in a new id: KinectPlayerSlots::title_id).
-        const auto odd = [](uint32_t id) { return id != 0 && (id & 1) != 0; };
-        const auto even = [](uint32_t id) { return id != 0 && (id & 1) == 0; };
-        if (!second_present && ids[0]) return even(ids[0]);
-        if (odd(ids[0]) && even(ids[1])) return false;
-        if (even(ids[0]) && odd(ids[1])) return true;
+        if (!second_present && (ids[0] == 1 || ids[0] == 2)) return ids[0] == 2;
+        if (ids[0] == 1 && ids[1] == 2) return false;
+        if (ids[0] == 2 && ids[1] == 1) return true;
         return std::nullopt;
     }
     bool reversed_ = false;

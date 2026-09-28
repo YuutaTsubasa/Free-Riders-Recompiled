@@ -119,21 +119,8 @@ public:
     static constexpr uint32_t players = 2;
     // The body in each slot for this frame, or null for an empty slot.
     std::array<const KinectBody*, players> assign(const KinectFrame& frame);
-    // The tracking id the title sees for the body in a slot. On the console
-    // a person who steps back in is a new skeleton with a new id, which the
-    // title identifies again before the player may carry on (the menus wait
-    // for it, 82491458): so every body that takes a slot gets a new one.
-    // Odd ids are the first player's slot, even ones the second's: 1 and 2
-    // for the first bodies, then 3 and 4, and so on.
-    uint32_t title_id(uint32_t slot) const { return slot + 1 + 2 * (entries_[slot] ? entries_[slot] - 1 : 0); }
-    // Whether the slot took a new body on the last assign.
-    bool entered(uint32_t slot) const { return entered_[slot]; }
-    // The sensor's tracking id of the body in a slot, 0 when empty.
-    uint32_t tracking(uint32_t slot) const { return tracking_[slot]; }
 private:
     std::array<uint32_t, players> tracking_{};  // sensor ids; 0 is free
-    std::array<uint32_t, players> entries_{};   // bodies each slot has taken
-    std::array<bool, players> entered_{};
 };
 
 }

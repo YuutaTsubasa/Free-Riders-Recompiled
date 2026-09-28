@@ -35,26 +35,6 @@ int main() {
         frame.bodies = {body(77, 0.3f)};
         players = slots.assign(frame);
         require(players[0] && players[0]->tracking_id == 77 && !players[1], "the first body is the first player");
-        require(slots.entered(0) && slots.title_id(0) == 1, "the first body is the title's skeleton 1, just entered");
-        players = slots.assign(frame);
-        require(!slots.entered(0) && slots.title_id(0) == 1, "a body still tracked keeps its id");
-        {
-            // Stepping out and back in is a new skeleton to the title, as on
-            // the console, so it identifies the player again.
-            sfr::KinectPlayerSlots again;
-            sfr::KinectFrame seen;
-            seen.bodies = {body(5, 0.0f)};
-            again.assign(seen);
-            seen.bodies = {};
-            again.assign(seen);
-            seen.bodies = {body(5, 0.0f)};
-            again.assign(seen);
-            require(again.entered(0) && again.title_id(0) == 3, "a body back in the first slot is skeleton 3");
-            seen.bodies = {body(5, 0.0f), body(6, 0.5f)};
-            again.assign(seen);
-            require(again.title_id(1) == 2 && again.title_id(0) % 2 == 1,
-                    "the second slot's ids are even, the first's odd");
-        }
 
         frame.bodies = {body(90, -0.4f), body(77, 0.3f)};
         players = slots.assign(frame);
