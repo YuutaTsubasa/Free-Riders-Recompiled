@@ -261,6 +261,7 @@ void run() {
     for (int i = 0; i < 60; ++i) { ++kinect_sequence; frame(0); }
     const auto [right, left] = lean_pair();
     require(right > 1.5f && left == 1.f, "a sensor body's roll leans the race one way");
+    require(right == 4.5f, "a sensor body's full lean uses the title's whole lean range");
     put(32, 0.3f, 0.5f, 2.2f);
     for (int i = 0; i < 60; ++i) { ++kinect_sequence; frame(0); }
     require(lean_pair().first == 1.f && lean_pair().second > 1.5f, "and the other roll the other way");

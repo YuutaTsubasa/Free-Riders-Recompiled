@@ -147,6 +147,8 @@ COM 介面依 SDK 2.0 的 `Kinect.h` 宣告到用得到的最後一個方法為�
   遊戲，所以 1P 的傾斜改由骨架算：沿用 webcam 體感的做法，比賽開始先保持站姿約 0.6 秒
   校正，之後以肩膀相對髖部的左右傾角換成那一對數值（`NUI_RACE_SENSOR_LEAN active=1`，
   `CAMERA_RACE_CALIBRATION ready=1`；`SFR_CAMERA_RACE_TRACE=1` 每 30 格印出 `lean=`）。
+  傾角約 4° 起算、30° 算傾到底（`lean=±1`）；傾到底時寫入遊戲可讀的最大值 3.5（兩數相差
+  4.5 倍），`SFR_KINECT_LEAN_SCALE`（0.1–3.5）可調小。原本傾到底只給 1，彎到極限也只轉一點點。
   其他動作（蹲、跳、踢）仍由遊戲自己的判斷器讀骨架；2P 的傾斜還沒接。
 - [`KinectPlayerSlots`](../src/kinect_sensor.h)：感測器最多完整追蹤兩個人。
   每個人只要還被追蹤就留在原本的欄位（遊戲以欄位與 tracking id 1／2 認人，

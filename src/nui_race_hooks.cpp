@@ -63,12 +63,23 @@ bool camera_player(uint32_t player) {
 // that pair.
 bool sensor_steering = false;
 uint32_t sensor_record = 0;
-void write_camera_lean(uint32_t record) {
+void write_camera_lean(uint32_t record,float scale=1.f) {
     // These are depth-image pixel counts in the original game, not joints.
     // RGB pose input supplies their ratio; zero/zero means full right lean.
-    const float lean=camera_motion.lean();
+    const float lean=camera_motion.lean()*scale;
     store_float(record+640,1.f+std::max(lean,0.f));
     store_float(record+644,1.f+std::max(-lean,0.f));
+}
+// A full lean of the sensor's body is this ratio minus one: the title reads
+// up to 3.5 from the depth view, so the default uses its whole range (a
+// full lean at 1 turned the board only a little). SFR_KINECT_LEAN_SCALE
+// changes it, 0.1..3.5.
+float sensor_lean_scale() {
+    static const float scale=[] {
+        const char* text=std::getenv("SFR_KINECT_LEAN_SCALE");
+        return std::clamp(text && *text?std::strtof(text,nullptr):3.5f,0.1f,3.5f);
+    }();
+    return scale;
 }
 void update_camera_motion(uint32_t record,uint64_t generation) {
     const uint64_t now=sfr::camera_motion_clock_ns();
@@ -333,7 +344,7 @@ SFR_HOOK(sub_82438930) {
     if(racing && box && original_body && camera_player(0))update_camera_motion(original_body,sfr::camera_pose_generation());
     else if(sensor_steering) {
         update_camera_motion(sensor_record,sfr::kinect_frame_generation());
-        write_camera_lean(sensor_record);
+        write_camera_lean(sensor_record,sensor_lean_scale());
     }
     else {camera_motion.reset();camera_last_tick=0;}
     static const bool motion_trace=[] {const char* p=std::getenv("SFR_CAMERA_RACE_TRACE");return p && *p=='1';}();
