@@ -368,6 +368,11 @@ std::shared_ptr<KinectSensor> KinectPreviewWindow::sensor() const {
     std::lock_guard guard(impl_->lock);
     return impl_->sensor;
 }
+
+std::string KinectPreviewWindow::failure() const {
+    std::lock_guard guard(impl_->lock);
+    return impl_->failure;
+}
 }
 #else
 namespace sfr {
@@ -377,5 +382,6 @@ KinectPreviewWindow::~KinectPreviewWindow() = default;
 std::unique_ptr<KinectPreviewWindow> KinectPreviewWindow::open(bool) { return nullptr; }
 bool KinectPreviewWindow::closed() const { return true; }
 std::shared_ptr<KinectSensor> KinectPreviewWindow::sensor() const { return nullptr; }
+std::string KinectPreviewWindow::failure() const { return {}; }
 }
 #endif

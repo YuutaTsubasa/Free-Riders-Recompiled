@@ -18,6 +18,9 @@ public:
     bool closed() const;
     // The open sensor, or null while it is opening or when there is none.
     std::shared_ptr<KinectSensor> sensor() const;
+    // Why no sensor opened (KinectSensor::open's reason, "no-runtime",
+    // "no-sensor", ...), or empty while it opens or once it has.
+    std::string failure() const;
     struct Impl;
 private:
     explicit KinectPreviewWindow(std::unique_ptr<Impl>);

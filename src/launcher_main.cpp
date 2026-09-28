@@ -78,10 +78,10 @@ enum Text {
     Parallel, ParallelHint, VertexCache, VertexCacheHint, GpuPipeline, GpuPipelineHint, RaceEvery, RaceEveryHint,
     CameraLabel, CameraHint, CameraHintOff, CameraHintPicture, CameraHintKinect, CameraOff, CameraPicture, CameraMotion, CameraDevice, CameraDeviceHint, CameraNone,
     CameraTest, CameraTesting, CameraWorks, CameraSilent, CameraClosed, CameraMirror, CameraMirrorHint,
-    CameraKinect, KinectRow, KinectRowHint, KinectWorks, KinectSilent, KinectMissing,
+    CameraKinect, KinectRow, KinectRowHint, KinectMissing,
     KinectNoRuntime, KinectNoSensor, KinectFailed, KinectDownload, KinectDownloadV2, KinectInstallHint,
     VoiceLabel, VoiceHint,
-    KinectPreviewLabel, KinectPreviewHint, KinectPreviewOpen, KinectPreviewClose,
+    KinectPreviewOpen, KinectPreviewClose,
     CameraDebug, CameraDebugHint,
     ImageDirectory, ImageDirectoryHint, AssetDirectory, AssetDirectoryHint, Browse, Found, Missing, FilesHint,
     StartGame, Quit, Defaults,
@@ -167,24 +167,19 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
      "若攝影機畫面像照鏡子一樣左右相反，請開啟此項。設定相反時，舉起一隻手會動到另一隻，游標也會跑到畫面邊緣。"},
     {"Kinect", "Kinect"},
     {"Kinect sensor", "Kinect 感測器"},
-    {"A real Kinect tracks you as the console did: an Xbox 360 Kinect (Kinect for Windows SDK 1.8) or a Kinect v2 for Xbox One (SDK 2.0). The first one found is used.",
-     "由實體 Kinect 像主機一樣追蹤你的身體：Xbox 360 版（需 Kinect for Windows SDK 1.8）或 Xbox One 版 Kinect v2（需 SDK 2.0）。會使用第一台找到的。"},
-    {"Kinect is working", "Kinect 運作中"},
-    {"Kinect opened, but sends nothing", "Kinect 已開啟，但沒有資料"},
+    {"A real Kinect tracks you as the console did: an Xbox 360 Kinect (Kinect for Windows SDK 1.8) or a Kinect v2 for Xbox One (SDK 2.0); the first one found is used. The preview shows whether it works, what it sees and the skeletons it tracks, and tilts it. It closes when the game starts.",
+     "由實體 Kinect 像主機一樣追蹤你的身體：Xbox 360 版（需 Kinect for Windows SDK 1.8）或 Xbox One 版 Kinect v2（需 SDK 2.0），會使用第一台找到的。預覽會顯示它是否正常、拍到的畫面與追蹤到的骨架，也能調整角度；開始遊戲時會自動關閉。"},
     {"No Kinect found", "找不到 Kinect"},
     {"No Kinect SDK is installed", "尚未安裝 Kinect SDK"},
     {"No Kinect connected", "沒有連接 Kinect"},
     {"Kinect found, but it will not start", "找到 Kinect，但無法啟動"},
     {"SDK 1.8 (Xbox 360)", "SDK 1.8（Xbox 360 版）"},
     {"SDK 2.0 (Kinect v2)", "SDK 2.0（Kinect v2）"},
-    {"An Xbox 360 Kinect needs the full Kinect for Windows SDK 1.8 (the Runtime alone refuses it); a Kinect v2 needs SDK 2.0 and a USB 3.0 port. Install the one for your sensor, plug it in through its adapter, then test again. If it still will not start, close other programs using the Kinect.",
-     "Xbox 360 版 Kinect 需要完整的 Kinect for Windows SDK 1.8（只裝 Runtime 會被拒絕）；Kinect v2 需要 SDK 2.0 與 USB 3.0 連接埠。請安裝對應的 SDK，用轉接器接上感測器後再測試一次。若仍無法啟動，請關閉其他正在使用 Kinect 的程式。"},
+    {"An Xbox 360 Kinect needs the full Kinect for Windows SDK 1.8 (the Runtime alone refuses it); a Kinect v2 needs SDK 2.0 and a USB 3.0 port. Install the one for your sensor, plug it in through its adapter, then open the preview again. If it still will not start, close other programs using the Kinect.",
+     "Xbox 360 版 Kinect 需要完整的 Kinect for Windows SDK 1.8（只裝 Runtime 會被拒絕）；Kinect v2 需要 SDK 2.0 與 USB 3.0 連接埠。請安裝對應的 SDK，用轉接器接上感測器後再開啟一次預覽。若仍無法啟動，請關閉其他正在使用 Kinect 的程式。"},
     {"Voice commands", "語音指令"},
     {"Say the Kinect's commands again: start, OK, back, next, pause... in English or Chinese (開始、確定、返回、下一步、暫停…). Uses Windows speech recognition and the default microphone: make the Kinect's microphone array the default recording device to use it.",
      "恢復 Kinect 的語音指令：start、OK、back、next、pause……英文或中文都可以（開始、確定、返回、下一步、暫停…）。使用 Windows 語音辨識與預設麥克風：要用 Kinect 的麥克風陣列，請把它設為預設錄音裝置。"},
-    {"Preview", "預覽"},
-    {"Opens a window with what the Kinect sees: its colour and depth cameras with the skeletons it tracks, and whether your feet are in view. Its Up and Down buttons tilt the sensor. It closes when the game starts.",
-     "開啟一個視窗顯示 Kinect 看到的畫面：彩色與深度影像，加上它追蹤到的骨架，以及腳是否在畫面內。視窗裡的「往上」「往下」可以調整感應器角度。開始遊戲時會自動關閉。"},
     {"Open preview", "開啟預覽"},
     {"Close preview", "關閉預覽"},
     {"Skeleton debug window", "骨架 Debug 視窗"},
@@ -1009,11 +1004,10 @@ struct Launcher {
     enum class CameraTrial { none, looking, pictures, silent, closed };
     std::atomic<CameraTrial> camera_trial{CameraTrial::none};
     std::jthread camera_trial_worker;
-    // Trying the Kinect says which step is missing: the SDK, the sensor
-    // (unplugged, or its power adapter not in), or starting it.
-    enum class KinectTrial { none, looking, working, silent, no_runtime, no_sensor, failed };
-    std::atomic<KinectTrial> kinect_trial{KinectTrial::none};
-    std::jthread kinect_trial_worker;
+    // Why the preview could not open the Kinect, kept after its window
+    // closes: which step is missing, the SDK, the sensor (unplugged, or its
+    // power adapter not in), or starting it.
+    std::string kinect_failure;
     // The camera choice under the pointer while its list is open, or -1.
     int camera_hovered = -1;
     // The preview window, when open, holds the Kinect (one session a
@@ -1803,54 +1797,33 @@ struct Launcher {
         // camera is turned on, since one may have been plugged in since.
         // A Kinect is the host's only one: no list, only whether it answers.
         if (settings.camera == "kinect") {
-            const auto state = kinect_trial.load();
-            const Text trial[] = {CameraTest, CameraTesting, KinectWorks, KinectSilent, KinectNoRuntime, KinectNoSensor,
-                                  KinectFailed};
-            float test_width = 0;
-            for (const Text text : trial) test_width = (std::max)(test_width, ImGui::CalcTextSize(tr(text)).x);
-            test_width += ImGui::GetStyle().FramePadding.x * 4;
-            setting_row(tr(KinectRow), tr(KinectRowHint), test_width, scale, [&] {
-                ImGui::BeginDisabled(state == KinectTrial::looking || kinect_preview != nullptr);
-                if (ImGui::Button(tr(trial[int(state)]), ImVec2(test_width, 0))) {
-                    kinect_trial.store(KinectTrial::looking);
-                    kinect_trial_worker = std::jthread([this] {
-                        std::string why;
-                        auto sensor = sfr::KinectSensor::open(&why);
-                        if (!sensor) {
-                            kinect_trial.store(why == "no-runtime" || why == "incomplete-runtime" ? KinectTrial::no_runtime
-                                               : why == "no-sensor"                              ? KinectTrial::no_sensor
-                                                                                                 : KinectTrial::failed);
-                            return;
-                        }
-                        sfr::KinectFrame frame;
-                        for (int attempt = 0; attempt < 300 && !frame.number; ++attempt)
-                            if (!sensor->next(frame)) std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                        kinect_trial.store(frame.number ? KinectTrial::working : KinectTrial::silent);
-                    });
-                }
-                ImGui::EndDisabled();
-            });
-            // What the sensor sees, in a window of its own.
-            {
-                if (kinect_preview && kinect_preview->closed()) kinect_preview.reset();
-                const Text label = kinect_preview ? KinectPreviewClose : KinectPreviewOpen;
-                const float button = (std::max)(ImGui::CalcTextSize(tr(KinectPreviewOpen)).x,
-                                                ImGui::CalcTextSize(tr(KinectPreviewClose)).x) + ImGui::GetStyle().FramePadding.x * 4;
-                setting_row(tr(KinectPreviewLabel), tr(KinectPreviewHint), button, scale, [&] {
-                    ImGui::BeginDisabled(state == KinectTrial::looking);
-                    if (ImGui::Button(tr(label), ImVec2(button, 0))) {
-                        if (kinect_preview) kinect_preview.reset();
-                        else kinect_preview = sfr::KinectPreviewWindow::open(language == 1);
-                    }
-                    ImGui::EndDisabled();
-                });
+            // What the sensor sees, in a window of its own: whether it works,
+            // its cameras and skeletons, and its tilt.
+            if (kinect_preview) {
+                if (const std::string why = kinect_preview->failure(); !why.empty()) kinect_failure = why;
+                if (kinect_preview->closed()) kinect_preview.reset();
             }
+            const Text label = kinect_preview ? KinectPreviewClose : KinectPreviewOpen;
+            const float button = (std::max)(ImGui::CalcTextSize(tr(KinectPreviewOpen)).x,
+                                            ImGui::CalcTextSize(tr(KinectPreviewClose)).x) + ImGui::GetStyle().FramePadding.x * 4;
+            setting_row(tr(KinectRow), tr(KinectRowHint), button, scale, [&] {
+                if (ImGui::Button(tr(label), ImVec2(button, 0))) {
+                    if (kinect_preview) kinect_preview.reset();
+                    else {
+                        kinect_failure.clear();
+                        kinect_preview = sfr::KinectPreviewWindow::open(language == 1);
+                    }
+                }
+            });
             // Anything short of a working sensor: what to install and check.
-            if (state == KinectTrial::no_runtime || state == KinectTrial::no_sensor || state == KinectTrial::failed) {
+            if (!kinect_failure.empty()) {
+                const Text why = kinect_failure == "no-runtime" || kinect_failure == "incomplete-runtime" ? KinectNoRuntime
+                                 : kinect_failure == "no-sensor"                                           ? KinectNoSensor
+                                                                                                           : KinectFailed;
                 const float padding = ImGui::GetStyle().FramePadding.x * 4;
                 const float v1_width = ImGui::CalcTextSize(tr(KinectDownload)).x + padding;
                 const float v2_width = ImGui::CalcTextSize(tr(KinectDownloadV2)).x + padding;
-                setting_row(tr(trial[int(state)]), tr(KinectInstallHint),
+                setting_row(tr(why), tr(KinectInstallHint),
                             v1_width + v2_width + ImGui::GetStyle().ItemSpacing.x, scale, [&] {
                     if (ImGui::Button(tr(KinectDownload), ImVec2(v1_width, 0)))
                         sfr::launcher::open_url("https://www.microsoft.com/download/details.aspx?id=40278");
