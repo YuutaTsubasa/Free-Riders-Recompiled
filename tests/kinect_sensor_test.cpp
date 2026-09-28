@@ -2,6 +2,7 @@
 #include "kinect_sensor.h"
 #include "pose_skeleton.h"
 #include <bit>
+#include <cmath>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -285,6 +286,40 @@ int main() {
                 left_side.apply(frame);
             }
             require(left_side.sees_back(3), "a diagonal sensor tells a back the same way");
+        }
+
+        {
+            // A sensor pitched up by 15 degrees sees an upright player leaning
+            // back: its up is (0, cos, sin) in its own space. Levelled, the
+            // body is upright again and gravity is straight down.
+            const float t = 15.0f * 3.14159265f / 180.0f, c = std::cos(t), s = std::sin(t);
+            const auto seen = [&](float y, float z) { return std::array<float, 3>{0.0f, y * c - z * s, y * s + z * c}; };
+            sfr::KinectFrame tilted;
+            tilted.gravity = {0.0f, c, s};
+            tilted.floor_plane = {0.0f, c, s, 0.54f};
+            sfr::KinectBody rider;
+            rider.tracking_id = 5;
+            for (auto& joint : rider.joints) joint = seen(0.0f, 2.2f);
+            rider.joints[sfr::nui_joint::hip_center] = seen(0.0f, 2.2f);
+            rider.joints[sfr::nui_joint::head] = seen(0.7f, 2.2f);
+            rider.position = seen(0.0f, 2.2f);
+            tilted.bodies = {rider};
+            require(near(sfr::kinect_level(tilted), 15.0f), "the tilt taken out is the sensor's pitch");
+            const auto& hip = tilted.bodies[0].joints[sfr::nui_joint::hip_center];
+            const auto& head = tilted.bodies[0].joints[sfr::nui_joint::head];
+            require(near(head[2], hip[2]) && near(head[1] - hip[1], 0.7f), "a levelled body stands upright");
+            require(near(tilted.gravity[1], 1.0f) && near(tilted.floor_plane[1], 1.0f) &&
+                    near(tilted.floor_plane[2], 0.0f) && near(tilted.floor_plane[3], 0.54f),
+                    "gravity and the floor are straight up after levelling");
+
+            sfr::KinectFrame upside;
+            upside.gravity = {0.0f, -1.0f, 0.0f};
+            upside.bodies = {rider};
+            require(sfr::kinect_level(upside) == 0.0f && upside.bodies[0].joints[3] == rider.joints[3],
+                    "gravity the other way up is not a tilt to take out");
+            sfr::KinectFrame none;
+            none.bodies = {rider};
+            require(sfr::kinect_level(none) == 0.0f, "a frame without gravity is left alone");
         }
 
         std::string why;

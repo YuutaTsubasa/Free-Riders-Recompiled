@@ -136,6 +136,12 @@ COM 介面依 SDK 2.0 的 `Kinect.h` 宣告到用得到的最後一個方法為�
   載入 `Kinect10.dll`（建置不需要 SDK，沒有 Kinect 的人也不需要那個 DLL），
   開啟骨架追蹤，在自己的執行緒上讓 `NuiSkeletonGetNextFrame` 等待新框架，套用 SDK
   建議的 `NuiTransformSmooth` 平滑參數（約一格延遲）。
+- 感測器仰角（[`kinect_level`](../src/kinect_sensor.h)）：骨架座標以感測器為準，放得低、
+  鏡頭往上仰時，站直的人看起來往後倒，遊戲的站姿校正就量到歪的站姿。每格依感測器加速度計
+  給的重力方向，把骨架和地板繞感測器轉正，使重力朝正下方（超過 30 度或沒有重力資料就不動；
+  `SFR_KINECT_LEVEL=0` 關閉）。`sfr_kinect_probe` 與遊戲的 `NATIVE_KINECT_BODY`（每 3 秒）
+  都會印出 `level=`（轉掉的度數），`NATIVE_KINECT_BODY` 另有髖、肩、頭、雙手的位置與雙手的
+  追蹤狀態（2 追蹤到、1 推測、0 沒有）。
 - 比賽轉向（[`nui_race_hooks.cpp`](../src/nui_race_hooks.cpp)）：遊戲的傾斜判斷讀身體紀錄
   +640／+644，在主機上是深度影像裡玩家左右兩側的像素數，不是關節。這裡沒有深度影像送進
   遊戲，所以 1P 的傾斜改由骨架算：沿用 webcam 體感的做法，比賽開始先保持站姿約 0.6 秒

@@ -25,6 +25,41 @@ const char* kinect_placement_name(KinectPlacement placement) { return placement_
 
 float kinect_placement_degrees(KinectPlacement placement) { return 45.0f * float(uint8_t(placement) % 8); }
 
+float kinect_level(KinectFrame& frame) {
+    const auto& g = frame.gravity;
+    const float length = std::sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
+    if (!(length > 0.5f)) return 0.0f;
+    const std::array<float, 3> up = {g[0] / length, g[1] / length, g[2] / length};
+    // cos 30 degrees: a sensor tilted further, or gravity the other way up,
+    // is not a tilt to take out.
+    if (up[1] < 0.8660254f) return 0.0f;
+    // The turn that takes up onto +y: about k = up x (0, 1, 0), by the angle
+    // between them (Rodrigues).
+    const std::array<float, 3> axis = {-up[2], 0.0f, up[0]};
+    const float sine = std::sqrt(axis[0] * axis[0] + axis[2] * axis[2]), cosine = up[1];
+    frame.gravity = {0.0f, 1.0f, 0.0f};
+    if (sine < 1e-6f) return 0.0f;
+    const std::array<float, 3> k = {axis[0] / sine, 0.0f, axis[2] / sine};
+    const auto turn = [&](const std::array<float, 3>& v) -> std::array<float, 3> {
+        const float dot = k[0] * v[0] + k[2] * v[2];
+        const std::array<float, 3> cross = {k[1] * v[2] - k[2] * v[1], k[2] * v[0] - k[0] * v[2],
+                                            k[0] * v[1] - k[1] * v[0]};
+        std::array<float, 3> out{};
+        for (int i = 0; i < 3; ++i) out[i] = v[i] * cosine + cross[i] * sine + k[i] * dot * (1.0f - cosine);
+        return out;
+    };
+    for (KinectBody& body : frame.bodies) {
+        for (auto& joint : body.joints) joint = turn(joint);
+        body.position = turn(body.position);
+    }
+    // A plane through turned points keeps its distance; only its normal turns.
+    if (frame.floor_plane[0] != 0.0f || frame.floor_plane[1] != 0.0f || frame.floor_plane[2] != 0.0f) {
+        const auto normal = turn({frame.floor_plane[0], frame.floor_plane[1], frame.floor_plane[2]});
+        frame.floor_plane = {normal[0], normal[1], normal[2], frame.floor_plane[3]};
+    }
+    return std::atan2(sine, cosine) * 180.0f / 3.14159265358979f;
+}
+
 void KinectPlacementTransform::apply(KinectFrame& frame) {
     if (placement_ == KinectPlacement::front) return;
     frame.floor_plane = {};

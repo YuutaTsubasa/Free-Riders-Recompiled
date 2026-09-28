@@ -30,10 +30,13 @@ int main(int argc, char** argv) {
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
             continue;
         }
+        const float gravity_y = frame.gravity[1];
+        const float tilt = sfr::kinect_level(frame);
         placement.apply(frame);
         if (frame.number - shown < 15) continue;  // twice a second
         shown = frame.number;
         std::cout << "frame " << frame.number << " floor=" << frame.floor_plane[1] << ',' << frame.floor_plane[3]
+                  << " gravity_y=" << gravity_y << " level=" << tilt
                   << " bodies=" << frame.bodies.size();
         for (const auto& body : frame.bodies) {
             const auto& hand = body.joints[sfr::nui_joint::hand_right];

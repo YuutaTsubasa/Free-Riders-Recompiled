@@ -188,8 +188,35 @@ SFR_HOOK(sub_827707B0) {
         const auto elapsed=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-started);
         // Turned once per new frame: the last one is kept as it was turned.
         if(kinect->next(kinect_frame)) {
+            // SFR_KINECT_LEVEL=0 keeps the sensor's own tilt.
+            static const bool level=[]{const char* t=std::getenv("SFR_KINECT_LEVEL");return !t || *t!='0';}();
+            const float gravity_y=kinect_frame.gravity[1];
+            const float tilt=level?sfr::kinect_level(kinect_frame):0.0f;
             kinect_placement.apply(kinect_frame);
-            kinect_generation.fetch_add(1,std::memory_order_relaxed);
+            const uint64_t generation=kinect_generation.fetch_add(1,std::memory_order_relaxed)+1;
+            // Every three seconds, what reaches the title: the tilt taken
+            // out and the first body's centre line and hands, with the hands'
+            // tracking states (2 tracked, 1 inferred, 0 not).
+            if(generation%90==1) {
+                std::ostringstream line;
+                line<<"NATIVE_KINECT_BODY frame="<<generation<<" gravity_y="<<gravity_y<<" level="<<tilt
+                    <<" bodies="<<kinect_frame.bodies.size();
+                if(!kinect_frame.bodies.empty()) {
+                    const auto& body=kinect_frame.bodies.front();
+                    const auto point=[&](const char* name,uint32_t joint) {
+                        const auto& p=body.joints[joint];
+                        line<<' '<<name<<'='<<p[0]<<','<<p[1]<<','<<p[2];
+                    };
+                    point("hip",sfr::nui_joint::hip_center);
+                    point("shoulders",sfr::nui_joint::shoulder_center);
+                    point("head",sfr::nui_joint::head);
+                    point("hand_l",sfr::nui_joint::hand_left);
+                    point("hand_r",sfr::nui_joint::hand_right);
+                    line<<" hand_states="<<body.joint_states[sfr::nui_joint::hand_left]<<','
+                        <<body.joint_states[sfr::nui_joint::hand_right];
+                }
+                std::cerr<<line.str()<<'\n';
+            }
         }
         sfr::publish_second_player_pad(std::nullopt);
         sfr::NuiSkeletonEmulation::write_header(memory,frame,++frame_number,uint64_t(elapsed.count()));

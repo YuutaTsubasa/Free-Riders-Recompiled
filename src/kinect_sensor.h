@@ -76,6 +76,15 @@ struct KinectV2Joint {
 void kinect_v2_body(const std::array<KinectV2Joint, kinect_v2_joint_count>& joints, uint32_t tracking_id,
                     KinectBody& body);
 
+// Turns a frame so that its gravity points straight down. Skeleton space is
+// the sensor's own: a sensor tilted up at the player (set low, as under a
+// TV) sees them leaning back, and the title measures a stance leaning back.
+// The sensor's accelerometer gives the frame's up (gravity); the bodies and
+// the floor are turned about the sensor so that up is +y, and the frame's
+// gravity becomes (0, 1, 0). A tilt beyond 30 degrees, or a frame without
+// gravity, is left alone. Returns the tilt taken out, in degrees.
+float kinect_level(KinectFrame& frame);
+
 // Why no sensor opened, from why each kind failed ("no-runtime",
 // "no-sensor", ...): a runtime that is installed says more than one that is
 // not, so it is its reason that counts; with neither, "no-runtime".
