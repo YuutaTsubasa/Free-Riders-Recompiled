@@ -456,13 +456,45 @@ void finish_camera_overthrow(uint32_t detector,uint32_t results,uint64_t& result
     camera_motion.consume_overthrow();result=1;
 }
 
+// A real Kinect's race runs the title's own detectors, but crouch (and the
+// charge and jump that follow it) never fire: they need what the depth view
+// gives on the console, and none reaches the title here. When the original
+// does not recognize one, the first player's skeleton decides as the webcam
+// motion does (the hips dropping below the calibrated stance, then rising).
+// SFR_KINECT_BODY_GESTURES=0 leaves the originals alone.
+void finish_sensor_detector(PPCContext& ctx,uint8_t* base,uint32_t address,uint32_t detector,uint32_t source,
+                            uint32_t results) {
+    if(address!=0x822C8778 && address!=0x822CB840 && address!=0x822C9050 && address!=0x822CA6B0)return;
+    static const bool bridge=[] {const char* p=std::getenv("SFR_KINECT_BODY_GESTURES");return !p || *p!='0';}();
+    static const bool trace=[] {const char* p=std::getenv("SFR_CAMERA_RACE_TRACE");return p && *p=='1';}();
+    if(body_of_source(ctx,base,source)!=sensor_record)return;
+    const uint32_t original=ctx.r3.u32;
+    const bool wanted=address==0x822C9050?camera_motion.jump():address==0x822CA6B0?false:camera_motion.crouch();
+    if(bridge && original!=1 && wanted) {
+        if(const auto bridged=camera_gesture(address,detector,results))ctx.r3.u64=*bridged;
+    }
+    if(!trace)return;
+    static std::unordered_map<uint32_t,std::pair<uint32_t,uint32_t>> last;
+    const std::pair now{original,ctx.r3.u32};
+    if(last.contains(address) && last[address]==now)return;
+    last[address]=now;
+    std::cerr<<"KINECT_GESTURE address=0x"<<std::hex<<address<<std::dec<<" original="<<original
+             <<" result="<<ctx.r3.u32<<" crouch="<<camera_motion.crouch()<<" jump="<<camera_motion.jump()<<'\n';
+}
+
 // One detector override: while the pad drives the race the body decides,
 // otherwise the original detector runs.
 #define RACE_DETECTOR(address, ...)                                      \
     PPC_FUNC_IMPL(__imp__sub_##address);                                       \
     SFR_HOOK(sub_##address) {                                                  \
         sfr::enter_function(ctx, "sub_" #address, 0x##address);               \
-        if (!pad_racing()) { __imp__sub_##address(ctx, base); return; }        \
+        if (!pad_racing()) {                                                   \
+            const uint32_t detector = ctx.r3.u32, source = ctx.r4.u32, results = ctx.r5.u32; \
+            __imp__sub_##address(ctx, base);                                   \
+            if (sensor_steering)                                               \
+                finish_sensor_detector(ctx, base, 0x##address, detector, source, results); \
+            return;                                                            \
+        }                                                                      \
         const uint32_t detector = ctx.r3.u32, source = ctx.r4.u32, results = ctx.r5.u32; \
         (void)detector; (void)source; (void)results;                           \
         note_detector_source(ctx, base, 0x##address, source);                  \

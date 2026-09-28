@@ -75,9 +75,17 @@ PPC_FUNC(__imp__sub_822CA6B0) {
 
 #define UNUSED_ORIGINAL(address) PPC_FUNC(__imp__sub_##address) { \
     throw std::runtime_error("unexpected original detector " #address); }
-UNUSED_ORIGINAL(822C9050)
+// A real Kinect's race: these originals never recognize a crouch or jump,
+// since no depth view reaches them.
+PPC_FUNC(__imp__sub_822C9050) {
+    if (!harness::sensor_body) throw std::runtime_error("unexpected original detector 822C9050");
+    ctx.r3.u64 = 2;
+}
 UNUSED_ORIGINAL(822B60F8)
-UNUSED_ORIGINAL(822C8778)
+PPC_FUNC(__imp__sub_822C8778) {
+    if (!harness::sensor_body) throw std::runtime_error("unexpected original detector 822C8778");
+    ctx.r3.u64 = 2;
+}
 UNUSED_ORIGINAL(822CB840)
 UNUSED_ORIGINAL(822C8650)
 UNUSED_ORIGINAL(822C9180)
@@ -107,9 +115,10 @@ UNUSED_ORIGINAL(822B72E0)
 PPC_FUNC(sub_822C8958) { throw std::runtime_error("unexpected grouped detector"); }
 
 namespace harness {
-uint32_t invoke(const char* name) {
+uint32_t invoke(const char* name, uint32_t source = 0) {
     PPCContext ctx;
     ctx.r3.u64 = detector;
+    ctx.r4.u64 = source;
     ctx.r5.u64 = results;
     auto found = hooks().find(name);
     if (found != hooks().end()) found->second(ctx, sfr::active_memory->base());
@@ -282,6 +291,30 @@ void run() {
     put(32, 0.3f, 0.5f, 2.2f);
     for (int i = 0; i < 60; ++i) { ++kinect_sequence; frame(0); }
     require(lean_pair().first == 1.f && lean_pair().second > 1.5f, "and the other roll the other way");
+
+    // The originals cannot see a crouch without the depth view, so the
+    // skeleton's crouch and the rise out of it answer for them.
+    constexpr uint32_t vtable = detector + 0xA00;
+    m.store<uint32_t>(object, vtable);
+    m.store<uint32_t>(vtable + 4, 0x82918418);
+    put(32, 0, 0.5f, 2.2f);
+    for (int i = 0; i < 60; ++i) { ++kinect_sequence; frame(0); }
+    require(invoke("sub_822C8778", source) == 2, "an upright sensor body does not crouch");
+    put(0, 0, -0.4f, 2.2f);
+    put(32, 0, 0.1f, 2.2f);
+    for (int i = 0; i < 30; ++i) { ++kinect_sequence; frame(0); }
+    m.store<uint32_t>(selected + 4, 0);
+    require(invoke("sub_822C8778", source) == 1 && (primary() & 0x7000) == 0x7000,
+            "a sensor body's crouch must reach the title");
+    put(0, 0, 0, 2.2f);
+    put(32, 0, 0.5f, 2.2f);
+    bool jumped = false;
+    for (int i = 0; i < 30 && !jumped; ++i) {
+        ++kinect_sequence;
+        frame(0);
+        jumped = invoke("sub_822C9050", source) == 1;
+    }
+    require(jumped && (primary() & 0x200), "rising out of the crouch must jump");
     sensor_body = false;
 }
 }
