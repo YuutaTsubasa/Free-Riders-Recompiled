@@ -397,8 +397,14 @@ SFR_HOOK(sub_827707B0) {
         for(uint32_t slot=0; slot<players.size(); ++slot) {
             const sfr::KinectBody* const body=players[slot];
             if(!body) continue;
-            (slot?second_skeleton:skeleton).write_joints(memory,frame,slot,slot+1,body->joints,body->joint_states,
-                                                        body->position);
+            auto& emulated=slot?second_skeleton:skeleton;
+            // A new body is a new skeleton, not yet identified (KinectPlayerSlots::title_id).
+            if(kinect_slots.entered(slot)) {
+                emulated.identify(sfr::NuiSkeletonEmulation::unidentified);
+                std::cerr << "NATIVE_KINECT_ENTER slot=" << slot << " tracking_id=" << kinect_slots.title_id(slot) << '\n';
+            }
+            emulated.write_joints(memory,frame,slot,kinect_slots.title_id(slot),body->joints,body->joint_states,
+                                  body->position);
         }
         if(bool(players[1])!=second_present) {
             second_present=bool(players[1]);
@@ -505,10 +511,12 @@ SFR_HOOK(sub_82764620) {
     memory.store<uint32_t>(uint64_t(message)+4,tracking_id);
     // Only the first player is the signed-in profile; a second one joins as
     // an unenrolled guest, as a friend standing beside the sensor would.
-    const bool profile=tracking_id<=1 && sfr::profile_for(0)!=nullptr;
+    // Odd tracking ids are the first player's slot (KinectPlayerSlots::title_id).
+    const bool first=(tracking_id&1)!=0;
+    const bool profile=first && sfr::profile_for(0)!=nullptr;
     const uint32_t enrollment=profile?0u:sfr::NuiSkeletonEmulation::guest;
     memory.store<uint32_t>(uint64_t(message)+12,enrollment);
-    (tracking_id>=2?second_skeleton:skeleton).identify(enrollment);
+    (first?skeleton:second_skeleton).identify(enrollment);
     std::cerr << "NUI_IDENTITY_IDENTIFY tracking_id=" << tracking_id << " callback=0x" << std::hex << callback
               << " context=0x" << context << std::dec << " result=" << (profile?"profile":"guest") << '\n';
     if(callback) {

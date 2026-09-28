@@ -177,3 +177,11 @@ mingw 編譯連結過。Kinect for Xbox 360（v1）已在實機上讀到骨架�
 不做水平校正（主機不會轉動骨架）。上面「比賽轉向」「蹲下」「感測器仰角」那些骨架做法，只在
 `SFR_KINECT_DEPTH=0` 時當備援；`SFR_KINECT_BODY_LEAN`、`SFR_KINECT_BODY_GESTURES`、`SFR_KINECT_LEVEL`
 設 1 或 0 可以個別強制。
+
+### 離開鏡頭再回來
+
+主機上，走出鏡頭再回來的人是一副新的骨架、新的追蹤編號，遊戲會重新辨識
+（`NuiIdentityIdentify`）他才讓他繼續。選單的玩家插槽（`82491458` 狀態 1）就是在等骨架資料的
+辨識結果（+8，`-1` 為未辨識）。之前遊戲永遠看到編號 1、2，同一個人回來時不會被重新辨識，
+裝備畫面因此卡住。現在每個進入玩家位置的人都拿新編號（`KinectPlayerSlots::title_id`：玩家 1 為
+奇數 1、3、5…，玩家 2 為偶數），辨識結果清回未辨識，log 印出 `NATIVE_KINECT_ENTER slot= tracking_id=`。
