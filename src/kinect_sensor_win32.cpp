@@ -105,16 +105,17 @@ public:
         get(smooth_, "NuiTransformSmooth");  // optional: frames go unsmoothed without it
         int sensors = 0;
         if (FAILED(count(&sensors)) || sensors < 1) { if (why) *why = "no-sensor"; return false; }
-        // SFR_KINECT_V1_FLAGS (NuiInitialize's flags, default skeleton only)
-        // and SFR_KINECT_V1_READ ("event": read when the frame event fires;
-        // "wait": let NuiSkeletonGetNextFrame wait for the frame) are there
-        // to find, on a sensor that signals frames but hands over no data
-        // (E_NUI_FRAME_NO_DATA), which way it does hand them over.
+        // Frames are read by letting NuiSkeletonGetNextFrame wait for them.
+        // Reading as soon as the frame event fires (SFR_KINECT_V1_READ=event)
+        // got E_NUI_FRAME_NO_DATA on every frame from a Kinect for Xbox 360
+        // (SDK 1.8, Windows 10), while waiting in the SDK got about 28 frames
+        // a second. SFR_KINECT_V1_FLAGS adds NuiInitialize flags, for trying
+        // another sensor.
         DWORD flags = nui_initialize_flag_uses_skeleton;
         if (const char* text = std::getenv("SFR_KINECT_V1_FLAGS"); text && *text)
             flags = DWORD(std::strtoul(text, nullptr, 0)) | nui_initialize_flag_uses_skeleton;
         const char* read = std::getenv("SFR_KINECT_V1_READ");
-        wait_in_sdk_ = read && std::string_view(read) == "wait";
+        wait_in_sdk_ = !(read && std::string_view(read) == "event");
         std::cerr << "NATIVE_KINECT_OPEN model=v1 flags=0x" << std::hex << flags << std::dec
                   << " read=" << (wait_in_sdk_ ? "wait" : "event") << std::endl;
         if (const HRESULT result = initialize(flags); FAILED(result)) {
@@ -206,7 +207,7 @@ private:
     HMODULE library_ = nullptr;
     HANDLE event_ = nullptr;
     bool initialized_ = false;
-    bool wait_in_sdk_ = false;
+    bool wait_in_sdk_ = true;
     NuiShutdown shutdown_ = nullptr;
     NuiSkeletonGetNextFrame next_frame_ = nullptr;
     NuiTransformSmooth smooth_ = nullptr;
