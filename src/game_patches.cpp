@@ -4,6 +4,7 @@
 #include "native_input.h"
 #include "avatar_state.h"
 #include "avatar_transform.h"
+#include "avatar_clip_pose.h"
 #include <bit>
 #include <atomic>
 #include <chrono>
@@ -349,6 +350,42 @@ SFR_AVATAR_PART_WALK(823BAFE0)
 SFR_AVATAR_PART_WALK(823BB2E8)
 
 PPC_FUNC_IMPL(__imp__sub_823B97A8);
+namespace {
+sfr::AvatarClipPose avatar_clip;
+sfr::AvatarPose read_avatar_pose(const sfr::GuestMemory& memory, uint32_t animation) {
+    sfr::AvatarPose pose;
+    if (!animation || !memory.readable(uint64_t(animation) + 11556, 4)) return pose;
+    const uint32_t current = memory.load<uint32_t>(uint64_t(animation) + 11556);
+    const uint64_t raw = uint64_t(animation) + 16 + 3456ull * current;
+    if (current >= 2 || !memory.readable(raw, 3456)) return pose;
+    pose.valid = true;
+    for (uint32_t bone = 0; bone < pose.bones.size(); ++bone) {
+        for (uint32_t i = 0; i < 3; ++i)
+            pose.bones[bone].translation[i] = std::bit_cast<float>(memory.load<uint32_t>(raw + bone * 48 + i * 4));
+        for (uint32_t i = 0; i < 4; ++i)
+            pose.bones[bone].rotation[i] = std::bit_cast<float>(memory.load<uint32_t>(raw + bone * 48 + 16 + i * 4));
+    }
+    return pose;
+}
+}
+PPC_FUNC_IMPL(__imp__sub_823BBCB8);
+SFR_HOOK(sub_823BBCB8) {
+    sfr::enter_function(ctx, "sub_823BBCB8", 0x823BBCB8);
+    const uint32_t controller = ctx.r3.u32, renderer = ctx.r4.u32, animation = ctx.r5.u32;
+    __imp__sub_823BBCB8(ctx, base);
+    if (!sfr::active_memory) return;
+    const auto& memory = *sfr::active_memory;
+    const uint32_t rider = sfr::single_player_avatar_racer(memory);
+    if (!rider || !memory.readable(uint64_t(rider) + 3208, 4)) return;
+    const uint32_t character = memory.load<uint32_t>(uint64_t(rider) + 3208);
+    if (!character || !memory.readable(uint64_t(character) + 8, 12) ||
+        memory.load<uint32_t>(uint64_t(character) + 8) != renderer ||
+        memory.load<uint32_t>(uint64_t(character) + 12) != controller ||
+        memory.load<uint32_t>(uint64_t(character) + 16) != animation) return;
+    // Preserve evaluated/blended clip output before 822A5140 computes tracked
+    // shoulder corrections against absent Xbox bind matrices (identity).
+    avatar_clip = {rider, animation, sfr::present_count.load(), read_avatar_pose(memory, animation)};
+}
 SFR_HOOK(sub_823B97A8) {
     sfr::enter_function(ctx, "sub_823B97A8", 0x823B97A8);
     // The main camera's Avatar draw (the other caller is the shadow pass).
@@ -369,34 +406,27 @@ SFR_HOOK(sub_823B97A8) {
                     frame.view[i] = std::bit_cast<float>(memory.load<uint32_t>(uint64_t(ctx.r6.u32) + i * 4));
                     frame.projection[i] = std::bit_cast<float>(memory.load<uint32_t>(uint64_t(ctx.r7.u32) + i * 4));
                 }
-                // Raw animation deltas are evaluated even without Xbox mesh
-                // assets. The SDK's final matrices depend on those assets and
-                // remain identity, so retarget the raw pose onto the VRM rig.
-                const uint32_t animation = ctx.r4.u32;
-                if (animation && memory.readable(uint64_t(animation) + 11556, 4)) {
-                    const uint32_t current = memory.load<uint32_t>(uint64_t(animation) + 11556);
-                    const uint64_t raw = uint64_t(animation) + 16 + 3456ull * current;
-                    if (current < 2 && memory.readable(raw, 3456)) {
-                        frame.pose.valid = true;
-                        for (uint32_t bone = 0; bone < frame.pose.bones.size(); ++bone) {
-                            auto& destination = frame.pose.bones[bone];
-                            for (uint32_t i = 0; i < 3; ++i)
-                                destination.translation[i] = std::bit_cast<float>(memory.load<uint32_t>(raw + bone * 48 + i * 4));
-                            for (uint32_t i = 0; i < 4; ++i)
-                                destination.rotation[i] = std::bit_cast<float>(memory.load<uint32_t>(raw + bone * 48 + 16 + i * 4));
-                        }
-                    }
-                }
+                if (auto clip = avatar_clip.current(rider, ctx.r4.u32, sfr::present_count.load())) frame.pose = *clip;
+                // BA028 reflects the completed skeleton across X for goofy.
+                if (memory.readable(uint64_t(ctx.r3.u32) + 8, 1))
+                    frame.pose.mirrored = memory.load<uint8_t>(uint64_t(ctx.r3.u32) + 8) != 0;
                 sfr::avatar_frame_transforms.publish(frame);
                 static const bool trace_pose = std::getenv("SFR_TRACE_AVATAR_POSE") != nullptr;
+                static const unsigned pose_every = [] {
+                    const char* text = std::getenv("SFR_TRACE_AVATAR_POSE_EVERY");
+                    const unsigned value = text ? unsigned(std::strtoul(text, nullptr, 10)) : 120u;
+                    return value ? value : 120u;
+                }();
                 static uint32_t pose_frames = 0;
-                if (trace_pose && pose_frames++ % 120 == 0 && memory.readable(uint64_t(ctx.r4.u32) + 11556, 4)) {
+                if (trace_pose && pose_frames++ % pose_every == 0 && memory.readable(uint64_t(ctx.r4.u32) + 11556, 4)) {
                     const uint32_t current = memory.load<uint32_t>(uint64_t(ctx.r4.u32) + 11556);
                     const uint64_t raw = uint64_t(ctx.r4.u32) + 16 + 3456ull * current;
                     const uint32_t controller = memory.readable(uint64_t(character) + 12, 4)
                         ? memory.load<uint32_t>(uint64_t(character) + 12) : 0;
                     std::ostringstream dump;
-                    dump << "AVATAR_POSE frame=" << pose_frames << " buffer=" << current;
+                    dump << "AVATAR_POSE frame=" << pose_frames << " present=" << sfr::present_count.load() << " buffer=" << current
+                         << " clip_valid=" << frame.pose.valid << " mirrored=" << frame.pose.mirrored
+                         << " clip_chest=" << frame.pose.bones[5].rotation[1] << " clip_root_y=" << frame.pose.bones[0].translation[1];
                     if (controller && memory.readable(controller, 152)) {
                         const uint32_t clip = memory.load<uint32_t>(uint64_t(controller) + 136);
                         dump << " bones=" << memory.load<uint32_t>(uint64_t(controller) + 148) << " clip=0x" << std::hex << clip;

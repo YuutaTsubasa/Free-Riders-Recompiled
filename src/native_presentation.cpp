@@ -180,16 +180,17 @@ struct NativePresentation::Impl {
     std::unique_ptr<plume::RenderPipelineLayout> blit_layout;
     std::unique_ptr<plume::RenderPipeline> blit_pipeline;
     // The player's own model, drawn over the frame while they race as the
-    // Avatar (SFR_AVATAR_MODEL). Its geometry never changes, so it is uploaded
-    // once and kept.
+    // Avatar (SFR_AVATAR_MODEL). Topology is static; posed vertices alternate
+    // between two buffers while the preceding frame is on the GPU.
     std::optional<sfr::GltfModel> model;
     std::unique_ptr<plume::RenderShader> model_vertex, model_pixel;
     std::unique_ptr<plume::RenderPipelineLayout> model_layout;
     std::unique_ptr<plume::RenderPipeline> model_pipeline, model_double_sided_pipeline;
     std::array<std::unique_ptr<plume::RenderBuffer>, 2> model_vertices;
-    std::unique_ptr<plume::RenderBuffer> model_indices;
+    std::array<std::unique_ptr<plume::RenderBuffer>, 2> model_indices;
     uint32_t model_vertex_slot = 0;
     bool model_animation_enabled = true;
+    bool model_mirrored = false;
     // Each part's slice of the index buffer, the picture its material paints
     // it with and the colour that picture is multiplied by: one draw a part,
     // so a face is not the colour of a sleeve.
@@ -507,15 +508,24 @@ void NativePresentation::Impl::build_model() {
     const uint64_t index_bytes = indices.size() * sizeof(uint32_t);
     for (auto& buffer : model_vertices)
         buffer = device.createBuffer(plume::RenderBufferDesc::UploadBuffer(vertex_bytes, plume::RenderBufferFlag::VERTEX));
-    model_indices = device.createBuffer(plume::RenderBufferDesc::UploadBuffer(index_bytes, plume::RenderBufferFlag::INDEX));
-    if (!model_vertices[0] || !model_vertices[1] || !model_indices) { model.reset(); return; }
+    for (auto& buffer : model_indices)
+        buffer = device.createBuffer(plume::RenderBufferDesc::UploadBuffer(index_bytes, plume::RenderBufferFlag::INDEX));
+    if (!model_vertices[0] || !model_vertices[1] || !model_indices[0] || !model_indices[1]) { model.reset(); return; }
     for (auto& buffer : model_vertices) {
         void* const at = buffer->map();
         if (!at) { model.reset(); return; }
         std::memcpy(at, vertices.data(), size_t(vertex_bytes));
         buffer->unmap();
     }
-    if (void* const at = model_indices->map()) { std::memcpy(at, indices.data(), size_t(index_bytes)); model_indices->unmap(); }
+    // A reflected skeleton reverses winding. Keep both static index orders so
+    // back-face culling and SV_IsFrontFace agree with the reflected normals.
+    for (auto& buffer : model_indices) {
+        void* const at = buffer->map();
+        if (!at) { model.reset(); return; }
+        std::memcpy(at, indices.data(), size_t(index_bytes));
+        buffer->unmap();
+        for (size_t i = 0; i + 2 < indices.size(); i += 3) std::swap(indices[i + 1], indices[i + 2]);
+    }
 
     if (graphics->backend() == sfr::GraphicsBackend::vulkan) {
         model_vertex = device.createShader(model_vs_spirv, sizeof(model_vs_spirv), "vertexMain", plume::RenderShaderFormat::SPIRV);
@@ -667,8 +677,8 @@ void NativePresentation::Impl::draw_model(const AvatarFrameTransform& frame) {
         // submit() waits the preceding submission before releasing its command
         // list. Alternating buffers therefore never overwrite vertices still
         // read by that submission; no additional per-frame GPU wait is needed.
-        model_vertex_slot ^= 1;
-        auto* destination = static_cast<float*>(model_vertices[model_vertex_slot]->map());
+        const uint32_t next_slot = model_vertex_slot ^ 1;
+        auto* destination = static_cast<float*>(model_vertices[next_slot]->map());
         if (!destination) return;
         for (const auto& primitive : model->primitives) {
             const size_t count = primitive.positions.size() / 3;
@@ -680,7 +690,9 @@ void NativePresentation::Impl::draw_model(const AvatarFrameTransform& frame) {
                     *destination++ = primitive.texcoords.size() == count * 2 ? primitive.texcoords[vertex * 2 + axis] : 0.f;
             }
         }
-        model_vertices[model_vertex_slot]->unmap();
+        model_vertices[next_slot]->unmap();
+        model_vertex_slot = next_slot;
+        model_mirrored = frame.pose.mirrored;
     }
     static const float scale = [] {
         const char* text = std::getenv("SFR_AVATAR_MODEL_SCALE");
@@ -691,7 +703,7 @@ void NativePresentation::Impl::draw_model(const AvatarFrameTransform& frame) {
     // local origin. Use the exact Avatar world/view/projection from this frame.
     std::array<float, 28> constants{};
     const auto transform = avatar_model_to_clip(frame.world, frame.view, frame.projection,
-                                                scale, model->lowest[1]);
+                                                scale, model->ground_y);
     std::copy(transform.begin(), transform.end(), constants.begin());
     constants[16] = 0.4f; constants[17] = -0.7f; constants[18] = 0.6f; constants[19] = 0.45f;
     command_list->setGraphicsPipelineLayout(model_layout.get());
@@ -700,7 +712,7 @@ void NativePresentation::Impl::draw_model(const AvatarFrameTransform& frame) {
                                                     uint32_t(model->vertices * 8 * sizeof(float)));
     const plume::RenderInputSlot slot(0, sizeof(float) * 8);
     command_list->setVertexBuffers(0, &vertex_view, 1, &slot);
-    const plume::RenderIndexBufferView index_view(plume::RenderBufferReference(model_indices.get(), 0),
+    const plume::RenderIndexBufferView index_view(plume::RenderBufferReference(model_indices[model_mirrored ? 1 : 0].get(), 0),
                                                   model_index_count * uint32_t(sizeof(uint32_t)),
                                                   plume::RenderFormat::R32_UINT);
     command_list->setIndexBuffer(&index_view);

@@ -43,14 +43,18 @@ struct GltfModel {
     // The box the whole model occupies, for standing it somewhere and sizing
     // it against a character.
     float lowest[3] = {0, 0, 0}, highest[3] = {0, 0, 0};
+    // Authored bind minimum, fixed across animation so jumps and crouches
+    // change height relative to the board instead of being grounded again.
+    float ground_y = 0;
     uint64_t vertices = 0, triangles = 0;
     // Shared immutable authored geometry, hierarchy and skin influences.
     std::shared_ptr<const GltfRig> rig;
 };
 
-// Rebuild geometry from authored bind data and native rotation deltas.
-// Keeps the bind pose's lowest Y anchored; recalculates current bounds.
-// Translations are ignored: the game owns root motion and VRM proportions.
+// Rebuild geometry from authored bind data and native rotation deltas, then
+// apply bone 0 translation in native meters and the final X reflection.
+// Other translations are ignored to preserve authored VRM proportions.
+// Recalculates current bounds while leaving the bind ground_y fixed.
 // Invalid/unrigged input returns false without changing the model.
 bool pose_gltf_model(GltfModel& model, const AvatarPose& pose);
 

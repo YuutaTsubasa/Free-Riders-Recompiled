@@ -18,7 +18,7 @@ sfr_cpu_diagnostic.exe "C:\Game\image" "C:\Game\assets" --game-region=ntsc-us
 ```
 
 在角色選单選 **AVATAR**，再選 Gear 並進入比賽。VRM 只會在目前的單人
-Avatar 比賽中顯示；一般角色、角色選單和雙人模式不會畫上這個模型。
+Avatar 的 Loading 預覽與比賽中顯示；一般角色、角色選單和雙人模式不會畫上這個模型。
 模型讀取失敗會記錄在 `game.log`；模型不會上傳。
 
 - `SFR_AVATAR_MODEL_SCALE`：模型尺寸倍率，預設 `1`。模型以公尺讀取，
@@ -54,7 +54,8 @@ Avatar 比賽中顯示；一般角色、角色選單和雙人模式不會畫上�
 離開選單會清除，也不能代替比賽的玩家數。
 
 所有指標先檢查可讀範圍。Loading 尚未建立 racer、切換角色或 race manager
-被銷毀時都停止繪製。
+被銷毀時都停止繪製。Manager `+20` 是預計參賽人數，Loading 的 vector 可能
+先只有本機玩家；不要求所有參賽者都載入後才顯示已建立的 1P 模型。
 
 ## 模型位置與相機
 
@@ -70,12 +71,20 @@ Avatar 比賽中顯示；一般角色、角色選單和雙人模式不會畫上�
 不會覆蓋主畫面的相機。每個 present 都消耗或清除一次資料，包含跳過繪製的格，
 不會沿用上一格或上一場的矩陣。
 
-同一個呼叫的 `r4` 是動畫物件。`[r4+11556]` 選擇目前的雙緩衝，
-`r4+16+buffer*3456` 包含 72 組 translation/quaternion/scale，步長 48 bytes。
-即使缺少 Xbox Avatar 網格，遊戲仍會計算這些動畫；缺少原始 bind pose 的
-最終矩陣則不能直接使用。渲染器複製當格 quaternion，以已確認的 19 個人形
-關節對應驅動 VRM，保留模型本身的肢體比例及 bind pose。遊戲 world 矩陣負責
-整體位置，來源骨骼的平移不會直接套到不同身形的模型。
+同一個呼叫的 `r4` 是動畫物件 B。`[B+11556]` 選擇目前的雙緩衝，
+`B+16+buffer*3456` 包含 72 組 translation/quaternion/scale，步長 48 bytes。
+在 `sub_823BBCB8` 完成動作片段求值與混合後保存當格結果，核對 controller、
+renderer、B 與目前 1P 的關聯，繪製時只接受同一玩家／B／present 的快照。
+
+這個時間點很重要：後面的 `sub_822A5140` 會依原生 chest 矩陣計算體感肩膀
+修正，但缺少 Xbox bind pose 時該矩陣是 identity。直接使用修正後的數值會
+重複套入身體轉向、扭曲上半身；VRM 暫時保留修正前的遊戲動作片段，尚未重建
+這段逐關節體感修正所需的原生骨架。
+
+已確認的 19 個人形關節驅動 VRM，保留模型的肢體比例及 bind pose。Root 的
+平移套用一次，保留蹲下與換邊小跳；其他關節的平移不套用到不同身形。
+腳底基準使用固定 bind minimum，不能每格重新貼地而消掉起跳。`byte[renderer+8]`
+沿用原版 `sub_823BA028` 的全身 X 鏡射，包含位置、法線與三角形方向，呈現換邊。
 
 每格從保留的原始頂點重算 skinning，更新法線與邊界，不會累積變形。
 兩組頂點緩衝輪流更新，避免覆寫 GPU 尚在讀取的上一格。這是 CPU skinning，

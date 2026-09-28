@@ -133,7 +133,9 @@ std::vector<uint8_t> skinned_triangle(bool vrm_one_point_oh = true, bool hierarc
     json += "{\"buffer\":0,\"byteOffset\":" + std::to_string(weights_at) + ",\"byteLength\":48},";
     json += "{\"buffer\":0,\"byteOffset\":" + std::to_string(bind_at) + ",\"byteLength\":64}],";
     json += hierarchy
-                ? R"("extensions":{"VRMC_vrm":{"humanoid":{"humanBones":{"hips":{"node":1},"spine":{"node":2}}}}},)"
+                ? (vrm_one_point_oh
+                    ? R"("extensions":{"VRMC_vrm":{"humanoid":{"humanBones":{"hips":{"node":1},"spine":{"node":2}}}}},)"
+                    : R"("extensions":{"VRM":{"humanoid":{"humanBones":[{"bone":"hips","node":1},{"bone":"spine","node":2}]}}},)")
                 : vrm_one_point_oh
                 ? "\"extensions\":{\"VRMC_vrm\":{\"humanoid\":{\"humanBones\":{\"spine\":{\"node\":1}}}}},"
                 : "\"extensions\":{\"VRM\":{\"humanoid\":{\"humanBones\":[{\"bone\":\"spine\",\"node\":1}]}}},";
@@ -284,6 +286,41 @@ void deeply_nested_json_is_refused() {
             "ordinary nested metadata still reads");
 }
 
+void native_root_translation_moves_the_whole_model() {
+    for (const bool newer : {false, true}) for (const bool hierarchy : {false, true}) {
+        auto model = sfr::read_binary_gltf(skinned_triangle(newer, hierarchy));
+        require(bool(model), "root motion fixture loads");
+        const auto authored = model->primitives[0];
+        sfr::AvatarPose pose;
+        pose.valid = true;
+        pose.bones[0].translation = {0.25f, 0.966f, -0.5f};
+        pose.bones[1].translation = {40, 50, 60};
+        require(sfr::pose_gltf_model(*model, pose), "native root translation accepted");
+        for (size_t i = 0; i < authored.positions.size(); ++i)
+            require(near(model->primitives[0].positions[i], authored.positions[i] + pose.bones[0].translation[i % 3]),
+                    "native root translation applies once in the same direction for both VRM versions");
+        require(near(model->lowest[1], 1.966f) && near(model->highest[1], 1.966f),
+                "root rise changes both animated bounds");
+        require(near(model->ground_y, 1), "root rise preserves authored ground reference");
+        const auto moved = model->primitives[0];
+        require(sfr::pose_gltf_model(*model, pose) && model->primitives[0].positions == moved.positions,
+                "root motion never accumulates between frames");
+        for (int axis = 0; axis < 3; ++axis) {
+            const auto finite = pose.bones[0].translation;
+            for (const float invalid : {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()}) {
+                pose.bones[0].translation[axis] = invalid;
+                require(!sfr::pose_gltf_model(*model, pose) && model->primitives[0].positions == moved.positions &&
+                        model->primitives[0].normals == moved.normals && near(model->lowest[1], 1.966f),
+                        "nonfinite root translation rejects the whole update before mutation");
+            }
+            pose.bones[0].translation = finite;
+        }
+        pose.bones[0].translation = {};
+        require(sfr::pose_gltf_model(*model, pose) && model->primitives[0].positions == authored.positions,
+                "zero root motion restores bind while non-root translations preserve proportions");
+    }
+}
+
 void native_pose_updates_from_bind() {
     auto model = sfr::read_binary_gltf(skinned_triangle(), nullptr, sfr::GltfPose::riding);
     const auto rest = sfr::read_binary_gltf(skinned_triangle());
@@ -299,7 +336,8 @@ void native_pose_updates_from_bind() {
     const auto moved = model->primitives[0];
     require(near(moved.positions[2], 1) && near(moved.normals[1], -1),
             "native rotation moves weighted vertex and normal");
-    require(near(model->lowest[1], rest->lowest[1]), "animated geometry stays anchored");
+    require(near(model->lowest[1], -1) && near(model->ground_y, rest->lowest[1]),
+            "rotation may lower geometry without changing authored grounding");
     require(sfr::pose_gltf_model(*model, pose) && model->primitives[0].positions == moved.positions,
             "repeated native pose never accumulates");
     pose.bones[1].rotation[0] = std::numeric_limits<float>::quiet_NaN();
@@ -322,10 +360,54 @@ void native_pose_updates_from_bind() {
     pose = {};
     require(!sfr::pose_gltf_model(*model, pose), "an unavailable capture keeps the static fallback");
     pose.valid = true;
-    pose.bones[0].translation = {100, 200, 300};
     pose.bones[1].translation = {40, 50, 60};
     require(sfr::pose_gltf_model(*model, pose) && model->primitives[0].positions == rest->primitives[0].positions,
-            "source translation never changes VRM proportions or root position");
+            "non-root translation never changes VRM proportions");
+}
+
+void native_mirroring_reflects_the_completed_pose() {
+    for (const bool newer : {false, true}) {
+        auto model = sfr::read_binary_gltf(skinned_triangle(newer));
+        require(bool(model), "mirroring fixture loads");
+        sfr::AvatarPose pose;
+        pose.valid = true;
+        require(!pose.mirrored, "native mirroring defaults off");
+        const float half = std::sqrt(0.5f);
+        pose.bones[1].rotation = {0, half, 0, half};
+        pose.bones[0].translation = {0.25f, 0.966f, -0.5f};
+        require(sfr::pose_gltf_model(*model, pose), "unmirrored reference pose accepted");
+        const auto before = model->primitives[0];
+        const float min_x = model->lowest[0], max_x = model->highest[0];
+        require(std::fabs(before.normals[0]) > 0.9f, "fixture has an X normal to reflect");
+        pose.mirrored = true;
+        require(sfr::pose_gltf_model(*model, pose), "mirrored pose accepted");
+        for (size_t i = 0; i < before.positions.size(); ++i) {
+            const float sign = i % 3 == 0 ? -1.0f : 1.0f;
+            require(near(model->primitives[0].positions[i], sign * before.positions[i]),
+                    "mirroring reflects final X including native root translation");
+            require(near(model->primitives[0].normals[i], sign * before.normals[i]),
+                    "mirroring reflects normal X while preserving Y and Z");
+        }
+        require(near(model->lowest[0], -max_x) && near(model->highest[0], -min_x), "mirrored bounds follow reflected vertices");
+        require(near(model->ground_y, 1), "mirroring preserves fixed ground reference");
+        require(model->primitives[0].indices == before.indices, "CPU reflection leaves winding to the renderer");
+        const auto mirrored = model->primitives[0];
+        require(sfr::pose_gltf_model(*model, pose) && model->primitives[0].positions == mirrored.positions,
+                "repeated reflection rebuilds from bind instead of toggling geometry");
+        pose.mirrored = false;
+        require(sfr::pose_gltf_model(*model, pose) && model->primitives[0].positions == before.positions,
+                "unmirroring restores the same translated pose");
+    }
+}
+
+void authored_ground_is_defined_for_every_loaded_pose() {
+    const auto ordinary = sfr::read_binary_gltf(one_triangle("{\"mesh\":0,\"translation\":[0,3,0]}"));
+    const auto rest = sfr::read_binary_gltf(skinned_triangle());
+    const auto riding = sfr::read_binary_gltf(skinned_triangle(), nullptr, sfr::GltfPose::riding);
+    require(ordinary && rest && riding, "ground reference fixtures load");
+    require(near(ordinary->ground_y, 3) && near(rest->ground_y, 1) && near(riding->ground_y, 1),
+            "static, rest and riding models retain the authored bind minimum");
+    require(!near(riding->lowest[1], riding->ground_y), "static riding deformation does not redefine grounding");
 }
 
 void native_pose_inherits_parents_and_authored_axes() {
@@ -404,6 +486,9 @@ int main(int argc, char** argv) {
         what_is_refused();
         cyclic_nodes_are_refused();
         deeply_nested_json_is_refused();
+        native_root_translation_moves_the_whole_model();
+        native_mirroring_reflects_the_completed_pose();
+        authored_ground_is_defined_for_every_loaded_pose();
         native_pose_updates_from_bind();
         native_pose_inherits_parents_and_authored_axes();
         native_identity_preserves_a_scaled_parent();

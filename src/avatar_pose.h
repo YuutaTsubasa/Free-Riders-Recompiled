@@ -9,5 +9,7 @@ struct AvatarBonePose {
 struct AvatarPose {
     std::array<AvatarBonePose, 72> bones;
     bool valid = false;
+    // Native renderer +8 reflects the completed pose across X.
+    bool mirrored = false;
 };
 }

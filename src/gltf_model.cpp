@@ -475,6 +475,8 @@ bool pose_gltf_model(GltfModel& model, const AvatarPose& pose) {
     const GltfRig& rig = *model.rig;
     std::array<Matrix, 72> delta;
     // Reject before touching geometry; a partially captured pose stays static.
+    for (const float value : pose.bones[0].translation)
+        if (!std::isfinite(value)) return false;
     for (size_t i = 0; i < delta.size(); ++i)
         if (!quaternion_matrix(pose.bones[i].rotation, rig.facing_backwards, delta[i])) return false;
     for (size_t i = 0; i < model.primitives.size(); ++i)
@@ -510,6 +512,10 @@ bool pose_gltf_model(GltfModel& model, const AvatarPose& pose) {
                 float value = transform.m[12 + axis];
                 for (int c = 0; c < 3; ++c) value += transform.m[c * 4 + axis] * source.positions[v * 3 + c];
                 if (rig.facing_backwards && axis != 1) value = -value;
+                // The capture is already in native model axes. Translate
+                // after VRM 0 facing conversion, once for the entire model.
+                value += pose.bones[0].translation[axis];
+                if (pose.mirrored && axis == 0) value = -value;
                 out.positions[v * 3 + axis] = value;
                 if (!any) model.lowest[axis] = model.highest[axis] = value;
                 else {
@@ -523,17 +529,13 @@ bool pose_gltf_model(GltfModel& model, const AvatarPose& pose) {
                 for (int axis = 0; axis < 3; ++axis) {
                     for (int c = 0; c < 3; ++c) normal[axis] += transform.m[c * 4 + axis] * source.normals[v * 3 + c];
                     if (rig.facing_backwards && axis != 1) normal[axis] = -normal[axis];
+                    if (pose.mirrored && axis == 0) normal[axis] = -normal[axis];
                 }
                 const float length = std::sqrt(normal[0]*normal[0] + normal[1]*normal[1] + normal[2]*normal[2]);
                 for (int axis = 0; axis < 3; ++axis) out.normals[v * 3 + axis] = length > 0 ? normal[axis] / length : 0;
             }
         }
     }
-    const float lift = rig.anchor_y - model.lowest[1];
-    for (auto& primitive : model.primitives)
-        for (size_t i = 1; i < primitive.positions.size(); i += 3) primitive.positions[i] += lift;
-    model.lowest[1] += lift;
-    model.highest[1] += lift;
     return true;
 }
 
@@ -948,6 +950,7 @@ std::optional<GltfModel> read_binary_gltf(const std::vector<uint8_t>& bytes, std
         }
     }
     if (model.primitives.empty()) { fail(error, "no drawable primitive"); return std::nullopt; }
+    model.ground_y = rig->anchor_y;
     if (facing_backwards) {
         // A VRM 0.x model faces -z where a 1.0 one faces +z. Turning it half a
         // turn about y -- which negates x and z -- means everything that draws

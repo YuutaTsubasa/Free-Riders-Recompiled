@@ -1,5 +1,6 @@
 #include "avatar_state.h"
 #include "avatar_transform.h"
+#include "avatar_clip_pose.h"
 #include <limits>
 #include <iostream>
 #include <stdexcept>
@@ -12,6 +13,18 @@ void require(bool value, const char* message) {
 
 int main() {
     try {
+        sfr::AvatarClipPose evaluated;
+        require(!evaluated.current(1, 2, 3), "no clip before evaluation");
+        evaluated.rider = 1; evaluated.animation = 2; evaluated.present = 3;
+        evaluated.pose.valid = true;
+        evaluated.pose.bones[5].rotation = {0, 0, 0, 1};
+        require(evaluated.current(1, 2, 3).has_value(), "current rider receives evaluated clip");
+        auto draw_pose = *evaluated.current(1, 2, 3);
+        draw_pose.bones[5].rotation[1] = 0.7f;
+        require(evaluated.current(1, 2, 3)->bones[5].rotation[1] == 0,
+                "later procedural writes cannot alter evaluated clip snapshot");
+        require(!evaluated.current(9, 2, 3) && !evaluated.current(1, 9, 3) && !evaluated.current(1, 2, 4),
+                "a reused animation address cannot leak another rider or frame");
         const sfr::AvatarMatrix identity{1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
         auto world = identity;
         world[12] = 3; world[13] = 4; world[14] = -6;
@@ -48,6 +61,14 @@ int main() {
         require(sfr::single_player_avatar_racer(memory) == rider, "live single-player Avatar");
         memory.store<uint8_t>(0x83E515FB, 0);
         require(sfr::single_player_avatar_racer(memory) == rider, "menu state is not race count");
+        // Loading creates the local preview before all planned race entrants.
+        memory.store<uint32_t>(manager + 20, 12);
+        require(sfr::single_player_avatar_racer(memory) == rider,
+                "Loading Avatar remains valid with one initialized racer and twelve planned entrants");
+        memory.store<uint32_t>(manager + 40, list + 12 * 4);
+        require(sfr::single_player_avatar_racer(memory) == rider,
+                "full race list retains the same first-player identity");
+        memory.store<uint32_t>(manager + 40, list + 4);
         for (const auto character : {0u, 1u, 18u}) {
             memory.store<uint32_t>(rider + 100, character);
             require(sfr::single_player_avatar_racer(memory) == 0, "ordinary character must not draw VRM");
