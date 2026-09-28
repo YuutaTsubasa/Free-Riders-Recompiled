@@ -134,8 +134,14 @@ COM 介面依 SDK 2.0 的 `Kinect.h` 宣告到用得到的最後一個方法為�
 
 - [`kinect_sensor_win32.cpp`](../src/kinect_sensor_win32.cpp)：執行時才 `LoadLibrary`
   載入 `Kinect10.dll`（建置不需要 SDK，沒有 Kinect 的人也不需要那個 DLL），
-  開啟骨架追蹤，在自己的執行緒上等感測器的新框架事件，套用 SDK 建議的
-  `NuiTransformSmooth` 平滑參數（約一格延遲）。
+  開啟骨架追蹤，在自己的執行緒上讓 `NuiSkeletonGetNextFrame` 等待新框架，套用 SDK
+  建議的 `NuiTransformSmooth` 平滑參數（約一格延遲）。
+- 比賽轉向（[`nui_race_hooks.cpp`](../src/nui_race_hooks.cpp)）：遊戲的傾斜判斷讀身體紀錄
+  +640／+644，在主機上是深度影像裡玩家左右兩側的像素數，不是關節。這裡沒有深度影像送進
+  遊戲，所以 1P 的傾斜改由骨架算：沿用 webcam 體感的做法，比賽開始先保持站姿約 0.6 秒
+  校正，之後以肩膀相對髖部的左右傾角換成那一對數值（`NUI_RACE_SENSOR_LEAN active=1`，
+  `CAMERA_RACE_CALIBRATION ready=1`；`SFR_CAMERA_RACE_TRACE=1` 每 30 格印出 `lean=`）。
+  其他動作（蹲、跳、踢）仍由遊戲自己的判斷器讀骨架；2P 的傾斜還沒接。
 - [`KinectPlayerSlots`](../src/kinect_sensor.h)：感測器最多完整追蹤兩個人。
   每個人只要還被追蹤就留在原本的欄位（遊戲以欄位與 tracking id 1／2 認人，
   第 1 位是登入的設定檔），新走進來的人補空的欄位。

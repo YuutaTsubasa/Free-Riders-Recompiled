@@ -1,3 +1,5 @@
+#include <utility>
+#include <bit>
 #include "ppc_recomp_shared.h"
 #include "diagnostic_hooks.h"
 #include "nui_race.h"
@@ -19,6 +21,7 @@ constexpr uint32_t nui_box_global = 0x83E52F88, race_flag_global = 0x83E52F8C;
 constexpr uint32_t existing_primary = 0x20, existing_secondary = 0x8;
 unsigned original_side_calls = 0, manager_calls = 0;
 bool sensor_body = false;
+uint64_t kinect_sequence = 0;
 }
 
 // Compile the real hooks, capturing their production registration names so a
@@ -36,6 +39,7 @@ uint64_t camera_motion_clock_ns() { return 0; }
 std::optional<GamepadState> second_player_pad() { return std::nullopt; }
 GamepadState nui_gamepad() { return harness::input; }
 bool nui_body_from_sensor() { return harness::sensor_body; }
+uint64_t kinect_frame_generation() { return harness::kinect_sequence; }
 void enter_function_observed(PPCContext&, const char*, uint32_t) {}
 void guest_checkpoint_permit() {}
 void call_indirect(PPCContext&, uint8_t*, uint32_t) {
@@ -235,6 +239,31 @@ void run() {
     require(m.load<uint32_t>(box + 0x78) == original, "a sensor's body must stay the title's record");
     require(invoke("sub_822CA6B0") == 1 && original_side_calls == 2,
             "with a sensor the original detectors must run");
+
+    // No depth image reaches the title, so a sensor's lean pair comes from
+    // the body: upright after the stance calibration, then the torso's roll.
+    const auto put = [&](uint32_t offset, float x, float y, float z) {
+        m.store<uint32_t>(original + offset, std::bit_cast<uint32_t>(x));
+        m.store<uint32_t>(original + offset + 4, std::bit_cast<uint32_t>(y));
+        m.store<uint32_t>(original + offset + 8, std::bit_cast<uint32_t>(z));
+    };
+    const auto lean_pair = [&] {
+        return std::pair{std::bit_cast<float>(m.load<uint32_t>(original + 640)),
+                         std::bit_cast<float>(m.load<uint32_t>(original + 644))};
+    };
+    put(0, 0, 0, 2.2f);        // hip centre
+    put(32, 0, 0.5f, 2.2f);    // shoulder centre
+    put(224, -0.1f, -0.8f, 2.2f);
+    put(288, 0.1f, -0.8f, 2.2f);
+    for (int i = 0; i < 60; ++i) { ++kinect_sequence; frame(0); }
+    require(lean_pair() == std::pair{1.f, 1.f}, "a calibrated upright sensor body leans neither way");
+    put(32, -0.3f, 0.5f, 2.2f);  // shoulders over one side of the hips
+    for (int i = 0; i < 60; ++i) { ++kinect_sequence; frame(0); }
+    const auto [right, left] = lean_pair();
+    require(right > 1.5f && left == 1.f, "a sensor body's roll leans the race one way");
+    put(32, 0.3f, 0.5f, 2.2f);
+    for (int i = 0; i < 60; ++i) { ++kinect_sequence; frame(0); }
+    require(lean_pair().first == 1.f && lean_pair().second > 1.5f, "and the other roll the other way");
     sensor_body = false;
 }
 }

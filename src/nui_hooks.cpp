@@ -48,6 +48,7 @@ bool camera_has_joints = false;
 // the title's own detectors instead of the pad (nui_body_from_sensor).
 std::unique_ptr<sfr::KinectSensor> kinect;
 std::atomic<bool> sensor_body{false};
+std::atomic<uint64_t> kinect_generation{0};  // kinect_frame_generation
 sfr::KinectFrame kinect_frame;
 sfr::KinectPlayerSlots kinect_slots;
 sfr::KinectPlacementTransform kinect_placement;  // SFR_KINECT_PLACEMENT
@@ -114,6 +115,7 @@ uint64_t input_frames=0;
 
 
 bool sfr::nui_body_from_sensor() { return sensor_body.load(std::memory_order_relaxed); }
+uint64_t sfr::kinect_frame_generation() { return kinect_generation.load(std::memory_order_relaxed); }
 
 // NuiInitialize(flags, ?)
 SFR_HOOK(sub_8276FD88) {
@@ -185,7 +187,10 @@ SFR_HOOK(sub_827707B0) {
         auto& memory=*sfr::active_memory;
         const auto elapsed=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-started);
         // Turned once per new frame: the last one is kept as it was turned.
-        if(kinect->next(kinect_frame)) kinect_placement.apply(kinect_frame);
+        if(kinect->next(kinect_frame)) {
+            kinect_placement.apply(kinect_frame);
+            kinect_generation.fetch_add(1,std::memory_order_relaxed);
+        }
         sfr::publish_second_player_pad(std::nullopt);
         sfr::NuiSkeletonEmulation::write_header(memory,frame,++frame_number,uint64_t(elapsed.count()));
         sfr::NuiSkeletonEmulation::write_floor(memory,frame,kinect_frame.floor_plane,kinect_frame.gravity);
