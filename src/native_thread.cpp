@@ -231,6 +231,10 @@ int32_t NativeThread::set_priority(int32_t host_relative) {
     return previous;
 }
 
+std::vector<uint32_t> host_processor_order(uint64_t allowed, uint16_t group) {
+    return processors_by_core(allowed, group);
+}
+
 uint64_t NativeThread::set_guest_processor(uint32_t guest_cpu) {
     if (guest_cpu >= 6)
         throw RuntimeStop("thread-host", guest_cpu, "guest processor index must be below 6");
@@ -244,7 +248,7 @@ uint64_t NativeThread::set_guest_processor(uint32_t guest_cpu) {
     {
         std::lock_guard guard(order_lock);
         if (ordered.empty() || ordered_for != impl_->allowed_affinity || ordered_group != impl_->processor_group) {
-            ordered = processors_by_core(impl_->allowed_affinity, impl_->processor_group);
+            ordered = host_processor_order(impl_->allowed_affinity, impl_->processor_group);
             ordered_for = impl_->allowed_affinity;
             ordered_group = impl_->processor_group;
             std::cerr << "NATIVE_HOST_PROCESSORS group=" << impl_->processor_group << " order=";

@@ -4,8 +4,17 @@
 #include <functional>
 #include <memory>
 #include <stop_token>
+#include <vector>
 
 namespace sfr {
+
+#ifdef _WIN32
+// The allowed logical processors of one group in the order guest processors
+// take them (guest processor n gets entry n modulo the count): the first
+// hardware thread of every physical core, fastest cores first, then the
+// second threads. SFR_HOST_PROCESSORS=sequential gives plain bit order.
+std::vector<uint32_t> host_processor_order(uint64_t allowed, uint16_t group);
+#endif
 
 class NativeThread {
 public:
