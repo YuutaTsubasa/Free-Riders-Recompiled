@@ -1,5 +1,8 @@
 #include "native_graphics.h"
 #include "native_presentation.h"
+#include "native_raster_state.h"
+#include "avatar_transform.h"
+#include "gltf_model.h"
 
 #include "plume_render_interface.h"
 #include <volk.h>
@@ -12,12 +15,18 @@
 
 #include <array>
 #include <cmath>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace {
@@ -34,6 +43,196 @@ bool rejects_with(Operation operation) {
 // The native-handle checks are D3D12's; the behaviour checks run on both
 // backends (SFR_GRAPHICS=vulkan).
 bool d3d12() { return sfr::selected_graphics_backend() == sfr::GraphicsBackend::d3d12; }
+
+struct ScopedEnvironment {
+    std::string name;
+    std::optional<std::string> previous;
+    static void set(const std::string& name, const char* value) {
+#ifdef _WIN32
+        _putenv_s(name.c_str(), value ? value : "");
+#else
+        if (value) setenv(name.c_str(), value, 1);
+        else unsetenv(name.c_str());
+#endif
+    }
+    ScopedEnvironment(std::string key, const std::string& value) : name(std::move(key)) {
+        if (const char* old = std::getenv(name.c_str())) previous = old;
+        set(name, value.c_str());
+    }
+    ~ScopedEnvironment() { set(name, previous ? previous->c_str() : nullptr); }
+};
+
+// A real model upload with no external assets. Root translation changes the
+// generated vertex data, so two draws detect accidental upload-buffer reuse.
+struct AvatarTriangleFile {
+    std::filesystem::path directory, path;
+    AvatarTriangleFile() {
+        directory = std::filesystem::temp_directory_path() /
+            ("sfr-avatar-presentation-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        require(std::filesystem::create_directory(directory), "create isolated Avatar fixture directory");
+        path = directory / "triangle.glb";
+        const auto put32 = [](std::vector<uint8_t>& out, uint32_t value) {
+            for (unsigned shift = 0; shift < 32; shift += 8) out.push_back(uint8_t(value >> shift));
+        };
+        std::vector<uint8_t> binary;
+        for (float value : {-0.25f, 0.f, 0.f, 0.25f, 0.f, 0.f, 0.f, 0.75f, 0.f}) {
+            uint32_t bits;
+            std::memcpy(&bits, &value, sizeof(bits));
+            put32(binary, bits);
+        }
+        // JOINTS_0: every vertex uses joint zero. WEIGHTS_0 assigns it full
+        // influence; an actual skin is required for native pose evaluation.
+        binary.insert(binary.end(), 12, 0);
+        for (float value : {1.f,0.f,0.f,0.f, 1.f,0.f,0.f,0.f, 1.f,0.f,0.f,0.f,
+                            1.f,0.f,0.f,0.f, 0.f,1.f,0.f,0.f, 0.f,0.f,1.f,0.f, 0.f,0.f,0.f,1.f}) {
+            uint32_t bits;
+            std::memcpy(&bits, &value, sizeof(bits));
+            put32(binary, bits);
+        }
+        for (uint8_t value : {0, 0, 1, 0, 2, 0, 0, 0}) binary.push_back(value);
+        std::string json = R"({"asset":{"version":"2.0"},
+            "nodes":[{"mesh":0,"skin":0},{}],
+            "skins":[{"joints":[1],"inverseBindMatrices":4}],
+            "meshes":[{"primitives":[{"attributes":{"POSITION":0,"JOINTS_0":2,"WEIGHTS_0":3},"indices":1,"material":0}]}],
+            "materials":[{"doubleSided":true,"pbrMetallicRoughness":{"baseColorFactor":[1,0,0,1]},
+                "extensions":{"KHR_materials_unlit":{}}}],
+            "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3"},
+                {"bufferView":1,"componentType":5123,"count":3,"type":"SCALAR"},
+                {"bufferView":2,"componentType":5121,"count":3,"type":"VEC4"},
+                {"bufferView":3,"componentType":5126,"count":3,"type":"VEC4"},
+                {"bufferView":4,"componentType":5126,"count":1,"type":"MAT4"}],
+            "bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":36},
+                {"buffer":0,"byteOffset":160,"byteLength":6},
+                {"buffer":0,"byteOffset":36,"byteLength":12},
+                {"buffer":0,"byteOffset":48,"byteLength":48},
+                {"buffer":0,"byteOffset":96,"byteLength":64}],
+            "buffers":[{"byteLength":168}],
+            "extensions":{"VRMC_vrm":{"humanoid":{"humanBones":{"hips":{"node":1}}}}}})";
+        while (json.size() % 4) json += ' ';
+        std::vector<uint8_t> glb;
+        put32(glb, 0x46546C67); put32(glb, 2); put32(glb, uint32_t(28 + json.size() + binary.size()));
+        put32(glb, uint32_t(json.size())); put32(glb, 0x4E4F534A);
+        glb.insert(glb.end(), json.begin(), json.end());
+        put32(glb, uint32_t(binary.size())); put32(glb, 0x004E4942);
+        glb.insert(glb.end(), binary.begin(), binary.end());
+        std::ofstream file(path, std::ios::binary);
+        file.write(reinterpret_cast<const char*>(glb.data()), std::streamsize(glb.size()));
+        require(bool(file), "write the synthetic Avatar GLB");
+    }
+    ~AvatarTriangleFile() {
+        std::error_code error;
+        std::filesystem::remove(path, error);
+        std::filesystem::remove(directory, error);
+    }
+};
+
+void avatar_draws_keep_viewport_order_and_independent_poses() {
+    AvatarTriangleFile fixture;
+    ScopedEnvironment model("SFR_AVATAR_MODEL", fixture.path.string());
+    ScopedEnvironment scale("SFR_AVATAR_MODEL_SCALE", "1");
+    ScopedEnvironment pose("SFR_AVATAR_MODEL_POSE", "game");
+    ScopedEnvironment depth("SFR_AVATAR_MODEL_NO_DEPTH", "0");
+    std::string model_error;
+    auto fixture_model = sfr::load_binary_gltf(fixture.path, &model_error, sfr::GltfPose::rest);
+    require(fixture_model && fixture_model->rig, "synthetic Avatar has a real native-pose rig");
+    sfr::AvatarPose translated_pose;
+    translated_pose.valid = true;
+    translated_pose.bones[0].translation[0] = -0.55f;
+    require(sfr::pose_gltf_model(*fixture_model, translated_pose) &&
+                std::abs(fixture_model->primitives[0].positions[0] - (-0.8f)) < 0.0001f,
+            "fixture root translation changes uploaded vertex positions");
+    sfr::NativeGraphics graphics;
+    graphics.initialize();
+    sfr::NativePresentation presentation(graphics, 64, 48);
+    sfr::NativeClear clear{};
+    clear.color = true;
+    clear.depth = true;
+    clear.depth_value = 1;
+    clear.color_value = {0, 0, 0, 1};
+    presentation.clear(clear);
+    const plume::RenderViewport viewport(8, 8, 48, 32, 0, 1);
+    const plume::RenderRect scissor(16, 12, 48, 36);
+    presentation.set_raster_state(viewport, scissor);
+    const sfr::AvatarMatrix identity{1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    sfr::AvatarFrameTransform frame{identity, identity, identity};
+    frame.world[13] = -0.5f;
+    frame.world[14] = 0.5f;
+    frame.pose.valid = true;
+    frame.pose.bones[0].translation[0] = -0.55f;
+    frame.present = 7;
+    const auto before = presentation.list_generation();
+    presentation.draw_player_model(frame);
+    const auto after_first = presentation.list_generation();
+    require(after_first > before, "Avatar pass invalidates cached guest bindings");
+    // No flush/readback between these draws: the GPU must retain both poses.
+    frame.pose.bones[0].translation[0] = 0.55f;
+    presentation.draw_player_model(frame);
+    require(presentation.list_generation() > after_first, "each Avatar pass invalidates guest bindings");
+    require(presentation.raster_state().viewport() == viewport && presentation.raster_state().scissor() == scissor,
+            "Avatar pass retains the title's viewport and scissor");
+    clear.color_value = {0, 1, 0, 1};
+    clear.depth = false;
+    const plume::RenderRect overlay(18, 28, 21, 31);
+    presentation.clear(clear, std::span<const plume::RenderRect>(&overlay, 1));
+    presentation.present();
+    const auto pixels = presentation.readback_color();
+    require(pixels.size() == 64 * 48 * 4, "Avatar GPU readback contains the complete target");
+    const auto pixel = [&](uint32_t x, uint32_t y) {
+        std::array<uint8_t, 4> value;
+        std::memcpy(value.data(), pixels.data() + (y * 64 + x) * 4, 4);
+        return value;
+    };
+    require(pixel(19, 25) == std::array<uint8_t, 4>{0, 0, 255, 255},
+            "first draw keeps its own root-translated vertices until submission");
+    require(pixel(45, 29) == std::array<uint8_t, 4>{0, 0, 255, 255},
+            "second draw uses its own root-translated vertices in the partial viewport");
+    require(pixel(19, 29) == std::array<uint8_t, 4>{0, 255, 0, 255},
+            "later title overlay remains above the Avatar after present");
+    require(pixel(14, 30) == std::array<uint8_t, 4>{0, 0, 0, 255} &&
+                pixel(49, 30) == std::array<uint8_t, 4>{0, 0, 0, 255},
+            "scissor clips the portions of both triangles inside the viewport but outside the scissor");
+    for (uint32_t y = 0; y < 48; ++y) for (uint32_t x = 0; x < 64; ++x)
+        if (x < 16 || x >= 48 || y < 12 || y >= 36)
+            require(pixel(x, y) == std::array<uint8_t, 4>{0, 0, 0, 255},
+                    "Avatar drawing does not spill outside the active view and scissor");
+
+    // A scene surface nearer than the Avatar must occlude it. This catches
+    // accidentally using (or clearing) a private depth buffer for the model.
+    const auto require_occluded = [&] {
+        const auto image = presentation.readback_color();
+        require(image.size() == 64 * 48 * 4, "occlusion readback contains the complete target");
+        for (size_t at = 0; at < image.size(); at += 4)
+            require(image[at] == 0 && image[at + 1] == 0 && image[at + 2] == 0 && image[at + 3] == 255,
+                    "nearer scene depth occludes the Avatar without being cleared by its pass");
+    };
+    frame.pose.bones[0].translation[0] = 0;
+    clear.color_value = {0, 0, 0, 1};
+    clear.depth = true;
+    clear.depth_value = 0.25f;
+    presentation.clear(clear);
+    ++frame.present;
+    presentation.draw_player_model(frame);
+    require_occluded();
+
+    if (presentation.raster_state().inverted_depth_supported()) {
+        const plume::RenderViewport reversed(8, 8, 48, 32, 1, 0);
+        presentation.set_raster_state(reversed, scissor);
+        clear.depth_value = 0;
+        presentation.clear(clear);
+        ++frame.present;
+        presentation.draw_player_model(frame);
+        const auto reversed_pixels = presentation.readback_color();
+        const size_t sample = (25 * 64 + 32) * 4;
+        require(reversed_pixels.size() == 64 * 48 * 4 && reversed_pixels[sample] == 0 &&
+                    reversed_pixels[sample + 1] == 0 && reversed_pixels[sample + 2] == 255,
+                "reversed viewport draws Avatar against far depth zero using the reversed comparison");
+        clear.depth_value = 0.75f;
+        presentation.clear(clear);
+        ++frame.present;
+        presentation.draw_player_model(frame);
+        require_occluded();
+    }
+}
 
 // Exercise the real swap-chain path against a surface with fewer optional
 // usages. A strict driver rejects unsupported flags instead of ignoring them.
@@ -303,6 +502,8 @@ void depth_stencil_clear_executes_on_native_attachment() {
 
 int main() {
     try {
+        // Must precede any code that caches model_wanted() or model scale.
+        avatar_draws_keep_viewport_order_and_independent_poses();
         vulkan_swapchain_respects_surface_usage();
         vulkan_failed_surface_query_does_not_create_swapchain();
         invalid_dimensions_are_rejected_before_a_window_exists();

@@ -313,6 +313,26 @@ if(SFR_POSE_AVAILABLE)
     target_link_libraries(sfr_pose_probe PRIVATE sfr_onnxruntime)
     sfr_copy_onnx_dlls(sfr_pose_probe)
 endif()
+# Reading a model out of a binary glTF (a .vrm is one).
+add_executable(sfr_image_decode_test tests/image_decode_test.cpp src/image_decode.cpp)
+target_include_directories(sfr_image_decode_test PRIVATE src)
+add_test(NAME image_decode COMMAND sfr_image_decode_test)
+
+add_executable(sfr_gltf_model_test tests/gltf_model_test.cpp src/gltf_model.cpp src/image_decode.cpp)
+target_include_directories(sfr_gltf_model_test PRIVATE src)
+add_test(NAME gltf_model COMMAND sfr_gltf_model_test)
+# Looking at a model without the game: sfr_vrm_probe <file.vrm>
+add_executable(sfr_vrm_probe tests/vrm_probe.cpp src/gltf_model.cpp src/image_decode.cpp)
+target_include_directories(sfr_vrm_probe PRIVATE src)
+# vcmpbfp, which the upstream translator leaves as a debug trap.
+add_executable(sfr_vector_compare_bounds_test tests/vector_compare_bounds_test.cpp src/vector_compare_bounds.cpp)
+target_include_directories(sfr_vector_compare_bounds_test PRIVATE src)
+add_test(NAME vector_compare_bounds COMMAND sfr_vector_compare_bounds_test)
+
+add_executable(sfr_avatar_state_test tests/avatar_state_test.cpp src/guest_memory.cpp)
+target_include_directories(sfr_avatar_state_test PRIVATE src)
+add_test(NAME avatar_state COMMAND sfr_avatar_state_test)
+# Which player each host controller is.
 add_executable(sfr_pad_assignment_test tests/pad_assignment_test.cpp src/pad_assignment.cpp)
 target_include_directories(sfr_pad_assignment_test PRIVATE src)
 add_test(NAME pad_assignment COMMAND sfr_pad_assignment_test)
@@ -627,7 +647,9 @@ if(WIN32 OR UNIX)
     endfunction()
     sfr_embed_shader(src/shaders/blit.hlsl vertexMain vs_6_0 blit_vs)
     sfr_embed_shader(src/shaders/blit.hlsl pixelMain ps_6_0 blit_ps)
-    add_library(sfr_native_presentation STATIC src/native_presentation.cpp src/touch_controls.cpp ${SFR_EMBEDDED_SHADER_HEADERS})
+    sfr_embed_shader(src/shaders/model.hlsl vertexMain vs_6_0 model_vs)
+    sfr_embed_shader(src/shaders/model.hlsl pixelMain ps_6_0 model_ps)
+    add_library(sfr_native_presentation STATIC src/native_presentation.cpp src/touch_controls.cpp src/gltf_model.cpp src/image_decode.cpp ${SFR_EMBEDDED_SHADER_HEADERS})
     target_include_directories(sfr_native_presentation PRIVATE "${SFR_EMBEDDED_SHADERS}")
     add_executable(sfr_native_presentation_test tests/native_presentation_test.cpp)
     if(WIN32)
@@ -717,7 +739,7 @@ if(SFR_BUILD_DIAGNOSTIC)
     target_sources(sfr_cpu_diagnostic PRIVATE src/diagnostic_main.cpp src/guest_memory.cpp src/xex_module.cpp src/virtual_memory.cpp src/critical_section.cpp src/hardware_info.cpp src/thread_local_storage.cpp src/system_time.cpp src/guest_clock.cpp src/timestamp_bundle.cpp src/vector_memory.cpp src/optional_import_policy.cpp src/native_modules.cpp src/integer_arithmetic.cpp src/memory_statistics.cpp
         ${SFR_DIAGNOSTIC_SOURCES} "${SFR_DIAGNOSTIC_DIR}/ppc_func_mapping.cpp" "${SFR_DIAGNOSTIC_DIR}/imports.cpp")
     target_include_directories(sfr_cpu_diagnostic PRIVATE src "${SFR_DIAGNOSTIC_DIR}" tools/XenonRecomp/thirdparty/simde tools/XenonRecomp/thirdparty/TinySHA1)
-    target_sources(sfr_cpu_diagnostic PRIVATE src/video_mode.cpp src/native_display.cpp src/physical_memory.cpp src/ansi_string.cpp src/store_halfword_update.cpp src/store_float_single_update.cpp src/load_halfword_update.cpp src/debug_monitor.cpp src/image_protection.cpp src/resource_coherency.cpp src/video_globals.cpp src/native_language.cpp src/system_config.cpp)
+    target_sources(sfr_cpu_diagnostic PRIVATE src/video_mode.cpp src/native_display.cpp src/physical_memory.cpp src/ansi_string.cpp src/store_halfword_update.cpp src/store_float_single_update.cpp src/load_halfword_update.cpp src/vector_compare_bounds.cpp src/debug_monitor.cpp src/image_protection.cpp src/resource_coherency.cpp src/video_globals.cpp src/native_language.cpp src/system_config.cpp)
     target_sources(sfr_cpu_diagnostic PRIVATE src/game_region.cpp)
     # The webcam standing in for the sensor, and the body it finds.
     target_sources(sfr_cpu_diagnostic PRIVATE src/camera_player.cpp src/camera_debug.cpp src/camera_debug_window.cpp src/pose_skeleton.cpp src/pose_smoothing.cpp
