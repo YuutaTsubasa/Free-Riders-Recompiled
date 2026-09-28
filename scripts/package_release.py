@@ -30,6 +30,7 @@ import sys
 import tarfile
 import zipfile
 from pathlib import Path
+from shader_pack_format import checked_shader_pack, validate_shader_pack
 
 ROOT = Path(__file__).resolve().parent.parent
 DXC = ROOT / 'tools/XenosRecomp/thirdparty/dxc-bin'
@@ -95,7 +96,7 @@ def desktop_files(platform, build, pack):
         # built with clang 15 for Linux), so the pack is all it has.
         sys.exit('a Linux release needs --pack')
     if pack:
-        files.append(('shaders.pack', need(pack)))
+        files.append(('shaders.pack', checked_shader_pack(need(pack))))
     return files
 
 
@@ -138,6 +139,11 @@ def main():
 
     if args.platform == 'android':
         apk = need(ROOT / 'out/android/FreeRidersRecompiled.apk')
+        with zipfile.ZipFile(apk) as archive:
+            try:
+                validate_shader_pack(archive.read('assets/shaders.pack'))
+            except (KeyError, ValueError) as error:
+                sys.exit(f'Android shader pack: {error}')
         out = args.output / (name + '.apk')
         shutil.copyfile(apk, out)
         # The APK already holds its libraries; the licences travel beside it.

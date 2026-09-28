@@ -210,6 +210,14 @@ void directories_are_found_and_checked() {
     std::ofstream(root / "out/tools/shader-translator/shader_translate.exe") << 'x';
     require(sfr::find_runtime_root(launcher) == root, "the checkout above the launcher is the runtime root");
 
+    // An extracted release can live under a development checkout. Its own
+    // shader pack must win over an unrelated ancestor's cache and tools.
+    std::ofstream(launcher / "shaders.pack") << "bundled pack";
+    require(sfr::find_runtime_root(launcher).empty(),
+            "a bundled shader pack keeps the release independent of an ancestor checkout");
+    std::filesystem::remove(launcher / "shaders.pack");
+    require(sfr::find_runtime_root(launcher) == root, "unbundled development builds still find the checkout");
+
     const auto file = root / "settings.ini";
     sfr::LauncherSettings settings;
     settings.volume = 7;

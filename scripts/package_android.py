@@ -15,12 +15,13 @@ import subprocess
 import sys
 import zipfile
 from pathlib import Path
+from shader_pack_format import checked_shader_pack
 
 ROOT = Path(__file__).resolve().parent.parent
 PROJECT = ROOT / 'android' / 'app' / 'src' / 'main'
 SDL_JAVA = ROOT / 'tools' / 'SDL' / 'android-project' / 'app' / 'src' / 'main' / 'java'
 MIN_SDK, TARGET_SDK = 28, 35
-VERSION_CODE, VERSION_NAME = 7, '0.2.0'
+VERSION_CODE, VERSION_NAME = 8, '0.2.1'
 
 
 def version_key(path):
@@ -69,6 +70,8 @@ def main():
     parser.add_argument('--min-sdk', type=int, default=MIN_SDK,
                         help='minimum API level, matching the native build (default: 28)')
     args = parser.parse_args()
+    if args.pack:
+        checked_shader_pack(Path(args.pack))
     if args.min_sdk < MIN_SDK:
         parser.error('--min-sdk must be at least 28')
 

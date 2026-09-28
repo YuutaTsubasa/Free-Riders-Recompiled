@@ -74,3 +74,16 @@ Tag the commit (`v0.2.0`), push the tag, and create the GitHub release with
 the archives and their SHA-256 sums, marked as a pre-release while the game is
 incomplete. Say in the notes which disc is supported and that the game data is
 not included.
+# Shader compatibility
+
+Regenerate `shaders.pack` with the current `scripts/pack_shaders.py` before
+packaging. The pack's shader ABI must match the executable; a successful boot
+or title movie does not establish compatibility. Verify the extracted release
+through a 1P race on both Vulkan and D3D12, with a clean cache and save directory.
+
+Pack format `SFRSHPK2` includes shader ABI 8 before its entry count. The packer
+selects `v8-*` cache entries, and the runtime and release scripts reject legacy
+or incompatible packs. A previous pack must not merely be relabeled: rebuild
+it from shaders compiled for the current ABI. v0.2.0 shipped a legacy Vulkan
+pack with three buffer addresses while its executable supplied five, causing
+white frames or device loss. This format guard prevents repeating that mix.
