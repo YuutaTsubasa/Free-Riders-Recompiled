@@ -358,6 +358,10 @@ def main():
     parser.add_argument('--containing', type=lambda text: int(text, 16), action='append', default=[],
                         metavar='ADDRESS', help='disassemble the function that contains this address (hex), '
                         'for example the LR of a STOP')
+    parser.add_argument('--stores', type=lambda text: [int(v) for v in text.split(',')], default=None,
+                        metavar='OFFSETS', help='list every function that stores to all these displacements '
+                        '(decimal, comma-separated), for example 640,644 (the lean pair), and disassemble '
+                        'the first twelve')
     parser.add_argument('--vtable', type=lambda text: int(text, 16), action='append', default=[],
                         metavar='ADDRESS', help='a vtable in the image (hex): disassemble its first eight '
                         'entries that are functions, for example 821A8768 (the Kinect image stream object)')
@@ -380,7 +384,26 @@ def main():
             entry = image.value(table + 4 * index, 'u32')
             if entry in ends:
                 extra.append((entry, f'vtable 0x{table:08X} entry {index}'))
+    found = []
+    if args.stores:
+        wanted = set(args.stores)
+        for start, end in ends.items():
+            if end - start > 0x10000 or not image.contains(start):
+                continue
+            seen = set()
+            for address in range(start, end, 4):
+                if not image.contains(address):
+                    break
+                w = image.word(address)
+                if (w >> 26) in STORES:
+                    seen.add(signed16(w & 0xFFFF))
+            if wanted <= seen:
+                found.append(start)
+        extra += [(start, 'stores to ' + ','.join(map(str, args.stores))) for start in found[:12]]
     text = report(image, ends, DETECTORS + CONTEXT + extra)
+    if args.stores:
+        text += '\n\n## Functions storing to ' + ','.join(map(str, args.stores)) + '\n\n' + \
+            '\n'.join(f'- 0x{start:08X}' for start in found) + '\n'
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(text, encoding='utf-8')
     print(f'{args.output}: {len(DETECTORS)} detectors and {len(CONTEXT)} related functions')

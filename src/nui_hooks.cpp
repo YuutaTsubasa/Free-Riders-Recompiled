@@ -251,11 +251,22 @@ SFR_HOOK(sub_82767148) {
     const uint32_t out=ctx.r5.u32;
     if(!out) { ctx.r3.u64=0x80004003u; return; }  // E_POINTER
     const auto kind=stream->type==0?sfr::KinectImageKind::depth_and_player:sfr::KinectImageKind::colour;
+    // Every five seconds, how many frames of each camera the title asked for
+    // and got (the depth ones make the race's lean).
+    static uint32_t asked[2]{},given[2]{};
+    static auto reported=std::chrono::steady_clock::now();
+    ++asked[stream->type&1];
+    if(const auto now=std::chrono::steady_clock::now(); now-reported>=std::chrono::seconds(5)) {
+        std::cerr<<"NUI_IMAGE_FRAMES depth="<<given[0]<<'/'<<asked[0]<<" colour="<<given[1]<<'/'<<asked[1]<<'\n';
+        asked[0]=asked[1]=given[0]=given[1]=0;
+        reported=now;
+    }
     if(!kinect || !kinect->image(kind,stream->image) || stream->image.width!=stream->width ||
        stream->image.height!=stream->height || stream->image.bytes_per_pixel!=stream->bytes_per_pixel) {
         ctx.r3.u64=0x83010001u;  // E_NUI_FRAME_NO_DATA: the title tries again later
         return;
     }
+    ++given[stream->type&1];
     auto& memory=*sfr::active_memory;
     const uint32_t rect=stream->frame+32;  // D3DLOCKED_RECT: pitch, bits
     call_guest8(ctx,base,sub_824F3CF0,{stream->texture,0,rect,0,0});

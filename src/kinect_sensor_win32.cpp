@@ -10,6 +10,7 @@
 #include <unknwn.h>
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <cstdio>
@@ -226,6 +227,8 @@ private:
             std::cerr << "NATIVE_KINECT model=v1 frames=" << frames << " with_body=" << tracked
                       << " bodies=" << frame.bodies.size() << " empty_waits=" << waits << " failed=" << failures;
             if (failures) std::cerr << " last_error=" << hresult(last_failure);
+            if (streams_[0].handle || streams_[1].handle)
+                std::cerr << " depth_frames=" << image_frames_[0].exchange(0) << " colour_frames=" << image_frames_[1].exchange(0);
             if (!frames && !failures) std::cerr << " (no skeleton frames: close any other program using the Kinect)";
             std::cerr << std::endl;
             reported = now;
@@ -291,6 +294,7 @@ private:
                     latest.bytes_per_pixel = stream.bytes_per_pixel;
                     latest.pixels.swap(scratch_);
                     ++latest.number;
+                    ++image_frames_[i];
                 }
                 frame->texture->UnlockRect(0);
             }
@@ -310,6 +314,7 @@ private:
     NuiImageStreamReleaseFrame image_release_ = nullptr;
     std::array<ImageStream, 2> streams_{{{0, 1, 320, 240, 2}, {1, 2, 640, 480, 4}}};
     std::array<KinectImage, 2> images_{};
+    std::array<std::atomic<uint32_t>, 2> image_frames_{};
     std::vector<uint8_t> scratch_;
     std::mutex lock_;
     KinectFrame latest_;
