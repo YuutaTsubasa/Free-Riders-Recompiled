@@ -251,10 +251,12 @@ private:
                                  raw.floor_clip_plane.w};
             frame.gravity = {raw.normal_to_gravity.x, raw.normal_to_gravity.y, raw.normal_to_gravity.z};
             frame.bodies.clear();
-            for (const auto& skeleton : raw.skeletons) {
+            for (uint32_t index = 0; index < uint32_t(nui_skeleton_count); ++index) {
+                const auto& skeleton = raw.skeletons[index];
                 if (skeleton.tracking_state != nui_skeleton_tracked || !skeleton.tracking_id) continue;
                 KinectBody& body = frame.bodies.emplace_back();
                 body.tracking_id = skeleton.tracking_id;
+                body.sensor_index = index;
                 body.position = {skeleton.position.x, skeleton.position.y, skeleton.position.z};
                 for (int j = 0; j < nui_position_count; ++j) {
                     const auto& p = skeleton.positions[j];

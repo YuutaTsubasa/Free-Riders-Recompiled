@@ -31,6 +31,9 @@ namespace sfr {
 // One body the sensor is tracking fully.
 struct KinectBody {
     uint32_t tracking_id = 0;                  // the sensor's, stable while tracked
+    // Where the sensor put it among its skeletons; its pixels in the depth
+    // image carry this plus one as their player index.
+    uint32_t sensor_index = 0;
     std::array<float, 3> position{};           // the skeleton's centre
     SkeletonJoints joints{};                   // nui_joint order
     std::array<uint32_t, nui_joint_count> joint_states{};  // 0 not, 1 inferred, 2 tracked
@@ -125,6 +128,8 @@ public:
     uint32_t title_id(uint32_t slot) const { return slot + 1 + 2 * (entries_[slot] ? entries_[slot] - 1 : 0); }
     // Whether the slot took a new body on the last assign.
     bool entered(uint32_t slot) const { return entered_[slot]; }
+    // The sensor's tracking id of the body in a slot, 0 when empty.
+    uint32_t tracking(uint32_t slot) const { return tracking_[slot]; }
 private:
     std::array<uint32_t, players> tracking_{};  // sensor ids; 0 is free
     std::array<uint32_t, players> entries_{};   // bodies each slot has taken

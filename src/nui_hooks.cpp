@@ -52,6 +52,10 @@ std::atomic<bool> sensor_body{false};
 std::atomic<uint64_t> kinect_generation{0};  // kinect_frame_generation
 sfr::KinectFrame kinect_frame;
 sfr::KinectPlayerSlots kinect_slots;
+// The depth image's player index (1..6, the sensor's skeleton + 1) as the
+// title's skeleton slot + 1, four bits each, made on the skeleton thread
+// for the depth frames (KinectBody::sensor_index).
+std::atomic<uint32_t> depth_players{0};
 sfr::CameraInputSelection camera_selection;
 std::atomic<bool> camera_input_active{false};
 std::atomic<uint64_t> camera_pose_counter{0};
@@ -273,11 +277,17 @@ SFR_HOOK(sub_82767148) {
     const uint32_t pitch=memory.load<uint32_t>(rect),bits=memory.load<uint32_t>(rect+4);
     if(bits && pitch>=stream->width*stream->bytes_per_pixel) {
         const uint8_t* pixel=stream->image.pixels.data();
+        const uint32_t players=depth_players.load(std::memory_order_relaxed);
         for(uint32_t y=0;y<stream->height;++y) {
             const uint32_t row=bits+y*pitch;
             if(stream->type==0) {
-                for(uint32_t x=0;x<stream->width;++x,pixel+=2)
-                    memory.store<uint16_t>(row+x*2,uint16_t(pixel[0]|pixel[1]<<8));
+                // The player index (low three bits) renumbered to the title's
+                // skeleton slots; people who are not playing are background.
+                for(uint32_t x=0;x<stream->width;++x,pixel+=2) {
+                    const uint16_t value=uint16_t(pixel[0]|pixel[1]<<8);
+                    const uint16_t player=uint16_t((players>>(4*(value&7)))&7);
+                    memory.store<uint16_t>(row+x*2,uint16_t((value&~7u)|((value&7)?player:0)));
+                }
             } else {
                 for(uint32_t x=0;x<stream->width;++x,pixel+=4)
                     memory.store<uint32_t>(row+x*4,0xFF000000u|uint32_t(pixel[2])<<16|uint32_t(pixel[1])<<8|pixel[0]);
@@ -405,6 +415,16 @@ SFR_HOOK(sub_827707B0) {
         sfr::NuiSkeletonEmulation::write_header(memory,frame,++frame_number,uint64_t(elapsed.count()));
         sfr::NuiSkeletonEmulation::write_floor(memory,frame,kinect_frame.floor_plane,kinect_frame.gravity);
         const auto players=kinect_slots.assign(kinect_frame);
+        {
+            // The depth view looks for each player by its skeleton slot, the
+            // player index its pixels carry on the console; the sensor marks
+            // them with its own skeleton's instead.
+            uint32_t table=0;
+            for(uint32_t slot=0; slot<players.size(); ++slot)
+                if(players[slot] && players[slot]->sensor_index<6)
+                    table|=(slot+1)<<(4*(players[slot]->sensor_index+1));
+            depth_players.store(table,std::memory_order_relaxed);
+        }
         for(uint32_t slot=0; slot<players.size(); ++slot) {
             const sfr::KinectBody* const body=players[slot];
             if(!body) continue;
