@@ -35,7 +35,10 @@ class FetchD3D12AgilityTests(unittest.TestCase):
         self.addCleanup(patch.stop)
 
     def serve(self, payload):
-        package = dict(fetcher.PACKAGE, sha256=hashlib.sha256(payload).hexdigest())
+        package = dict(fetcher.PACKAGE, sha256=hashlib.sha256(payload).hexdigest(), files_sha256={
+            'D3D12Core.dll': hashlib.sha256(b'runtime').hexdigest(),
+            'LICENSE.txt': hashlib.sha256(b'licence').hexdigest(),
+        })
         mock.patch.dict(fetcher.PACKAGE, package).start()
         self.addCleanup(mock.patch.stopall)
         return mock.patch.object(fetcher.urllib.request, 'urlopen', return_value=io.BytesIO(payload))
@@ -60,6 +63,22 @@ class FetchD3D12AgilityTests(unittest.TestCase):
         for name in ('D3D12Core.dll', 'LICENSE.txt'):
             (self.root / name).write_bytes(b'x')
         (self.root / 'version.txt').write_text('1\n')
+        self.assertFalse(fetcher.present())
+
+    def test_corrupt_installed_runtime_is_rejected_and_repaired(self):
+        with self.serve(package_bytes()):
+            fetcher.fetch()
+            (self.root / 'D3D12Core.dll').write_bytes(b'')
+            self.assertFalse(fetcher.present(), 'matching version.txt must not validate an empty DLL')
+        with self.serve(package_bytes()):
+            self.assertTrue(fetcher.fetch())
+        self.assertEqual((self.root / 'D3D12Core.dll').read_bytes(), b'runtime')
+        self.assertTrue(fetcher.present())
+
+    def test_corrupt_installed_licence_is_rejected(self):
+        with self.serve(package_bytes()):
+            fetcher.fetch()
+        (self.root / 'LICENSE.txt').write_bytes(b'changed')
         self.assertFalse(fetcher.present())
 
 
