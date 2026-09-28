@@ -69,6 +69,10 @@ CONTEXT = [
     # the +640 / +644 lean pair (and whatever else the crouch needs).
     (0x82439530, 'depth view update'),
     (0x824395E8, 'Kinect frame thread (waits for skeleton and depth frames)'),
+    (0x82438CC8, 'depth view object creation (main thread)'),
+    (0x82438268, 'depth view object step (vtable[0] every fourth frame, or a job)'),
+    (0x82439998, 'depth view: per-player pass one'),
+    (0x82439D80, 'depth view: per-player pass two (into the manager at +3424 + 800 per player)'),
 ]
 MAPPING = re.compile(r'\{\s*0x([0-9A-Fa-f]+),\s*[A-Za-z_][A-Za-z0-9_]*\s*\},')
 
@@ -348,6 +352,9 @@ def main():
     parser.add_argument('--functions', type=Path,
                         help='ppc_func_mapping.cpp of the generated game (default: the first under out/recomp)')
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--extra', type=lambda text: int(text, 16), action='append', default=[],
+                        metavar='ADDRESS', help='another function to disassemble (hex), for example a '
+                        'vtable entry a trace printed; may be given more than once')
     args = parser.parse_args()
     if not (args.dump / 'complete.txt').is_file():
         parser.error('image dump has no completion marker')
@@ -355,7 +362,8 @@ def main():
     if not mapping or not mapping.is_file():
         parser.error('no ppc_func_mapping.cpp found: pass --functions')
     image = Image(args.dump)
-    text = report(image, function_ends(mapping.read_text()), DETECTORS + CONTEXT)
+    extra = [(address, 'requested with --extra') for address in args.extra]
+    text = report(image, function_ends(mapping.read_text()), DETECTORS + CONTEXT + extra)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(text, encoding='utf-8')
     print(f'{args.output}: {len(DETECTORS)} detectors and {len(CONTEXT)} related functions')

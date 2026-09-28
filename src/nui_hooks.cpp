@@ -802,6 +802,19 @@ SFR_HOOK(sub_82439530) {
         if(skipped++<4) std::cerr << "NUI_DEPTH_VIEW_SKIPPED manager=0x" << std::hex << ctx.r3.u32 << std::dec << '\n';
         return;
     }
+    // Once: what the console's depth stream would feed (the object's size
+    // and buffer, and its vtable[0], which fetches a frame).
+    static bool described=false;
+    if(!described) {
+        described=true;
+        auto& m=*sfr::active_memory;
+        const uint32_t view=m.load<uint32_t>(uint64_t(ctx.r3.u32)+7736),vtable=m.load<uint32_t>(view);
+        std::cerr<<"NUI_DEPTH_VIEW object=0x"<<std::hex<<view<<" vtable=0x"<<vtable<<" fetch=0x"
+                 <<(vtable?m.load<uint32_t>(vtable):0)<<std::dec<<" open="<<unsigned(m.load<uint8_t>(uint64_t(view)+77))
+                 <<" enabled="<<unsigned(m.load<uint8_t>(uint64_t(ctx.r3.u32)+7756))
+                 <<" width="<<m.load<uint32_t>(uint64_t(view)+48)<<" height="<<m.load<uint32_t>(uint64_t(view)+52)
+                 <<" buffer=0x"<<std::hex<<m.load<uint32_t>(uint64_t(view)+72)<<std::dec<<'\n';
+    }
     __imp__sub_82439530(ctx,base);
 }
 
