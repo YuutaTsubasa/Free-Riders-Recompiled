@@ -76,7 +76,7 @@ enum Text {
     Sound, SoundHint, Volume,
     SkipMovies, SkipMoviesHint,
     Parallel, ParallelHint, VertexCache, VertexCacheHint, GpuPipeline, GpuPipelineHint, RaceEvery, RaceEveryHint,
-    CameraLabel, CameraHint, CameraOff, CameraPicture, CameraMotion, CameraDevice, CameraDeviceHint, CameraNone,
+    CameraLabel, CameraHint, CameraHintOff, CameraHintPicture, CameraHintKinect, CameraOff, CameraPicture, CameraMotion, CameraDevice, CameraDeviceHint, CameraNone,
     CameraTest, CameraTesting, CameraWorks, CameraSilent, CameraClosed, CameraMirror, CameraMirrorHint,
     CameraKinect, KinectRow, KinectRowHint, KinectWorks, KinectSilent, KinectMissing,
     KinectNoRuntime, KinectNoSensor, KinectFailed, KinectDownload, KinectDownloadV2, KinectInstallHint,
@@ -145,6 +145,12 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Camera", "攝影機"},
     {"Motion tracks your body for Player 1. Controller input takes priority; after 1.5 seconds idle, fresh camera tracking resumes. Lost tracking falls back to the controller. Player 2 keeps its assigned controller.",
      "「體感」追蹤你的身體來控制 1P。操作手把時優先接手，停止操作 1.5 秒後恢復攝影機追蹤；失去追蹤時退回手把。2P 保留原本指定的手把。"},
+    {"No camera: the game is played with controllers and the keyboard.",
+     "不使用攝影機：用手把或鍵盤遊玩。"},
+    {"Opens a webcam only for the pictures the game shows of you; you still play with controllers and the keyboard.",
+     "開啟 webcam，只把影像交給遊戲顯示；操作仍然用手把或鍵盤。"},
+    {"A real Kinect tracks the players' bodies, as on the console: its skeletons and its depth and colour cameras go to the game, which reads your moves itself. Controllers still work in the menus.",
+     "由實體 Kinect 追蹤玩家的身體，跟主機上一樣：骨架、深度與彩色影像直接交給遊戲，由遊戲自己判斷動作。選單中仍可使用手把。"},
     {"Off", "關閉"},
     {"Picture", "畫面"},
     {"Motion", "體感"},
@@ -1006,6 +1012,8 @@ struct Launcher {
     static constexpr int angle_unknown = INT_MIN, angle_no_motor = INT_MIN + 1;
     std::atomic<int> kinect_angle{angle_unknown};
     std::atomic<bool> kinect_turning{false};
+    // The camera choice under the pointer while its list is open, or -1.
+    int camera_hovered = -1;
     std::jthread kinect_angle_worker;
     // The preview window, when open, holds the Kinect (one session a
     // process): the tilt buttons turn it through the preview's sensor.
@@ -1789,17 +1797,25 @@ struct Launcher {
         setting_row(tr(VertexCache), tr(VertexCacheHint), switch_width, scale, [&] { toggle("##vertex", &settings.vertex_cache); });
         setting_row(tr(GpuPipeline), tr(GpuPipelineHint), switch_width, scale, [&] { toggle("##pipeline", &settings.gpu_pipeline); });
         const float camera_width = 150 * scale;
-        setting_row(tr(CameraLabel), tr(CameraHint), camera_width, scale, [&] {
-            const char* const values[] = {"off", "picture", "motion", "kinect"};
+        // The hint says what the chosen setting does, or while the list is
+        // open the one under the pointer (from the frame before).
+        static constexpr const char* camera_values[] = {"off", "picture", "motion", "kinect"};
+        static constexpr Text camera_hints[] = {CameraHintOff, CameraHintPicture, CameraHint, CameraHintKinect};
+        int camera_chosen = 0;
+        for (int i = 0; i < 4; ++i) if (settings.camera == camera_values[i]) camera_chosen = i;
+        const int camera_described = camera_hovered >= 0 ? camera_hovered : camera_chosen;
+        setting_row(tr(CameraLabel), tr(camera_hints[camera_described]), camera_width, scale, [&] {
             const Text labels[] = {CameraOff, CameraPicture, CameraMotion, CameraKinect};
             // A real sensor only where there is a runtime to reach it.
             const int choices = sfr::KinectSensor::supported() ? 4 : 3;
-            int chosen = 0;
-            for (int i = 0; i < choices; ++i) if (settings.camera == values[i]) chosen = i;
+            const int chosen = (std::min)(camera_chosen, choices - 1);
+            camera_hovered = -1;
             ImGui::SetNextItemWidth(camera_width);
             if (ImGui::BeginCombo("##camera", tr(labels[chosen]))) {
-                for (int i = 0; i < choices; ++i)
-                    if (ImGui::Selectable(tr(labels[i]), chosen == i)) settings.camera = values[i];
+                for (int i = 0; i < choices; ++i) {
+                    if (ImGui::Selectable(tr(labels[i]), chosen == i)) settings.camera = camera_values[i];
+                    if (ImGui::IsItemHovered() || ImGui::IsItemFocused()) camera_hovered = i;
+                }
                 ImGui::EndCombo();
             }
         });
