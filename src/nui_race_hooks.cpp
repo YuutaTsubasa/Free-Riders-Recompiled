@@ -74,6 +74,15 @@ void write_camera_lean(uint32_t record,float scale=1.f) {
 // up to 3.5 from the depth view, so the default uses its whole range (a
 // full lean at 1 turned the board only a little). SFR_KINECT_LEAN_SCALE
 // changes it, 0.1..3.5.
+// SFR_KINECT_BODY_LEAN=0 leaves the pair as the title's depth view made it
+// (with SFR_KINECT_DEPTH=1 the depth images reach it), for comparing the
+// console's own lean with the skeleton's.
+bool sensor_body_lean() {
+    static const bool enabled=[] {const char* p=std::getenv("SFR_KINECT_BODY_LEAN");return !p || *p!='0';}();
+    return enabled;
+}
+// The title's own pair on the last manager update, before the body's lean.
+float depth_lean_right=0,depth_lean_left=0;
 float sensor_lean_scale() {
     static const float scale=[] {
         const char* text=std::getenv("SFR_KINECT_LEAN_SCALE");
@@ -362,7 +371,9 @@ SFR_HOOK(sub_82438930) {
     if(racing && box && original_body && camera_player(0))update_camera_motion(original_body,sfr::camera_pose_generation());
     else if(sensor_steering) {
         update_camera_motion(sensor_record,sfr::kinect_frame_generation(),true);
-        write_camera_lean(sensor_record,sensor_lean_scale());
+        depth_lean_right=load_float(sensor_record+640);
+        depth_lean_left=load_float(sensor_record+644);
+        if(sensor_body_lean())write_camera_lean(sensor_record,sensor_lean_scale());
     }
     else {camera_motion.reset();camera_last_tick=0;}
     static const bool motion_trace=[] {const char* p=std::getenv("SFR_CAMERA_RACE_TRACE");return p && *p=='1';}();
@@ -370,7 +381,8 @@ SFR_HOOK(sub_82438930) {
     if(motion_trace && (racing || sensor_steering) && (++motion_frames%30==0 || camera_motion.jump() || camera_motion.overthrow())) {
         std::cerr<<"CAMERA_RACE_MOTION title_step="<<seconds<<" generation="<<sfr::camera_pose_generation()
                  <<" camera="<<camera_player(0)<<" ready="<<camera_motion.ready()
-                 <<" lean="<<camera_motion.lean()<<" crouch="<<camera_motion.crouch()
+                 <<" lean="<<camera_motion.lean()<<" depth_pair="<<depth_lean_right<<'/'<<depth_lean_left
+                 <<" crouch="<<camera_motion.crouch()
                  <<" jump="<<camera_motion.jump()<<" acceleration="<<camera_motion.boost()<<" arm_action="<<camera_motion.arm_action()
                  <<" overthrow="<<camera_motion.overthrow()<<" kick_leg="<<camera_motion.kick_leg_action()<<'\n';
     }
@@ -400,7 +412,7 @@ SFR_HOOK(sub_82918418) {
     // update and this read: a sensor's first player gets its lean again here.
     if (sensor_steering && live_race_source && record && record == sensor_record &&
         memory().load<uint32_t>(live_race_source) == object) {
-        write_camera_lean(record,sensor_lean_scale());
+        if(sensor_body_lean())write_camera_lean(record,sensor_lean_scale());
         return;
     }
     if (pad_racing() && live_race_source && record &&

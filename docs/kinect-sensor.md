@@ -217,3 +217,7 @@ mingw 編譯連結過。Kinect for Xbox 360（v1）已在實機上讀到骨架�
   的影像以大端序寫進這張材質（深度 16 位元原樣、彩色 X8R8G8B8），填好 `NUI_IMAGE_FRAME`（+20 材質）
   交給遊戲。之後的上色（`82438328`）、+72 緩衝區、輪廓計算全是遊戲自己的程式。
   `NUI_IMAGE_STREAM_OPEN ... backend=kinect texture=`、前 4 幀的 `NUI_IMAGE_FRAME type= number=` 可確認。
+
+有了深度影像，遊戲自己的深度檢視會算出傾斜那一對數值；`SFR_CAMERA_RACE_TRACE=1` 的
+`CAMERA_RACE_MOTION` 行以 `depth_pair=右/左` 印出它（在骨架傾斜寫入之前）。
+`SFR_KINECT_BODY_LEAN=0` 不寫骨架傾斜，直接用遊戲原本由深度算的轉向。
