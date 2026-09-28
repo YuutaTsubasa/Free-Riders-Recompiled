@@ -292,18 +292,23 @@ SFR_HOOK(sub_82767148) {
     ctx.r3.u64=0;
 }
 
-// Texture LockRect (texture, level, locked rect, rect, flags). The image
-// stream object reads a frame's texture with D3DLOCK_READONLY (0x10), which
-// on the console answers with the texture's cached physical view (0xC0000000
-// up, 0x20000000 below the 0xE0000000 one). Only the 0xE0000000 view exists
-// here (physical_memory.h), so for the two textures the sensor's frames come
-// in the lock is made without the flag: the same memory, where it is mapped.
-// Every other lock is the title's own.
+// Texture LockRect (texture, level, locked rect, rect, flags). A lock with
+// D3DLOCK_READONLY (0x10) answers on the console with the texture's cached
+// physical view (0xC0000000 up, 0x20000000 below the 0xE0000000 one). Only
+// the 0xE0000000 view exists here (physical_memory.h), so such a lock is
+// made without the flag: the same memory, where it is mapped. The Kinect's
+// image stream object is what reads textures this way -- the frame it is
+// given, and its own copies (8243EF28, for the camera image) -- and nothing
+// did before its streams opened.
 PPC_FUNC_IMPL(__imp__sub_824F3CF0);
 SFR_HOOK(sub_824F3CF0) {
     sfr::enter_function(ctx,"sub_824F3CF0",0x824F3CF0);
-    const uint32_t texture=ctx.r3.u32;
-    if(texture && (texture==image_streams[0].texture || texture==image_streams[1].texture)) ctx.r7.u64=0;
+    if(ctx.r7.u32&0x10) {
+        static uint32_t noted=0;
+        if(noted++<4) std::cerr<<"NATIVE_TEXTURE_LOCK_READONLY texture=0x"<<std::hex<<ctx.r3.u32<<" flags=0x"<<ctx.r7.u32
+                               <<" lr=0x"<<ctx.lr<<std::dec<<" view=0xE0000000\n";
+        ctx.r7.u64&=~uint64_t(0x10);
+    }
     __imp__sub_824F3CF0(ctx,base);
 }
 

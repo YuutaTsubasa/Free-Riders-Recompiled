@@ -355,6 +355,9 @@ def main():
     parser.add_argument('--extra', type=lambda text: int(text, 16), action='append', default=[],
                         metavar='ADDRESS', help='another function to disassemble (hex), for example a '
                         'vtable entry a trace printed; may be given more than once')
+    parser.add_argument('--containing', type=lambda text: int(text, 16), action='append', default=[],
+                        metavar='ADDRESS', help='disassemble the function that contains this address (hex), '
+                        'for example the LR of a STOP')
     parser.add_argument('--vtable', type=lambda text: int(text, 16), action='append', default=[],
                         metavar='ADDRESS', help='a vtable in the image (hex): disassemble its first eight '
                         'entries that are functions, for example 821A8768 (the Kinect image stream object)')
@@ -367,6 +370,11 @@ def main():
     image = Image(args.dump)
     ends = function_ends(mapping.read_text())
     extra = [(address, 'requested with --extra') for address in args.extra]
+    starts = sorted(ends)
+    for address in args.containing:
+        start = max((candidate for candidate in starts if candidate <= address), default=None)
+        if start is not None:
+            extra.append((start, f'contains 0x{address:08X}'))
     for table in args.vtable:
         for index in range(8):
             entry = image.value(table + 4 * index, 'u32')
