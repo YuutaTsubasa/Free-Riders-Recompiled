@@ -65,6 +65,10 @@ DETECTORS = [
 CONTEXT = [
     (0x82438930, 'Kinect manager update (fills the body record)'),
     (0x822B72E0, 'race preparation ("On your Gear!")'),
+    # The depth view: on the console it turns the sensor's depth image into
+    # the +640 / +644 lean pair (and whatever else the crouch needs).
+    (0x82439530, 'depth view update'),
+    (0x824395E8, 'Kinect frame thread (waits for skeleton and depth frames)'),
 ]
 MAPPING = re.compile(r'\{\s*0x([0-9A-Fa-f]+),\s*[A-Za-z_][A-Za-z0-9_]*\s*\},')
 
