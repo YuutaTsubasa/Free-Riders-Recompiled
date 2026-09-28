@@ -45,9 +45,10 @@ void construction_and_validation_retain_only_valid_state() {
     sfr::NativeRasterState state(graphics, 8, 6);
     D3D12_FEATURE_DATA_D3D12_OPTIONS13 actual_options{};
     auto* actual_device = static_cast<plume::D3D12Device*>(&graphics.device())->d3d;
-    require_hr(actual_device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS13, &actual_options, sizeof(actual_options)),
-               "query actual D3D12_OPTIONS13 capability in test");
-    require(state.inverted_depth_supported() == (actual_options.InvertedViewportDepthFlipsZSupported != FALSE),
+    // A runtime that does not know OPTIONS13 counts as no support.
+    const bool known = SUCCEEDED(
+        actual_device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS13, &actual_options, sizeof(actual_options)));
+    require(state.inverted_depth_supported() == (known && actual_options.InvertedViewportDepthFlipsZSupported != FALSE),
             "reported inverted-depth support exactly matches the native device query");
     require(state.viewport() == plume::RenderViewport(0, 0, 8, 6, 0, 1), "constructor retains a full-target viewport");
     require(state.scissor() == plume::RenderRect(0, 0, 8, 6), "constructor retains a full-target scissor");

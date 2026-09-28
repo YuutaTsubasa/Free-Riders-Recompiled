@@ -48,6 +48,9 @@ LICENSES = [
 DXC_LICENSES = [
     ('DirectXShaderCompiler-LLVM.txt', ROOT / 'packaging/licenses/DirectXShaderCompiler-LLVM.txt'),
     ('DirectXShaderCompiler-MS.txt', ROOT / 'packaging/licenses/DirectXShaderCompiler-MS.txt'),
+    # D3D12\D3D12Core.dll (scripts/fetch_d3d12_agility.py), on the package's
+    # list of distributable files.
+    ('D3D12AgilitySDK-MS.txt', ROOT / 'tools/d3d12-agility/LICENSE.txt'),
 ]
 README = """Free Riders Recompiled {version} ({platform})
 
@@ -85,6 +88,8 @@ def desktop_files(platform, build, pack):
         files.append(('shader-tools/shader_translate.exe', need(ROOT / 'out/tools/shader-translator/shader_translate.exe')))
         for name in ('dxc.exe', 'dxcompiler.dll', 'dxil.dll'):
             files.append(('shader-tools/' + name, need(DXC / 'bin/x64' / name)))
+        # The D3D12 runtime Windows 10 lacks; the game names its version.
+        files.append(('D3D12/D3D12Core.dll', need(ROOT / 'tools/d3d12-agility/D3D12Core.dll')))
     elif not pack:
         # No Linux translator yet (the pinned XenosRecomp corrupts memory when
         # built with clang 15 for Linux), so the pack is all it has.

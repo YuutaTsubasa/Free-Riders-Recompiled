@@ -9,7 +9,8 @@ has no disc, and must never be given one.
 
 What a release does contain, beside the launcher: the recompiled game
 (`sfr_cpu_diagnostic`), the `shaders.pack` translated so far, the licences
-and, on Windows, the shader tools that translate shaders the pack lacks.
+and, on Windows, the shader tools that translate shaders the pack lacks and
+the D3D12 Agility SDK runtime (`D3D12\D3D12Core.dll`, which Windows 10 needs).
 
 ## 1. Build
 

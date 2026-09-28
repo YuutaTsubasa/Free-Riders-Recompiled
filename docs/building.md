@@ -27,6 +27,10 @@ prebuilt DXC, Plume, Dear ImGui, SDL) into `tools/`:
 python scripts/bootstrap.py
 ```
 
+On Windows it also fetches the Direct3D 12 Agility SDK's `D3D12Core.dll`
+into `tools/d3d12-agility` (Windows 10's own D3D12 lacks what the renderer
+uses; the build copies it into `D3D12\` beside the game).
+
 `config/dependencies.lock.json` records every revision. Bootstrap never
 changes an existing checkout, and applies (and afterwards verifies) the small
 Plume patch in `patches/`.

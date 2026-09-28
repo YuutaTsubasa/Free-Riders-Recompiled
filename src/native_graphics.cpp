@@ -13,6 +13,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <sstream>
+#include <string>
 #include <thread>
 #include <utility>
 #ifdef _WIN32
@@ -45,6 +46,68 @@ namespace {
         message << "; device removal HRESULT 0x" << static_cast<uint32_t>(removed);
     throw std::runtime_error(message.str());
 }
+
+std::string hex(HRESULT value) {
+    std::ostringstream text;
+    text << "0x" << std::hex << static_cast<uint32_t>(value);
+    return text.str();
+}
+
+// Whether Plume can draw with D3D12 here, by its own tests: the first
+// hardware adapter that makes an ID3D12Device8 at feature level 11_0,
+// answers the shader model query and records into the command list Plume
+// uses. Each adapter's answer is logged, so a machine that fails says which
+// adapter failed and how.
+bool d3d12_usable() {
+    Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
+    if (const HRESULT result = CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)); FAILED(result)) {
+        std::cerr << "NATIVE_GRAPHICS_D3D12_PROBE factory=" << hex(result) << '\n';
+        return false;
+    }
+    Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+    for (UINT index = 0; factory->EnumAdapters1(index, &adapter) != DXGI_ERROR_NOT_FOUND; ++index) {
+        DXGI_ADAPTER_DESC1 description{};
+        adapter->GetDesc1(&description);
+        char name[256] = {};
+        WideCharToMultiByte(CP_UTF8, 0, description.Description, -1, name, sizeof name - 1, nullptr, nullptr);
+        std::cerr << "NATIVE_GRAPHICS_D3D12_PROBE adapter=" << index << " name=\"" << name << '"';
+        if (description.Flags & (DXGI_ADAPTER_FLAG_REMOTE | DXGI_ADAPTER_FLAG_SOFTWARE)) {
+            std::cerr << " skipped=remote-or-software\n";
+            continue;
+        }
+        Microsoft::WRL::ComPtr<ID3D12Device8> device;
+        if (const HRESULT result = D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device));
+            FAILED(result)) {
+            std::cerr << " create=" << hex(result) << '\n';
+            continue;
+        }
+        D3D12_FEATURE_DATA_SHADER_MODEL model{D3D_SHADER_MODEL_6_0};
+        const HRESULT result = device->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &model, sizeof model);
+        if (FAILED(result) && result != E_INVALIDARG) {
+            std::cerr << " shader_model=" << hex(result) << '\n';
+            continue;
+        }
+        // Plume records into ID3D12GraphicsCommandList7, which only a recent
+        // runtime has (Windows 11 24H2's own, or the Agility SDK's beside
+        // the program); Windows 10's own makes the device but not the list.
+        Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
+        Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList7> list;
+        if (const HRESULT made = device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator));
+            FAILED(made)) {
+            std::cerr << " command_allocator=" << hex(made) << '\n';
+            continue;
+        }
+        if (const HRESULT made = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr,
+                                                           IID_PPV_ARGS(&list));
+            FAILED(made)) {
+            std::cerr << " command_list7=" << hex(made) << " (no D3D12 Agility SDK runtime in D3D12\\?)\n";
+            continue;
+        }
+        std::cerr << " usable=1\n";
+        return true;
+    }
+    return false;
+}
 #endif
 }
 
@@ -52,7 +115,14 @@ GraphicsBackend selected_graphics_backend() {
     static const GraphicsBackend backend = [] {
 #ifdef _WIN32
         const char* text = std::getenv("SFR_GRAPHICS");
-        return text && std::strcmp(text, "vulkan") == 0 ? GraphicsBackend::vulkan : GraphicsBackend::d3d12;
+        if (text && std::strcmp(text, "vulkan") == 0) return GraphicsBackend::vulkan;
+        // Chosen before anything is drawn, so the shader cache prepares
+        // Vulkan's bytecode from the start when D3D12 cannot run.
+        if (!d3d12_usable()) {
+            std::cerr << "NATIVE_GRAPHICS_FALLBACK from=D3D12 to=Vulkan reason=no-usable-d3d12-adapter\n";
+            return GraphicsBackend::vulkan;
+        }
+        return GraphicsBackend::d3d12;
 #else
         return GraphicsBackend::vulkan;
 #endif
