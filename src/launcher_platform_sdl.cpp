@@ -94,7 +94,7 @@ private:
 // ---------------------------------------------------------------- Linux
 // The play defaults and the player's choices, in the game's environment.
 void apply_environment(const LauncherSettings& settings, const fs::path& directory, bool checkout) {
-    for (const auto& [name, value] : game_environment(settings)) {
+    for (const auto& [name, value] : game_environment(settings, directory)) {
         if (value.empty()) unsetenv(name.c_str());
         else setenv(name.c_str(), value.c_str(), 1);
     }
@@ -288,13 +288,14 @@ std::string source_name(const fs::path& source) {
     return utf8(source);
 }
 
-std::optional<fs::path> pick_path(const fs::path& start, bool folders) {
+std::optional<fs::path> pick_path(const fs::path& start, bool folders, FileFilter filter) {
     struct ReleaseKeys {
         ~ReleaseKeys() { ImGui::GetIO().ClearInputKeys(); }
     } release_keys;
 #ifdef __ANDROID__
     (void)start;
     (void)folders;
+    (void)filter;  // Android's document provider offers all files.
     {
         std::lock_guard hold(picked_lock);
         picked_ready = false;
@@ -311,13 +312,19 @@ std::optional<fs::path> pick_path(const fs::path& start, bool folders) {
     std::error_code error;
     const fs::path begin = fs::is_directory(start, error) ? start : start.parent_path();
     std::string command;
-    if (have("zenity"))
+    if (have("zenity")) {
         command = std::string("zenity --file-selection") + (folders ? " --directory" : "") +
-                  " --filename=" + shell_quoted(utf8(begin) + "/") + " 2>/dev/null";
-    else if (have("kdialog"))
+                  " --filename=" + shell_quoted(utf8(begin) + "/");
+        if (!folders && filter == FileFilter::AvatarModel)
+            command += " --file-filter=" + shell_quoted("Avatar model | *.vrm *.glb *.VRM *.GLB");
+        command += " 2>/dev/null";
+    } else if (have("kdialog")) {
         command = std::string("kdialog ") + (folders ? "--getexistingdirectory " : "--getopenfilename ") +
-                  shell_quoted(utf8(begin)) + " 2>/dev/null";
-    else
+                  shell_quoted(utf8(begin));
+        if (!folders && filter == FileFilter::AvatarModel)
+            command += " " + shell_quoted("*.vrm *.glb *.VRM *.GLB|Avatar model");
+        command += " 2>/dev/null";
+    } else
         return std::nullopt;
     const std::string chosen = first_line(command);
     if (chosen.empty()) return std::nullopt;
@@ -349,7 +356,7 @@ std::unique_ptr<GameProcess> start_game(const LauncherSettings& settings, const 
         std::ofstream env(directory / "settings.env", std::ios::binary | std::ios::trunc);
         if (!env) return nullptr;
         env << "# Written by the launcher at each start.\n";
-        for (const auto& [name, value] : game_environment(settings)) env << name << '=' << value << '\n';
+        for (const auto& [name, value] : game_environment(settings, directory)) env << name << '=' << value << '\n';
     }
     game_launched = true;
     launcher_back = false;

@@ -18,9 +18,11 @@ namespace sfr::launcher {
 // or the app's external files directory on Android.
 std::filesystem::path launcher_directory();
 
-// A disc image file, or with folders a folder. Android picks only files
+enum class FileFilter { DiscImage, AvatarModel };
+// A disc image or model file, or with folders a folder. Android picks only files
 // (through the system's document picker; the result reads like a path).
-std::optional<std::filesystem::path> pick_path(const std::filesystem::path& start, bool folders);
+std::optional<std::filesystem::path> pick_path(const std::filesystem::path& start, bool folders,
+                                              FileFilter filter = FileFilter::DiscImage);
 bool can_pick_folders();
 // How a picked source is shown (the document's name on Android).
 std::string source_name(const std::filesystem::path& source);

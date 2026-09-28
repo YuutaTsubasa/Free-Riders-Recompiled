@@ -829,6 +829,25 @@ class DiagnosticGenerationTests(unittest.TestCase):
             'inline uint8_t VectorMaskL[] = {\n' +
             ', '.join(hex(value) for value in values) + ',\n};\n')
 
+    def test_avatar_vector_bounds_emits_the_runtime_comparison_instead_of_a_trap(self):
+        body = ('\t// vcmpbfp128 v63,v0,v51\n\t__builtin_debugtrap();\n'
+                '\t// blr \n\treturn;')
+        self.prepare([('avatar', 0x1000, body)])
+        output, report = self.run_generation()
+        self.assertEqual(report['counts']['retained_functions'], 1)
+        self.assertIn('sfr::vector_compare_bounds(ctx.v0.f32, ctx.v51.f32, ctx.v63.u32);', output)
+        self.assertNotIn('__builtin_debugtrap', output)
+
+    def test_avatar_vector_bounds_does_not_hide_other_traps_or_record_forms(self):
+        plain = '\t// vcmpbfp128 v63,v0,v51\n\t__builtin_debugtrap();\n'
+        self.prepare([
+            ('record', 0x1000, plain.replace('vcmpbfp128 ', 'vcmpbfp128. ') + '\t// blr \n\treturn;'),
+            ('other_trap', 0x1100, plain + '\t// tw 31,r0,r0\n\t__builtin_debugtrap();\n\t// blr \n\treturn;'),
+        ])
+        _, report = self.run_generation()
+        self.assertEqual(report['counts']['retained_functions'], 0)
+        self.assertEqual(len(report['rejected_functions']), 2)
+
     def test_vector_word_store_hooks_keep_effective_address_and_source(self):
         self.prepare([('wordstores', 0x1000, '\tuint32_t ea{};\n' +
             vector_word_store() + vector_word_store('stvewx', 31, 'r7', 0) +

@@ -62,7 +62,7 @@ std::string source_name(const fs::path& source) {
     return std::string(text.begin(), text.end());
 }
 
-std::optional<fs::path> pick_path(const fs::path& start, bool folders) {
+std::optional<fs::path> pick_path(const fs::path& start, bool folders, FileFilter filter) {
     IFileOpenDialog* dialog = nullptr;
     if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog))))
         return std::nullopt;
@@ -70,8 +70,10 @@ std::optional<fs::path> pick_path(const fs::path& start, bool folders) {
     dialog->GetOptions(&options);
     dialog->SetOptions(options | FOS_FORCEFILESYSTEM | (folders ? FOS_PICKFOLDERS : FOS_FILEMUSTEXIST));
     if (!folders) {
-        const COMDLG_FILTERSPEC types[] = {{L"Disc image (*.iso)", L"*.iso;*.xiso"}, {L"*.*", L"*.*"}};
-        dialog->SetFileTypes(2, types);
+        const COMDLG_FILTERSPEC disc_types[] = {{L"Disc image (*.iso)", L"*.iso;*.xiso"}, {L"*.*", L"*.*"}};
+        const COMDLG_FILTERSPEC model_types[] = {{L"Avatar model (*.vrm, *.glb)", L"*.vrm;*.glb"}};
+        if (filter == FileFilter::AvatarModel) dialog->SetFileTypes(1, model_types);
+        else dialog->SetFileTypes(2, disc_types);
     }
     IShellItem* folder = nullptr;
     std::error_code error;
@@ -104,8 +106,13 @@ fs::path game_program(const fs::path& directory) { return directory / L"sfr_cpu_
 bool quit_with_game() { return true; }
 
 std::unique_ptr<GameProcess> start_game(const LauncherSettings& settings, const fs::path& directory, const fs::path& log) {
-    for (const auto& [name, value] : game_environment(settings))
-        SetEnvironmentVariableA(name.c_str(), value.empty() ? nullptr : value.c_str());
+    const auto avatar_model = resolved_avatar_model(settings, directory);
+    for (const auto& [name, value] : game_environment(settings, directory)) {
+        if (name == "SFR_AVATAR_MODEL")
+            SetEnvironmentVariableW(L"SFR_AVATAR_MODEL", avatar_model.empty() ? nullptr : avatar_model.c_str());
+        else
+            SetEnvironmentVariableA(name.c_str(), value.empty() ? nullptr : value.c_str());
+    }
     // Saves beside the launcher, whatever the game's working directory.
     SetEnvironmentVariableW(L"SFR_SAVE_DIRECTORY", (directory / L"save").c_str());
     const fs::path root = find_runtime_root(directory);

@@ -62,6 +62,7 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         else if (key == "camera_device" && value.size() <= 128) settings.camera_device = value;
         else if (key == "camera_mirror") read_flag(value, settings.camera_mirror);
         else if (key == "camera_debug") read_flag(value, settings.camera_debug);
+        else if (key == "avatar_model") settings.avatar_model = utf8_path(value);
         else if (key == "player1_device" && (value == "both" || value == "gamepad" || value == "keyboard"))
             settings.player1_device = value;
         else if (key == "player2_device" && (value == "gamepad" || value == "keyboard" || value == "off"))
@@ -101,6 +102,7 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "camera_device=" << s.camera_device << '\n'
         << "camera_mirror=" << s.camera_mirror << '\n'
         << "camera_debug=" << s.camera_debug << '\n'
+        << "avatar_model=" << path_utf8(s.avatar_model) << '\n'
         << "player1_device=" << s.player1_device << '\n'
         << "player2_device=" << s.player2_device << '\n'
         << "player1_gamepad=" << s.player1_gamepad << '\n'
@@ -120,7 +122,9 @@ LauncherSettings load_launcher_settings(const std::filesystem::path& file) {
     if (!in) return {};
     std::ostringstream text;
     text << in.rdbuf();
-    return parse_launcher_settings(text.str());
+    auto settings = parse_launcher_settings(text.str());
+    settings.avatar_model = resolved_avatar_model(settings, std::filesystem::absolute(file).parent_path());
+    return settings;
 }
 
 bool save_launcher_settings(const std::filesystem::path& file, const LauncherSettings& settings) {
@@ -138,7 +142,13 @@ bool save_launcher_settings(const std::filesystem::path& file, const LauncherSet
     return !error;
 }
 
-std::vector<std::pair<std::string, std::string>> game_environment(const LauncherSettings& s) {
+std::filesystem::path resolved_avatar_model(const LauncherSettings& settings, const std::filesystem::path& directory) {
+    if (settings.avatar_model.empty() || settings.avatar_model.is_absolute() || directory.empty()) return settings.avatar_model;
+    return (directory / settings.avatar_model).lexically_normal();
+}
+
+std::vector<std::pair<std::string, std::string>> game_environment(const LauncherSettings& s,
+                                                               const std::filesystem::path& directory) {
     return {
         // Playing: no diagnostic time or call limits, no traces.
         {"SFR_CALL_BUDGET", "18446744073709551615"},
@@ -168,6 +178,8 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         {"SFR_CAMERA", s.camera == "off" ? "" : s.camera},
         {"SFR_CAMERA_DEVICE", s.camera_device},
         {"SFR_CAMERA_MIRROR", s.camera_mirror ? "1" : "0"},
+        {"SFR_AVATAR", s.avatar_model.empty() ? "0" : "1"},
+        {"SFR_AVATAR_MODEL", path_utf8(resolved_avatar_model(s, directory))},
 #ifdef _WIN32
         {"SFR_CAMERA_DEBUG", s.camera == "motion" && s.camera_debug ? "1" : "0"},
 #else
