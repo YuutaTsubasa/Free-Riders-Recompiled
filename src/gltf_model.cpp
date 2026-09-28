@@ -6,6 +6,7 @@
 #include <cstring>
 #include <fstream>
 #include <map>
+#include <limits>
 
 namespace sfr {
 namespace {
@@ -380,12 +381,174 @@ void fail(std::string* error, const char* why) {
 
 }  // namespace
 
+struct GltfRig {
+    struct Skin { std::vector<uint32_t> nodes; std::vector<Matrix> inverse_bind; };
+    struct Influence { std::array<uint32_t, 4> joints{}; std::array<float, 4> weights{}; };
+    struct Primitive {
+        std::vector<float> positions, normals;
+        std::vector<Influence> influences;
+        uint32_t node = ~0u, skin = ~0u;
+    };
+    std::vector<Matrix> local, bind_world, basis;
+    std::vector<uint32_t> parent, order;
+    std::vector<int> native_bone;
+    std::vector<Skin> skins;
+    std::vector<Primitive> primitives;
+    bool facing_backwards = false;
+    float anchor_y = std::numeric_limits<float>::infinity();
+};
+
+namespace {
+Matrix weighted_matrix(const GltfRig::Influence& influence, const std::vector<Matrix>& palette) {
+    Matrix out;
+    std::fill(std::begin(out.m), std::end(out.m), 0.0f);
+    float total = 0;
+    for (size_t i = 0; i < 4; ++i) {
+        const float weight = influence.weights[i];
+        if (!(weight > 0) || !std::isfinite(weight) || influence.joints[i] >= palette.size()) continue;
+        const auto& joint = palette[influence.joints[i]];
+        for (size_t j = 0; j < 16; ++j) out.m[j] += joint.m[j] * weight;
+        total += weight;
+    }
+    if (total <= 0.0001f) return {};
+    if (std::fabs(total - 1.0f) > 0.0001f)
+        for (float& value : out.m) value /= total;
+    return out;
+}
+
+Matrix rotation_basis(const Matrix& matrix) {
+    Matrix out;
+    // A matrix node can carry scale (and rounding/shear). Orthogonalize the
+    // axes so transpose_rotation remains its inverse, including at identity.
+    double axes[3][3]{};
+    for (int column = 0; column < 3; ++column) {
+        double original_length = 0;
+        for (int row = 0; row < 3; ++row) {
+            axes[column][row] = matrix.m[column * 4 + row];
+            original_length += axes[column][row] * axes[column][row];
+        }
+        if (!(original_length > 0) || !std::isfinite(original_length)) return {};
+        for (int previous = 0; previous < column; ++previous) {
+            double projection = 0;
+            for (int row = 0; row < 3; ++row) projection += axes[column][row] * axes[previous][row];
+            for (int row = 0; row < 3; ++row) axes[column][row] -= projection * axes[previous][row];
+        }
+        double length = 0;
+        for (double value : axes[column]) length += value * value;
+        if (!(length > original_length * 1e-12)) return {};
+        length = std::sqrt(length);
+        for (int row = 0; row < 3; ++row) {
+            axes[column][row] /= length;
+            out.m[column * 4 + row] = float(axes[column][row]);
+        }
+    }
+    return out;
+}
+
+Matrix transpose_rotation(const Matrix& matrix) {
+    Matrix out;
+    for (int c = 0; c < 3; ++c)
+        for (int r = 0; r < 3; ++r) out.m[c * 4 + r] = matrix.m[r * 4 + c];
+    return out;
+}
+
+bool quaternion_matrix(const std::array<float, 4>& quaternion, bool backwards, Matrix& out) {
+    double norm = 0;
+    for (float value : quaternion) {
+        if (!std::isfinite(value)) return false;
+        norm += double(value) * value;
+    }
+    if (!(norm > 1e-12)) return false;
+    const float inverse_length = float(1 / std::sqrt(norm));
+    const float flip = backwards ? -1.0f : 1.0f;
+    const float x = quaternion[0] * inverse_length * flip, y = quaternion[1] * inverse_length;
+    const float z = quaternion[2] * inverse_length * flip, w = quaternion[3] * inverse_length;
+    out.m[0] = 1 - 2 * (y*y + z*z); out.m[1] = 2 * (x*y + z*w); out.m[2] = 2 * (x*z - y*w);
+    out.m[4] = 2 * (x*y - z*w); out.m[5] = 1 - 2 * (x*x + z*z); out.m[6] = 2 * (y*z + x*w);
+    out.m[8] = 2 * (x*z + y*w); out.m[9] = 2 * (y*z - x*w); out.m[10] = 1 - 2 * (x*x + y*y);
+    return true;
+}
+}
+
+bool pose_gltf_model(GltfModel& model, const AvatarPose& pose) {
+    if (!pose.valid || !model.rig || model.rig->primitives.size() != model.primitives.size()) return false;
+    const GltfRig& rig = *model.rig;
+    std::array<Matrix, 72> delta;
+    // Reject before touching geometry; a partially captured pose stays static.
+    for (size_t i = 0; i < delta.size(); ++i)
+        if (!quaternion_matrix(pose.bones[i].rotation, rig.facing_backwards, delta[i])) return false;
+    for (size_t i = 0; i < model.primitives.size(); ++i)
+        if (model.primitives[i].positions.size() != rig.primitives[i].positions.size() ||
+            model.primitives[i].normals.size() != rig.primitives[i].normals.size()) return false;
+    std::vector<Matrix> world(rig.local.size());
+    for (uint32_t node : rig.order) {
+        Matrix local = rig.local[node];
+        if (const int native = rig.native_bone[node]; native >= 0) {
+            // Native deltas use the normalized humanoid axes. Convert them to
+            // this authored bone's bind basis, then inherit its posed parent.
+            local = multiply(local, multiply(transpose_rotation(rig.basis[node]),
+                             multiply(delta[size_t(native)], rig.basis[node])));
+        }
+        world[node] = rig.parent[node] == ~0u ? local : multiply(world[rig.parent[node]], local);
+    }
+    std::vector<std::vector<Matrix>> palettes(rig.skins.size());
+    for (size_t s = 0; s < rig.skins.size(); ++s) {
+        const auto& skin = rig.skins[s];
+        auto& palette = palettes[s];
+        palette.reserve(skin.nodes.size());
+        for (size_t j = 0; j < skin.nodes.size(); ++j)
+            palette.push_back(skin.nodes[j] < world.size() ? multiply(world[skin.nodes[j]], skin.inverse_bind[j]) : skin.inverse_bind[j]);
+    }
+    bool any = false;
+    for (size_t p = 0; p < rig.primitives.size(); ++p) {
+        const auto& source = rig.primitives[p];
+        auto& out = model.primitives[p];
+        for (size_t v = 0; v < source.positions.size() / 3; ++v) {
+            const Matrix transform = !source.influences.empty() ? weighted_matrix(source.influences[v], palettes[source.skin])
+                : (source.skin == ~0u ? world[source.node] : Matrix{});
+            for (int axis = 0; axis < 3; ++axis) {
+                float value = transform.m[12 + axis];
+                for (int c = 0; c < 3; ++c) value += transform.m[c * 4 + axis] * source.positions[v * 3 + c];
+                if (rig.facing_backwards && axis != 1) value = -value;
+                out.positions[v * 3 + axis] = value;
+                if (!any) model.lowest[axis] = model.highest[axis] = value;
+                else {
+                    model.lowest[axis] = (std::min)(model.lowest[axis], value);
+                    model.highest[axis] = (std::max)(model.highest[axis], value);
+                }
+            }
+            any = true;
+            if (!source.normals.empty()) {
+                float normal[3]{};
+                for (int axis = 0; axis < 3; ++axis) {
+                    for (int c = 0; c < 3; ++c) normal[axis] += transform.m[c * 4 + axis] * source.normals[v * 3 + c];
+                    if (rig.facing_backwards && axis != 1) normal[axis] = -normal[axis];
+                }
+                const float length = std::sqrt(normal[0]*normal[0] + normal[1]*normal[1] + normal[2]*normal[2]);
+                for (int axis = 0; axis < 3; ++axis) out.normals[v * 3 + axis] = length > 0 ? normal[axis] / length : 0;
+            }
+        }
+    }
+    const float lift = rig.anchor_y - model.lowest[1];
+    for (auto& primitive : model.primitives)
+        for (size_t i = 1; i < primitive.positions.size(); i += 3) primitive.positions[i] += lift;
+    model.lowest[1] += lift;
+    model.highest[1] += lift;
+    return true;
+}
+
 bool model_wanted() {
-    static const bool wanted = [] {
-        const char* const path = std::getenv("SFR_AVATAR_MODEL");
-        return path && *path;
-    }();
+    static const bool wanted = !avatar_model_path().empty();
     return wanted;
+}
+
+std::filesystem::path avatar_model_path() {
+#ifdef _WIN32
+    const wchar_t* path = _wgetenv(L"SFR_AVATAR_MODEL");
+#else
+    const char* path = std::getenv("SFR_AVATAR_MODEL");
+#endif
+    return path ? std::filesystem::path(path) : std::filesystem::path{};
 }
 
 std::optional<GltfModel> read_binary_gltf(const std::vector<uint8_t>& bytes, std::string* error, GltfPose pose) {
@@ -461,6 +624,35 @@ std::optional<GltfModel> read_binary_gltf(const std::vector<uint8_t>& bytes, std
     // out exactly as it was authored.
     bool facing_backwards = false;
     const std::map<std::string, uint32_t> bones = humanoid_bones(root, facing_backwards);
+    auto rig = std::make_shared<GltfRig>();
+    rig->local = local;
+    rig->parent = parent;
+    rig->order = order;
+    rig->facing_backwards = facing_backwards;
+    rig->bind_world.resize(node_count);
+    rig->basis.resize(node_count);
+    rig->native_bone.assign(node_count, -1);
+    // The game's generic humanoid mapping at 0x82190438, consumed by
+    // sub_82291A48. Other native bones stay unmapped until their axes and
+    // hierarchy are verified; do not guess intermediate/finger joints.
+    const std::pair<const char*, int> native_bones[] = {
+        {"hips", 0}, {"spine", 1}, {"chest", 5}, {"neck", 14}, {"head", 19},
+        {"leftShoulder", 12}, {"rightShoulder", 16}, {"leftUpperArm", 20}, {"rightUpperArm", 22},
+        {"leftLowerArm", 25}, {"rightLowerArm", 28}, {"leftHand", 33}, {"rightHand", 36},
+        {"leftUpperLeg", 2}, {"rightUpperLeg", 3}, {"leftLowerLeg", 6}, {"rightLowerLeg", 8},
+        {"leftFoot", 11}, {"rightFoot", 15}
+    };
+    for (const auto& [name, native] : native_bones)
+        if (const auto found = bones.find(name); found != bones.end() && found->second < node_count)
+            rig->native_bone[found->second] = native;
+    for (uint32_t node : order) {
+        rig->bind_world[node] = parent[node] == ~0u ? local[node] : multiply(rig->bind_world[parent[node]], local[node]);
+        // Compose rotation-only locals: a parent's nonuniform scale followed
+        // by a child's rotation shears bind_world and cannot define its axes.
+        const Matrix local_basis = rotation_basis(local[node]);
+        rig->basis[node] = parent[node] == ~0u ? local_basis
+            : rotation_basis(multiply(rig->basis[parent[node]], local_basis));
+    }
     std::map<uint32_t, Matrix> turns;
     if (pose == GltfPose::riding) {
         for (const PoseBone& posed : riding_stance) {
@@ -499,11 +691,12 @@ std::optional<GltfModel> read_binary_gltf(const std::vector<uint8_t>& bytes, std
     // when the mesh was made. In the rest pose every one of these is the
     // identity, which is why an unposed model needs no skinning at all.
     std::vector<std::vector<Matrix>> skins;
+    std::vector<std::vector<Matrix>> bind_palettes;
     if (const Json* const skin_list = root.find("skins"))
         for (const Json& skin : skin_list->array) {
             std::vector<Matrix> joints;
             const Json* const joint_list = skin.find("joints");
-            if (!joint_list) { skins.push_back(joints); continue; }
+            if (!joint_list) { skins.push_back(joints); rig->skins.emplace_back(); bind_palettes.emplace_back(); continue; }
             std::vector<Matrix> binds(joint_list->array.size());
             if (const Json* const bind_index = skin.find("inverseBindMatrices")) {
                 const Accessor bind = read_accessor(root, bind_index->whole(), binary);
@@ -513,10 +706,17 @@ std::optional<GltfModel> read_binary_gltf(const std::vector<uint8_t>& bytes, std
                         for (int i = 0; i < 16; ++i) binds[j].m[i] = read_float(bytes_at + i * 4, bind.component);
                     }
             }
+            GltfRig::Skin retained;
+            retained.inverse_bind = binds;
+            std::vector<Matrix> bind_palette;
             for (size_t j = 0; j < joint_list->array.size(); ++j) {
                 const uint32_t node = joint_list->array[j].whole(~0u);
+                retained.nodes.push_back(node);
+                bind_palette.push_back(node < node_count ? multiply(rig->bind_world[node], binds[j]) : binds[j]);
                 joints.push_back(node < node_count ? multiply(world[node], binds[j]) : binds[j]);
             }
+            rig->skins.push_back(std::move(retained));
+            bind_palettes.push_back(std::move(bind_palette));
             skins.push_back(std::move(joints));
         }
 
@@ -570,9 +770,10 @@ std::optional<GltfModel> read_binary_gltf(const std::vector<uint8_t>& bytes, std
         // A skinned mesh takes its place from its bones, not from the node it
         // hangs on: glTF says that node's own transform is not applied.
         const std::vector<Matrix>* skin = nullptr;
+        uint32_t chosen_skin = ~0u;
         if (const Json* const skin_index = nodes->array[index].find("skin")) {
             const uint32_t chosen = skin_index->whole(~0u);
-            if (chosen < skins.size() && !skins[chosen].empty()) skin = &skins[chosen];
+            if (chosen < skins.size() && !skins[chosen].empty()) { skin = &skins[chosen]; chosen_skin = chosen; }
         }
         const Matrix unmoved;
         const Matrix& place = skin ? unmoved : world[index];
@@ -586,9 +787,16 @@ std::optional<GltfModel> read_binary_gltf(const std::vector<uint8_t>& bytes, std
             const Accessor positions = read_accessor(root, position_index->whole(), binary);
             if (!positions.ok || positions.components != 3 || positions.component != 5126) continue;
             GltfPrimitive out;
+            GltfRig::Primitive source;
+            source.node = uint32_t(index);
+            source.skin = chosen_skin;
+            source.positions.reserve(size_t(positions.count) * 3);
             out.material = primitive.whole_at("material", ~0u);
             if (const Json* const materials = root.find("materials"); materials && out.material < materials->array.size()) {
                 const Json& material = materials->array[out.material];
+                if (const Json* sided = material.find("doubleSided")) out.double_sided = sided->boolean;
+                if (const Json* extensions = material.find("extensions"))
+                    out.unlit = extensions->find("KHR_materials_unlit") != nullptr;
                 if (const Json* const pbr = material.find("pbrMetallicRoughness")) {
                     if (const Json* const base = pbr->find("baseColorFactor"); base && base->array.size() >= 3)
                         for (size_t channel = 0; channel < base->array.size() && channel < 4; ++channel)
@@ -615,6 +823,14 @@ std::optional<GltfModel> read_binary_gltf(const std::vector<uint8_t>& bytes, std
             }
             const bool skinning = skin && joints.ok && weights.ok && joints.components == 4 && weights.components == 4
                                   && joints.count == positions.count && weights.count == positions.count;
+            if (skinning) {
+                source.influences.resize(positions.count);
+                for (uint32_t vertex = 0; vertex < positions.count; ++vertex)
+                    for (uint32_t i = 0; i < 4; ++i) {
+                        source.influences[vertex].joints[i] = read_index(joints.data + uint64_t(vertex) * joints.stride + i * component_size(joints.component), joints.component);
+                        source.influences[vertex].weights[i] = read_weight(weights.data + uint64_t(vertex) * weights.stride + i * component_size(weights.component), weights.component);
+                    }
+            }
             const auto bone_matrix = [&](uint32_t vertex) {
                 Matrix out;
                 for (float& element : out.m) element = 0;
@@ -644,6 +860,7 @@ std::optional<GltfModel> read_binary_gltf(const std::vector<uint8_t>& bytes, std
                 const float x = read_float(bytes_at, positions.component);
                 const float y = read_float(bytes_at + 4, positions.component);
                 const float z = read_float(bytes_at + 8, positions.component);
+                source.positions.insert(source.positions.end(), {x, y, z});
                 const Matrix bones = skinning ? bone_matrix(vertex) : Matrix{};
                 const Matrix& moves = skinning ? bones : place;
                 out.positions.push_back(moves.m[0] * x + moves.m[4] * y + moves.m[8] * z + moves.m[12]);
@@ -654,11 +871,13 @@ std::optional<GltfModel> read_binary_gltf(const std::vector<uint8_t>& bytes, std
                 const Accessor normals = read_accessor(root, normal_index->whole(), binary);
                 if (normals.ok && normals.components == 3 && normals.component == 5126 && normals.count == positions.count) {
                     out.normals.reserve(size_t(normals.count) * 3);
+                    source.normals.reserve(size_t(normals.count) * 3);
                     for (uint32_t vertex = 0; vertex < normals.count; ++vertex) {
                         const uint8_t* const bytes_at = normals.data + uint64_t(vertex) * normals.stride;
                         const float x = read_float(bytes_at, normals.component);
                         const float y = read_float(bytes_at + 4, normals.component);
                         const float z = read_float(bytes_at + 8, normals.component);
+                        source.normals.insert(source.normals.end(), {x, y, z});
                         // The rotation part only: a normal carries no position.
                         const Matrix bones = skinning ? bone_matrix(vertex) : Matrix{};
                         const Matrix& moves = skinning ? bones : place;
@@ -716,6 +935,15 @@ std::optional<GltfModel> read_binary_gltf(const std::vector<uint8_t>& bytes, std
             }
             model.vertices += positions.count;
             model.triangles += out.indices.size() / 3;
+            for (size_t vertex = 0; vertex < source.positions.size() / 3; ++vertex) {
+                const Matrix transform = skinning ? weighted_matrix(source.influences[vertex], bind_palettes[chosen_skin])
+                    : (skin ? Matrix{} : rig->bind_world[index]);
+                const float y = transform.m[1] * source.positions[vertex * 3]
+                    + transform.m[5] * source.positions[vertex * 3 + 1]
+                    + transform.m[9] * source.positions[vertex * 3 + 2] + transform.m[13];
+                rig->anchor_y = (std::min)(rig->anchor_y, y);
+            }
+            rig->primitives.push_back(std::move(source));
             model.primitives.push_back(std::move(out));
         }
     }
@@ -740,6 +968,9 @@ std::optional<GltfModel> read_binary_gltf(const std::vector<uint8_t>& bytes, std
             model.highest[axis] = highest;
         }
     }
+    const bool has_native_bone = std::any_of(rig->native_bone.begin(), rig->native_bone.end(), [](int bone) { return bone >= 0; });
+    const bool has_weights = std::any_of(rig->primitives.begin(), rig->primitives.end(), [](const auto& part) { return !part.influences.empty(); });
+    if (has_native_bone && has_weights) model.rig = std::move(rig);
     return model;
 }
 

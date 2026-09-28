@@ -369,7 +369,51 @@ SFR_HOOK(sub_823B97A8) {
                     frame.view[i] = std::bit_cast<float>(memory.load<uint32_t>(uint64_t(ctx.r6.u32) + i * 4));
                     frame.projection[i] = std::bit_cast<float>(memory.load<uint32_t>(uint64_t(ctx.r7.u32) + i * 4));
                 }
+                // Raw animation deltas are evaluated even without Xbox mesh
+                // assets. The SDK's final matrices depend on those assets and
+                // remain identity, so retarget the raw pose onto the VRM rig.
+                const uint32_t animation = ctx.r4.u32;
+                if (animation && memory.readable(uint64_t(animation) + 11556, 4)) {
+                    const uint32_t current = memory.load<uint32_t>(uint64_t(animation) + 11556);
+                    const uint64_t raw = uint64_t(animation) + 16 + 3456ull * current;
+                    if (current < 2 && memory.readable(raw, 3456)) {
+                        frame.pose.valid = true;
+                        for (uint32_t bone = 0; bone < frame.pose.bones.size(); ++bone) {
+                            auto& destination = frame.pose.bones[bone];
+                            for (uint32_t i = 0; i < 3; ++i)
+                                destination.translation[i] = std::bit_cast<float>(memory.load<uint32_t>(raw + bone * 48 + i * 4));
+                            for (uint32_t i = 0; i < 4; ++i)
+                                destination.rotation[i] = std::bit_cast<float>(memory.load<uint32_t>(raw + bone * 48 + 16 + i * 4));
+                        }
+                    }
+                }
                 sfr::avatar_frame_transforms.publish(frame);
+                static const bool trace_pose = std::getenv("SFR_TRACE_AVATAR_POSE") != nullptr;
+                static uint32_t pose_frames = 0;
+                if (trace_pose && pose_frames++ % 120 == 0 && memory.readable(uint64_t(ctx.r4.u32) + 11556, 4)) {
+                    const uint32_t current = memory.load<uint32_t>(uint64_t(ctx.r4.u32) + 11556);
+                    const uint64_t raw = uint64_t(ctx.r4.u32) + 16 + 3456ull * current;
+                    const uint32_t controller = memory.readable(uint64_t(character) + 12, 4)
+                        ? memory.load<uint32_t>(uint64_t(character) + 12) : 0;
+                    std::ostringstream dump;
+                    dump << "AVATAR_POSE frame=" << pose_frames << " buffer=" << current;
+                    if (controller && memory.readable(controller, 152)) {
+                        const uint32_t clip = memory.load<uint32_t>(uint64_t(controller) + 136);
+                        dump << " bones=" << memory.load<uint32_t>(uint64_t(controller) + 148) << " clip=0x" << std::hex << clip;
+                        if (clip && memory.readable(clip, 4)) {
+                            const uint32_t vt = memory.load<uint32_t>(clip);
+                            if (vt && memory.readable(vt, 28)) dump << " eval=0x" << memory.load<uint32_t>(uint64_t(vt) + 24);
+                        }
+                        dump << std::dec;
+                    }
+                    if (current < 2 && memory.readable(raw, 3456))
+                        for (uint32_t bone = 0; bone < 72; ++bone) {
+                            dump << " bone" << bone << '=';
+                            for (uint32_t word = 0; word < 12; ++word)
+                                dump << (word ? "," : "") << std::bit_cast<float>(memory.load<uint32_t>(raw + bone * 48 + word * 4));
+                        }
+                    std::cerr << dump.str() << '\n';
+                }
             }
         }
     }

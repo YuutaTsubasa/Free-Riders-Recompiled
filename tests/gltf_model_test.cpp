@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -18,7 +19,8 @@ void put32(std::vector<uint8_t>& bytes, uint32_t value) {
 }
 
 // A binary glTF of one triangle, built here so the test needs no file.
-std::vector<uint8_t> one_triangle(const std::string& extra_node = {}, bool with_normals = true) {
+std::vector<uint8_t> one_triangle(const std::string& extra_node = {}, bool with_normals = true,
+                                const std::string& material_properties = {}) {
     std::vector<float> positions = {0, 0, 0, 1, 0, 0, 0, 1, 0};
     std::vector<float> normals = {0, 0, 1, 0, 0, 1, 0, 0, 1};
     std::vector<uint16_t> indices = {0, 1, 2};
@@ -51,7 +53,7 @@ std::vector<uint8_t> one_triangle(const std::string& extra_node = {}, bool with_
     json += "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},";
     json += "{\"buffer\":0,\"byteOffset\":" + std::to_string(normals_at) + ",\"byteLength\":36},";
     json += "{\"buffer\":0,\"byteOffset\":" + std::to_string(indices_at) + ",\"byteLength\":6}],";
-    json += "\"materials\":[{},{},{},{\"pbrMetallicRoughness\":{\"baseColorFactor\":[0.25,0.5,0.75,0.5]}}],";
+    json += "\"materials\":[{},{},{},{\"pbrMetallicRoughness\":{\"baseColorFactor\":[0.25,0.5,0.75,0.5]}" + material_properties + "}],";
     json += "\"buffers\":[{\"byteLength\":" + std::to_string(binary.size()) + "}]}";
     while (json.size() % 4) json += ' ';
 
@@ -73,11 +75,16 @@ std::vector<uint8_t> one_triangle(const std::string& extra_node = {}, bool with_
 // A binary glTF of one skinned triangle hanging off a single bone, which the
 // VRM extension calls the spine. Everything the pose code needs and nothing
 // else: one joint, full weight, an identity bind pose.
-std::vector<uint8_t> skinned_triangle(bool vrm_one_point_oh = true) {
+std::vector<uint8_t> skinned_triangle(bool vrm_one_point_oh = true, bool hierarchy = false, bool scaled_parent = false) {
     const std::vector<float> positions = {0, 1, 0, 1, 1, 0, 0, 1, 1};
     const std::vector<float> normals = {0, 0, 1, 0, 0, 1, 0, 0, 1};
     const std::vector<float> weights = {1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0};
-    const std::vector<float> bind = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    const float diagonal = std::sqrt(0.5f);
+    const std::vector<float> bind = scaled_parent
+        ? std::vector<float>{diagonal/2, -diagonal/2, 0, 0, diagonal, diagonal, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}
+        : hierarchy
+        ? std::vector<float>{0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, -3, 0, 0, 1}
+        : std::vector<float>{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     std::vector<uint8_t> binary;
     const auto put_floats = [&binary](const std::vector<float>& values) {
         for (float value : values) {
@@ -103,8 +110,12 @@ std::vector<uint8_t> skinned_triangle(bool vrm_one_point_oh = true) {
     while (binary.size() % 4) binary.push_back(0);
 
     std::string json = "{\"asset\":{\"version\":\"2.0\"},";
-    json += "\"nodes\":[{\"mesh\":0,\"skin\":0},{\"translation\":[0,0,0]}],";
-    json += "\"skins\":[{\"joints\":[1],\"inverseBindMatrices\":5}],";
+    json += scaled_parent
+        ? R"("nodes":[{"mesh":0,"skin":0},{"scale":[2,1,1],"children":[2]},{"rotation":[0,0,0.3826834323650898,0.9238795325112867]}],)"
+        : hierarchy
+        ? R"("nodes":[{"mesh":0,"skin":0},{"translation":[0,2,0],"rotation":[0,0,0.7071067811865476,0.7071067811865476],"children":[2]},{"translation":[1,0,0]}],)"
+        : R"("nodes":[{"mesh":0,"skin":0},{"translation":[0,0,0]}],)";
+    json += "\"skins\":[{\"joints\":[" + std::string(hierarchy ? "2" : "1") + "],\"inverseBindMatrices\":5}],";
     json += "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":1,";
     json += "\"JOINTS_0\":3,\"WEIGHTS_0\":4},\"indices\":2}]}],";
     json += "\"accessors\":[";
@@ -121,7 +132,9 @@ std::vector<uint8_t> skinned_triangle(bool vrm_one_point_oh = true) {
     json += "{\"buffer\":0,\"byteOffset\":" + std::to_string(joints_at) + ",\"byteLength\":12},";
     json += "{\"buffer\":0,\"byteOffset\":" + std::to_string(weights_at) + ",\"byteLength\":48},";
     json += "{\"buffer\":0,\"byteOffset\":" + std::to_string(bind_at) + ",\"byteLength\":64}],";
-    json += vrm_one_point_oh
+    json += hierarchy
+                ? R"("extensions":{"VRMC_vrm":{"humanoid":{"humanBones":{"hips":{"node":1},"spine":{"node":2}}}}},)"
+                : vrm_one_point_oh
                 ? "\"extensions\":{\"VRMC_vrm\":{\"humanoid\":{\"humanBones\":{\"spine\":{\"node\":1}}}}},"
                 : "\"extensions\":{\"VRM\":{\"humanoid\":{\"humanBones\":[{\"bone\":\"spine\",\"node\":1}]}}},";
     json += "\"buffers\":[{\"byteLength\":" + std::to_string(binary.size()) + "}]}";
@@ -270,10 +283,110 @@ void deeply_nested_json_is_refused() {
     require(bool(sfr::read_binary_gltf(one_triangle("{\"mesh\":0,\"extras\":[[[0]]]}"))),
             "ordinary nested metadata still reads");
 }
+
+void native_pose_updates_from_bind() {
+    auto model = sfr::read_binary_gltf(skinned_triangle(), nullptr, sfr::GltfPose::riding);
+    const auto rest = sfr::read_binary_gltf(skinned_triangle());
+    require(model && rest, "animated fixture loads");
+    sfr::AvatarPose pose;
+    pose.valid = true;
+    require(sfr::pose_gltf_model(*model, pose), "native identity pose is accepted");
+    require(model->primitives[0].positions == rest->primitives[0].positions,
+            "identity restores authored bind, not baked riding vertices");
+    const float half = std::sqrt(0.5f);
+    pose.bones[1].rotation = {half, 0, 0, half};
+    require(sfr::pose_gltf_model(*model, pose), "native spine rotation is accepted");
+    const auto moved = model->primitives[0];
+    require(near(moved.positions[2], 1) && near(moved.normals[1], -1),
+            "native rotation moves weighted vertex and normal");
+    require(near(model->lowest[1], rest->lowest[1]), "animated geometry stays anchored");
+    require(sfr::pose_gltf_model(*model, pose) && model->primitives[0].positions == moved.positions,
+            "repeated native pose never accumulates");
+    pose.bones[1].rotation[0] = std::numeric_limits<float>::quiet_NaN();
+    require(!sfr::pose_gltf_model(*model, pose) && model->primitives[0].positions == moved.positions,
+            "invalid quaternion rejects whole update without corrupting geometry");
+    auto ordinary = sfr::read_binary_gltf(one_triangle());
+    const auto before = ordinary->primitives[0].positions;
+    require(!sfr::pose_gltf_model(*ordinary, pose) && ordinary->primitives[0].positions == before,
+            "ordinary models retain their static geometry");
+    pose.bones[1].rotation = {half, 0, 0, half};
+    auto older = sfr::read_binary_gltf(skinned_triangle(false));
+    require(sfr::pose_gltf_model(*older, pose), "VRM zero native pose accepted");
+    require(near(older->primitives[0].positions[2], moved.positions[2]),
+            "VRM zero facing conversion preserves native lean direction");
+    pose.bones[1].rotation = {2 * half, 0, 0, 2 * half};
+    require(sfr::pose_gltf_model(*model, pose) && near(model->primitives[0].normals[1], -1),
+            "finite quaternions are normalized");
+    pose.bones[1].rotation = {0, 0, 0, 0};
+    require(!sfr::pose_gltf_model(*model, pose), "a zero quaternion is refused");
+    pose = {};
+    require(!sfr::pose_gltf_model(*model, pose), "an unavailable capture keeps the static fallback");
+    pose.valid = true;
+    pose.bones[0].translation = {100, 200, 300};
+    pose.bones[1].translation = {40, 50, 60};
+    require(sfr::pose_gltf_model(*model, pose) && model->primitives[0].positions == rest->primitives[0].positions,
+            "source translation never changes VRM proportions or root position");
+}
+
+void native_pose_inherits_parents_and_authored_axes() {
+    auto model = sfr::read_binary_gltf(skinned_triangle(true, true));
+    const auto plain = sfr::read_binary_gltf(skinned_triangle());
+    require(model && plain, "rotated bind hierarchy reads");
+    sfr::AvatarPose pose;
+    pose.valid = true;
+    require(sfr::pose_gltf_model(*model, pose), "hierarchy identity pose accepted");
+    for (size_t i = 0; i < 9; ++i)
+        require(near(model->primitives[0].positions[i], plain->primitives[0].positions[i]),
+                "authored bind and inverse bind cancel even with rotated and translated parent");
+    const float half = std::sqrt(0.5f);
+    pose.bones[0].rotation = {half, 0, 0, half};
+    require(sfr::pose_gltf_model(*model, pose) && near(model->primitives[0].positions[2], -1),
+            "parent rotates child geometry about the parent's authored pivot");
+    pose.bones[0].rotation = {0, 0, 0, 1};
+    pose.bones[1].rotation = {half, 0, 0, half};
+    require(sfr::pose_gltf_model(*model, pose) && near(model->primitives[0].positions[2], -2),
+            "native X delta stays X with a bone authored ninety degrees around Z");
+    require(near(model->primitives[0].normals[1], -1), "normal uses the retargeted bind basis");
+    pose.bones[0].rotation = {half, 0, 0, half};
+    require(sfr::pose_gltf_model(*model, pose) && near(model->primitives[0].positions[2], 1),
+            "parent and child deltas compose through the hierarchy");
+}
+
+void native_identity_preserves_a_scaled_parent() {
+    auto model = sfr::read_binary_gltf(skinned_triangle(true, true, true));
+    require(bool(model), "nonuniformly scaled rig reads");
+    const auto authored = model->primitives[0];
+    sfr::AvatarPose pose;
+    pose.valid = true;
+    require(sfr::pose_gltf_model(*model, pose), "scaled rig identity pose accepted");
+    for (size_t i = 0; i < authored.positions.size(); ++i) {
+        require(near(model->primitives[0].positions[i], authored.positions[i]),
+                "identity preserves geometry under scale(2,1,1) and child Z45");
+        require(near(model->primitives[0].normals[i], authored.normals[i]),
+                "identity preserves scaled rig normals");
+    }
+    pose.bones[1].rotation = {std::sqrt(0.5f), 0, 0, std::sqrt(0.5f)};
+    require(sfr::pose_gltf_model(*model, pose), "scaled rig animated pose accepted");
+    for (float value : model->primitives[0].positions) require(std::isfinite(value), "scaled animation has finite positions");
+    for (float value : model->primitives[0].normals) require(std::isfinite(value), "scaled animation has finite normals");
+    require(std::fabs(model->primitives[0].positions[2] - authored.positions[2]) > 0.1f,
+            "scaled rig still moves under a nonidentity pose");
+    require(near(model->primitives[0].positions[2], 1) && near(model->primitives[0].normals[1], -1),
+            "native rotation axes exclude inherited nonuniform scale");
+}
 }
 
 int main(int argc, char** argv) {
     try {
+        const auto flags = sfr::read_binary_gltf(one_triangle({}, true,
+            R"(,"doubleSided":true,"extensions":{"KHR_materials_unlit":{},"VRMC_materials_mtoon":{"specVersion":"1.0"}})"));
+        require(flags && flags->primitives[0].double_sided && flags->primitives[0].unlit,
+                "VRM material double-sided and unlit fallback are preserved");
+        const auto defaults = sfr::read_binary_gltf(one_triangle());
+        require(defaults && !defaults->primitives[0].double_sided && !defaults->primitives[0].unlit,
+                "ordinary material keeps lighting and backface culling");
+        const auto disabled = sfr::read_binary_gltf(one_triangle({}, true, R"(,"doubleSided":false)"));
+        require(disabled && !disabled->primitives[0].double_sided, "explicit single-sided material");
         if (argc > 1) {
             const std::string test = argv[1];
             if (test == "cycles") cyclic_nodes_are_refused();
@@ -291,6 +404,9 @@ int main(int argc, char** argv) {
         what_is_refused();
         cyclic_nodes_are_refused();
         deeply_nested_json_is_refused();
+        native_pose_updates_from_bind();
+        native_pose_inherits_parents_and_authored_axes();
+        native_identity_preserves_a_scaled_parent();
         std::cout << "glTF model checks passed\n";
         return 0;
     } catch (const std::exception& error) {

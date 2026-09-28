@@ -37,15 +37,28 @@ Vertex vertexMain(Input input) {
     return vertex;
 }
 
-float4 pixelMain(Vertex vertex) : SV_Target {
-    const float4 painted = g_Picture.Sample(g_Sampler, vertex.texcoord) * g_Tint;
+float3 srgbToLinear(float3 value) {
+    return lerp(value / 12.92, pow((value + 0.055) / 1.055, 2.4), step(0.04045, value));
+}
+
+float3 linearToSrgb(float3 value) {
+    return lerp(value * 12.92, 1.055 * pow(max(value, 0), 1.0 / 2.4) - 0.055, step(0.0031308, value));
+}
+
+float4 pixelMain(Vertex vertex, bool front : SV_IsFrontFace) : SV_Target {
+    const float4 sampleColour = g_Picture.Sample(g_Sampler, vertex.texcoord);
+    const float4 painted = float4(srgbToLinear(sampleColour.rgb) * g_Tint.rgb, sampleColour.a * g_Tint.a);
     // A cut-out, not a blend: hair and eyelashes are drawn as cards with
     // see-through corners, and without this they are opaque rectangles.
     if (painted.a < g_Options.x) discard;
-    const float3 normal = normalize(vertex.normal);
+    // VRM files may declare MToon and its standard unlit fallback together.
+    // Until full MToon is available, preserve that fallback instead of adding
+    // an unrelated directional light to already authored character colours.
+    if (g_Options.y > 0.5) return float4(linearToSrgb(painted.rgb), painted.a);
+    const float3 normal = normalize(front ? vertex.normal : -vertex.normal);
     // Lambert, with enough ambient that a face turned away is still a shape
     // rather than a silhouette.
     const float lit = saturate(dot(normal, -normalize(g_Light.xyz)));
     const float shade = g_Light.w + (1.0 - g_Light.w) * lit;
-    return float4(painted.rgb * shade, painted.a);
+    return float4(linearToSrgb(painted.rgb * shade), painted.a);
 }

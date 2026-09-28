@@ -1,4 +1,5 @@
 #pragma once
+#include "avatar_pose.h"
 #include <array>
 #include <cmath>
 #include <mutex>
@@ -25,6 +26,7 @@ inline AvatarMatrix avatar_model_to_clip(const AvatarMatrix& world, const Avatar
 
 struct AvatarFrameTransform {
     AvatarMatrix world, view, projection;
+    AvatarPose pose;
 };
 
 // Consume once per presented frame, including frames where the Avatar is

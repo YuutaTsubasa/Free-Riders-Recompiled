@@ -1,13 +1,17 @@
 #pragma once
 #include "image_decode.h"
+#include "avatar_pose.h"
 
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <memory>
 #include <string>
 #include <vector>
 
 namespace sfr {
+
+struct GltfRig;
 
 // One drawable piece of a model: triangles in one space, indexed.
 struct GltfPrimitive {
@@ -27,6 +31,8 @@ struct GltfPrimitive {
     // What the material calls see-through: anything below this much alpha is
     // not drawn at all. Zero for a material that is opaque.
     float alpha_cutoff = 0;
+    bool double_sided = false;
+    bool unlit = false;
 };
 
 struct GltfModel {
@@ -38,14 +44,22 @@ struct GltfModel {
     // it against a character.
     float lowest[3] = {0, 0, 0}, highest[3] = {0, 0, 0};
     uint64_t vertices = 0, triangles = 0;
+    // Shared immutable authored geometry, hierarchy and skin influences.
+    std::shared_ptr<const GltfRig> rig;
 };
+
+// Rebuild geometry from authored bind data and native rotation deltas.
+// Keeps the bind pose's lowest Y anchored; recalculates current bounds.
+// Translations are ignored: the game owns root motion and VRM proportions.
+// Invalid/unrigged input returns false without changing the model.
+bool pose_gltf_model(GltfModel& model, const AvatarPose& pose);
 
 // How the model should stand.
 //
 // A VRM is authored in a T-pose, arms straight out, which is not how anyone
 // rides a board. `riding` rotates the humanoid bones the VRM extension names
-// into a rider's stance and skins the mesh into it once, at load -- the pose
-// does not change between frames, so there is nothing to do per frame.
+// into a rider's stance at load as a static fallback. Rigged VRMs retain their
+// authored bind data so pose_gltf_model can replace that stance each frame.
 enum class GltfPose { rest, riding };
 
 // Reads a binary glTF -- which is what a .vrm is -- and returns the geometry
@@ -66,6 +80,7 @@ std::optional<GltfModel> load_binary_gltf(const std::filesystem::path& file, std
 // (SFR_AVATAR_MODEL). Asked before a frame is presented, so it is read
 // once.
 bool model_wanted();
+std::filesystem::path avatar_model_path();
 
 // The same from bytes already in hand (what the tests use).
 std::optional<GltfModel> read_binary_gltf(const std::vector<uint8_t>& bytes, std::string* error = nullptr,

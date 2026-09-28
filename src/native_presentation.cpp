@@ -185,8 +185,11 @@ struct NativePresentation::Impl {
     std::optional<sfr::GltfModel> model;
     std::unique_ptr<plume::RenderShader> model_vertex, model_pixel;
     std::unique_ptr<plume::RenderPipelineLayout> model_layout;
-    std::unique_ptr<plume::RenderPipeline> model_pipeline;
-    std::unique_ptr<plume::RenderBuffer> model_vertices, model_indices;
+    std::unique_ptr<plume::RenderPipeline> model_pipeline, model_double_sided_pipeline;
+    std::array<std::unique_ptr<plume::RenderBuffer>, 2> model_vertices;
+    std::unique_ptr<plume::RenderBuffer> model_indices;
+    uint32_t model_vertex_slot = 0;
+    bool model_animation_enabled = true;
     // Each part's slice of the index buffer, the picture its material paints
     // it with and the colour that picture is multiplied by: one draw a part,
     // so a face is not the colour of a sleeve.
@@ -194,6 +197,7 @@ struct NativePresentation::Impl {
         uint32_t first = 0, count = 0, picture = 0;
         float colour[4] = {1, 1, 1, 1};
         float cutoff = 0;
+        bool double_sided = false, unlit = false;
     };
     std::vector<ModelPart> model_parts;
     // The model's pictures, and last of them a single white pixel for the
@@ -446,17 +450,19 @@ void NativePresentation::Impl::build_blit() {
 void NativePresentation::Impl::build_model() {
     if (model_tried) return;
     model_tried = true;
-    const char* const path = std::getenv("SFR_AVATAR_MODEL");
-    if (!path || !*path) return;
+    const auto path = sfr::avatar_model_path();
+    if (path.empty()) return;
     // Standing as a rider, not in the T-pose the file was authored in;
     // SFR_AVATAR_MODEL_POSE=rest asks for the file as it is, which is how to
     // tell a posing mistake from a modelling one.
     const char* const pose_text = std::getenv("SFR_AVATAR_MODEL_POSE");
     const bool rest_pose = pose_text && std::strcmp(pose_text, "rest") == 0;
+    model_animation_enabled = !rest_pose;
     std::string why;
     model = sfr::load_binary_gltf(path, &why, rest_pose ? sfr::GltfPose::rest : sfr::GltfPose::riding);
     if (!model) {
-        std::cerr << "NATIVE_MODEL unavailable=" << why << " path=" << path << '\n';
+        const auto utf8 = path.u8string();
+        std::cerr << "NATIVE_MODEL unavailable=" << why << " path=" << std::string(utf8.begin(), utf8.end()) << '\n';
         return;
     }
     // One buffer for the lot: position and normal a vertex, with each
@@ -477,6 +483,8 @@ void NativePresentation::Impl::build_model() {
         // picture of its own is painted with.
         part.picture = primitive.image < model->images.size() ? primitive.image : uint32_t(model->images.size());
         part.cutoff = primitive.alpha_cutoff;
+        part.double_sided = primitive.double_sided;
+        part.unlit = primitive.unlit;
         model_parts.push_back(part);
         for (size_t vertex = 0; vertex < count; ++vertex) {
             vertices.push_back(primitive.positions[vertex * 3]);
@@ -497,10 +505,16 @@ void NativePresentation::Impl::build_model() {
     auto& device = graphics->device();
     const uint64_t vertex_bytes = vertices.size() * sizeof(float);
     const uint64_t index_bytes = indices.size() * sizeof(uint32_t);
-    model_vertices = device.createBuffer(plume::RenderBufferDesc::UploadBuffer(vertex_bytes, plume::RenderBufferFlag::VERTEX));
+    for (auto& buffer : model_vertices)
+        buffer = device.createBuffer(plume::RenderBufferDesc::UploadBuffer(vertex_bytes, plume::RenderBufferFlag::VERTEX));
     model_indices = device.createBuffer(plume::RenderBufferDesc::UploadBuffer(index_bytes, plume::RenderBufferFlag::INDEX));
-    if (!model_vertices || !model_indices) { model.reset(); return; }
-    if (void* const at = model_vertices->map()) { std::memcpy(at, vertices.data(), size_t(vertex_bytes)); model_vertices->unmap(); }
+    if (!model_vertices[0] || !model_vertices[1] || !model_indices) { model.reset(); return; }
+    for (auto& buffer : model_vertices) {
+        void* const at = buffer->map();
+        if (!at) { model.reset(); return; }
+        std::memcpy(at, vertices.data(), size_t(vertex_bytes));
+        buffer->unmap();
+    }
     if (void* const at = model_indices->map()) { std::memcpy(at, indices.data(), size_t(index_bytes)); model_indices->unmap(); }
 
     if (graphics->backend() == sfr::GraphicsBackend::vulkan) {
@@ -639,16 +653,35 @@ void NativePresentation::Impl::build_model() {
     pipeline_desc.depthTargetFormat = plume::RenderFormat::D32_FLOAT_S8_UINT;
     pipeline_desc.renderTargetBlend[0] = plume::RenderBlendDesc::Copy();
     model_pipeline = device.createGraphicsPipeline(pipeline_desc);
-    if (!model_pipeline) { model.reset(); return; }
+    pipeline_desc.cullMode = plume::RenderCullMode::NONE;
+    model_double_sided_pipeline = device.createGraphicsPipeline(pipeline_desc);
+    if (!model_pipeline || !model_double_sided_pipeline) { model_pipeline.reset(); model.reset(); return; }
     std::cerr << "NATIVE_MODEL loaded primitives=" << model->primitives.size() << " vertices=" << model->vertices
               << " triangles=" << model->triangles << " height=" << (model->highest[1] - model->lowest[1])
               << " pictures=" << model->images.size() << '\n';
 }
 
-// Drawn where the game's own rider stands: at a fixed place in front of the
-// camera, in the projection the game itself uses, which is worked out rather
-// than taken from a draw (docs/avatar.md).
+// Use this frame's actual Avatar world and camera transforms.
 void NativePresentation::Impl::draw_model(const AvatarFrameTransform& frame) {
+    if (model_animation_enabled && pose_gltf_model(*model, frame.pose)) {
+        // submit() waits the preceding submission before releasing its command
+        // list. Alternating buffers therefore never overwrite vertices still
+        // read by that submission; no additional per-frame GPU wait is needed.
+        model_vertex_slot ^= 1;
+        auto* destination = static_cast<float*>(model_vertices[model_vertex_slot]->map());
+        if (!destination) return;
+        for (const auto& primitive : model->primitives) {
+            const size_t count = primitive.positions.size() / 3;
+            for (size_t vertex = 0; vertex < count; ++vertex) {
+                for (size_t axis = 0; axis < 3; ++axis) *destination++ = primitive.positions[vertex * 3 + axis];
+                for (size_t axis = 0; axis < 3; ++axis)
+                    *destination++ = primitive.normals.size() == count * 3 ? primitive.normals[vertex * 3 + axis] : (axis == 1 ? 1.f : 0.f);
+                for (size_t axis = 0; axis < 2; ++axis)
+                    *destination++ = primitive.texcoords.size() == count * 2 ? primitive.texcoords[vertex * 2 + axis] : 0.f;
+            }
+        }
+        model_vertices[model_vertex_slot]->unmap();
+    }
     static const float scale = [] {
         const char* text = std::getenv("SFR_AVATAR_MODEL_SCALE");
         const double value = text ? std::strtod(text, nullptr) : 1.0;
@@ -663,7 +696,7 @@ void NativePresentation::Impl::draw_model(const AvatarFrameTransform& frame) {
     constants[16] = 0.4f; constants[17] = -0.7f; constants[18] = 0.6f; constants[19] = 0.45f;
     command_list->setGraphicsPipelineLayout(model_layout.get());
     command_list->setPipeline(model_pipeline.get());
-    const plume::RenderVertexBufferView vertex_view(plume::RenderBufferReference(model_vertices.get(), 0),
+    const plume::RenderVertexBufferView vertex_view(plume::RenderBufferReference(model_vertices[model_vertex_slot].get(), 0),
                                                     uint32_t(model->vertices * 8 * sizeof(float)));
     const plume::RenderInputSlot slot(0, sizeof(float) * 8);
     command_list->setVertexBuffers(0, &vertex_view, 1, &slot);
@@ -674,8 +707,10 @@ void NativePresentation::Impl::draw_model(const AvatarFrameTransform& frame) {
     command_list->setGraphicsDescriptorSet(model_sampler.get(), 1);
     for (const ModelPart& part : model_parts) {
         if (!part.count || part.picture >= model_picture_sets.size()) continue;
+        command_list->setPipeline(part.double_sided ? model_double_sided_pipeline.get() : model_pipeline.get());
         for (int channel = 0; channel < 4; ++channel) constants[20 + size_t(channel)] = part.colour[channel];
         constants[24] = part.cutoff;
+        constants[25] = part.unlit ? 1.0f : 0.0f;
         command_list->setGraphicsDescriptorSet(model_picture_sets[part.picture].get(), 0);
         command_list->setGraphicsPushConstants(0, constants.data());
         command_list->drawIndexedInstanced(part.count, 1, part.first, 0, 0);

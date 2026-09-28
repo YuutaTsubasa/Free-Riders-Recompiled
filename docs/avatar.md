@@ -5,12 +5,16 @@
 
 ## 使用方式
 
-啟動遊戲前設定以下環境變數（Windows 範例）：
+在啟動器設定的 **Advanced／進階** 頁面選擇 **1P Avatar 模型**，瀏覽本機
+`.vrm` 或 `.glb`。路徑會記住，下次啟動遊戲生效；清除即可停用。
+手動輸入的相對路徑以啟動器所在資料夾為基準。模型只在本機讀取。
+
+直接啟動 runtime 時，也可以設定以下環境變數（Windows 範例）：
 
 ```bat
 set "SFR_AVATAR=1"
 set "SFR_AVATAR_MODEL=C:\Models\player.vrm"
-FreeRidersRecompiled.exe
+sfr_cpu_diagnostic.exe "C:\Game\image" "C:\Game\assets" --game-region=ntsc-us
 ```
 
 在角色選单選 **AVATAR**，再選 Gear 並進入比賽。VRM 只會在目前的單人
@@ -20,11 +24,12 @@ Avatar 比賽中顯示；一般角色、角色選單和雙人模式不會畫上�
 - `SFR_AVATAR_MODEL_SCALE`：模型尺寸倍率，預設 `1`。模型以公尺讀取，
   腳底最低點對齊遊戲角色的原點；不同模型仍需要實測尺寸。
 - `SFR_AVATAR_MODEL_POSE=rest`：使用檔案原本姿勢；預設依 VRM 人形骨架
-  烘焙一個固定滑行姿勢。
+  套用遊戲的 Avatar 骨骼動畫；尚未取得動作時暫用固定滑行姿勢。
 - `SFR_AVATAR_BODY=2`：使用女性 Avatar 的遊戲內 body/gear variant。
 - `SFR_AVATAR_TEXTURE_MAX`：貼圖最大邊長，預設 `2048`。
 - `SFR_AVATAR_MODEL_PLAIN=1`：停用模型貼圖，方便診斷形狀。
 - `SFR_TRACE_AVATAR=1`：記錄角色狀態與前幾次矩陣；不記錄攝影機影像。
+- `SFR_TRACE_AVATAR_POSE=1`：額外取樣遊戲的骨骼旋轉數值，供動作診斷。
 
 沒有指定模型時，原生 VRM 渲染器不會建立 GPU 資源。
 只設定 `SFR_AVATAR=1` 可以測試沒有原始 Xbox Avatar 資產的載入流程，
@@ -65,6 +70,17 @@ Avatar 比賽中顯示；一般角色、角色選單和雙人模式不會畫上�
 不會覆蓋主畫面的相機。每個 present 都消耗或清除一次資料，包含跳過繪製的格，
 不會沿用上一格或上一場的矩陣。
 
+同一個呼叫的 `r4` 是動畫物件。`[r4+11556]` 選擇目前的雙緩衝，
+`r4+16+buffer*3456` 包含 72 組 translation/quaternion/scale，步長 48 bytes。
+即使缺少 Xbox Avatar 網格，遊戲仍會計算這些動畫；缺少原始 bind pose 的
+最終矩陣則不能直接使用。渲染器複製當格 quaternion，以已確認的 19 個人形
+關節對應驅動 VRM，保留模型本身的肢體比例及 bind pose。遊戲 world 矩陣負責
+整體位置，來源骨骼的平移不會直接套到不同身形的模型。
+
+每格從保留的原始頂點重算 skinning，更新法線與邊界，不會累積變形。
+兩組頂點緩衝輪流更新，避免覆寫 GPU 尚在讀取的上一格。這是 CPU skinning，
+高面數模型會增加每格 CPU 工作量。
+
 模型仍在遊戲畫完該格後合成，使用自己的深度緩衝；因此模型自身有遮擋，
 但場景不會遮住它，而且它可能蓋到 HUD。還沒有完整的場景內渲染。
 
@@ -74,13 +90,17 @@ PR #15 補上 body-type 回覆；要實際開始比賽，還需要 Avatar 初始
 asset size 與空資產回覆、原始零部件流程的處理，以及 `vcmpbfp128` 指令支援。
 原始 Xbox Avatar 的網格不會下載或重建，改由本機模型顯示。
 
-VRM 0.x / 1.0 都以 binary glTF 讀取，使用基本色與基本色貼圖。支援 PNG 和
+VRM 0.x / 1.0 都以 binary glTF 讀取，使用基本色與基本色貼圖。依每個材質的
+`doubleSided` 決定是否畫背面；`KHR_materials_unlit` 保留不受光照影響的顏色，
+MToon 材質目前使用它宣告的 unlit fallback。受光材質在 linear colour space
+計算光照，避免直接在 sRGB 貼圖上乘亮度造成偏暗。支援 PNG 和
 baseline JPEG；不支援 interlaced PNG 或 progressive JPEG，讀不到的貼圖會
 退回材質色。讀取器會拒絕循環節點、過深 JSON、截斷 JPEG segment 與超出 PNG
 宣告尺寸的解壓資料。
 
-目前仍有限制：固定滑行姿勢、沒有角色動態動畫、沒有完整 MToon 或透明混色，
-也沒有雙人 VRM。不同模型的尺寸、骨架與材質需要實際確認。
+目前仍有限制：只對應主要身體關節，尚無完整手指、表情與 spring bone 動態，
+沒有完整 MToon 或透明混色，也沒有雙人 VRM。沒有 VRM 人形骨架對應的普通
+GLB 會維持靜態。不同模型的尺寸、骨架與材質需要實際確認。
 
 ## 驗證
 
