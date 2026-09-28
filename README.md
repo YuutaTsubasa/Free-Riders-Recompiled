@@ -30,6 +30,7 @@ page; to build it yourself, see [Building](docs/building.md).
 - [How to Build](#how-to-build)
 - [Controls](#controls)
 - [Camera motion input](#camera-motion-input)
+- [VRM Avatar models](#vrm-avatar-models)
 - [FAQ](#faq)
 - [Repository Layout](#repository-layout)
 - [Credits](#credits)
@@ -58,6 +59,8 @@ What works today:
   (Android camera capture, not yet tried on a device).
 - Optional webcam motion input for 1P on Windows, with estimated 3D body
   joints, controller handoff and a separate skeleton debug window.
+- Experimental custom VRM Avatar models, selected in the launcher, with
+  game-driven animation and hand-held items.
 
 Known limits:
 
@@ -66,7 +69,7 @@ Known limits:
   those above may stop on something the runtime does not do yet.
 - Linux and Android use shaders translated beforehand on Windows
   (`shaders.pack`, included in the releases). The game creates all of its
-  468 shaders while it boots, so one run on Windows collects them all.
+  shaders while it boots; releases include the matching shader pack.
 - Android has been tried in the emulator and on one Adreno 750 handheld.
 
 Progress notes (mostly in Traditional Chinese) are in [docs/](docs/), starting
@@ -157,6 +160,36 @@ A webcam estimates relative 3D pose; it does not measure depth like Kinect.
 The Linux and Android prebuilt packages do not enable camera motion input.
 Setup, gestures, source builds and limitations:
 [Camera input](docs/camera-input.md).
+
+## VRM Avatar models
+
+Starting with v0.3.0, you can use your own **VRM 0.x / VRM 1.0** model for the
+in-game **AVATAR** rider. Camera motion input is optional; controllers and
+keyboard controls work with the model too.
+
+1. Open the launcher's **Advanced** tab and find **Avatar model**.
+2. Choose **Browse** and select a `.vrm` or binary `.glb` file. Desktop users
+   can also type its path; Android imports a copy into the app's storage.
+3. Start the game and select **AVATAR** in the character menu, then choose
+   your Gear. AVATAR must already be available in your game save; selecting
+   a model does not unlock it.
+4. To change models, return to the launcher and restart the game. **Clear**
+   disables the custom model.
+
+One model setting is shared by both local players; it applies to whoever
+selects AVATAR, with separate poses for each player. Ordinary characters are
+unchanged. The model appears in Loading and races, follows the game's main
+body animation, jumps and stance changes, and supplies hand positions for
+held items. Models are read locally; no avatar model is bundled or uploaded.
+
+This is experimental. A `.glb` without VRM humanoid bones stays static.
+Full MToon shading, transparent blending, spring bones, facial expressions
+and finger animation are not implemented. Some poses and item grips can
+look different between models, and complex models can reduce performance.
+Windows D3D12/Vulkan gameplay has been checked; full two-player VRM gameplay
+and physical Linux/Android VRM gameplay still need broader testing.
+
+Troubleshooting and platform details: [VRM Avatar guide](docs/vrm-avatar.md).
 
 ## FAQ
 

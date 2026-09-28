@@ -11,8 +11,9 @@ void require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
 
-std::string value_of(const sfr::LauncherSettings& settings, const std::string& name) {
-    for (const auto& [key, value] : sfr::game_environment(settings))
+std::string value_of(const sfr::LauncherSettings& settings, const std::string& name,
+                     const std::filesystem::path& directory = {}) {
+    for (const auto& [key, value] : sfr::game_environment(settings, directory))
         if (key == name) return value;
     throw std::runtime_error("variable missing from the game environment");
 }
@@ -97,6 +98,30 @@ void camera_debug_settings() {
                     "debugging explicitly overrides the inherited environment and requires Windows motion mode plus opt-in");
         }
     }
+}
+
+void avatar_model_settings() {
+    const auto defaults = sfr::parse_launcher_settings("volume=35\n");
+    require(sfr::format_launcher_settings(defaults).find("avatar_model=\n") != std::string::npos,
+            "older settings default to no avatar model");
+    require(value_of(defaults, "SFR_AVATAR") == "0" && value_of(defaults, "SFR_AVATAR_MODEL").empty(),
+            "no selected model disables the avatar and clears an inherited model");
+
+    const std::u8string model = u8"C:/遊戲/My Avatars/騎士 = 1.vrm";
+    const std::string model_utf8(model.begin(), model.end());
+    const auto selected = sfr::parse_launcher_settings("avatar_model=" + model_utf8 + "\n");
+    const auto saved = sfr::format_launcher_settings(selected);
+    require(saved.find("avatar_model=" + model_utf8 + "\n") != std::string::npos,
+            "the selected Unicode model path with spaces is serialized as UTF-8");
+    const auto reloaded = sfr::parse_launcher_settings(saved);
+    require(value_of(reloaded, "SFR_AVATAR_MODEL") == model_utf8 && value_of(reloaded, "SFR_AVATAR") == "1",
+            "the selected model survives a round trip and enables the avatar at launch");
+    const auto cleared = sfr::parse_launcher_settings(saved + "avatar_model=\n");
+    require(value_of(cleared, "SFR_AVATAR_MODEL").empty() && value_of(cleared, "SFR_AVATAR") == "0",
+            "clearing a previously selected model overrides a stale inherited environment");
+    const auto missing = sfr::parse_launcher_settings("avatar_model=Z:/missing/avatar.glb\n");
+    require(value_of(missing, "SFR_AVATAR_MODEL") == "Z:/missing/avatar.glb",
+            "an unavailable model stays selected so it can be reported instead of silently discarded");
 }
 
 void malformed_values_keep_defaults() {
@@ -225,6 +250,34 @@ void directories_are_found_and_checked() {
     settings.volume = 8;
     require(sfr::save_launcher_settings(file, settings), "settings save over an existing file");
     require(sfr::load_launcher_settings(file).volume == 8, "saved settings load");
+    settings.avatar_model = std::filesystem::path(u8"models/騎士 1.vrm");
+    require(sfr::save_launcher_settings(file, settings), "relative avatar settings save");
+    const auto avatar_settings = sfr::load_launcher_settings(file);
+    require(avatar_settings.avatar_model == root / settings.avatar_model,
+            "a loaded relative model is anchored to settings.ini, not the process working directory");
+    const auto absolute_avatar = (root / settings.avatar_model).lexically_normal().u8string();
+    require(value_of(avatar_settings, "SFR_AVATAR_MODEL") == std::string(absolute_avatar.begin(), absolute_avatar.end()),
+            "loaded relative model reaches the game as an absolute path");
+    std::filesystem::create_directories(root / "models");
+    std::ofstream(root / settings.avatar_model) << "model";
+    {
+        struct RestoreDirectory {
+            std::filesystem::path previous = std::filesystem::current_path();
+            ~RestoreDirectory() { std::filesystem::current_path(previous); }
+        } restore;
+        std::filesystem::current_path(launcher);
+        require(!std::filesystem::is_regular_file(settings.avatar_model), "the model is not in the process working directory");
+        const auto resolved = sfr::resolved_avatar_model(settings, root);
+        require(std::filesystem::is_regular_file(resolved) && resolved == root / settings.avatar_model,
+                "the UI validates a typed relative path against the launcher directory");
+        require(value_of(settings, "SFR_AVATAR_MODEL", root) == std::string(absolute_avatar.begin(), absolute_avatar.end()),
+                "a typed relative model launches from the same absolute path the UI validates");
+        settings.avatar_model = resolved;
+        require(sfr::resolved_avatar_model(settings, launcher) == resolved, "absolute model selections are unchanged");
+        settings.avatar_model.clear();
+        require(sfr::resolved_avatar_model(settings, root).empty() && value_of(settings, "SFR_AVATAR_MODEL", root).empty(),
+                "clearing the model never resolves to the launcher directory itself");
+    }
     require(sfr::load_launcher_settings(root / "missing.ini").volume == 100, "a missing file gives the defaults");
     std::filesystem::remove_all(root);
 }
@@ -234,6 +287,7 @@ int main() {
     try {
         settings_round_trip();
         camera_debug_settings();
+        avatar_model_settings();
         malformed_values_keep_defaults();
         environment_follows_settings();
         directories_are_found_and_checked();

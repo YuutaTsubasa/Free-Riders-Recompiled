@@ -945,6 +945,18 @@ static uint32_t complete_overlapped(uint32_t overlapped, uint32_t result, uint32
     return 997;
 }
 
+// SFR_AVATAR=1 turns the Xbox avatar system on. It is off by default: the
+// title only needs it for the Avatar entry of the character ring, and saying
+// yes to XamAvatarInitialize means answering everything it then asks about
+// the assets it would draw.
+static bool avatars_enabled() {
+    static const bool enabled = [] {
+        const char* const text = std::getenv("SFR_AVATAR");
+        return text && *text && *text != '0';
+    }();
+    return enabled;
+}
+
 static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t address) {
     // Cleared on the way out, so a report names what a thread is inside.
     struct InImport {
@@ -2344,24 +2356,116 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         throw GuestThreadExit{ctx.r3.u32};
     }
     if (std::string_view(name) == "__imp__XamAvatarInitialize") {
-        // No avatar system: fail as the pinned reference does (xam_avatar.cc
-        // returns ~0). The title's avatar library frees its buffer and continues.
-        ctx.r3.u64 = 0xFFFFFFFFu;
-        std::cerr << "RESULT XamAvatarInitialize status=0xffffffff backend=no-avatars lr=0x" << std::hex << ctx.lr << std::dec << '\n';
-        return;
-    }
-    if (std::string_view(name) == "__imp__XamAvatarManifestGetBodyType") {
-        // XamAvatarManifestGetBodyType(manifest): XAVATAR_BODY_TYPE, 1 male,
-        // 2 female. Choosing the Avatar rider asks it of the manifest the
-        // title holds, which no avatar system has filled here: answer male
-        // rather than stop the game.
-        std::cerr << "RESULT XamAvatarManifestGetBodyType manifest=0x" << std::hex << ctx.r3.u32
-                  << " body=1 backend=no-avatars lr=0x" << ctx.lr << std::dec << '\n';
-        ctx.r3.u64 = 1;
+        // Without SFR_AVATAR there is no avatar system: fail as the pinned
+        // reference does (xam_avatar.cc returns ~0), and the title's avatar
+        // library frees its buffer and carries on. With it the system is
+        // there, and the title goes on to ask for the assets it draws an
+        // avatar from -- which is what the Avatar entry of the character
+        // ring waits for: choosing it without this loads for ever.
+        ctx.r3.u64 = avatars_enabled() ? 0u : 0xFFFFFFFFu;
+        std::cerr << "RESULT XamAvatarInitialize status=0x" << std::hex << ctx.r3.u32 << " backend="
+                  << (avatars_enabled() ? "avatars" : "no-avatars") << " lr=0x" << ctx.lr << std::dec << '\n';
         return;
     }
     if (std::string_view(name) == "__imp__XamAvatarShutdown") {
         std::cerr << "RESULT XamAvatarShutdown backend=no-avatars\n";
+        return;
+    }
+    if (std::string_view(name) == "__imp__XamAvatarGetAssets" && active_memory) {
+        // XamAvatarGetAssets(avatar, mask, ?, descriptors, data, ...): the
+        // assets themselves. Nothing is written into either buffer yet -- this
+        // reports success over what the title zeroed, to find out whether it
+        // will race with an avatar that has no assets (and draw nothing) or
+        // insist on real ones. That answers whether a model of our own has to
+        // be encoded in Microsoft's format or can simply be drawn by us.
+        const uint32_t avatar = ctx.r3.u32, mask = ctx.r4.u32;
+        const uint32_t descriptors = ctx.r6.u32, data = ctx.r7.u32;
+        // The data buffer is what the title keeps at [avatar+0x2FC40], and it
+        // reads its own first word as a pointer and a count from there
+        // (823BA468 walks [.]->[.], 823B9E10 reads [.+8]). An avatar of no
+        // parts is therefore expressible without any real assets: a pointer
+        // into the buffer at a zero count, and zero for the other count. Every
+        // loop over parts then has nothing to walk.
+        if (data) {
+            active_memory->check_write(data, 32);
+            for (uint32_t offset = 0; offset < 32; offset += 4) active_memory->store<uint32_t>(uint64_t(data) + offset, 0);
+            active_memory->store<uint32_t>(data, data + 16);
+        }
+        ctx.r3.u64 = 0;
+        static bool reported = false;
+        if (!reported) {
+            reported = true;
+            std::cerr << "RESULT XamAvatarGetAssets avatar=0x" << std::hex << avatar << " mask=0x" << mask
+                      << " descriptors=0x" << descriptors << " data=0x" << data << " lr=0x" << ctx.lr
+                      << std::dec << " backend=empty-assets" << '\n';
+        }
+        return;
+    }
+    if (std::string_view(name) == "__imp__XamAvatarGetAssetsResultSize" && active_memory) {
+        // XamAvatarGetAssetsResultSize(mask, out_a, out_b): how much room the
+        // assets for that set of types need. 823B9B58 rounds the second one up
+        // to four kilobytes, adds 0x64000, and keeps it -- so the title simply
+        // allocates what it is told and then asks for the assets themselves.
+        // The sizes here are a first guess, to see what GetAssets is handed.
+        const uint32_t mask = ctx.r3.u32, out_a = ctx.r4.u32, out_b = ctx.r5.u32;
+        static const uint32_t bytes = [] {
+            const char* const text = std::getenv("SFR_AVATAR_ASSET_BYTES");
+            const unsigned long value = text ? std::strtoul(text, nullptr, 0) : 0x10000;
+            return uint32_t(value ? value : 0x10000);
+        }();
+        if (out_a) active_memory->store<uint32_t>(out_a, bytes);
+        if (out_b) active_memory->store<uint32_t>(out_b, bytes);
+        ctx.r3.u64 = 0;
+        static bool reported = false;
+        if (!reported) {
+            reported = true;
+            std::cerr << "RESULT XamAvatarGetAssetsResultSize mask=0x" << std::hex << mask << " bytes=0x" << bytes
+                      << " out=0x" << out_a << ",0x" << out_b << " lr=0x" << ctx.lr << std::dec << '\n';
+        }
+        return;
+    }
+    if (std::string_view(name) == "__imp__XamAvatarGetManifestLocalUser" && active_memory) {
+        // XamAvatarGetManifestLocalUser(user, manifest, overlapped). The
+        // wrapper 82750E08 turns success into ERROR_IO_PENDING when an
+        // overlapped is passed and writes a failure into [overlapped+24], so
+        // this completes the overlapped itself and reports success.
+        //
+        // The manifest buffer is left as the title made it: nothing has asked
+        // it for anything but the body type yet, and that is answered from
+        // SFR_AVATAR_BODY rather than from here. What the title wants in it
+        // will show up as the next thing it stops on.
+        const uint32_t user = ctx.r3.u32, manifest = ctx.r4.u32, overlapped = ctx.r5.u32;
+        if (overlapped) complete_overlapped(overlapped, 0);
+        ctx.r3.u64 = 0;
+        static bool reported = false;
+        if (!reported) {
+            reported = true;
+            std::cerr << "RESULT XamAvatarGetManifestLocalUser user=" << user << " manifest=0x" << std::hex
+                      << manifest << " overlapped=0x" << overlapped << " lr=0x" << ctx.lr << std::dec << '\n';
+        }
+        return;
+    }
+    if (std::string_view(name) == "__imp__XamAvatarManifestGetBodyType") {
+        const uint32_t manifest = ctx.r3.u32;
+        // The character ring asks which body the local Avatar uses. Character
+        // 17 is Avatar; the answer chooses its male/female gear/model variant
+        // (17/18), not a different selected-character ID. Menu previews also
+        // ask this, so the call must not be used to latch the active rider.
+        // SFR_AVATAR_BODY picks one (1 male, 2 female).
+        static const uint32_t body = [] {
+            const char* const text = std::getenv("SFR_AVATAR_BODY");
+            const unsigned long value = text ? std::strtoul(text, nullptr, 10) : 1;
+            return uint32_t(value == 2 ? 2 : 1);
+        }();
+        ctx.r3.u64 = body;
+        static bool reported = false;
+        if (!reported) {
+            reported = true;
+            std::cerr << "RESULT XamAvatarManifestGetBodyType manifest=0x" << std::hex << manifest
+                      << std::dec << " body=" << body << " backend=" << (avatars_enabled() ? "empty-assets" : "no-avatars")
+                      << " lr=0x" << std::hex << ctx.lr
+                      << std::dec << '\n';
+        }
         return;
     }
     if (std::string_view(name) == "__imp__XMsgStartIORequestEx" && active_memory) {

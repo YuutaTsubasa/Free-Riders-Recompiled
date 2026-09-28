@@ -52,6 +52,8 @@ struct LauncherSettings {
     // Windows motion mode: show the skeleton submitted to the game in a
     // separate window, without a camera image (SFR_CAMERA_DEBUG).
     bool camera_debug = false;
+    // Optional shared local-player Avatar model. Empty keeps the custom avatar disabled.
+    std::filesystem::path avatar_model;
     // Controls (input_bindings.h). The devices each player uses, and how
     // their keys and pad buttons are arranged, as "a=Z,b=X,..." lines. An
     // empty line means the defaults, so a settings file written before any
@@ -74,10 +76,16 @@ std::string format_launcher_settings(const LauncherSettings& settings);
 LauncherSettings load_launcher_settings(const std::filesystem::path& file);
 bool save_launcher_settings(const std::filesystem::path& file, const LauncherSettings& settings);
 
+// Model paths typed by the player are relative to the launcher, never the
+// game's working directory. Empty selections stay empty.
+std::filesystem::path resolved_avatar_model(const LauncherSettings& settings,
+                                            const std::filesystem::path& launcher_directory);
+
 // The game's environment for these settings: the play defaults (no
 // diagnostic limits or traces, 60 fps cap) plus the player's choices. An
 // empty value removes the variable.
-std::vector<std::pair<std::string, std::string>> game_environment(const LauncherSettings& settings);
+std::vector<std::pair<std::string, std::string>> game_environment(const LauncherSettings& settings,
+    const std::filesystem::path& launcher_directory = {});
 // Its command line after the program: image directory, asset directory,
 // region.
 std::vector<std::wstring> game_arguments(const LauncherSettings& settings);

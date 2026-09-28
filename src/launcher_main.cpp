@@ -102,6 +102,7 @@ enum Text {
     BindingSet, BindingSetHint, SetOneKeyboard, SetOnePad, SetTwoKeyboard, SetTwoPad,
     PressKey, PressButton, Unbound, ResetBindings, BindingsHint, SticksFixed,
     PlayerOneGamepad, PlayerTwoGamepad, GamepadHint, GamepadAutomatic, GamepadMissing,
+    AvatarModel, AvatarModelHint, AvatarModelNone, AvatarModelMissing, AvatarModelImportFailed, Clear,
     TextCount
 };
 
@@ -317,6 +318,13 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
      "這位玩家拿哪一支手把。只要它插著就是這位玩家的，不管電腦把它排在第幾個；拔掉的話這位玩家就等它，不會去搶別人的。"},
     {"Whichever is first", "自動（依順序）"},
     {"not plugged in", "目前沒插著"},
+    {"Avatar model", "Avatar 模型"},
+    {"Choose a VRM or GLB, then select AVATAR in either player's character menu. Changes apply on the next game launch. Unsupported models are skipped; see game.log for details.",
+     "選擇 VRM 或 GLB，並由任一玩家在角色選單選 AVATAR 即可使用。設定於下次啟動遊戲時套用。不支援的模型會略過，詳細資訊請查看 game.log。"},
+    {"No custom model", "未選擇自訂模型"},
+    {"Model file not found. Choose another file or clear this selection.", "找不到模型檔案，請選擇其他檔案或清除目前選擇。"},
+    {"Could not import the model. Your previous selection is unchanged.", "無法匯入模型，已保留原本的選擇。"},
+    {"Clear", "清除"},
 }};
 
 int language = 0;
@@ -974,6 +982,7 @@ struct Launcher {
     std::function<void(bool)> show_window = [](bool) {};
     fs::path directory, settings_file, log_file, runtime_root;
     sfr::LauncherSettings settings;
+    bool avatar_model_import_failed = false;
     sfr::UiSounds ui_sounds;
     Fonts fonts;
     float scale = 1.0f;
@@ -1792,7 +1801,64 @@ struct Launcher {
         write_bindings();
     }
 
+    void avatar_model_settings() {
+        ImGui::PushID("avatar_model");
+        ImGui::PushFont(fonts.heading);
+        ImGui::TextUnformatted(tr(AvatarModel));
+        ImGui::PopFont();
+        ImGui::PushStyleColor(ImGuiCol_Text, dim_text);
+        ImGui::TextWrapped("%s", tr(AvatarModelHint));
+        ImGui::PopStyleColor();
+        if (focus_first_control) {
+            focus_next();
+            focus_first_control = false;
+        }
+        if (small_button(tr(Browse), scale)) {
+            const auto start = settings.avatar_model.empty() ? directory : sfr::resolved_avatar_model(settings, directory);
+            if (auto chosen = sfr::launcher::pick_path(start, false, sfr::launcher::FileFilter::AvatarModel)) {
+#ifdef __ANDROID__
+                // A document descriptor belongs to this launcher process.
+                // Keep an app-local copy that GameActivity can reopen.
+                const auto model = directory / "avatar-model.vrm";
+                avatar_model_import_failed = !sfr::launcher::copy_picked_file(*chosen, model);
+                if (!avatar_model_import_failed) settings.avatar_model = model;
+#else
+                settings.avatar_model = *chosen;
+#endif
+            }
+        }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(settings.avatar_model.empty() && !avatar_model_import_failed);
+        if (small_button(tr(Clear), scale)) {
+            settings.avatar_model.clear();
+            avatar_model_import_failed = false;
+        }
+        ImGui::EndDisabled();
+#ifndef __ANDROID__
+        // Also allow a typed path on desktops without a native picker.
+        char path[4096]{};
+        utf8(settings.avatar_model).copy(path, sizeof path - 1);
+        ImGui::SetNextItemWidth(content_width);
+        if (ImGui::InputTextWithHint("##model_path", tr(AvatarModelNone), path, sizeof path))
+            settings.avatar_model = fs::path(std::u8string(path, path + std::strlen(path)));
+        if (ImGui::IsItemHovered() && !settings.avatar_model.empty())
+            ImGui::SetTooltip("%s", utf8(sfr::resolved_avatar_model(settings, directory)).c_str());
+#else
+        ImGui::TextWrapped("%s", settings.avatar_model.empty() ? tr(AvatarModelNone) : utf8(settings.avatar_model).c_str());
+#endif
+        std::error_code error;
+        const bool missing = !settings.avatar_model.empty() && !fs::is_regular_file(sfr::resolved_avatar_model(settings, directory), error);
+        if (missing || avatar_model_import_failed) {
+            ImGui::PushStyleColor(ImGuiCol_Text, warning_text);
+            ImGui::TextWrapped("%s", tr(avatar_model_import_failed ? AvatarModelImportFailed : AvatarModelMissing));
+            ImGui::PopStyleColor();
+        }
+        ImGui::Dummy(ImVec2(0, 10 * scale));
+        ImGui::PopID();
+    }
+
     void advanced_settings() {
+        avatar_model_settings();
         const float switch_width = ImGui::GetFrameHeight() * 1.9f;
         setting_row(tr(Parallel), tr(ParallelHint), switch_width, scale, [&] { toggle("##parallel", &settings.parallel); });
         setting_row(tr(VertexCache), tr(VertexCacheHint), switch_width, scale, [&] { toggle("##vertex", &settings.vertex_cache); });
@@ -1927,6 +1993,7 @@ struct Launcher {
         if (small_button(tr(Defaults), scale)) {
             const auto image = settings.image_directory, assets = settings.asset_directory;
             settings = {};
+            avatar_model_import_failed = false;
             settings.image_directory = image;
             settings.asset_directory = assets;
             ui_sounds.enabled = settings.ui_sounds;

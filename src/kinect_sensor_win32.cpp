@@ -10,9 +10,11 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <mutex>
 #include <stop_token>
+#include <string_view>
 #include <thread>
 #include <type_traits>
 
@@ -103,7 +105,20 @@ public:
         get(smooth_, "NuiTransformSmooth");  // optional: frames go unsmoothed without it
         int sensors = 0;
         if (FAILED(count(&sensors)) || sensors < 1) { if (why) *why = "no-sensor"; return false; }
-        if (const HRESULT result = initialize(nui_initialize_flag_uses_skeleton); FAILED(result)) {
+        // Frames are read by letting NuiSkeletonGetNextFrame wait for them.
+        // Reading as soon as the frame event fires (SFR_KINECT_V1_READ=event)
+        // got E_NUI_FRAME_NO_DATA on every frame from a Kinect for Xbox 360
+        // (SDK 1.8, Windows 10), while waiting in the SDK got about 28 frames
+        // a second. SFR_KINECT_V1_FLAGS adds NuiInitialize flags, for trying
+        // another sensor.
+        DWORD flags = nui_initialize_flag_uses_skeleton;
+        if (const char* text = std::getenv("SFR_KINECT_V1_FLAGS"); text && *text)
+            flags = DWORD(std::strtoul(text, nullptr, 0)) | nui_initialize_flag_uses_skeleton;
+        const char* read = std::getenv("SFR_KINECT_V1_READ");
+        wait_in_sdk_ = !(read && std::string_view(read) == "event");
+        std::cerr << "NATIVE_KINECT_OPEN model=v1 flags=0x" << std::hex << flags << std::dec
+                  << " read=" << (wait_in_sdk_ ? "wait" : "event") << std::endl;
+        if (const HRESULT result = initialize(flags); FAILED(result)) {
             // E_NUI_DEVICE_NOT_READY and the like: unpowered, or in use.
             if (why) *why = "initialize-" + hresult(result);
             return false;
@@ -134,12 +149,35 @@ private:
         constexpr NuiTransformSmoothParameters smoothing{0.5f, 0.5f, 0.5f, 0.05f, 0.04f};
         NuiSkeletonFrame raw{};
         KinectFrame frame;
-        uint64_t frames = 0, tracked = 0;
+        uint64_t frames = 0, tracked = 0, waits = 0, failures = 0;
+        HRESULT last_failure = S_OK;
         auto reported = std::chrono::steady_clock::now();
+        // Every five seconds, frames or not: a sensor that opens but sends
+        // nothing (in use by another program, short of power, on a USB
+        // controller it does not get on with) says so instead of staying
+        // silent.
+        const auto report = [&] {
+            const auto now = std::chrono::steady_clock::now();
+            if (now - reported < std::chrono::seconds(5)) return;
+            std::cerr << "NATIVE_KINECT model=v1 frames=" << frames << " with_body=" << tracked
+                      << " bodies=" << frame.bodies.size() << " empty_waits=" << waits << " failed=" << failures;
+            if (failures) std::cerr << " last_error=" << hresult(last_failure);
+            if (!frames && !failures) std::cerr << " (no skeleton frames: close any other program using the Kinect)";
+            std::cerr << std::endl;
+            reported = now;
+            frames = tracked = waits = failures = 0;
+        };
         while (!stop.stop_requested()) {
-            if (WaitForSingleObject(event_, 100) != WAIT_OBJECT_0) continue;
-            ResetEvent(event_);
-            if (FAILED(next_frame_(0, &raw))) continue;
+            report();
+            if (!wait_in_sdk_) {
+                if (WaitForSingleObject(event_, 100) != WAIT_OBJECT_0) { ++waits; continue; }
+                ResetEvent(event_);
+            }
+            if (const HRESULT result = next_frame_(wait_in_sdk_ ? 100 : 0, &raw); FAILED(result)) {
+                ++failures;
+                last_failure = result;
+                continue;
+            }
             if (smooth_) smooth_(&raw, &smoothing);
             frame.floor_plane = {raw.floor_clip_plane.x, raw.floor_clip_plane.y, raw.floor_clip_plane.z,
                                  raw.floor_clip_plane.w};
@@ -163,19 +201,13 @@ private:
                 frame.number = latest_.number + 1;
                 latest_ = frame;
             }
-            const auto now = std::chrono::steady_clock::now();
-            if (now - reported >= std::chrono::seconds(5)) {
-                std::cerr << "NATIVE_KINECT model=v1 frames=" << frames << " with_body=" << tracked
-                          << " bodies=" << frame.bodies.size() << '\n';
-                reported = now;
-                frames = tracked = 0;
-            }
         }
     }
 
     HMODULE library_ = nullptr;
     HANDLE event_ = nullptr;
     bool initialized_ = false;
+    bool wait_in_sdk_ = true;
     NuiShutdown shutdown_ = nullptr;
     NuiSkeletonGetNextFrame next_frame_ = nullptr;
     NuiTransformSmooth smooth_ = nullptr;

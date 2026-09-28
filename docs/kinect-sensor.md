@@ -113,6 +113,12 @@ COM 介面依 SDK 2.0 的 `Kinect.h` 宣告到用得到的最後一個方法為�
 有單元測試。
 
 不開遊戲也可以檢查：`sfr_kinect_probe [秒數]` 會印出追蹤到的人與右手位置。
+每 5 秒另有一行 `NATIVE_KINECT model=v1 frames=… with_body=… empty_waits=… failed=…`：
+`frames=0` 且 `failed` 一直增加（`last_error=0x83010001`，`E_NUI_FRAME_NO_DATA`）表示
+感測器有通知新畫面、卻交不出骨架。一台 Kinect for Xbox 360（SDK 1.8、Windows 10）
+在「事件觸發就讀」時每格都如此，改成讓 `NuiSkeletonGetNextFrame` 自己等待後每秒
+約 28 格，所以預設是後者；`SFR_KINECT_V1_READ=event` 可切回，`SFR_KINECT_V1_FLAGS`
+可再加 `NuiInitialize` 旗標（例如 `0x1` 深度＋玩家索引）試別的感測器。
 
 找不到感測器或執行階段時（`NATIVE_KINECT started=0 reason=…`），遊戲會退回手把
 模擬，不會卡住。`reason` 可能是：
@@ -160,7 +166,8 @@ COM 介面依 SDK 2.0 的 `Kinect.h` 宣告到用得到的最後一個方法為�
 這台開發機沒有 Kinect，也沒有遊戲光碟：資料結構大小由編譯期檢查確認
 （`NUI_SKELETON_DATA` 436 bytes、`NUI_SKELETON_FRAME` 2664 bytes、v2 `Joint` 20 bytes），
 欄位分配、v2 關節對應與框架寫入有單元測試（`kinect_sensor` CTest），Windows 版以
-mingw 編譯連結過，但**兩種感測器都還沒在實機上試過**。v2 的 COM 方法順序若與 SDK
+mingw 編譯連結過。Kinect for Xbox 360（v1）已在實機上讀到骨架畫面與地板；v2 還沒在
+實機上試過。v2 的 COM 方法順序若與 SDK
 不符，`sfr_kinect_probe` 會讀不到骨架或當掉，那是最先要看的地方。
 特別需要確認的：
 

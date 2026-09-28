@@ -21,7 +21,7 @@ int main(int argc, char** argv) {
         std::cout << "no sensor: " << why << '\n';
         return 1;
     }
-    std::cout << sensor->model() << " open; stand in front of it\n";
+    std::cout << sensor->model() << " open; stand in front of it" << std::endl;
     sfr::KinectFrame frame;
     const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
     uint64_t shown = 0;
@@ -42,7 +42,7 @@ int main(int argc, char** argv) {
                       << (placement.placement() == sfr::KinectPlacement::front ? ""
                           : placement.sees_back(body.tracking_id) ? " sees back" : " sees chest") << ']';
         }
-        std::cout << '\n';
+        std::cout << std::endl;
     }
     return 0;
 }

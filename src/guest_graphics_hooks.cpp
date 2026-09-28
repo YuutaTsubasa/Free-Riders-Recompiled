@@ -1,5 +1,7 @@
 #include "ppc_recomp_shared.h"
 #include "diagnostic_hooks.h"
+#include "avatar_state.h"
+#include "avatar_transform.h"
 #include "guest_graphics.h"
 #include "native_graphics.h"
 #include "native_presentation.h"
@@ -300,6 +302,25 @@ static bool rendering_this_frame() {
     return sfr::present_count%every==0;
 }
 
+namespace sfr {
+std::optional<AvatarMatrix> avatar_hand_transform(const AvatarPose& pose, uint32_t bone) {
+    if (!active_guest_graphics || !active_guest_graphics->created()) return std::nullopt;
+    return active_guest_graphics->presentation().avatar_hand_transform(pose, bone);
+}
+void draw_avatar_model(const AvatarFrameTransform& frame) {
+    if (!skip_draws() && rendering_this_frame()) {
+        graphics().presentation().draw_player_model(frame);
+        if (std::getenv("SFR_TRACE_AVATAR") && frame.present % 120 == 0) {
+            const auto& v = graphics().presentation().raster_state().viewport();
+            const auto& s = graphics().presentation().raster_state().scissor();
+            std::cerr << "AVATAR_PASS present=" << frame.present << " draws=" << frame_draws << " viewport="
+                      << v.x << ',' << v.y << ',' << v.width << ',' << v.height << ',' << v.minDepth << ',' << v.maxDepth
+                      << " scissor=" << s.left << ',' << s.top << ',' << s.right << ',' << s.bottom << '\n';
+        }
+    }
+}
+}
+
 // SFR_FRAME_LIMIT=<fps>: at most that many presents a second. The title
 // steps a race a sixtieth of a second per frame and does not wait for the
 // display there, so a race that runs faster than 60 fps (drawing every
@@ -336,6 +357,8 @@ static std::vector<std::pair<uint32_t,uint32_t>> frame_callbacks;
 
 SFR_HOOK(sub_824E65A0) {
     sfr::enter_function(ctx,"sub_824E65A0",0x824E65A0);
+    // Preload in the menu; actual geometry is drawn in the Avatar's pass.
+    graphics().presentation().prepare_player_model();
     save_screenshot();
     // Submitting the frame and waiting for it: what the CPU spends beyond
     // recording, which is where a GPU-bound frame shows up.
@@ -489,7 +512,18 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     case 4: draw.topology=plume::RenderPrimitiveTopology::TRIANGLE_LIST; break;
     case 5: draw.topology=plume::RenderPrimitiveTopology::TRIANGLE_FAN; break;
     case 6: draw.topology=plume::RenderPrimitiveTopology::TRIANGLE_STRIP; break;
-    default: throw sfr::RuntimeStop("native-draw",primitive,"unsupported primitive type");
+    // A primitive this renderer has no topology for. The avatar's own
+    // drawing asks for one (type 13, a polygon) when it has no parts to draw,
+    // and stopping the game over a draw that describes nothing is worse than
+    // leaving it out. Counted, so a run says how many it left out rather than
+    // hiding them; anything that matters will show up as something missing.
+    default: {
+        static std::atomic<uint64_t> unsupported{0};
+        const uint64_t count=unsupported.fetch_add(1,std::memory_order_relaxed)+1;
+        if((count&(count-1))==0)
+            std::cerr << "NATIVE_DRAW_PRIMITIVE_SKIPPED type=" << primitive << " count=" << count << char(10);
+        return;
+    }
     }
     // Draws aimed at one of the title's own surfaces share the one native
     // framebuffer: each pass draws there and the resolve that follows copies
@@ -900,6 +934,14 @@ SFR_HOOK(sub_824F5288) {
 // (device +0x778: physical address | 3, then endian and size in bytes) and
 // the stride in dwords at +12704.
 struct Stream0 { uint32_t physical, size, stride; };
+// Draws with no vertices at all, counted so that a run says how many it left
+// out instead of silently drawing nothing.
+static void note_empty_stream(uint32_t source) {
+    static std::atomic<uint64_t> skipped{0};
+    const uint64_t count=skipped.fetch_add(1,std::memory_order_relaxed)+1;
+    if((count&(count-1))==0)
+        std::cerr << "NATIVE_DRAW_EMPTY source=0x" << std::hex << source << std::dec << " count=" << count << char(10);
+}
 static Stream0 stream0(uint32_t device) {
     auto& memory=*sfr::active_memory;
     const uint32_t fetch0=memory.load<uint32_t>(uint64_t(device)+0x778), fetch1=memory.load<uint32_t>(uint64_t(device)+0x77C);
@@ -907,7 +949,11 @@ static Stream0 stream0(uint32_t device) {
     if((fetch0&3)!=3) throw sfr::RuntimeStop("native-draw",fetch0,"stream 0 has no vertex fetch constant");
     // Word 1: endian (bits 0..1, 2 = 8-in-32 as swap_words assumes) and the size.
     if((fetch1&3)!=2) throw sfr::RuntimeStop("native-draw",fetch1,"unsupported vertex buffer endianness");
-    if(!stride) throw sfr::RuntimeStop("native-draw",device,"stream 0 has no stride");
+    // A stride of zero reads nothing: the draw has no vertices at all. The
+    // avatar asks for one when it has no assets, so it is skipped and counted
+    // rather than stopping the game. Everything else about the stream still
+    // has to be right.
+    if(!stride) return {};
     return {fetch0&0x1FFFFFFCu,fetch1&0x03FFFFFCu,stride};
 }
 
@@ -921,6 +967,7 @@ SFR_HOOK(sub_824F52D0) {
     auto& memory=*sfr::active_memory;
     const uint32_t device=ctx.r3.u32, primitive=ctx.r4.u32, start=ctx.r5.u32, count=ctx.r6.u32;
     const auto stream=stream0(device);
+    if(!stream.stride) { note_empty_stream(0x824F52D0); return; }
     if(uint64_t(start)+count>stream.size/stream.stride)
         throw sfr::RuntimeStop("native-draw",start,"draw exceeds the stream 0 vertex buffer");
     const uint64_t bytes=uint64_t(count)*stream.stride;
@@ -986,6 +1033,7 @@ SFR_HOOK(sub_824F56E8) {
     if(!count || count>0x40000) throw sfr::RuntimeStop("native-draw",count,"unsupported index count");
     const uint32_t indices=sfr::NativeRenderer::guest_address(memory,index_physical+start*index_size,uint64_t(count)*index_size);
     const auto stream=stream0(device);
+    if(!stream.stride) { note_empty_stream(0x824F5570); return; }
     const uint32_t vertex_count=stream.size/stream.stride;
     if(frame_streams.emplace(stream.physical,stream.size).second) frame_stream_bytes+=stream.size;
     const uint32_t restart=wide?0xFFFFFFFFu:0xFFFFu;

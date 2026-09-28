@@ -192,6 +192,32 @@ def rewrite_barriers(body):
     return ''.join(chunks), count
 
 
+def rewrite_vector_compare_bounds(body):
+    """Give vcmpbfp a body; the upstream emits a debug trap for it.
+
+    One function on the avatar path holds a vcmpbfp128, and a trap there stops
+    the whole run. The instruction writes two bits an element -- above the
+    bound, and below its negative -- which src/vector_compare_bounds.cpp does.
+    Only the plain form is rewritten: the record form also reports in CR6, and
+    this game does not use it.
+    """
+    pattern = re.compile(
+        r'\t// vcmpbfp128 v(?P<d>\d{1,3}),v(?P<a>\d{1,3}),v(?P<b>\d{1,3})(?P<end>\r?\n)'
+        r'\t__builtin_debugtrap\(\);\r?\n')
+    chunks, cursor, count = [], 0, 0
+    for instruction in pattern.finditer(body):
+        newline = instruction['end']
+        destination, left, right = instruction['d'], instruction['a'], instruction['b']
+        chunks.append(body[cursor:instruction.start()])
+        chunks.append('\t// vcmpbfp128 v%s,v%s,v%s%s' % (destination, left, right, newline))
+        chunks.append('\tsfr::vector_compare_bounds(ctx.v%s.f32, ctx.v%s.f32, ctx.v%s.u32);%s'
+                      % (left, right, destination, newline))
+        cursor = instruction.end()
+        count += 1
+    chunks.append(body[cursor:])
+    return ''.join(chunks), count
+
+
 def rewrite_vector_memory(body):
     chunks, cursor, loads, stores = [], 0, 0, 0
     for instruction in VECTOR_MEMORY.finditer(body):
@@ -1298,6 +1324,7 @@ def inspect_body(body, address, symbols, events, jump_tables=None):
     clock_body, clock_reads = rewrite_time_base(branch_body)
     rewritten, reservation_loads, conditional_stores = rewrite_reservations(clock_body)
     rewritten, barriers = rewrite_barriers(rewritten)
+    rewritten, compare_bounds = rewrite_vector_compare_bounds(rewritten)
     rewritten, vector_loads, vector_stores = rewrite_vector_memory(rewritten)
     rewritten, vector_word_stores = rewrite_vector_word_stores(rewritten)
     rewritten, vector_partial_loads, invalid_partial_loads = rewrite_vector_partial_loads(rewritten, address)
@@ -1353,6 +1380,12 @@ def inspect_body(body, address, symbols, events, jump_tables=None):
         reasons.append('unsupported_barrier')
     if barriers:
         details['barriers'] = barriers
+    compare_bounds_instructions = sum(
+        bool(re.match(r'vcmpbfp(?:128)?(?:\s|$)', item[1].strip())) for item in instructions)
+    if compare_bounds_instructions != compare_bounds:
+        reasons.append('unsupported_vector_compare_bounds')
+    if compare_bounds:
+        details['vector_compare_bounds'] = compare_bounds
     if reservation_loads:
         details['reservation_loads'] = reservation_loads
     if conditional_stores:
@@ -1417,7 +1450,9 @@ def inspect_body(body, address, symbols, events, jump_tables=None):
         reasons.append('empty_instruction_range')
     if end > 0x100000000:
         raise ValueError('Guest instruction range overflows 32-bit address space')
-    if '__builtin_debugtrap' in body:
+    # After the rewrites, not before: a trap this filter has given a body
+    # (vcmpbfp) is no longer a trap, and one it has not is still refused.
+    if '__builtin_debugtrap' in rewritten:
         reasons.append('debugtrap')
     if re.search(r'//\s*ERROR\b', body):
         reasons.append('error_comment')
@@ -1584,6 +1619,7 @@ def generate(input_dir, log_path, output_dir, jump_table_path=None):
                     rewritten_body = rewrite_missing_comparisons(rewritten_body, addresses[name], events)[0]
                     rewritten_body = rewrite_supplemental(rewritten_body, addresses[name], events)[0]
                     retained_supplemental += details.get('retained_supplemental', 0)
+                    rewritten_body = rewrite_vector_compare_bounds(rewritten_body)[0]
                     rewritten_body = rewrite_barriers(
                         rewrite_vector_memory(rewrite_reservations(rewrite_time_base(rewritten_body)[0])[0])[0])[0]
                     rewritten_body = rewrite_vector_word_stores(rewritten_body)[0]

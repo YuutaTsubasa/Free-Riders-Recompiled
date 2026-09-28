@@ -1,8 +1,10 @@
+#include "avatar_transform.h"
 #include "native_presentation.h"
 #include <functional>
 
 #include "native_graphics.h"
 #include "native_raster_state.h"
+#include "gltf_model.h"
 #include "touch_controls.h"
 #ifdef _WIN32
 #include "plume_d3d12.h"
@@ -40,9 +42,13 @@
 
 // The blit shaders, compiled at build time (CMakeLists.txt, sfr_embed_shader).
 #include "blit_vs_dxil.h"
+#include "model_vs_dxil.h"
+#include "model_ps_dxil.h"
 #include "blit_ps_dxil.h"
 #include "blit_vs_spirv.h"
 #include "blit_ps_spirv.h"
+#include "model_vs_spirv.h"
+#include "model_ps_spirv.h"
 
 namespace {
 #ifdef _WIN32
@@ -173,6 +179,44 @@ struct NativePresentation::Impl {
     std::unique_ptr<plume::RenderShader> blit_vertex, blit_pixel;
     std::unique_ptr<plume::RenderPipelineLayout> blit_layout;
     std::unique_ptr<plume::RenderPipeline> blit_pipeline;
+    // The player's own model, drawn over the frame while they race as the
+    // Avatar (SFR_AVATAR_MODEL). Topology is static; posed vertices alternate
+    // between two buffers while the preceding frame is on the GPU.
+    std::optional<sfr::GltfModel> model;
+    std::unique_ptr<plume::RenderShader> model_vertex, model_pixel;
+    std::unique_ptr<plume::RenderPipelineLayout> model_layout;
+    std::unique_ptr<plume::RenderPipeline> model_pipeline, model_double_sided_pipeline;
+    std::unique_ptr<plume::RenderPipeline> model_reverse_pipeline, model_reverse_double_sided_pipeline;
+    // One upload buffer per draw, recycled only after the preceding frame's
+    // submission has completed. Both split-screen views can draw both riders.
+    std::array<std::vector<std::unique_ptr<plume::RenderBuffer>>, 2> model_vertices;
+    uint64_t model_present = ~uint64_t(0);
+    size_t model_draw_index = 0;
+    std::array<std::unique_ptr<plume::RenderBuffer>, 2> model_indices;
+    uint32_t model_vertex_slot = 0;
+    bool model_animation_enabled = true;
+    bool model_mirrored = false;
+    // Each part's slice of the index buffer, the picture its material paints
+    // it with and the colour that picture is multiplied by: one draw a part,
+    // so a face is not the colour of a sleeve.
+    struct ModelPart {
+        uint32_t first = 0, count = 0, picture = 0;
+        float colour[4] = {1, 1, 1, 1};
+        float cutoff = 0;
+        bool double_sided = false, unlit = false;
+    };
+    std::vector<ModelPart> model_parts;
+    // The model's pictures, and last of them a single white pixel for the
+    // parts that have none, so that one pipeline draws both.
+    std::vector<std::unique_ptr<plume::RenderTexture>> model_pictures;
+    std::vector<std::unique_ptr<plume::RenderTextureView>> model_picture_views;
+    std::vector<std::unique_ptr<plume::RenderDescriptorSet>> model_picture_sets;
+    std::unique_ptr<plume::RenderDescriptorSet> model_sampler;
+    std::unique_ptr<plume::RenderSampler> model_sampler_object;
+    uint32_t model_index_count = 0;
+    bool model_tried = false;
+    void build_model();
+    void draw_model(const AvatarFrameTransform& frame);
     // The last blit's viewport (x, y, width, height) and window size, for touches.
     std::array<float, 6> touch_view{};
 #ifdef __ANDROID__
@@ -299,8 +343,8 @@ struct NativePresentation::Impl {
     // readback and explicit flushes submit it.
     bool open = false;
     std::vector<std::function<void(bool)>> after_flush;
-    // Counts begun command lists: what a list has bound (NativeRenderer
-    // skips rebinding its layout and sets) lasts until the next one begins.
+    // Binding generation: new lists and custom passes both invalidate the
+    // layout/pipeline/descriptors cached by NativeRenderer.
     uint64_t list_generation = 0;
     void begin_list() {
         command_list->begin();
@@ -395,6 +439,298 @@ void NativePresentation::Impl::build_blit() {
     if (!blit_pipeline) unavailable("blit pipeline");
 
     build_blit_targets();
+}
+
+// The model the player chose for the Avatar, uploaded once. SFR_AVATAR_MODEL
+// names a .vrm (or any binary glTF); without it nothing is drawn and nothing
+// is built.
+void NativePresentation::Impl::build_model() {
+    if (model_tried) return;
+    model_tried = true;
+    const auto path = sfr::avatar_model_path();
+    if (path.empty()) return;
+    // Standing as a rider, not in the T-pose the file was authored in;
+    // SFR_AVATAR_MODEL_POSE=rest asks for the file as it is, which is how to
+    // tell a posing mistake from a modelling one.
+    const char* const pose_text = std::getenv("SFR_AVATAR_MODEL_POSE");
+    const bool rest_pose = pose_text && std::strcmp(pose_text, "rest") == 0;
+    model_animation_enabled = !rest_pose;
+    std::string why;
+    model = sfr::load_binary_gltf(path, &why, rest_pose ? sfr::GltfPose::rest : sfr::GltfPose::riding);
+    if (!model) {
+        const auto utf8 = path.u8string();
+        std::cerr << "NATIVE_MODEL unavailable=" << why << " path=" << std::string(utf8.begin(), utf8.end()) << '\n';
+        return;
+    }
+    // One buffer for the lot: position and normal a vertex, with each
+    // primitive's indices shifted past the vertices before it.
+    std::vector<float> vertices;
+    std::vector<uint32_t> indices;
+    for (const auto& primitive : model->primitives) {
+        // Where this part's vertices start, counted in vertices: eight floats
+        // each, position, normal and texture coordinate.
+        const uint32_t base = uint32_t(vertices.size() / 8);
+        const size_t count = primitive.positions.size() / 3;
+        const bool shaded = primitive.normals.size() == primitive.positions.size();
+        ModelPart part;
+        part.first = uint32_t(indices.size());
+        part.count = uint32_t(primitive.indices.size());
+        for (int channel = 0; channel < 4; ++channel) part.colour[channel] = primitive.colour[channel];
+        // The last picture is the white one, which is what a part with no
+        // picture of its own is painted with.
+        part.picture = primitive.image < model->images.size() ? primitive.image : uint32_t(model->images.size());
+        part.cutoff = primitive.alpha_cutoff;
+        part.double_sided = primitive.double_sided;
+        part.unlit = primitive.unlit;
+        model_parts.push_back(part);
+        for (size_t vertex = 0; vertex < count; ++vertex) {
+            vertices.push_back(primitive.positions[vertex * 3]);
+            vertices.push_back(primitive.positions[vertex * 3 + 1]);
+            vertices.push_back(primitive.positions[vertex * 3 + 2]);
+            vertices.push_back(shaded ? primitive.normals[vertex * 3] : 0.0f);
+            vertices.push_back(shaded ? primitive.normals[vertex * 3 + 1] : 1.0f);
+            vertices.push_back(shaded ? primitive.normals[vertex * 3 + 2] : 0.0f);
+            const bool painted = primitive.texcoords.size() == primitive.positions.size() / 3 * 2;
+            vertices.push_back(painted ? primitive.texcoords[vertex * 2] : 0.0f);
+            vertices.push_back(painted ? primitive.texcoords[vertex * 2 + 1] : 0.0f);
+        }
+        for (const uint32_t index : primitive.indices) indices.push_back(base + index);
+    }
+    model_index_count = uint32_t(indices.size());
+    if (!model_index_count) { model.reset(); return; }
+
+    auto& device = graphics->device();
+    const uint64_t vertex_bytes = vertices.size() * sizeof(float);
+    const uint64_t index_bytes = indices.size() * sizeof(uint32_t);
+    for (auto& group : model_vertices) {
+        group.push_back(device.createBuffer(plume::RenderBufferDesc::UploadBuffer(vertex_bytes, plume::RenderBufferFlag::VERTEX)));
+        if (!group.back()) { model.reset(); return; }
+    }
+    for (auto& buffer : model_indices)
+        buffer = device.createBuffer(plume::RenderBufferDesc::UploadBuffer(index_bytes, plume::RenderBufferFlag::INDEX));
+    if (!model_indices[0] || !model_indices[1]) { model.reset(); return; }
+    // A reflected skeleton reverses winding. Keep both static index orders so
+    // back-face culling and SV_IsFrontFace agree with the reflected normals.
+    for (auto& buffer : model_indices) {
+        void* const at = buffer->map();
+        if (!at) { model.reset(); return; }
+        std::memcpy(at, indices.data(), size_t(index_bytes));
+        buffer->unmap();
+        for (size_t i = 0; i + 2 < indices.size(); i += 3) std::swap(indices[i + 1], indices[i + 2]);
+    }
+
+    if (graphics->backend() == sfr::GraphicsBackend::vulkan) {
+        model_vertex = device.createShader(model_vs_spirv, sizeof(model_vs_spirv), "vertexMain", plume::RenderShaderFormat::SPIRV);
+        model_pixel = device.createShader(model_ps_spirv, sizeof(model_ps_spirv), "pixelMain", plume::RenderShaderFormat::SPIRV);
+    } else {
+        model_vertex = device.createShader(model_vs_dxil, sizeof(model_vs_dxil), "vertexMain", plume::RenderShaderFormat::DXIL);
+        model_pixel = device.createShader(model_ps_dxil, sizeof(model_ps_dxil), "pixelMain", plume::RenderShaderFormat::DXIL);
+    }
+    plume::RenderPipelineLayoutBuilder layout;
+    layout.begin(false, true);
+    plume::RenderDescriptorSetBuilder pictures;
+    pictures.begin();
+    pictures.addTexture(0);
+    pictures.end();
+    layout.addDescriptorSet(pictures);
+    plume::RenderDescriptorSetBuilder samplers;
+    samplers.begin();
+    samplers.addSampler(0);
+    samplers.end();
+    model_sampler = samplers.create(&device);
+    layout.addDescriptorSet(samplers);
+    layout.addPushConstant(0, 2, sizeof(float) * 28,
+                           plume::RenderShaderStageFlag::VERTEX | plume::RenderShaderStageFlag::PIXEL);
+    layout.end();
+    model_layout = layout.create(&device);
+    if (!model_vertex || !model_pixel || !model_layout || !model_sampler) { model.reset(); return; }
+
+    plume::RenderSamplerDesc sampler_desc;
+    sampler_desc.minFilter = plume::RenderFilter::LINEAR;
+    sampler_desc.magFilter = plume::RenderFilter::LINEAR;
+    // A VRM's texture coordinates run past the edge where a part is meant to
+    // repeat, which is what its own sampler asks for.
+    sampler_desc.addressU = plume::RenderTextureAddressMode::WRAP;
+    sampler_desc.addressV = plume::RenderTextureAddressMode::WRAP;
+    sampler_desc.addressW = plume::RenderTextureAddressMode::WRAP;
+    model_sampler_object = device.createSampler(sampler_desc);
+    if (!model_sampler_object) { model.reset(); return; }
+    model_sampler->setSampler(0, model_sampler_object.get());
+
+    // The pictures, uploaded once. This waits for the copy: it happens at
+    // load, and the alternative is keeping the staging buffers alive for a
+    // frame to save a wait nobody sees.
+    {
+        auto upload = graphics->queue().createCommandList();
+        auto finished = device.createCommandFence();
+        std::vector<std::unique_ptr<plume::RenderBuffer>> staging;
+        if (!upload || !finished) { model.reset(); return; }
+        sfr::DecodedImage white;
+        white.width = white.height = 1;
+        white.rgba = {255, 255, 255, 255};
+        upload->begin();
+        for (size_t index = 0; index <= model->images.size(); ++index) {
+            const sfr::DecodedImage& picture = index < model->images.size() ? model->images[index] : white;
+            auto texture = device.createTexture(plume::RenderTextureDesc::Texture2D(
+                picture.width, picture.height, 1, plume::RenderFormat::R8G8B8A8_UNORM));
+            // A row of a texture being copied starts on a 256 byte boundary.
+            const uint32_t row_bytes = (picture.width * 4 + 255) & ~255u;
+            auto buffer = device.createBuffer(
+                plume::RenderBufferDesc::UploadBuffer(uint64_t(row_bytes) * picture.height));
+            if (!texture || !buffer) { model.reset(); return; }
+            if (auto* const at = static_cast<uint8_t*>(buffer->map())) {
+                for (uint32_t row = 0; row < picture.height; ++row)
+                    std::memcpy(at + uint64_t(row) * row_bytes, picture.rgba.data() + size_t(row) * picture.width * 4,
+                                size_t(picture.width) * 4);
+                buffer->unmap();
+            }
+            upload->barriers(plume::RenderBarrierStage::COPY,
+                             plume::RenderTextureBarrier(texture.get(), plume::RenderTextureLayout::COPY_DEST));
+            upload->copyTextureRegion(
+                plume::RenderTextureCopyLocation::Subresource(texture.get()),
+                plume::RenderTextureCopyLocation::PlacedFootprint(buffer.get(), plume::RenderFormat::R8G8B8A8_UNORM,
+                                                                  picture.width, picture.height, 1, row_bytes / 4));
+            upload->barriers(plume::RenderBarrierStage::GRAPHICS,
+                             plume::RenderTextureBarrier(texture.get(), plume::RenderTextureLayout::SHADER_READ));
+            auto view = texture->createTextureView(
+                plume::RenderTextureViewDesc::Texture2D(plume::RenderFormat::R8G8B8A8_UNORM));
+            auto set = pictures.create(&device);
+            if (!view || !set) { model.reset(); return; }
+            set->setTexture(0, texture.get(), plume::RenderTextureLayout::SHADER_READ, view.get());
+            model_pictures.push_back(std::move(texture));
+            model_picture_views.push_back(std::move(view));
+            model_picture_sets.push_back(std::move(set));
+            staging.push_back(std::move(buffer));
+        }
+        upload->end();
+        graphics->queue().executeCommandLists(upload.get(), finished.get());
+        graphics->queue().waitForCommandFence(finished.get());
+    }
+
+    const plume::RenderInputElement elements[3] = {
+        plume::RenderInputElement("POSITION", 0, 0, plume::RenderFormat::R32G32B32_FLOAT, 0, 0),
+        plume::RenderInputElement("NORMAL", 0, 1, plume::RenderFormat::R32G32B32_FLOAT, 0, 12),
+        plume::RenderInputElement("TEXCOORD", 0, 2, plume::RenderFormat::R32G32_FLOAT, 0, 24)};
+    const plume::RenderInputSlot slot(0, sizeof(float) * 8);
+    plume::RenderGraphicsPipelineDesc pipeline_desc;
+    pipeline_desc.pipelineLayout = model_layout.get();
+    pipeline_desc.vertexShader = model_vertex.get();
+    pipeline_desc.pixelShader = model_pixel.get();
+    pipeline_desc.inputElements = elements;
+    pipeline_desc.inputElementsCount = 3;
+    pipeline_desc.inputSlots = &slot;
+    pipeline_desc.inputSlotsCount = 1;
+    pipeline_desc.primitiveTopology = plume::RenderPrimitiveTopology::TRIANGLE_LIST;
+    // Back faces are dropped, so the model's own far side does not draw over
+    // its near one: glTF winds its front faces counter-clockwise.
+    // SFR_AVATAR_MODEL_FLAT keeps them, for telling a winding problem from a
+    // placement one.
+    static const bool flat = [] {
+        const char* const text = std::getenv("SFR_AVATAR_MODEL_FLAT");
+        return text && *text && *text != '0';
+    }();
+    pipeline_desc.cullMode = flat ? plume::RenderCullMode::NONE : plume::RenderCullMode::BACK;
+    // Share the scene depth so later scenery cannot overwrite the rider.
+    // The title uses reversed depth in races; normal viewports are also valid.
+    static const bool flatten_depth = [] {
+        const char* const text = std::getenv("SFR_AVATAR_MODEL_NO_DEPTH");
+        return text && *text && *text != '0';
+    }();
+    pipeline_desc.depthEnabled = !flatten_depth;
+    pipeline_desc.depthWriteEnabled = !flatten_depth;
+    // Nearer is smaller: this projection puts the near plane at zero and
+    // everything beyond it between there and one.
+    pipeline_desc.depthFunction = plume::RenderComparisonFunction::LESS;
+    pipeline_desc.renderTargetCount = 1;
+    // The game's own frame, not the swap chain: its colour and depth formats.
+    pipeline_desc.renderTargetFormat[0] = plume::RenderFormat::B8G8R8A8_UNORM;
+    pipeline_desc.depthTargetFormat = plume::RenderFormat::D32_FLOAT_S8_UINT;
+    pipeline_desc.renderTargetBlend[0] = plume::RenderBlendDesc::Copy();
+    model_pipeline = device.createGraphicsPipeline(pipeline_desc);
+    pipeline_desc.cullMode = plume::RenderCullMode::NONE;
+    model_double_sided_pipeline = device.createGraphicsPipeline(pipeline_desc);
+    pipeline_desc.depthFunction = plume::RenderComparisonFunction::GREATER;
+    model_reverse_double_sided_pipeline = device.createGraphicsPipeline(pipeline_desc);
+    pipeline_desc.cullMode = flat ? plume::RenderCullMode::NONE : plume::RenderCullMode::BACK;
+    model_reverse_pipeline = device.createGraphicsPipeline(pipeline_desc);
+    if (!model_pipeline || !model_double_sided_pipeline || !model_reverse_pipeline || !model_reverse_double_sided_pipeline) {
+        model_pipeline.reset(); model.reset(); return;
+    }
+    std::cerr << "NATIVE_MODEL loaded primitives=" << model->primitives.size() << " vertices=" << model->vertices
+              << " triangles=" << model->triangles << " height=" << (model->highest[1] - model->lowest[1])
+              << " pictures=" << model->images.size() << '\n';
+}
+
+// Use this frame's actual Avatar world and camera transforms.
+void NativePresentation::Impl::draw_model(const AvatarFrameTransform& frame) {
+    if (frame.present != model_present) {
+        model_present = frame.present;
+        model_vertex_slot ^= 1;
+        model_draw_index = 0;
+    }
+    auto& group = model_vertices[model_vertex_slot];
+    if (model_draw_index == group.size()) {
+        group.push_back(graphics->device().createBuffer(plume::RenderBufferDesc::UploadBuffer(
+            model->vertices * 8 * sizeof(float), plume::RenderBufferFlag::VERTEX)));
+    }
+    auto* buffer = group[model_draw_index++].get();
+    if (!buffer) return;
+    // Rebuild from bind data even on invalid poses: another player's pose
+    // must not become the fallback for this rider.
+    AvatarPose pose = frame.pose;
+    if (!model_animation_enabled || !pose.valid) { pose = {}; pose.valid = true; }
+    bool posed = pose_gltf_model(*model, pose);
+    if (!posed && model->rig) {
+        pose = {}; pose.valid = true;
+        posed = pose_gltf_model(*model, pose);
+    }
+    model_mirrored = posed && pose.mirrored;
+    auto* destination = static_cast<float*>(buffer->map());
+    if (!destination) return;
+    for (const auto& primitive : model->primitives) {
+        const size_t count = primitive.positions.size() / 3;
+        for (size_t vertex = 0; vertex < count; ++vertex) {
+            for (size_t axis = 0; axis < 3; ++axis) *destination++ = primitive.positions[vertex * 3 + axis];
+            for (size_t axis = 0; axis < 3; ++axis)
+                *destination++ = primitive.normals.size() == count * 3 ? primitive.normals[vertex * 3 + axis] : (axis == 1 ? 1.f : 0.f);
+            for (size_t axis = 0; axis < 2; ++axis)
+                *destination++ = primitive.texcoords.size() == count * 2 ? primitive.texcoords[vertex * 2 + axis] : 0.f;
+        }
+    }
+    buffer->unmap();
+    const float scale = avatar_model_scale();
+    // VRM vertices are in metres, with their lowest point on the rider's
+    // local origin. Use the exact Avatar world/view/projection from this frame.
+    std::array<float, 28> constants{};
+    const auto transform = avatar_model_to_clip(frame.world, frame.view, frame.projection,
+                                                scale, model->ground_y);
+    std::copy(transform.begin(), transform.end(), constants.begin());
+    constants[16] = 0.4f; constants[17] = -0.7f; constants[18] = 0.6f; constants[19] = 0.45f;
+    command_list->setGraphicsPipelineLayout(model_layout.get());
+    const auto& viewport = raster_state->viewport();
+    const bool reversed = viewport.minDepth > viewport.maxDepth;
+    const auto* single_sided = reversed ? model_reverse_pipeline.get() : model_pipeline.get();
+    const auto* double_sided = reversed ? model_reverse_double_sided_pipeline.get() : model_double_sided_pipeline.get();
+    command_list->setPipeline(single_sided);
+    const plume::RenderVertexBufferView vertex_view(plume::RenderBufferReference(buffer, 0),
+                                                    uint32_t(model->vertices * 8 * sizeof(float)));
+    const plume::RenderInputSlot slot(0, sizeof(float) * 8);
+    command_list->setVertexBuffers(0, &vertex_view, 1, &slot);
+    const plume::RenderIndexBufferView index_view(plume::RenderBufferReference(model_indices[model_mirrored ? 1 : 0].get(), 0),
+                                                  model_index_count * uint32_t(sizeof(uint32_t)),
+                                                  plume::RenderFormat::R32_UINT);
+    command_list->setIndexBuffer(&index_view);
+    command_list->setGraphicsDescriptorSet(model_sampler.get(), 1);
+    for (const ModelPart& part : model_parts) {
+        if (!part.count || part.picture >= model_picture_sets.size()) continue;
+        command_list->setPipeline(part.double_sided ? double_sided : single_sided);
+        for (int channel = 0; channel < 4; ++channel) constants[20 + size_t(channel)] = part.colour[channel];
+        constants[24] = part.cutoff;
+        constants[25] = part.unlit ? 1.0f : 0.0f;
+        command_list->setGraphicsDescriptorSet(model_picture_sets[part.picture].get(), 0);
+        command_list->setGraphicsPushConstants(0, constants.data());
+        command_list->drawIndexedInstanced(part.count, 1, part.first, 0, 0);
+    }
 }
 
 void NativePresentation::Impl::build_blit_targets() {
@@ -721,8 +1057,33 @@ bool NativePresentation::Impl::rebuild_surface() {
 }
 #endif
 
+std::optional<std::array<float, 16>> NativePresentation::avatar_hand_transform(const AvatarPose& pose, uint32_t bone) const {
+    if (!impl_->model || !impl_->model_animation_enabled) return std::nullopt;
+    return gltf_avatar_bone_transform(*impl_->model, pose, bone, avatar_model_scale());
+}
+
+void NativePresentation::prepare_player_model() {
+    if (sfr::model_wanted()) impl_->build_model();
+}
+
+void NativePresentation::draw_player_model(const AvatarFrameTransform& frame) {
+    if (!sfr::model_wanted()) return;
+    for (const auto* matrix : {&frame.world, &frame.view, &frame.projection})
+        for (float value : *matrix) if (!std::isfinite(value)) return;
+    impl_->refuse_during_gpu_wait();
+    impl_->build_model();
+    if (!impl_->model_pipeline) return;
+    impl_->ensure_open();
+    impl_->raster_state->apply(*impl_->command_list);
+    impl_->draw_model(frame);
+    // NativeRenderer caches layout/pipeline/descriptors/vertex bindings.
+    // Force the next title draw to restore all of them after this custom pass.
+    ++impl_->list_generation;
+}
+
 void NativePresentation::present(uint32_t area_width, uint32_t area_height) {
     impl_->refuse_during_gpu_wait();
+
 #ifdef __ANDROID__
     // Back from the background: draw into the new surface, or skip the frame.
     if ((impl_->rebuild_swap_chain || !impl_->swap_chain) && !impl_->rebuild_surface()) return;

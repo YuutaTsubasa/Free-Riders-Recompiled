@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <utility>
 #include <vector>
@@ -18,6 +19,8 @@ struct RenderViewport;
 namespace sfr {
 class NativeGraphics;
 class NativeRasterState;
+struct AvatarFrameTransform;
+struct AvatarPose;
 
 struct NativeClear {
     bool color = false;
@@ -49,12 +52,17 @@ public:
     // that area is stretched to the window, as a console's scaler does; zero
     // presents the whole framebuffer.
     void present(uint32_t area_width = 0, uint32_t area_height = 0);
+    void prepare_player_model();
+    // Draw at the character pass using the title's current viewport/scissor.
+    // Later title draws (including HUD) retain their original ordering.
+    void draw_player_model(const AvatarFrameTransform& frame);
+    std::optional<std::array<float, 16>> avatar_hand_transform(const AvatarPose&, uint32_t bone) const;
     // The area the last present stretched, or the framebuffer size.
     [[nodiscard]] std::pair<uint32_t, uint32_t> presented_area() const noexcept;
     // Records commands against the color/depth framebuffer with the current
     // viewport and scissor into the frame's open command list.
     void record(const std::function<void(plume::RenderCommandList&)>& body);
-    // Changes whenever a new command list begins (bindings do not carry over).
+    // Changes when a list begins or a custom pass invalidates guest bindings.
     uint64_t list_generation() const;
     // Submits the recorded draws and clears and waits for them (and for a
     // frame still in flight), then runs the after_flush callbacks with
