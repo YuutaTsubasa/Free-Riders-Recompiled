@@ -14,6 +14,10 @@ namespace sfr {
 // hardware thread of every physical core, fastest cores first, then the
 // second threads. SFR_HOST_PROCESSORS=sequential gives plain bit order.
 std::vector<uint32_t> host_processor_order(uint64_t allowed, uint16_t group);
+// One-time placement of the calling guest thread within its current allowed
+// group/mask. Explicit CPU Sets keep their current mask. Returns the resulting
+// host mask; does not change process affinity.
+uint64_t pin_current_guest_processor(uint32_t guest_cpu);
 #endif
 
 class NativeThread {
@@ -40,6 +44,10 @@ public:
     [[nodiscard]] int32_t priority() const;
     int32_t set_priority(int32_t host_relative);
     uint64_t set_guest_processor(uint32_t guest_cpu);
+#ifdef _WIN32
+    // Prefer the mapped processor while allowing wakeups on the guest host pool.
+    uint64_t set_guest_processor(uint32_t guest_cpu, bool allow_migration);
+#endif
     [[nodiscard]] uint64_t affinity_mask() const;
 
 private:

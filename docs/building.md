@@ -87,7 +87,10 @@ Settings are kept in `settings.ini`, saves in `save/`, the game's trace in
 `game.log`, all beside the launcher.
 
 The shader translator lets the game translate the Xbox shaders it meets while
-running (Direct3D 12 by default, Vulkan in the launcher's Advanced tab).
+running. The launcher defaults to Vulkan for new settings; on Windows, choose
+Vulkan or D3D12 in **Display > Graphics backend**. Existing saved choices are
+preserved. Direct diagnostic runs without `SFR_GRAPHICS` retain their existing
+platform default.
 `python scripts/pack_shaders.py` collects the shaders translated so far into
 `out/shaders/shaders.pack` for machines without the translator (Linux,
 Android).

@@ -1,10 +1,15 @@
 #include "native_shaders.h"
 #include "native_graphics.h"
 #include "guest_memory.h"
+#include "runtime_shader_cache.h"
+#include "shader_pack_format.h"
 #include <plume_render_interface.h>
 #include <algorithm>
 #include <iostream>
 #include <stdexcept>
+#include <fstream>
+#include <vector>
+#include <cstdlib>
 
 namespace {
 void require(bool ok, const char* detail) { if (!ok) throw std::runtime_error(detail); }
@@ -65,5 +70,77 @@ void run() {
             "all original shaders retained with exact stage counts");
     std::cout << "Original shaders: " << vertex << " native vertex stages, " << pixel << " retained pixel libraries\n";
 }
+
+// Exercise the actual native ownership path with the release pack, without
+// checking proprietary shader sources into the repository.
+void lifetime(const char* pack) {
+#ifdef _WIN32
+    _putenv_s("SFR_SHADER_PACK", pack);
+#else
+    setenv("SFR_SHADER_PACK", pack, 1);
+#endif
+    std::ifstream in(pack, std::ios::binary);
+    require(bool(in), "cannot open lifetime test shader pack");
+    std::vector<uint8_t> bytes{std::istreambuf_iterator<char>(in), {}};
+    const auto count = sfr::shader_pack_count(bytes);
+    size_t at = sfr::shader_pack_header_size;
+    auto word = [&] {
+        require(at + 4 <= bytes.size(), "truncated test pack");
+        uint32_t value = 0;
+        for (unsigned i = 0; i < 4; ++i) value |= uint32_t(bytes[at++]) << (i * 8);
+        return value;
+    };
+    sfr::GuestMemory memory;
+    sfr::NativeGraphics graphics;
+    graphics.initialize();
+    sfr::NativeShaders shaders(memory, graphics);
+    sfr::runtime_shader_translation = true;
+    constexpr uint32_t source = 0x10000000, object = 0x40566410;
+    memory.map(source, 0x100000);
+    uint32_t first = 0, second = 0;
+    std::vector<uint8_t> first_source;
+    sfr::ShaderStage first_stage{};
+    for (uint32_t i = 0; i < count && !second; ++i) {
+        const auto stage = sfr::ShaderStage(word());
+        (void)word();
+        const auto size = word(), dxil = word(), spirv = word();
+        require(uint64_t(at) + size + dxil + spirv <= bytes.size(), "truncated test entry");
+        if (size <= 0x100000 && (graphics.backend() == sfr::GraphicsBackend::vulkan ? spirv : dxil)) {
+            for (uint32_t n = 0; n < size; ++n) memory.store<uint8_t>(source + n, bytes[at + n]);
+            const auto handle = shaders.create(stage, source);
+            if (!first) {
+                first = handle;
+                first_stage = stage;
+                first_source.assign(bytes.begin() + at, bytes.begin() + at + size);
+                shaders.attach(first, object);
+                require(shaders.create(stage, source) == first,
+                        "identical shader recreation must reuse the immutable native stage");
+                shaders.attach(first, object + 0x1000);
+                require(shaders.handle_of(object) == first && shaders.handle_of(object + 0x1000) == first,
+                        "independent guest objects can share one immutable shader");
+            } else if (handle != first) {
+                second = handle;
+                // Original creation just allocated a new object at the same
+                // heap address after a scene unload (Issue #20).
+                shaders.attach(second, object);
+                require(shaders.handle_of(object) == second && shaders.handle_of(object + 0x1000) == first,
+                        "recycled guest address must replace only its own shader binding");
+            }
+        }
+        at += size + dxil + spirv;
+    }
+    require(first && second, "test pack needs two distinct usable shaders");
+    for (size_t n = 0; n < first_source.size(); ++n) memory.store<uint8_t>(source + n, first_source[n]);
+    const auto before = shaders.size();
+    for (unsigned i = 0; i < 2100; ++i) {
+        require(shaders.create(first_stage, source) == first, "reloading retains the shader identity");
+        shaders.attach(first, object);
+    }
+    require(shaders.size() == before, "scene reloads cannot exhaust native shader handles");
+    rejects([&] { shaders.attach(0, object); });
+    rejects([&] { shaders.attach(first, object + 1); });
+    require(shaders.handle_of(object) == first, "invalid attaches preserve the current mapping");
+    std::cout << "Shader lifetime: address reuse, shared stages and 2100 reloads passed\n";
 }
-int main() { try { run(); return 0; } catch(const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; } }
+}
+int main(int argc, char** argv) { try { if (argc == 2) lifetime(argv[1]); else run(); return 0; } catch(const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; } }

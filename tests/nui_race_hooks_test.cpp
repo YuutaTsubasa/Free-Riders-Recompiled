@@ -21,6 +21,9 @@ constexpr uint32_t nui_box_global = 0x83E52F88, race_flag_global = 0x83E52F8C;
 constexpr uint32_t existing_primary = 0x20, existing_secondary = 0x8;
 unsigned original_side_calls = 0, manager_calls = 0;
 bool sensor_body = false;
+bool camera_active = false;
+bool second_pad_present = false;
+unsigned pose_calls = 0;
 uint64_t kinect_sequence = 0;
 }
 
@@ -33,10 +36,12 @@ uint64_t kinect_sequence = 0;
 
 namespace sfr {
 GuestMemory* active_memory = nullptr;
-bool camera_motion_active() { return false; }
+bool camera_motion_active() { return harness::camera_active; }
 uint64_t camera_pose_generation() { return 0; }
 uint64_t camera_motion_clock_ns() { return 0; }
-std::optional<GamepadState> second_player_pad() { return std::nullopt; }
+std::optional<GamepadState> second_player_pad() {
+    return harness::second_pad_present ? std::optional(GamepadState{}) : std::nullopt;
+}
 GamepadState nui_gamepad() { return harness::input; }
 bool nui_sensor_has_depth() { return false; }
 bool nui_body_from_sensor() { return harness::sensor_body; }
@@ -55,6 +60,7 @@ PPC_FUNC(__imp__sub_822C6200) {
 }
 PPC_FUNC(__imp__sub_82918418) { ctx.r3.u64 = sfr::active_memory->load<uint32_t>(ctx.r3.u32 + 4); }
 PPC_FUNC(__imp__sub_82438930) { ++harness::manager_calls; }
+PPC_FUNC(__imp__sub_822A6988) { ++harness::pose_calls; }
 
 // Fixture for the original Side detector's observed result with the copied
 // race pose: tracked hands recognize Side. This is a guest-code boundary,
@@ -189,6 +195,85 @@ void crouch_jump(int16_t left_y) {
     require((filtered() & 0x200) != 0, "release jump must survive the game filter");
     frame(0);
     require(invoke("sub_822C9050") == 2 && (filtered() & 0x200) == 0, "jump release must last one frame");
+}
+
+void posture() {
+    sfr::GuestMemory m;
+    sfr::active_memory = &m;
+    m.map(box, 0x10000);
+    m.map(0x83E50000, 0x4000);
+    m.map(0x82B04000, 0x4000);
+    constexpr uint32_t manager = box + 0x5000, list = box + 0x5100;
+    constexpr uint32_t p1 = box + 0x6000, p2 = box + 0x7000, ai = box + 0x8000;
+    m.store<uint32_t>(nui_box_global, box);
+    m.store<uint32_t>(box + 0x78, original);
+    m.store<uint32_t>(race_flag_global, 1);
+    m.store<uint32_t>(0x83E52FDC, manager);
+    m.store<uint8_t>(0x82B0569F, 2);
+    m.store<uint32_t>(manager + 20, 8);
+    m.store<uint32_t>(manager + 36, list);
+    m.store<uint32_t>(manager + 40, list + 12);
+    m.store<uint32_t>(list, p1);
+    m.store<uint32_t>(list + 4, p2);
+    m.store<uint32_t>(list + 8, ai);
+    frame(0);
+    auto check = [&](uint32_t rider, uint32_t lr, uint32_t joint, bool forwarded) {
+        PPCContext ctx;
+        ctx.r3.u64 = rider;
+        ctx.r4.u64 = joint;
+        ctx.lr = lr;
+        const auto before = pose_calls;
+        auto hook = hooks().find("sub_822A6988");
+        if (hook != hooks().end()) hook->second(ctx, m.base());
+        else __imp__sub_822A6988(ctx, m.base());
+        require(pose_calls == before + unsigned(forwarded),
+                "tracked pose overlay must follow live local ownership and input source");
+    };
+    const std::pair<uint32_t, uint32_t> calls[] = {
+        {0x822A46E0,2}, {0x822A46F4,5}, {0x822A4708,7}, {0x822A471C,9},
+        {0x822A4730,6}, {0x822A4744,8}, {0x822A4758,10}};
+    for (auto [lr,joint] : calls) {
+        check(p1,lr,joint,false); check(p2,lr,joint,false); check(ai,lr,joint,true);
+    }
+    check(p1,0x12345678,2,true);
+    check(p1,0x822A46E0,5,true);
+    m.store<uint32_t>(p1 + 108, 3); // autopilot does not revoke ownership
+    check(p1,0x822A46E0,2,false);
+    sensor_body = true;
+    check(p1,0x822A46E0,2,true); check(p2,0x822A46E0,2,true);
+    sensor_body = false;
+    camera_active = true;
+    // Match player_of_record: local-count alone does not enable split input.
+    check(p1,0x822A46E0,2,true); check(p2,0x822A46E0,2,true);
+    second_pad_present = true;
+    frame(0);
+    const char* split = std::getenv("SFR_RACE_TWO_PLAYERS");
+    const char* swap = std::getenv("SFR_RACE_PLAYERS_SWAP");
+    const bool shared = split && *split == '0';
+    const bool reversed = !shared && swap && *swap && *swap != '0';
+    check(p1,0x822A46E0,2,!reversed);
+    check(p2,0x822A46E0,2,shared || reversed);
+    second_pad_present = false;
+    frame(0); // disconnection does not revoke the latched routing
+    check(p1,0x822A46E0,2,!reversed);
+    check(p2,0x822A46E0,2,shared || reversed);
+    m.store<uint8_t>(0x82B0569F, 1);
+    check(p1,0x822A46E0,2,!reversed);
+    check(p2,0x822A46E0,2,true);
+    m.store<uint8_t>(0x82B0569F, 2);
+    camera_active = false;
+    m.store<uint32_t>(manager + 40, list + 4); // Loading has only initialized P1
+    check(p1,0x822A46E0,2,false); check(p2,0x822A46E0,2,true);
+    m.store<uint32_t>(list, ai); // old allocation is no longer owned
+    check(p1,0x822A46E0,2,true); check(ai,0x822A46E0,2,false);
+    m.store<uint32_t>(manager + 40, list + 3);
+    check(ai,0x822A46E0,2,true);
+    m.store<uint32_t>(0x83E52FDC, 0);
+    check(ai,0x822A46E0,2,true);
+    m.store<uint32_t>(0x83E52FDC, manager);
+    m.store<uint32_t>(manager + 40, list + 4);
+    m.store<uint32_t>(race_flag_global, 0);
+    check(ai,0x822A46E0,2,true);
 }
 
 void run() {
@@ -336,6 +421,7 @@ int main() {
 #endif
     try {
         harness::run();
+        harness::posture();
         std::cout << "nui race hook tests passed\n";
         return 0;
     } catch (const std::exception& error) {

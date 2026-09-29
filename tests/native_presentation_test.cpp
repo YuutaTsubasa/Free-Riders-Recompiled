@@ -126,7 +126,8 @@ struct AvatarTriangleFile {
     }
 };
 
-void avatar_draws_keep_viewport_order_and_independent_poses() {
+void avatar_draws_keep_viewport_order_and_independent_poses(uint32_t percent = 100) {
+    ScopedEnvironment resolution("SFR_RENDER_SCALE", std::to_string(percent));
     AvatarTriangleFile fixture;
     ScopedEnvironment model("SFR_AVATAR_MODEL", fixture.path.string());
     ScopedEnvironment scale("SFR_AVATAR_MODEL_SCALE", "1");
@@ -176,10 +177,14 @@ void avatar_draws_keep_viewport_order_and_independent_poses() {
     presentation.clear(clear, std::span<const plume::RenderRect>(&overlay, 1));
     presentation.present();
     const auto pixels = presentation.readback_color();
-    require(pixels.size() == 64 * 48 * 4, "Avatar GPU readback contains the complete target");
+    const uint32_t render_width = 64 * percent / 100, render_height = 48 * percent / 100;
+    require(pixels.size() == render_width * render_height * 4, "Avatar GPU readback contains the scaled target");
+    const auto pixel_offset = [&](uint32_t x, uint32_t y) {
+        return (uint32_t((y + 0.5f) * percent / 100) * render_width + uint32_t((x + 0.5f) * percent / 100)) * 4;
+    };
     const auto pixel = [&](uint32_t x, uint32_t y) {
         std::array<uint8_t, 4> value;
-        std::memcpy(value.data(), pixels.data() + (y * 64 + x) * 4, 4);
+        std::memcpy(value.data(), pixels.data() + pixel_offset(x, y), 4);
         return value;
     };
     require(pixel(19, 25) == std::array<uint8_t, 4>{0, 0, 255, 255},
@@ -200,7 +205,7 @@ void avatar_draws_keep_viewport_order_and_independent_poses() {
     // accidentally using (or clearing) a private depth buffer for the model.
     const auto require_occluded = [&] {
         const auto image = presentation.readback_color();
-        require(image.size() == 64 * 48 * 4, "occlusion readback contains the complete target");
+        require(image.size() == render_width * render_height * 4, "occlusion readback contains the scaled target");
         for (size_t at = 0; at < image.size(); at += 4)
             require(image[at] == 0 && image[at + 1] == 0 && image[at + 2] == 0 && image[at + 3] == 255,
                     "nearer scene depth occludes the Avatar without being cleared by its pass");
@@ -222,8 +227,8 @@ void avatar_draws_keep_viewport_order_and_independent_poses() {
         ++frame.present;
         presentation.draw_player_model(frame);
         const auto reversed_pixels = presentation.readback_color();
-        const size_t sample = (25 * 64 + 32) * 4;
-        require(reversed_pixels.size() == 64 * 48 * 4 && reversed_pixels[sample] == 0 &&
+        const size_t sample = pixel_offset(32, 25);
+        require(reversed_pixels.size() == render_width * render_height * 4 && reversed_pixels[sample] == 0 &&
                     reversed_pixels[sample + 1] == 0 && reversed_pixels[sample + 2] == 255,
                 "reversed viewport draws Avatar against far depth zero using the reversed comparison");
         clear.depth_value = 0.75f;
@@ -290,6 +295,65 @@ struct RestrictedSurface {
         vkCmdCopyImage = copy_image;
     }
 };
+
+void completed_frames_do_not_release_guest_execution() {
+    sfr::NativeGraphics graphics;
+    graphics.initialize();
+    sfr::NativePresentation presentation(graphics, 64, 48);
+    unsigned released = 0;
+    struct ResetWait { ~ResetWait() { sfr::NativePresentation::set_gpu_wait({}); } } reset;
+    sfr::NativePresentation::set_gpu_wait([&](const auto& wait) { ++released; wait(); });
+    sfr::NativeClear clear{};
+    clear.color = true;
+    // Reuse both submission fences repeatedly: the successful fast path must
+    // still consume the D3D12 event / reset the Vulkan fence before reuse.
+    for (unsigned frame = 0; frame < 8; ++frame) {
+        clear.color_value = {frame % 2 ? 1.f : 0.f, 0, 0, 1};
+        presentation.clear(clear);
+        presentation.present();
+        graphics.wait_idle();
+        const auto before = released;
+        presentation.flush();
+        const char* fast = std::getenv("SFR_GPU_WAIT_FAST");
+        const bool legacy = fast && *fast == '0';
+        require(released == before + unsigned(legacy),
+                "completed frames release guest execution only in legacy comparison mode");
+        const auto pixels = presentation.readback_color();
+        require(pixels[2] == (frame % 2 ? 255 : 0), "fence reuse preserves the submitted frame");
+    }
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL report_pending_fence(VkDevice, VkFence) { return VK_NOT_READY; }
+
+void pending_fence_queries_use_the_guarded_wait() {
+    if (d3d12()) return;
+    sfr::NativeGraphics graphics;
+    graphics.initialize();
+    sfr::NativePresentation presentation(graphics, 64, 48);
+    sfr::NativeClear clear{};
+    clear.color = true;
+    presentation.clear(clear);
+    presentation.present();
+    // Force the query outcome to make fallback deterministic, even on fast
+    // GPUs. The wait itself still uses the real submission fence and reset.
+    struct Reset {
+        PFN_vkGetFenceStatus query = vkGetFenceStatus;
+        ~Reset() { vkGetFenceStatus = query; sfr::NativePresentation::set_gpu_wait({}); }
+    } reset;
+    unsigned released = 0;
+    vkGetFenceStatus = report_pending_fence;
+    sfr::NativePresentation::set_gpu_wait([&](const auto& wait) {
+        ++released;
+        require(rejects_with<std::logic_error>([&] { presentation.clear(clear); }),
+                "pending GPU work must reject reentrant guest rendering");
+        wait();
+    });
+    presentation.flush();
+    require(released == 1, "a pending query must invoke the guarded wait exactly once");
+    vkGetFenceStatus = reset.query;
+    presentation.clear(clear);
+    require(presentation.readback_color().size() == 64 * 48 * 4, "rendering resumes after the guarded wait");
+}
 
 void vulkan_swapchain_respects_surface_usage() {
     if (d3d12()) return;
@@ -406,6 +470,36 @@ void rectangle_clear_preserves_outside_pixels() {
     }
 }
 
+void scaled_clear_boundaries_and_loading_area() {
+    sfr::NativeGraphics graphics;
+    graphics.initialize();
+    for (uint32_t percent : {50u, 75u, 100u, 150u, 200u}) {
+        ScopedEnvironment setting("SFR_RENDER_SCALE", std::to_string(percent));
+        sfr::NativePresentation presentation(graphics, 19, 11);
+        const uint32_t width = (19 * percent + 50) / 100, height = (11 * percent + 50) / 100;
+        sfr::NativeClear clear{};
+        clear.color = true;
+        clear.color_value = {0, 0, 0, 1};
+        presentation.clear(clear);
+        // Adjacent split views share one rounded edge even at fractional scales.
+        const plume::RenderRect left(0,0,7,11), right(7,0,12,11);
+        clear.color_value = {1,0,0,1}; presentation.clear(clear, std::span(&left,1));
+        clear.color_value = {0,1,0,1}; presentation.clear(clear, std::span(&right,1));
+        presentation.set_raster_state({0,0,12,11}, {0,0,12,11});
+        presentation.present(12,11);
+        require(presentation.presented_area() == std::pair{12u,11u}, "Loading area remains in guest coordinates");
+        const auto image = presentation.readback_color();
+        require(image.size() == width * height * 4, "scaled odd dimensions round to the nearest host pixel");
+        const uint32_t middle = (7 * width + 19/2) / 19, edge = (12 * width + 19/2) / 19;
+        for (uint32_t y=0; y<height; ++y) for (uint32_t x=0; x<width; ++x) {
+            const size_t at = (y * width + x) * 4;
+            require(image[at] == 0 && image[at+1] == (x>=middle && x<edge ? 255 : 0) &&
+                image[at+2] == (x<middle ? 255 : 0) && image[at+3] == 255,
+                "scaled clears preserve adjacent players and pixels outside the loading area");
+        }
+    }
+}
+
 void invalid_clear_arguments_do_not_mutate_color() {
     sfr::NativeGraphics graphics;
     graphics.initialize();
@@ -502,14 +596,20 @@ void depth_stencil_clear_executes_on_native_attachment() {
 
 int main() {
     try {
+        ScopedEnvironment baseline_resolution("SFR_RENDER_SCALE", "100");
         // Must precede any code that caches model_wanted() or model scale.
         avatar_draws_keep_viewport_order_and_independent_poses();
+        for (uint32_t percent : {50u, 75u, 150u, 200u})
+            avatar_draws_keep_viewport_order_and_independent_poses(percent);
+        completed_frames_do_not_release_guest_execution();
+        pending_fence_queries_use_the_guarded_wait();
         vulkan_swapchain_respects_surface_usage();
         vulkan_failed_surface_query_does_not_create_swapchain();
         invalid_dimensions_are_rejected_before_a_window_exists();
         creates_hidden_fixed_size_window_and_native_resources();
         full_color_clears_reach_gpu_memory();
         rectangle_clear_preserves_outside_pixels();
+        scaled_clear_boundaries_and_loading_area();
         invalid_clear_arguments_do_not_mutate_color();
         depth_stencil_clear_executes_on_native_attachment();
         std::cout << "Native presentation checks passed\n";

@@ -227,6 +227,15 @@ NativeSyncObjects::WaitResult NativeSyncObjects::WaitHandle::wait_multiple(
     std::vector<HANDLE> handles;
     for (auto* wait : waits) handles.push_back(wait->impl_->native);
     if (wait_all) {
+        if (timeout_ms == 0) {
+            if (stop.stop_requested()) return {status_success, true};
+            // A zero timeout is a poll, not an already-expired deadline.
+            // One native wait preserves atomic consumption of the whole set.
+            const DWORD result = WaitForMultipleObjects(DWORD(handles.size()), handles.data(), TRUE, 0);
+            if (result == WAIT_OBJECT_0) return {status_success, false};
+            if (result == WAIT_TIMEOUT) return {status_timeout, false};
+            stop_host("WaitForMultipleObjects", waits[0]->impl_->guest_handle, GetLastError());
+        }
         // A cancel event cannot join a wait-all set: wait in slices and poll it.
         const ULONGLONG start = GetTickCount64();
         for (;;) {

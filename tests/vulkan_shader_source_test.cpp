@@ -22,6 +22,8 @@ void defines_the_screen_scale() {
     require(text->find("#define g_ScreenSpaceScale vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 320, 8)") !=
                 std::string::npos, "the screen scale reads shared constant bytes 320");
     require(text->find("#define g_ScreenSpaceScale") < text->find("#else"), "only the SPIR-V branch gains it");
+    require(text->find("#define g_ResolvedTextureScale vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 328, 8)") !=
+                std::string::npos, "resolved texture scale reads the aligned shared constant extension");
     require(!sfr::vulkan_shader_source("float4 x;\n"), "text without the header is refused");
     std::string crlf;
     for (const char c : header) {

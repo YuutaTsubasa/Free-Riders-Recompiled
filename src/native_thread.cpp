@@ -77,6 +77,20 @@ std::vector<uint32_t> processors_by_core(uint64_t allowed, uint16_t group) {
     return ordered;
 }
 
+// CPU Sets are a user/application scheduling preference that a restrictive
+// hard affinity would override. Leave placement alone when either level is
+// explicitly configured, or when the available API cannot confirm its state.
+bool has_cpu_set_assignment(HANDLE thread) {
+    using Query = BOOL (WINAPI*)(HANDLE, PULONG, ULONG, PULONG);
+    const HMODULE kernel = GetModuleHandleW(L"kernel32.dll");
+    const auto selected = reinterpret_cast<Query>(GetProcAddress(kernel, "GetThreadSelectedCpuSets"));
+    const auto defaults = reinterpret_cast<Query>(GetProcAddress(kernel, "GetProcessDefaultCpuSets"));
+    ULONG count = 0;
+    if (selected && (!selected(thread, nullptr, 0, &count) || count)) return true;
+    count = 0;
+    return defaults && (!defaults(GetCurrentProcess(), nullptr, 0, &count) || count);
+}
+
 }
 
 struct NativeThread::Impl {
@@ -235,10 +249,29 @@ std::vector<uint32_t> host_processor_order(uint64_t allowed, uint16_t group) {
     return processors_by_core(allowed, group);
 }
 
+uint64_t pin_current_guest_processor(uint32_t guest_cpu) {
+    if (guest_cpu >= 6) throw RuntimeStop("thread-host", guest_cpu, "guest processor index must be below 6");
+    GROUP_AFFINITY current{};
+    if (!GetThreadGroupAffinity(GetCurrentThread(), &current))
+        throw_host_error("GetThreadGroupAffinity", GetLastError());
+    if (has_cpu_set_assignment(GetCurrentThread())) return current.Mask;
+    const auto order = host_processor_order(current.Mask, current.Group);
+    if (order.empty()) throw RuntimeStop("thread-host", 0, "calling thread has no allowed processors");
+    const uint64_t selected = uint64_t{1} << order[guest_cpu % order.size()];
+    if (!SetThreadAffinityMask(GetCurrentThread(), static_cast<DWORD_PTR>(selected)))
+        throw_host_error("SetThreadAffinityMask", GetLastError());
+    return selected;
+}
+
 uint64_t NativeThread::set_guest_processor(uint32_t guest_cpu) {
+    return set_guest_processor(guest_cpu, false);
+}
+
+uint64_t NativeThread::set_guest_processor(uint32_t guest_cpu, bool allow_migration) {
     if (guest_cpu >= 6)
         throw RuntimeStop("thread-host", guest_cpu, "guest processor index must be below 6");
-    (void)affinity_mask();
+    const auto previous_mask = affinity_mask();
+    if (allow_migration && has_cpu_set_assignment(impl_->handle)) return previous_mask;
 
     static std::mutex order_lock;
     static uint64_t ordered_for = 0;
@@ -262,9 +295,27 @@ uint64_t NativeThread::set_guest_processor(uint32_t guest_cpu) {
     const uint64_t selected_mask = uint64_t{1} << processors[guest_cpu % processors.size()];
     if (selected_mask == 0)
         throw RuntimeStop("thread-host", guest_cpu, "could not select an allowed host processor");
-    if (SetThreadAffinityMask(impl_->handle, static_cast<DWORD_PTR>(selected_mask)) == 0)
+    uint64_t host_mask = selected_mask;
+    if (allow_migration) {
+        // GuestExecution still serializes each guest core. Restricting every
+        // host thread for that core to one CPU adds an OS scheduling convoy
+        // before it can even reacquire the guest permit. Keep the existing
+        // six-core host pool, but allow a ready thread to use another member.
+        host_mask = 0;
+        for (size_t i = 0; i < (std::min)(size_t{6}, processors.size()); ++i)
+            host_mask |= uint64_t{1} << processors[i];
+    }
+    if (SetThreadAffinityMask(impl_->handle, static_cast<DWORD_PTR>(host_mask)) == 0)
         throw_host_error("SetThreadAffinityMask", GetLastError());
-    return selected_mask;
+    if (allow_migration) {
+        PROCESSOR_NUMBER ideal{impl_->processor_group, BYTE(processors[guest_cpu % processors.size()]), 0};
+        if (!SetThreadIdealProcessorEx(impl_->handle, &ideal, nullptr)) {
+            const DWORD error = GetLastError();
+            if (!SetThreadAffinityMask(impl_->handle, static_cast<DWORD_PTR>(previous_mask))) std::terminate();
+            throw_host_error("SetThreadIdealProcessorEx", error);
+        }
+    }
+    return host_mask;
 }
 
 uint64_t NativeThread::affinity_mask() const {

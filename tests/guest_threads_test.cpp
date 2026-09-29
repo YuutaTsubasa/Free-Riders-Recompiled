@@ -6,12 +6,22 @@
 #include <iostream>
 #include <stdexcept>
 #include <future>
+#include <cstdlib>
 
 namespace {
 void require(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
 template<class F> void rejects(F operation) {
     try { operation(); } catch (const sfr::RuntimeStop&) { return; }
     throw std::runtime_error("unsupported thread operation did not stop");
+}
+uint64_t expected_host_affinity(uint32_t cpu) {
+    sfr::NativeThread reference([](std::stop_token) { return 0; });
+#ifdef _WIN32
+    const char* setting = std::getenv("SFR_WORKER_AFFINITY");
+    return reference.set_guest_processor(cpu, !setting || *setting != '0');
+#else
+    return reference.set_guest_processor(cpu);
+#endif
 }
 bool target(uint32_t address) { return address == 0x82001000 || address == 0x82002000; }
 sfr::GuestThreads::Request request() {
@@ -134,9 +144,9 @@ void creation_affinity_selects_guest_and_native_processor_while_parked() {
             const uint32_t mask = uint32_t{1} << cpu;
             require(threads.set_affinity(reference_object, mask, 0) == 0,
                     "existing affinity route selects each guest processor");
-            const auto expected_host = threads.host_affinity(reference_object);
-            require(expected_host && !(expected_host & (expected_host - 1)),
-                    "reference affinity binds one allowed native processor");
+            const auto expected_host = expected_host_affinity(cpu);
+            require(expected_host && threads.host_affinity(reference_object) == expected_host,
+                    "reference affinity follows the selected host placement policy");
             expected_cpu = cpu;
             for (const bool explicit_affinity : {false, true}) {
                 expected.flags = explicit_affinity ? (mask << 24) | 1u : 1u;
@@ -275,7 +285,7 @@ void object_references_and_native_configuration() {
     require(memory.load<uint8_t>(snapshot.state.pcr + 0x10C) == 2 && memory.load<uint8_t>(object + 0xBF) == 2,
             "affinity updates both guest processor fields");
     const auto host_mask = threads.host_affinity(object);
-    require(host_mask && !(host_mask & (host_mask - 1)), "host thread is bound to one real processor");
+    require(host_mask == expected_host_affinity(2), "host affinity follows the configured policy for guest processor 2");
     rejects([&] { threads.set_affinity(object, 8, 0x20000000); });
     rejects([&] { threads.set_affinity(object, 8, snapshot.state.pcr + 0x10C); });
     rejects([&] { threads.set_affinity(object, 8, object + 0xBC); });

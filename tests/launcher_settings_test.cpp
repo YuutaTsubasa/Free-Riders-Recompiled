@@ -69,6 +69,62 @@ void settings_round_trip() {
             "non-ASCII directories survive a round trip");
 }
 
+void graphics_backend_settings() {
+    for (const char* text : {"", "vulkan=invalid\n", "window_width=1920\n"})
+        require(value_of(sfr::parse_launcher_settings(text), "SFR_GRAPHICS") == "vulkan",
+                "new, missing and invalid backend settings default to Vulkan");
+    for (const char* text : {"vulkan=0\n", "vulkan=false\n", "vulkan=1\n", "vulkan=true\n"}) {
+        const auto loaded = sfr::parse_launcher_settings(text);
+        const auto saved = sfr::parse_launcher_settings(sfr::format_launcher_settings(loaded));
+        const bool vulkan = std::string(text).find('0') == std::string::npos &&
+                            std::string(text).find("false") == std::string::npos;
+        require(saved.vulkan == vulkan &&
+                value_of(saved, "SFR_GRAPHICS") == (vulkan ? "vulkan" : "d3d12"),
+                "existing explicit backend choices survive load/save and reach the game");
+    }
+}
+
+void rendering_resolution_settings() {
+    const sfr::LauncherSettings defaults;
+    require(defaults.render_scale == 100, "the render scale defaults to 100 percent");
+    require(sfr::format_launcher_settings(defaults).find("render_scale=100\n") != std::string::npos,
+            "internal rendering defaults to native 1280x720");
+    require(value_of(defaults, "SFR_RENDER_SCALE") == "100",
+            "native rendering explicitly overrides an inherited render scale");
+    require(value_of(sfr::parse_launcher_settings("window_width=1920\nwindow_height=1080\n"),
+                     "SFR_RENDER_SCALE") == "100",
+            "older settings keep native rendering regardless of output window size");
+
+    for (const char* scale : {"50", "75", "100", "150", "200"}) {
+        const auto settings = sfr::parse_launcher_settings(
+            std::string("window_width=1920\nwindow_height=1080\nrender_scale=") + scale + "\n");
+        const auto saved = sfr::format_launcher_settings(settings);
+        require(saved.find(std::string("render_scale=") + scale + "\n") != std::string::npos,
+                "each supported internal resolution is serialized");
+        const auto reloaded = sfr::parse_launcher_settings(saved);
+        require(value_of(reloaded, "SFR_RENDER_SCALE") == scale,
+                "each internal resolution survives a round trip and overrides the game environment");
+        require(reloaded.window_width == 1920 && reloaded.window_height == 1080 &&
+                value_of(reloaded, "SFR_WINDOW_WIDTH") == "1920" &&
+                value_of(reloaded, "SFR_WINDOW_HEIGHT") == "1080",
+                "internal rendering does not change the output window size");
+    }
+    for (const char* scale : {"", "abc", "0", "49", "51", "99", "101", "125", "201",
+                              "-50", "+50", "50.0", "50junk", "4294967296"}) {
+        const auto settings = sfr::parse_launcher_settings(std::string("render_scale=") + scale + "\n");
+        require(value_of(settings, "SFR_RENDER_SCALE") == "100",
+                "malformed or unsupported internal resolutions fall back to native rendering");
+    }
+    require(value_of(sfr::parse_launcher_settings("render_scale=50\nrender_scale=125\n"),
+                     "SFR_RENDER_SCALE") == "100",
+            "an invalid later render scale resets to native rendering");
+    sfr::LauncherSettings invalid;
+    invalid.render_scale = 125;
+    require(sfr::format_launcher_settings(invalid).find("render_scale=100\n") != std::string::npos &&
+            value_of(invalid, "SFR_RENDER_SCALE") == "100",
+            "unsupported in-memory settings serialize and launch at native resolution");
+}
+
 void camera_debug_settings() {
     const sfr::LauncherSettings defaults;
     require(sfr::format_launcher_settings(defaults).find("camera_debug=0\n") != std::string::npos,
@@ -145,7 +201,7 @@ void environment_follows_settings() {
     require(value_of(settings, "SFR_FRAME_LIMIT") == "60", "the game is capped at 60 fps");
     require(value_of(settings, "SFR_PARALLEL_WORKER") == "cores", "parallel guest cores by default");
     require(value_of(settings, "SFR_SKIP_MOVIES").empty(), "movies play by default");
-    require(value_of(settings, "SFR_GRAPHICS").empty(), "Direct3D 12 by default");
+    require(value_of(settings, "SFR_GRAPHICS") == "vulkan", "Vulkan by default");
     require(value_of(settings, "SFR_CAMERA").empty(), "the camera is left alone by default");
     require(value_of(settings, "SFR_PROFILE") == "1", "the player is signed in so the game saves");
     require(value_of(settings, "SFR_GPU_PIPELINE") == "1", "the graphics card works a frame behind by default");
@@ -194,6 +250,8 @@ void environment_follows_settings() {
     settings.audio = false;
     settings.vulkan = true;
     require(value_of(settings, "SFR_GRAPHICS") == "vulkan", "the Vulkan setting selects Vulkan");
+    settings.vulkan = false;
+    require(value_of(settings, "SFR_GRAPHICS") == "d3d12", "the D3D12 choice is explicit");
     require(value_of(settings, "SFR_FULLSCREEN") == "1" && value_of(settings, "SFR_PARALLEL_WORKER") == "0" &&
             value_of(settings, "SFR_WINDOW_HEIGHT") == "1440" && value_of(settings, "SFR_SKIP_MOVIES") == "1" &&
             value_of(settings, "SFR_AUDIO") == "0", "the environment carries the player's choices");
@@ -281,6 +339,8 @@ void directories_are_found_and_checked() {
 int main() {
     try {
         settings_round_trip();
+        graphics_backend_settings();
+        rendering_resolution_settings();
         camera_debug_settings();
         avatar_model_settings();
         malformed_values_keep_defaults();

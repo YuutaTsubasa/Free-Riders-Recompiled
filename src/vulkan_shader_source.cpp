@@ -57,7 +57,8 @@ std::optional<std::string> vulkan_shader_source(const std::string& hlsl) {
     // desktop driver forgives and a stricter one need not. The alignment of
     // the screen-space scale, which stays in the shared constants, is said.
     text.insert(at + anchor.size(),
-                "#define g_ScreenSpaceScale vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 320, 8)\n");
+                "#define g_ScreenSpaceScale vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 320, 8)\n"
+                "#define g_ResolvedTextureScale vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 328, 8)\n");
 
     remove_cbuffer(text, "VertexPalette");
     replace_indexing(text, "g_VertexPalette", [](const std::string& index) {

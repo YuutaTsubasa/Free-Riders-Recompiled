@@ -70,6 +70,16 @@ inline bool has_animation(const GuestMemory& memory, const LocalAvatar& avatar) 
 }
 }
 
+// Live ownership is independent of the selected character and temporary
+// autopilot mode. Only initialized local entries are safe to inspect.
+inline std::optional<uint32_t> local_rider_slot(const GuestMemory& memory, uint32_t rider) {
+    const auto racers = avatar_state_detail::local_racers(memory);
+    if (!racers || !rider || !memory.readable(rider, 108)) return std::nullopt;
+    for (uint32_t slot = 0; slot < std::min(racers->populated_count, racers->local_count); ++slot)
+        if (memory.load<uint32_t>(uint64_t(racers->begin) + slot * 4) == rider) return slot;
+    return std::nullopt;
+}
+
 inline std::optional<LocalAvatar> local_avatar_for_renderer(const GuestMemory& memory, uint32_t renderer) {
     if (!renderer) return std::nullopt;
     return avatar_state_detail::find(memory, [renderer](const LocalAvatar& avatar) {

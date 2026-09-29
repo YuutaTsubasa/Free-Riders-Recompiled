@@ -6,6 +6,7 @@
 #include "vulkan_shader_source.h"
 #include "shader_inputs.h"
 #include "shader_pack_format.h"
+#include "resolution_shader_source.h"
 #include "vertex_palette.h"
 #include <algorithm>
 #include <cstdio>
@@ -128,17 +129,17 @@ void run(const std::vector<fs::path>& arguments, const fs::path& log, const char
     }
 }
 
-// The pinned shader_common.h plus one shared constant, g_ScreenSpaceScale at
-// c20.xy (see SharedConstants::screen_space_scale). Written next to the cache.
+// Extend the pinned shader header with screen-space and resolved-texture scale
+// constants at c20.xy/zw, and helpers which preserve guest texel coordinates.
 fs::path extended_common_header() {
     const fs::path pinned = setting("SFR_SHADER_COMMON", "tools/XenosRecomp/XenosRecomp/shader_common.h");
     const fs::path extended = setting("SFR_RUNTIME_SHADER_CACHE", "out/shaders/runtime") / "shader_common_extended.h";
     const auto bytes = read_file(pinned);
-    std::string text(bytes.begin(), bytes.end());
+    std::string text = resolution_shader_header(std::string(bytes.begin(), bytes.end()));
     const std::string anchor = "uint g_conditionalRenderingIndex : packoffset(c19.w);";
     const auto at = text.find(anchor);
     if (at == std::string::npos) failed("pinned shader_common.h lacks the shared constant block");
-    text.replace(at, anchor.size(), anchor.substr(0, anchor.size() - 1) + "; \\\n    float2 g_ScreenSpaceScale : packoffset(c20.x);");
+    text.replace(at, anchor.size(), anchor.substr(0, anchor.size() - 1) + "; \\\n    float2 g_ScreenSpaceScale : packoffset(c20.x); \\\n    float2 g_ResolvedTextureScale : packoffset(c20.z);");
     // Two more push-constant addresses, for SPIR-V: the skinning palette and
     // the loop constants. They used to be read out of the shared constants
     // with a 64-bit vk::RawBufferLoad of their own, which is an indirection
@@ -296,6 +297,7 @@ const ShaderCacheEntry& runtime_shader(ShaderStage stage, std::span<const uint8_
     // shared constants (docs/vulkan-push-constants.md).
     // "v8" loads push constant addresses as uint2 for Adreno and explicitly
     // targets Vulkan 1.2 for PhysicalStorageBuffer64.
+    // "v9" preserves guest texel dimensions for scaled framebuffer resolves.
     std::snprintf(name, sizeof name, "v%u-%016llx-%zu", shader_abi_version,
                   static_cast<unsigned long long>(hash), source.size());
     const fs::path folder = setting("SFR_RUNTIME_SHADER_CACHE", "out/shaders/runtime") / name;

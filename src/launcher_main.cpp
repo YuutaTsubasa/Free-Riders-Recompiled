@@ -72,7 +72,7 @@ namespace fs = std::filesystem;
 enum Text {
     TitleLine, Subtitle,
     TabDisplay, TabSound, TabGame, TabAdvanced, TabFiles,
-    WindowSize, DesktopSize, Fullscreen, FullscreenHint, VSync, VSyncHint, RenderResolution, RenderResolutionValue,
+    WindowSize, DesktopSize, Fullscreen, FullscreenHint, VSync, VSyncHint, RenderResolution, RenderResolutionHint, NativeResolution,
     Sound, SoundHint, Volume,
     SkipMovies, SkipMoviesHint,
     Parallel, ParallelHint, VertexCache, VertexCacheHint, GpuPipeline, GpuPipelineHint, RaceEvery, RaceEveryHint,
@@ -94,7 +94,7 @@ enum Text {
     InstallFailed, InstallCancelledText, InstalledTitle, InstalledText, OpenSettings, NoShaderTools,
     GuideSelect, GuideBack, GuideQuit, GuidePlay, GuideCancel, GuideTabs,
     QuitTitle, QuitText, CancelInstallTitle, CancelInstallText, Yes, No,
-    UiSoundsLabel, UiSoundsHint, VulkanLabel, VulkanHint,
+    UiSoundsLabel, UiSoundsHint, GraphicsBackendLabel, GraphicsBackendHint,
     ShaderPack, ShaderPackHint, ChoosePack, InstallIntroFile, InstallFromImage, NoShaderPack,
     LanguageLabel, LanguageHint, LanguageSystem, LanguageEnglish, LanguageChinese, TouchLabel, TouchHint, TiltLabel, TiltHint,
     BarSettings, BarInstaller, BarInstalling, BarStopped,
@@ -116,7 +116,7 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Game", "遊戲"},
     {"Advanced", "進階"},
     {"Game files", "遊戲檔案"},
-    {"Window size", "視窗大小"},
+    {"Output window size", "輸出視窗大小"},
     {"desktop", "桌面大小"},
     {"Full screen", "全螢幕"},
     {"Borderless full screen. Alt+Enter switches while playing.", "無邊框全螢幕。遊戲中可按 Alt+Enter 切換。"},
@@ -124,7 +124,9 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Waits for the display between frames. The game never runs above 60 fps either way.",
      "每格畫面等待螢幕更新。無論是否開啟，遊戲都不會超過 60 fps。"},
     {"Rendering resolution", "繪製解析度"},
-    {"1280 x 720, scaled to the window", "1280 x 720，縮放至視窗"},
+    {"Fewer pixels can improve speed; more improve detail. Applied when the game starts.",
+     "較低解析度可提升效能，較高解析度可增加細節。遊戲啟動時套用。"},
+    {"native", "原生"},
     {"Sound", "聲音"},
     {"Plays the game's sound on the default output device.", "在預設的輸出裝置播放遊戲聲音。"},
     {"Volume", "音量"},
@@ -254,9 +256,9 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"No", "否"},
     {"Launcher sounds", "啟動器音效"},
     {"The short sounds this launcher makes when you move and choose.", "在啟動器中移動與選擇時的提示音。"},
-    {"Vulkan renderer (experimental)", "Vulkan 繪圖（實驗性）"},
-    {"Draws with Vulkan instead of Direct3D 12. Shaders are compiled for it the first time they appear.",
-     "改用 Vulkan 取代 Direct3D 12 繪圖。著色器第一次出現時會為它編譯。"},
+    {"Graphics backend", "繪圖後端"},
+    {"Choose Vulkan (default) or D3D12. Changes apply the next time you start the game.",
+     "選擇 Vulkan（預設）或 D3D12，下次啟動遊戲時生效。"},
     {"Shader pack", "著色器包"},
     {"shaders.pack: the shaders compiled on a computer (python scripts/pack_shaders.py). The game needs it where it cannot compile shaders itself, as on phones.",
      "shaders.pack：在電腦上編好的著色器（python scripts/pack_shaders.py）。在無法自行編譯著色器的地方（例如手機）需要它。"},
@@ -1478,15 +1480,46 @@ struct Launcher {
         setting_row(tr(Fullscreen), tr(FullscreenHint), switch_width, scale, [&] { toggle("##full", &settings.fullscreen); });
 #else
         (void)name;
-        (void)combo_width;
         const float switch_width = ImGui::GetFrameHeight() * 1.9f;
 #endif
         setting_row(tr(VSync), tr(VSyncHint), switch_width, scale, [&] { toggle("##vsync", &settings.vsync); });
+#ifdef _WIN32  // elsewhere the game always draws with Vulkan
+        setting_row(tr(GraphicsBackendLabel), tr(GraphicsBackendHint), combo_width, scale, [&] {
+            ImGui::SetNextItemWidth(combo_width);
+            if (ImGui::BeginCombo("##graphics_backend", settings.vulkan ? "Vulkan" : "D3D12")) {
+                for (const bool vulkan : {true, false}) {
+                    const bool chosen = settings.vulkan == vulkan;
+                    if (ImGui::Selectable(vulkan ? "Vulkan" : "D3D12", chosen)) {
+                        settings.vulkan = vulkan;
+                        ::play(sfr::UiSound::confirm);
+                    }
+                    if (chosen) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+        });
+#endif
         language_row();
-        const float value_width = ImGui::CalcTextSize(tr(RenderResolutionValue)).x;
-        setting_row(tr(RenderResolution), nullptr, value_width, scale, [&] {
-            ImGui::AlignTextToFramePadding();
-            ImGui::TextDisabled("%s", tr(RenderResolutionValue));
+        const auto render_name = [&](uint32_t percent) {
+            char text[96];
+            if (percent == 100)
+                std::snprintf(text, sizeof text, "1280 x 720  (%s)", tr(NativeResolution));
+            else std::snprintf(text, sizeof text, "%u x %u", 1280 * percent / 100, 720 * percent / 100);
+            return std::string(text);
+        };
+        setting_row(tr(RenderResolution), tr(RenderResolutionHint), combo_width, scale, [&] {
+            ImGui::SetNextItemWidth(combo_width);
+            if (ImGui::BeginCombo("##render_scale", render_name(settings.render_scale).c_str())) {
+                for (const uint32_t percent : {50u, 75u, 100u, 150u, 200u}) {
+                    const bool chosen = percent == settings.render_scale;
+                    if (ImGui::Selectable(render_name(percent).c_str(), chosen)) {
+                        settings.render_scale = percent;
+                        ::play(sfr::UiSound::confirm);
+                    }
+                    if (chosen) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
         });
     }
 
@@ -1882,9 +1915,6 @@ struct Launcher {
         }
         if (sfr::VoiceRecognizer::supported())
             setting_row(tr(VoiceLabel), tr(VoiceHint), switch_width, scale, [&] { toggle("##voice", &settings.voice); });
-#ifdef _WIN32  // elsewhere the game always draws with Vulkan
-        setting_row(tr(VulkanLabel), tr(VulkanHint), switch_width, scale, [&] { toggle("##vulkan", &settings.vulkan); });
-#endif
         const float slider_width = 220 * scale;
         setting_row(tr(RaceEvery), tr(RaceEveryHint), slider_width, scale, [&] {
             int every = int(settings.race_render_every);

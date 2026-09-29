@@ -2,6 +2,7 @@
 #include "guest_memory.h"
 #include "system_time.h"
 #include <algorithm>
+#include <cstdlib>
 #include <bit>
 #include <limits>
 #include <utility>
@@ -11,6 +12,15 @@
 #include <thread>
 namespace sfr {
 namespace {
+void place_guest_worker(NativeThread& thread, uint32_t cpu) {
+#ifdef _WIN32
+    const char* setting = std::getenv("SFR_WORKER_AFFINITY");
+    thread.set_guest_processor(cpu, !setting || *setting != '0');
+#else
+    thread.set_guest_processor(cpu);
+#endif
+}
+
 // 96 slots fill 0x73000000..0x7EFFFFFF, below the XMA registers at 0x7FEA0000.
 constexpr uint32_t slots_begin = 0x73000000, slot_stride = 0x200000, slot_count = 96;
 constexpr uint32_t stack_max = 0x100000;
@@ -254,7 +264,7 @@ uint32_t GuestThreads::create(const Request& r) {
     ++i.next_slot;
     i.initialize(record->state, r, cpu);
     record->native = std::make_unique<NativeThread>(i.factory(record->state));
-    record->native->set_guest_processor(cpu);
+    place_guest_worker(*record->native, cpu);
     i.records.push_back(std::move(record)); // Capacity was reserved before any outputs.
     try {
         check_outputs(i.memory, r);
@@ -327,7 +337,7 @@ uint32_t GuestThreads::set_affinity(uint32_t object, uint32_t mask, uint32_t pre
     if (previous_cpu >= 6 || memory.load<uint8_t>(object_cpu) != previous_cpu)
         throw RuntimeStop("thread-affinity", object, "guest processor state is inconsistent");
     const auto cpu = static_cast<uint8_t>(std::countr_zero(mask));
-    record.native->set_guest_processor(cpu);
+    place_guest_worker(*record.native, cpu);
     memory.store<uint8_t>(pcr_cpu, cpu);
     memory.store<uint8_t>(object_cpu, cpu);
     if (previous_output) memory.store<uint32_t>(previous_output, uint32_t(1) << previous_cpu);

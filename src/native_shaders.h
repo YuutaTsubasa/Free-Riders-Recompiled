@@ -21,7 +21,9 @@ public:
     bool owns(uint32_t handle) const noexcept;
     // The original CreateVertexShader/CreatePixelShader build the real guest
     // shader object; the game holds that object, and the native shader is
-    // found through it. Each handle and object is attached exactly once.
+    // found through it. Call attach only for a successfully created original
+    // object: its heap address may have belonged to a shader in an old scene.
+    // Identical immutable stages share a native handle across guest objects.
     void attach(uint32_t handle, uint32_t object);
     bool owns_object(uint32_t object) const noexcept;
     uint32_t handle_of(uint32_t object) const;
