@@ -179,11 +179,10 @@ mingw 編譯連結過。Kinect for Xbox 360（v1）已在實機上讀到骨架�
 
 ### 預設：全部交給遊戲
 
-選 Kinect 時預設就開深度與彩色串流（`SFR_KINECT_DEPTH=0` 才只開骨架），而且**不再用骨架代替
-遊戲**：傾斜不寫入（遊戲的深度檢視自己算）、蹲下與起跳不補判斷（遊戲自己的判斷器看得到深度）、
-不做水平校正（主機不會轉動骨架）。上面「比賽轉向」「蹲下」「感測器仰角」那些骨架做法，只在
-`SFR_KINECT_DEPTH=0` 時當備援；`SFR_KINECT_BODY_LEAN`、`SFR_KINECT_BODY_GESTURES`、`SFR_KINECT_LEVEL`
-設 1 或 0 可以個別強制。
+選 Kinect v1 時預設嘗試開啟深度與彩色串流。深度成功開啟時，傾斜由遊戲的深度檢視計算、
+蹲下與起跳沿用遊戲判斷器，也不做水平校正。Kinect v2 尚未提供深度串流；它與深度開啟失敗、
+`SFR_KINECT_DEPTH=0` 的情況，都會自動使用上面「比賽轉向」「蹲下」「感測器仰角」的骨架備援。
+`SFR_KINECT_BODY_LEAN`、`SFR_KINECT_BODY_GESTURES`、`SFR_KINECT_LEVEL` 設 1 或 0 可以個別強制。
 
 ### 骨架原樣交給遊戲
 
