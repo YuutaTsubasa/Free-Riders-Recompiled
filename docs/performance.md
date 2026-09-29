@@ -972,3 +972,15 @@ record_ms 包含在 draw_ms 內，不能再加一次；新舊 record_ms 也有�
 交付：上述同一 APK 已留在手機上，原 debug.env 已逐 byte 還原（skip_movies=0、
 cores）；正常啟動紀錄確認 bulk=1、verify=0，暖快取載入 2,781,269 bytes，
 畫面已回到標題頁。delivery.log / delivery.png 保存最後驗證。沒有提交 commit。
+
+## 2026-09-28：客體處理器改排到不同的實體核心（Windows）
+
+比賽的瓶頸在客體主執行緒（`holders=1:` 約 36 ms 一格，算繪路徑約 8 ms），所以速度幾乎
+取決於 CPU 單核與排程。客體的 6 個處理器原本依序對到 Windows 的邏輯處理器 0–5；有
+超執行緒的 CPU 上 0/1、2/3、4/5 是同一顆實體核心，六個客體處理器等於擠在三顆核心上
+（實測 i7-6850K：比賽 22–30 fps）。
+
+現在依 `GetLogicalProcessorInformationEx(RelationProcessorCore)` 排序：先取每顆實體核心的
+第一個硬體執行緒（效率等級高的核心，也就是混合架構的 P 核，排前面），用完才輪到各核心的
+第二個。啟動時印出一次 `NATIVE_HOST_PROCESSORS group= order=`。
+`SFR_HOST_PROCESSORS=sequential` 還原舊的順序，方便 A/B 比較。

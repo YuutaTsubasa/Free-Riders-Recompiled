@@ -83,6 +83,22 @@ class FetchPoseModelTests(unittest.TestCase):
         self.assertEqual({call.args[0] for call in fetch.call_args_list},
                          {'onnxruntime-win-x64.zip', 'rtmpose-t.zip'})
 
+    def test_linux_selection_verifies_the_linux_runtime(self):
+        with mock.patch('sys.argv', ['fetch_pose_model.py', '--platform', 'linux', '--verify-only']), \
+                mock.patch.object(fetcher, 'fetch') as fetch:
+            fetcher.main()
+        names = {call.args[0] for call in fetch.call_args_list}
+        self.assertIn('onnxruntime-linux-x64.tgz', names)
+        self.assertNotIn('onnxruntime-win-x64.zip', names)
+
+    def test_android_adds_its_runtime_and_the_notices_it_borrows(self):
+        with mock.patch('sys.argv', ['fetch_pose_model.py', '--android', '--verify-only']), \
+                mock.patch.object(fetcher, 'fetch') as fetch:
+            fetcher.main()
+        names = {call.args[0] for call in fetch.call_args_list}
+        self.assertTrue({'onnxruntime-win-x64.zip', 'onnxruntime-android.aar',
+                         'onnxruntime-linux-x64.tgz'} <= names)
+
 
 if __name__ == '__main__':
     unittest.main()

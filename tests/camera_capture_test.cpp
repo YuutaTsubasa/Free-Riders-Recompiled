@@ -78,8 +78,69 @@ void a_camera_is_found_by_its_name() {
 }
 }
 
+// Four by two, every Y different so a turned picture shows where each
+// pixel went; chroma grey except the right half, which is red.
+void yuv420_turns_and_converts() {
+    std::vector<uint8_t> y(4 * 2), u, v;
+    for (uint32_t i = 0; i < y.size(); ++i) y[i] = uint8_t(20 + i * 20);
+    const auto luma_of = [](const sfr::CameraFrame& frame, uint32_t x, uint32_t row) {
+        return frame.bgra[(size_t(row) * frame.width + x) * 4 + 1];  // grey: green follows Y
+    };
+    // Interleaved chroma (pixel stride 2): U and V of one plane, offset by one.
+    std::vector<uint8_t> interleaved{128, 128, 128, 128};
+    sfr::CameraYuvPlanes planes;
+    planes.y = y;
+    planes.y_row = 4;
+    planes.u = {interleaved.data(), 3};
+    planes.v = {interleaved.data() + 1, 3};
+    planes.uv_row = 4;
+    planes.uv_pixel = 2;
+    sfr::CameraFrame upright, turned;
+    require(sfr::convert_camera_yuv420(planes, 4, 2, 0, upright), "an unturned picture converts");
+    require(upright.width == 4 && upright.height == 2, "unturned keeps its size");
+    require(sfr::convert_camera_yuv420(planes, 4, 2, 90, turned), "a quarter turn converts");
+    require(turned.width == 2 && turned.height == 4, "a quarter turn stands the picture up");
+    // Clockwise: the source's bottom-left comes to the top-left, its
+    // top-left to the top-right.
+    require(luma_of(turned, 0, 0) == luma_of(upright, 0, 1) && luma_of(turned, 1, 0) == luma_of(upright, 0, 0),
+            "a quarter turn is clockwise");
+    require(sfr::convert_camera_yuv420(planes, 4, 2, 180, turned) && luma_of(turned, 0, 0) == luma_of(upright, 3, 1),
+            "a half turn puts the last pixel first");
+    require(sfr::convert_camera_yuv420(planes, 4, 2, 270, turned) && turned.width == 2 &&
+                luma_of(turned, 0, 0) == luma_of(upright, 3, 0),
+            "three quarters bring the top-right corner to the top-left");
+    require(!sfr::convert_camera_yuv420(planes, 4, 2, 45, turned), "only quarter turns");
+
+    // Planar chroma (pixel stride 1) with padded rows: the right half red.
+    std::vector<uint8_t> padded_y(6 * 2, 81), planar_u{128, 90, 0}, planar_v{128, 240, 0};
+    planes.y = padded_y;
+    planes.y_row = 6;
+    planes.u = planar_u;
+    planes.v = planar_v;
+    planes.uv_row = 3;
+    planes.uv_pixel = 1;
+    sfr::CameraFrame planar;
+    require(sfr::convert_camera_yuv420(planes, 4, 2, 0, planar), "planar chroma converts");
+    require(planar.bgra[(1 * 4 + 3) * 4 + 2] > planar.bgra[(1 * 4 + 0) * 4 + 2] + 100, "red on the right only");
+
+    planes.y = {padded_y.data(), 7};
+    require(!sfr::convert_camera_yuv420(planes, 4, 2, 0, planar), "a plane too short for the picture is refused");
+}
+
+void phone_pictures_stand_upright() {
+    // Most phones mount the back sensor at 90 and the front at 270; the game
+    // holds the screen turned to landscape (90 or 270).
+    require(sfr::camera_upright_rotation(90, false, 0) == 90, "a back camera held upright turns by its mounting");
+    require(sfr::camera_upright_rotation(90, false, 90) == 0, "a back camera in landscape needs no turn");
+    require(sfr::camera_upright_rotation(90, false, 270) == 180, "the other landscape is upside down");
+    require(sfr::camera_upright_rotation(270, true, 90) == 0, "a front camera in landscape needs no turn");
+    require(sfr::camera_upright_rotation(270, true, 270) == 180, "a front camera the other way round is a half turn");
+}
+
 int main() {
     try {
+        yuv420_turns_and_converts();
+        phone_pictures_stand_upright();
         bgra_is_copied_with_opaque_alpha();
         yuy2_and_nv12_become_colours();
         sizes_that_cannot_hold_a_picture_are_refused();

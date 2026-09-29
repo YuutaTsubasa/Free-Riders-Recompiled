@@ -7,13 +7,14 @@
 
 ## 三種設定
 
-launcher 的「攝影機」（`SFR_CAMERA`）有三種：
+launcher 的「攝影機」（`SFR_CAMERA`）有三種 webcam 設定，Windows 另有實體 Kinect：
 
 | 設定 | `SFR_CAMERA` | 畫面 | 誰在操作 |
 | --- | --- | --- | --- |
 | 關閉 | 空白 | 不開攝影機 | 手把 |
 | 畫面 | `picture` | 開攝影機，交給遊戲顯示 | 手把 |
 | 體感 | `motion` | 開攝影機 | 攝影機姿勢，手把操作時優先接手 |
+| Kinect | `kinect` | 實體 Kinect（Windows） | Kinect 追蹤到的身體，見 [實體 Kinect](kinect-sensor.md) |
 
 「體感」保留原本的手把與鍵盤操作。每次提交完整骨架時只選一個來源，
 避免攝影機與手把同時拉動同一位玩家；接手規則見下方「兩位玩家」。
@@ -123,7 +124,13 @@ python scripts/fetch_pose_model.py                 # 預設：MediaPipe 3D + ONN
 python scripts/fetch_pose_model.py --verify-only   # 只核對所選下載檔，不下載、不解壓
 python scripts/fetch_pose_model.py --model rtmpose  # 選用舊的 RTMPose 2D 模型
 python scripts/fetch_pose_model.py --model rtmpose --verify-only
+python scripts/fetch_pose_model.py --platform linux  # Linux x64 的 ONNX Runtime（同樣放在 tools/onnx/onnxruntime）
+python scripts/fetch_pose_model.py --android         # 另外下載 Android（arm64-v8a、x86_64）的 ONNX Runtime
 ```
+
+Linux 的遊戲執行檔以 `$ORIGIN` 為 RUNPATH，會先找自己旁邊的 `libonnxruntime.so.1`。
+Android 的 runtime 解壓到 `tools/onnx/onnxruntime-android`（AAR 內沒有授權檔，授權與
+ThirdPartyNotices 取自同版本的 Linux 套件），CMake 依 ABI 連結。
 
 預設下載 `tools/onnx/mediapipe/` 內的
 `pose_estimation_mediapipe_2023mar.onnx`、`person_detection_mediapipe_2023mar.onnx`
@@ -218,5 +225,25 @@ Camera 持續動作以主機單調時鐘計時；遊戲計時欄位實際可為 
 
 - 攝影機的畫面還沒接到遊戲自己的 NUI 影像串流（`82768C40`），所以「畫面」
   目前只是把相機打開。
-- Android 還沒有 Camera2 的擷取實作。
-- 真正的 Kinect 感測器（走 USB）沒有做，手邊沒有機器可以試。
+- 真正的 Kinect 感測器見 [實體 Kinect](kinect-sensor.md)（Windows，`SFR_CAMERA=kinect`）。
+- Android 的遊戲還沒把姿勢模型打包進 APK（手機鏡頭的擷取已經有了，見下方）。
+
+## Android：手機自己的鏡頭
+
+[`camera_capture_android.cpp`](../src/camera_capture_android.cpp) 用 NDK 的 Camera2
+與 AImageReader 讀 YUV_420_888（最接近 640x480 的尺寸）：
+
+- **清單**：系統列出的每一顆鏡頭，名字是「Back camera 0 (78°)」這樣：朝向、系統的
+  鏡頭編號、長邊的視角（由感測器寬度與最短焦距算出）。視角越大，玩家可以站得越近。
+  有些手機把超廣角藏在「邏輯鏡頭」裡、不單獨列給 App，那種手機只選得到主鏡頭。
+- **權限**：第一次開鏡頭時才用 SDL 跳出系統的相機權限詢問（launcher 的「測試」
+  按鈕就會觸發），從不開攝影機的玩家不會被問。
+- **轉正**：手機感測器是橫著裝的，依 `SENSOR_ORIENTATION`、鏡頭朝向與螢幕目前的
+  轉向算出順時針要轉幾度（[`camera_upright_rotation`](../src/camera_capture.h)），
+  轉換時一併轉好（`convert_camera_yuv420`）。Camera2 給的前鏡頭畫面本身不是鏡像的。
+
+**建議的擺法**：手機接電視（USB-C 轉 HDMI 或投影），放在電視旁、背面超廣角朝向玩家；
+或把手機立在電視旁用前鏡頭。
+
+轉換、旋轉與轉正角度有單元測試（`camera_capture` CTest），CI 的 Android launcher
+建置會編譯它；實機還沒試過。

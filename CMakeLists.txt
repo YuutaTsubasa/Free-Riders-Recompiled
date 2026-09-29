@@ -83,6 +83,10 @@ add_test(NAME nui_device_status COMMAND sfr_nui_device_status_test)
 add_executable(sfr_nui_skeleton_test tests/nui_skeleton_test.cpp src/nui_skeleton.cpp src/nui_device_status.cpp src/guest_memory.cpp)
 target_include_directories(sfr_nui_skeleton_test PRIVATE src)
 add_test(NAME nui_skeleton COMMAND sfr_nui_skeleton_test)
+add_executable(sfr_kinect_sensor_test tests/kinect_sensor_test.cpp src/kinect_sensor.cpp src/kinect_sensor_none.cpp src/nui_skeleton.cpp src/guest_memory.cpp
+    src/kinect_preview.cpp)
+target_include_directories(sfr_kinect_sensor_test PRIVATE src)
+add_test(NAME kinect_sensor COMMAND sfr_kinect_sensor_test)
 add_executable(sfr_nui_menu_players_test tests/nui_menu_players_test.cpp src/nui_skeleton.cpp src/guest_memory.cpp)
 target_include_directories(sfr_nui_menu_players_test PRIVATE src)
 add_test(NAME nui_menu_players COMMAND sfr_nui_menu_players_test)
@@ -209,20 +213,49 @@ add_executable(sfr_touch_controls_test tests/touch_controls_test.cpp src/touch_c
 target_include_directories(sfr_touch_controls_test PRIVATE src)
 add_test(NAME touch_controls COMMAND sfr_touch_controls_test)
 # The webcam standing in for the Kinect sensor: Media Foundation on Windows,
-# nothing yet elsewhere (the setting then has no effect).
+# V4L2 on Linux, the NDK's Camera2 on Android (the phone's own cameras),
+# nothing elsewhere (the setting then has no effect).
+set(SFR_CAMERA_LIBRARIES)
 if(WIN32)
     set(SFR_CAMERA_CAPTURE src/camera_capture.cpp src/camera_capture_win32.cpp)
+elseif(ANDROID)
+    set(SFR_CAMERA_CAPTURE src/camera_capture.cpp src/camera_capture_android.cpp)
+    set(SFR_CAMERA_LIBRARIES SDL2::SDL2 camera2ndk mediandk)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(SFR_CAMERA_CAPTURE src/camera_capture.cpp src/camera_capture_v4l2.cpp)
 else()
     set(SFR_CAMERA_CAPTURE src/camera_capture.cpp src/camera_capture_none.cpp)
 endif()
+if(WIN32)
+    set(SFR_KINECT_SENSOR src/kinect_sensor_win32.cpp src/kinect_v2_win32.cpp)
+    set(SFR_VOICE src/voice_commands.cpp src/voice_commands_win32.cpp)
+else()
+    set(SFR_KINECT_SENSOR src/kinect_sensor_none.cpp)
+    set(SFR_VOICE src/voice_commands.cpp src/voice_commands_none.cpp)
+endif()
+# The Kinect's voice commands, through the host's speech recognizer.
+add_executable(sfr_voice_commands_test tests/voice_commands_test.cpp src/voice_commands.cpp src/voice_commands_none.cpp)
+target_include_directories(sfr_voice_commands_test PRIVATE src)
+add_test(NAME voice_commands COMMAND sfr_voice_commands_test)
+# Checking a host's Kinect without starting the game (no test: it needs one).
+add_executable(sfr_kinect_probe tests/kinect_probe.cpp src/kinect_sensor.cpp ${SFR_KINECT_SENSOR})
+target_include_directories(sfr_kinect_probe PRIVATE src)
 add_executable(sfr_camera_capture_test tests/camera_capture_test.cpp src/camera_capture.cpp)
 target_include_directories(sfr_camera_capture_test PRIVATE src)
 add_test(NAME camera_capture COMMAND sfr_camera_capture_test)
+# Exercise the Android backend on the host with a controllable NDK boundary.
+if(NOT ANDROID)
+    add_executable(sfr_camera_android_lifecycle_test tests/camera_android_lifecycle_test.cpp
+        src/camera_capture.cpp src/camera_capture_android.cpp)
+    target_include_directories(sfr_camera_android_lifecycle_test PRIVATE src tests/android_camera_mock)
+    target_link_libraries(sfr_camera_android_lifecycle_test PRIVATE Threads::Threads)
+    add_test(NAME camera_android_lifecycle COMMAND sfr_camera_android_lifecycle_test)
+    set_tests_properties(camera_android_lifecycle PROPERTIES TIMEOUT 15)
+endif()
 # Checking a host's camera without starting the game (no test: it needs one).
 add_executable(sfr_camera_probe tests/camera_probe.cpp ${SFR_CAMERA_CAPTURE})
 target_include_directories(sfr_camera_probe PRIVATE src)
+target_link_libraries(sfr_camera_probe PRIVATE ${SFR_CAMERA_LIBRARIES})
 function(sfr_copy_onnx_dlls target)
     if(TARGET sfr_onnx_dlls)
         add_dependencies(${target} sfr_onnx_dlls)
@@ -231,18 +264,27 @@ endfunction()
 # Finding a body in a camera picture: ONNX Runtime and the pinned MediaPipe
 # models (tools/onnx, fetched by scripts/fetch_pose_model.py). Without them
 # the camera can still give the title a picture, but not drive the player.
-set(SFR_ONNX_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/tools/onnx/onnxruntime" CACHE PATH "Host ONNX Runtime installation")
-if(WIN32)
-    set(SFR_ONNX_LIBRARY "${SFR_ONNX_ROOT}/lib/onnxruntime.lib")
+# Android takes the runtime fetched for each ABI (--android).
+if(ANDROID)
+    set(SFR_ONNX_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/tools/onnx/onnxruntime-android")
+    set(SFR_ONNX_LIBRARY "${SFR_ONNX_ROOT}/lib/${ANDROID_ABI}/libonnxruntime.so")
 else()
-    set(SFR_ONNX_LIBRARY "${SFR_ONNX_ROOT}/lib/libonnxruntime.so")
+    set(SFR_ONNX_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/tools/onnx/onnxruntime" CACHE PATH "Host ONNX Runtime installation")
+    if(WIN32)
+        set(SFR_ONNX_LIBRARY "${SFR_ONNX_ROOT}/lib/onnxruntime.lib")
+    else()
+        set(SFR_ONNX_LIBRARY "${SFR_ONNX_ROOT}/lib/libonnxruntime.so")
+    endif()
 endif()
-# The fetched runtime is a host library, not an Android NDK build.
-if(NOT ANDROID AND EXISTS "${SFR_ONNX_ROOT}/include/onnxruntime_cxx_api.h" AND EXISTS "${SFR_ONNX_LIBRARY}")
+if(EXISTS "${SFR_ONNX_ROOT}/include/onnxruntime_cxx_api.h" AND EXISTS "${SFR_ONNX_LIBRARY}")
     set(SFR_POSE_AVAILABLE ON)
     add_library(sfr_onnxruntime INTERFACE)
     target_include_directories(sfr_onnxruntime INTERFACE "${SFR_ONNX_ROOT}/include")
     target_link_libraries(sfr_onnxruntime INTERFACE "${SFR_ONNX_LIBRARY}")
+    if(NOT WIN32 AND NOT ANDROID)
+        # A release keeps libonnxruntime.so.1 beside the program.
+        target_link_options(sfr_onnxruntime INTERFACE "LINKER:-rpath,$ORIGIN")
+    endif()
     # Windows finds a DLL beside the program before System32, which has an
     # older onnxruntime.dll of its own (Windows ML's): without the fetched
     # one beside it, the program loads that one and fails to start.
@@ -278,8 +320,16 @@ if(SFR_POSE_AVAILABLE)
     # Running the model over a camera picture, or a BMP, without the game.
     add_executable(sfr_pose_probe tests/pose_probe.cpp src/pose_skeleton.cpp ${SFR_POSE_SOURCES} ${SFR_CAMERA_CAPTURE})
     target_include_directories(sfr_pose_probe PRIVATE src)
-    target_link_libraries(sfr_pose_probe PRIVATE sfr_onnxruntime)
+    target_link_libraries(sfr_pose_probe PRIVATE sfr_onnxruntime ${SFR_CAMERA_LIBRARIES})
     sfr_copy_onnx_dlls(sfr_pose_probe)
+endif()
+# CI builds every available Android camera consumer, including pose when its
+# optional runtime is present, so launcher-only builds cannot hide missing deps.
+if(ANDROID)
+    add_custom_target(sfr_android_camera_probes DEPENDS sfr_camera_probe)
+    if(TARGET sfr_pose_probe)
+        add_dependencies(sfr_android_camera_probes sfr_pose_probe)
+    endif()
 endif()
 # Reading a model out of a binary glTF (a .vrm is one).
 add_executable(sfr_image_decode_test tests/image_decode_test.cpp src/image_decode.cpp)
@@ -338,6 +388,9 @@ add_test(NAME native_audio COMMAND sfr_native_audio_test)
 add_executable(sfr_launcher_settings_test tests/launcher_settings_test.cpp src/launcher_settings.cpp)
 target_include_directories(sfr_launcher_settings_test PRIVATE src)
 add_test(NAME launcher_settings COMMAND sfr_launcher_settings_test)
+add_executable(sfr_text_wrap_test tests/text_wrap_test.cpp src/text_wrap.cpp)
+target_include_directories(sfr_text_wrap_test PRIVATE src)
+add_test(NAME text_wrap COMMAND sfr_text_wrap_test)
 add_executable(sfr_camera_debug_test tests/camera_debug_test.cpp src/camera_debug.cpp)
 target_include_directories(sfr_camera_debug_test PRIVATE src)
 add_test(NAME camera_debug COMMAND sfr_camera_debug_test)
@@ -370,12 +423,13 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui/imgui.cpp")
     set(SFR_IMGUI "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui")
     # The launcher lists the host cameras and controllers.
     set(SFR_LAUNCHER_SOURCES src/launcher_main.cpp src/launcher_settings.cpp src/input_bindings.cpp src/pad_devices.cpp src/pad_assignment.cpp src/launcher_sound.cpp src/launcher_art.cpp src/sony_gamepad.cpp
-        ${SFR_CAMERA_CAPTURE}
+        ${SFR_CAMERA_CAPTURE} src/kinect_sensor.cpp ${SFR_KINECT_SENSOR} ${SFR_VOICE}
+        src/kinect_preview.cpp src/kinect_preview_window.cpp src/camera_debug.cpp src/text_wrap.cpp
         ${SFR_IMGUI}/imgui.cpp ${SFR_IMGUI}/imgui_draw.cpp ${SFR_IMGUI}/imgui_tables.cpp ${SFR_IMGUI}/imgui_widgets.cpp)
     if(WIN32)
         add_executable(sfr_launcher WIN32 ${SFR_LAUNCHER_SOURCES} src/launcher_platform_win32.cpp
             ${SFR_IMGUI}/backends/imgui_impl_win32.cpp ${SFR_IMGUI}/backends/imgui_impl_dx11.cpp)
-        target_link_libraries(sfr_launcher PRIVATE sfr_installer winmm imm32 d3d11 dxgi d3dcompiler hid setupapi ole32 shell32 xinput)
+        target_link_libraries(sfr_launcher PRIVATE sfr_installer winmm imm32 d3d11 dxgi d3dcompiler hid setupapi ole32 shell32 xinput gdi32)
         set_target_properties(sfr_launcher PROPERTIES OUTPUT_NAME FreeRidersRecompiled)
     else()
         set(SFR_LAUNCHER_SOURCES ${SFR_LAUNCHER_SOURCES} src/launcher_platform_sdl.cpp
@@ -384,7 +438,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui/imgui.cpp")
             # liblauncher.so, run by LauncherActivity (android/).
             add_library(sfr_launcher SHARED ${SFR_LAUNCHER_SOURCES})
             set_target_properties(sfr_launcher PROPERTIES OUTPUT_NAME launcher)
-            target_link_libraries(sfr_launcher PRIVATE android log)
+            target_link_libraries(sfr_launcher PRIVATE android log ${SFR_CAMERA_LIBRARIES})
         else()
             add_executable(sfr_launcher ${SFR_LAUNCHER_SOURCES})
             set_target_properties(sfr_launcher PROPERTIES OUTPUT_NAME FreeRidersRecompiled)
@@ -695,7 +749,7 @@ if(SFR_BUILD_DIAGNOSTIC)
         add_library(sfr_cpu_diagnostic SHARED src/android_main.cpp)
         set_target_properties(sfr_cpu_diagnostic PROPERTIES OUTPUT_NAME main)
         set_source_files_properties(src/diagnostic_main.cpp PROPERTIES COMPILE_DEFINITIONS main=sfr_game_main)
-        target_link_libraries(sfr_cpu_diagnostic PRIVATE android log)
+        target_link_libraries(sfr_cpu_diagnostic PRIVATE android log ${SFR_CAMERA_LIBRARIES})
         # The NDK hardens every translation unit by default. The guest code is
         # thirty thousand generated functions with large frames that only ever
         # touch the checked guest memory, so the canaries and the fortified
@@ -712,6 +766,8 @@ if(SFR_BUILD_DIAGNOSTIC)
     # The webcam standing in for the sensor, and the body it finds.
     target_sources(sfr_cpu_diagnostic PRIVATE src/camera_player.cpp src/camera_debug.cpp src/camera_debug_window.cpp src/pose_skeleton.cpp src/pose_smoothing.cpp
                    ${SFR_CAMERA_CAPTURE} ${SFR_POSE_SOURCES})
+    # A real Kinect (SFR_CAMERA=kinect), through the Kinect for Windows runtime.
+    target_sources(sfr_cpu_diagnostic PRIVATE src/kinect_sensor.cpp ${SFR_KINECT_SENSOR} ${SFR_VOICE})
     if(SFR_POSE_AVAILABLE)
         target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_onnxruntime)
         sfr_copy_onnx_dlls(sfr_cpu_diagnostic)

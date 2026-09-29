@@ -58,9 +58,10 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         else if (key == "vulkan") read_flag(value, settings.vulkan);
         else if (key == "touch_controls") read_flag(value, settings.touch_controls);
         else if (key == "tilt") read_flag(value, settings.tilt);
-        else if (key == "camera" && (value == "off" || value == "picture" || value == "motion")) settings.camera = value;
+        else if (key == "camera" && (value == "off" || value == "picture" || value == "motion" || value == "kinect")) settings.camera = value;
         else if (key == "camera_device" && value.size() <= 128) settings.camera_device = value;
         else if (key == "camera_mirror") read_flag(value, settings.camera_mirror);
+        else if (key == "voice") read_flag(value, settings.voice);
         else if (key == "camera_debug") read_flag(value, settings.camera_debug);
         else if (key == "avatar_model") settings.avatar_model = utf8_path(value);
         else if (key == "player1_device" && (value == "both" || value == "gamepad" || value == "keyboard"))
@@ -101,6 +102,7 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "camera=" << s.camera << '\n'
         << "camera_device=" << s.camera_device << '\n'
         << "camera_mirror=" << s.camera_mirror << '\n'
+        << "voice=" << s.voice << '\n'
         << "camera_debug=" << s.camera_debug << '\n'
         << "avatar_model=" << path_utf8(s.avatar_model) << '\n'
         << "player1_device=" << s.player1_device << '\n'
@@ -174,10 +176,12 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         {"SFR_VSYNC", s.vsync ? "1" : "0"},
         {"SFR_GRAPHICS", s.vulkan ? "vulkan" : ""},
         // "off" leaves the camera alone; "picture" opens it for the image the
-        // title shows; "motion" also drives the Kinect player's body with it.
+        // title shows; "motion" also drives the Kinect player's body with it;
+        // "kinect" is a real sensor tracking the players (kinect_sensor.h).
         {"SFR_CAMERA", s.camera == "off" ? "" : s.camera},
         {"SFR_CAMERA_DEVICE", s.camera_device},
         {"SFR_CAMERA_MIRROR", s.camera_mirror ? "1" : "0"},
+        {"SFR_VOICE", s.voice ? "1" : ""},
         {"SFR_AVATAR", s.avatar_model.empty() ? "0" : "1"},
         {"SFR_AVATAR_MODEL", path_utf8(resolved_avatar_model(s, directory))},
 #ifdef _WIN32

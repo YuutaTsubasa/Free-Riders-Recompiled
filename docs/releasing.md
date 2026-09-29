@@ -8,9 +8,10 @@ anything from `private/` or `game/`. GitHub Actions cannot make a release: it
 has no disc, and must never be given one.
 
 What a release does contain, beside the launcher: the recompiled game
-(`sfr_cpu_diagnostic`), the `shaders.pack` translated so far, the licences
-and, on Windows, the shader tools that translate shaders the pack lacks and
-the D3D12 Agility SDK runtime (`D3D12\D3D12Core.dll`, which Windows 10 needs).
+(`sfr_cpu_diagnostic`), the `shaders.pack` translated so far, the licences,
+on Windows the shader tools that translate shaders the pack lacks and the
+D3D12 Agility SDK runtime (`D3D12\D3D12Core.dll`, which Windows 10 needs), and with
+`--camera` the ONNX Runtime and MediaPipe models of the webcam's motion input.
 
 ## 1. Build
 
@@ -55,7 +56,9 @@ The Windows `--camera` bundle also requires both MediaPipe models, ONNX
 Runtime DLLs, the model licence and the runtime's licence/third-party notices.
 Verify the pinned downloads with `python scripts/fetch_pose_model.py --verify-only`.
 Linux and Android prebuilt releases currently omit camera motion inference;
-state this in the release notes. Update `VERSION_NAME` and monotonically
+state this in the release notes. (`fetch_pose_model.py --platform linux` and
+`--android` fetch their runtimes, and `build_android.sh` puts the MediaPipe
+models in the APK when they are there, but neither is packaged for release yet.) Update `VERSION_NAME` and monotonically
 increase `VERSION_CODE` in `scripts/package_android.py` before packaging.
 
 Desktop archives and the Android licences ZIP include `VRM-Avatar.md`.

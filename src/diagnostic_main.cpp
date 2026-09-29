@@ -1249,6 +1249,20 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         ctx.r3.u64 = 0;
         return;
     }
+    if (std::string_view(name) == "__imp__XamShowNuiControllerRequiredUI") {
+        // The system's "pick up a controller" notice, which a Kinect race
+        // asked for on its worker thread after a pad button (seen with a real
+        // Kinect: r3 0, r4 0xff). There is no system UI here and the pad is
+        // already in hand: report it shown and closed (0), as the
+        // troubleshooter above.
+        static uint32_t shown = 0;
+        if (shown++ < 8)
+            std::cerr << "NUI_CONTROLLER_REQUIRED_UI r3=0x" << std::hex << ctx.r3.u32 << " r4=0x" << ctx.r4.u32
+                      << " r5=0x" << ctx.r5.u32 << " lr=0x" << ctx.lr << std::dec << " count=" << shown
+                      << " result=0 backend=closed\n";
+        ctx.r3.u64 = 0;
+        return;
+    }
     if (address == 0x82ACB43C && std::string_view(name) == "__imp__XamNuiGetDeviceStatus") {
         if (!active_memory) throw RuntimeStop("memory-context", address, "guest memory is not initialized");
         write_nui_device_status(*active_memory, ctx.r3.u32, emulated_nui_device_status);

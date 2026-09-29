@@ -5,6 +5,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -12,6 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -33,15 +35,31 @@ uint64_t allowed_process_mask() {
     return process;
 }
 
+// Guest processors take the allowed processors in host_processor_order.
 uint64_t selected_mask(uint64_t allowed, uint32_t guest_cpu) {
-    uint32_t count = 0;
-    for (uint64_t bits = allowed; bits; bits &= bits - 1) ++count;
-    uint32_t selected = guest_cpu % count;
-    for (uint32_t bit = 0; bit < 64; ++bit) {
-        const uint64_t mask = uint64_t{1} << bit;
-        if ((allowed & mask) != 0 && selected-- == 0) return mask;
+    const std::vector<uint32_t> order = sfr::host_processor_order(allowed, 0);
+    require(!order.empty());
+    return uint64_t{1} << order[guest_cpu % order.size()];
+}
+
+// The physical core of each logical processor of group 0.
+std::vector<int> core_of_processors() {
+    std::vector<int> core(64, -1);
+    DWORD length = 0;
+    GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &length);
+    std::vector<unsigned char> buffer(length);
+    auto* first = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buffer.data());
+    require(GetLogicalProcessorInformationEx(RelationProcessorCore, first, &length) != FALSE);
+    int index = 0;
+    for (DWORD offset = 0; offset < length; ++index) {
+        const auto* entry = reinterpret_cast<const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buffer.data() + offset);
+        for (WORD g = 0; g < entry->Processor.GroupCount; ++g)
+            if (entry->Processor.GroupMask[g].Group == 0)
+                for (uint32_t bit = 0; bit < 64; ++bit)
+                    if (uint64_t(entry->Processor.GroupMask[g].Mask) >> bit & 1) core[bit] = index;
+        offset += entry->Size;
     }
-    throw std::runtime_error("allowed processor mask unexpectedly had no selected bit");
+    return core;
 }
 
 uint64_t queried_thread_affinity(uint32_t native_id) {
@@ -182,6 +200,27 @@ void unsupported_priority_is_rejected_without_mutation() {
     require(thread.priority() == initial);
 }
 
+// Every allowed processor appears once, and the first ones are each on a
+// physical core of their own: guest processors do not share a core while
+// another core is free.
+void host_processor_order_spreads_over_physical_cores() {
+    const uint64_t allowed = allowed_process_mask();
+    const std::vector<uint32_t> order = sfr::host_processor_order(allowed, 0);
+    uint64_t seen = 0;
+    for (const uint32_t bit : order) {
+        require(bit < 64 && (allowed >> bit & 1));
+        require(!(seen >> bit & 1));
+        seen |= uint64_t{1} << bit;
+    }
+    require(seen == allowed);
+    const std::vector<int> core = core_of_processors();
+    std::vector<int> cores;
+    for (uint32_t bit = 0; bit < 64; ++bit)
+        if ((allowed >> bit & 1) && std::find(cores.begin(), cores.end(), core[bit]) == cores.end()) cores.push_back(core[bit]);
+    for (size_t i = 0; i < cores.size() && i < order.size(); ++i)
+        for (size_t j = 0; j < i; ++j) require(core[order[i]] != core[order[j]]);
+}
+
 void six_guest_processors_map_to_allowed_native_processors() {
     const uint64_t allowed = allowed_process_mask();
     for (uint32_t guest_cpu = 0; guest_cpu < 6; ++guest_cpu) {
@@ -278,6 +317,7 @@ int main() {
         empty_entry_is_rejected();
         priority_changes_are_native_and_return_the_previous_value();
         unsupported_priority_is_rejected_without_mutation();
+        host_processor_order_spreads_over_physical_cores();
         six_guest_processors_map_to_allowed_native_processors();
         invalid_guest_processor_is_rejected_without_mutation();
         parked_cancel_joins_without_running_entry_and_keeps_handle_open();

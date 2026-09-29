@@ -65,11 +65,17 @@ for abi in "${abis[@]}"; do
     done
     triple=$([ "$abi" = arm64-v8a ] && echo aarch64-linux-android || echo x86_64-linux-android)
     cp "$(ls -d "$ndk"/toolchains/llvm/prebuilt/*/sysroot/usr/lib/$triple/libc++_shared.so | head -1)" "$jni/$abi/"
+    # ONNX Runtime for the camera's motion input (fetch_pose_model.py --android).
+    onnx="$root/tools/onnx/onnxruntime-android/lib/$abi/libonnxruntime.so"
+    if [ -f "$onnx" ]; then cp "$onnx" "$jni/$abi/"; else rm -f "$jni/$abi/libonnxruntime.so"; fi
 done
 if [ "$apk" = 1 ]; then
     # Only the ABIs built now (jniLibs may hold older ones).
     abi_options=()
     for abi in "${abis[@]}"; do abi_options+=(--abi "$abi"); done
     [ -z "$pack" ] || abi_options+=(--pack "$pack")
+    # The MediaPipe models for the camera's motion input (fetch_pose_model.py).
+    pose="$root/tools/onnx/mediapipe"
+    [ ! -f "$pose/pose_estimation_mediapipe_2023mar.onnx" ] || abi_options+=(--pose "$(native "$pose")")
     ANDROID_HOME="$ANDROID_HOME" python "$root/scripts/package_android.py" --min-sdk "$api" "${abi_options[@]}"
 fi

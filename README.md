@@ -47,10 +47,18 @@ What works today:
 - Playing without Kinect: the Kinect is emulated. Buttons stand in for the
   voice commands the menus understand, and the pad drives the body a race
   reads (leaning, jumping, kick dash, grabbing, tricks).
+- A real Kinect on Windows (Xbox 360 / Kinect for Windows v1 with the Kinect
+  for Windows SDK 1.8, or Kinect v2 with SDK 2.0): the sensor's skeletons go to the game, which
+  reads them with its own gesture detectors, as on the console; or a webcam
+  standing in for it ([docs/kinect-sensor.md](docs/kinect-sensor.md),
+  [docs/camera-input.md](docs/camera-input.md)). Played through races with an
+  Xbox 360 Kinect (SDK 1.8) on Windows 10; the Kinect v2 path is not yet tried
+  on hardware.
 - A launcher that installs the game from your disc image and keeps its
   settings, in English or Traditional Chinese, on every platform.
 - Linux (Vulkan, SDL2), and Android (arm64-v8a) with on-screen touch controls
-  and tilt steering.
+  and tilt steering; the phone's own camera can stand in for the webcam
+  (Android camera capture, not yet tried on a device).
 - Optional webcam motion input for 1P on Windows, with estimated 3D body
   joints, controller handoff and a separate skeleton debug window.
 - Experimental custom VRM Avatar models, selected in the launcher, with

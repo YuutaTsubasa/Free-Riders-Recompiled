@@ -27,8 +27,13 @@ Free Riders Recompiled 是以靜態重編譯製作的 Xbox 360 版《Sonic Free 
 - Direct3D 12 與 Vulkan 繪圖，著色器在遊戲遇到時即時轉換；音效；紀錄的儲存與讀取。
 - 不需要 Kinect：Kinect 由程式模擬。按鍵代替選單能聽懂的語音指令，手把驅動比賽讀取的
   身體動作（傾斜、跳躍、踢地加速、抓取、特技）。
+- Windows 上可接實體 Kinect（Xbox 360 版／Kinect for Windows 第一代需安裝 Kinect for Windows
+  SDK 1.8；Xbox One 版 Kinect v2 需安裝 SDK 2.0）：感測器的骨架直接交給遊戲，由遊戲自己的手勢判斷器讀取，和主機上一樣；也可以用 webcam
+  代替（[docs/kinect-sensor.md](docs/kinect-sensor.md)、[docs/camera-input.md](docs/camera-input.md)）。
+  已在 Windows 10 上用 Xbox 360 版 Kinect（SDK 1.8）實際跑完比賽；Kinect v2 尚未實機測試。
 - 各平台都有啟動器：從光碟映像檔安裝遊戲並保存設定，支援英文與繁體中文（右上角可切換）。
-- Linux（Vulkan、SDL2），以及 Android（arm64-v8a）的觸控按鈕與傾斜轉彎。
+- Linux（Vulkan、SDL2），以及 Android（arm64-v8a）的觸控按鈕與傾斜轉彎；手機本身的鏡頭也能當作 webcam
+  （Android 鏡頭擷取，尚未實機測試）。
 - Windows 可選擇使用 webcam 控制 1P：估算 3D 骨架、手把自動接手，以及獨立骨架 Debug 視窗。
 - 實驗性 VRM Avatar 模型：可在啟動器選擇自己的模型，搭配遊戲動畫與手持道具。
 

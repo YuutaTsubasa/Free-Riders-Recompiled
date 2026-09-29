@@ -38,7 +38,11 @@ jobs:
       - uses: actions/upload-artifact@v6
         with:
           name: launcher-windows
-          path: out/build/host/FreeRidersRecompiled.exe
+          # The launcher, and the probe that checks a real Kinect without the
+          # game (docs/kinect-sensor.md).
+          path: |
+            out/build/host/FreeRidersRecompiled.exe
+            out/build/host/sfr_kinect_probe.exe
 
   linux:
     name: Linux
@@ -99,7 +103,7 @@ jobs:
         run: ctest --test-dir out/build/macos -j 4 --output-on-failure -E "^(native_graphics|native_shaders|native_presentation|native_raster_state|native_blend_control|guest_graphics|guest_render_state|guest_blend_request|guest_sampler_filter|guest_texture_binding|ansi_string|async_completion_primitives|critical_section|guest_async_files|guest_memory|guest_threads|hardware_info|load_halfword_update|memory_statistics|multibyte_unicode|native_modules|native_sync_objects|nui_device_status|pending_guest_write|physical_memory|resource_coherency|store_float_single_update|store_halfword_update|system_config|system_time|thread_local_storage|vector_memory|video_mode|virtual_memory|xex_module)$"
 
   android:
-    name: Android (launcher)
+    name: Android (launcher and camera probes)
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
@@ -114,6 +118,11 @@ jobs:
         run: |
           export SFR_ANDROID_NDK="$ANDROID_NDK_LATEST_HOME"
           scripts/build_android.sh --launcher-only --abi arm64-v8a --abi x86_64
+      - name: Build the camera probes for both ABIs
+        run: |
+          for abi in arm64-v8a x86_64; do
+            cmake --build "out/build/android-$abi" --target sfr_android_camera_probes
+          done
       - uses: actions/upload-artifact@v6
         with:
           name: android-launcher-libraries

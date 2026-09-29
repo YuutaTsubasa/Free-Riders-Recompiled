@@ -5,10 +5,16 @@
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cstdlib>
 #include <exception>
+#include <iostream>
+#include <mutex>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 namespace sfr {
 
@@ -17,6 +23,58 @@ namespace {
 [[noreturn]] void throw_host_error(const char* operation, DWORD error) {
     throw RuntimeStop("thread-host", error,
         std::string(operation) + " failed with Windows error " + std::to_string(error));
+}
+
+// The allowed logical processors of one group in the order guest processors
+// take them: the first logical processor of every physical core, fastest
+// cores (highest efficiency class) first, and only then the second hardware
+// thread of each core. Taking bits in order instead put the six guest
+// processors on three cores, two hardware threads each, on a machine with
+// simultaneous multithreading (logical 0 and 1 are one core). The ordering
+// is a host choice only: each guest processor still gets one processor of
+// its own. SFR_HOST_PROCESSORS=sequential restores the plain bit order.
+std::vector<uint32_t> processors_by_core(uint64_t allowed, uint16_t group) {
+    std::vector<uint32_t> sequential;
+    for (uint32_t bit = 0; bit < 64; ++bit)
+        if (allowed >> bit & 1) sequential.push_back(bit);
+    const char* setting = std::getenv("SFR_HOST_PROCESSORS");
+    if (setting && std::string_view(setting) == "sequential") return sequential;
+    DWORD length = 0;
+    GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &length);
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || length == 0) return sequential;
+    std::vector<unsigned char> buffer(length);
+    auto* first = reinterpret_cast<SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buffer.data());
+    if (!GetLogicalProcessorInformationEx(RelationProcessorCore, first, &length)) return sequential;
+    struct Core { BYTE efficiency; std::vector<uint32_t> threads; };
+    std::vector<Core> cores;
+    for (DWORD offset = 0; offset < length;) {
+        const auto* entry = reinterpret_cast<const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX*>(buffer.data() + offset);
+        if (entry->Size == 0) break;
+        if (entry->Relationship == RelationProcessorCore) {
+            Core core{entry->Processor.EfficiencyClass, {}};
+            for (WORD i = 0; i < entry->Processor.GroupCount; ++i) {
+                const GROUP_AFFINITY& mask = entry->Processor.GroupMask[i];
+                if (mask.Group != group) continue;
+                for (uint32_t bit = 0; bit < 64; ++bit)
+                    if ((uint64_t(mask.Mask) & allowed) >> bit & 1) core.threads.push_back(bit);
+            }
+            if (!core.threads.empty()) cores.push_back(std::move(core));
+        }
+        offset += entry->Size;
+    }
+    std::stable_sort(cores.begin(), cores.end(),
+                     [](const Core& a, const Core& b) { return a.efficiency > b.efficiency; });
+    std::vector<uint32_t> ordered;
+    for (size_t thread = 0; ordered.size() < sequential.size(); ++thread) {
+        const size_t before = ordered.size();
+        for (const Core& core : cores)
+            if (thread < core.threads.size()) ordered.push_back(core.threads[thread]);
+        if (ordered.size() == before) break;
+    }
+    // Anything the core list missed keeps its place at the end.
+    for (const uint32_t bit : sequential)
+        if (std::find(ordered.begin(), ordered.end(), bit) == ordered.end()) ordered.push_back(bit);
+    return ordered;
 }
 
 }
@@ -173,25 +231,35 @@ int32_t NativeThread::set_priority(int32_t host_relative) {
     return previous;
 }
 
+std::vector<uint32_t> host_processor_order(uint64_t allowed, uint16_t group) {
+    return processors_by_core(allowed, group);
+}
+
 uint64_t NativeThread::set_guest_processor(uint32_t guest_cpu) {
     if (guest_cpu >= 6)
         throw RuntimeStop("thread-host", guest_cpu, "guest processor index must be below 6");
     (void)affinity_mask();
 
-    uint32_t processor_count = 0;
-    for (uint64_t bits = impl_->allowed_affinity; bits; bits &= bits - 1) ++processor_count;
-    if (processor_count == 0)
-        throw RuntimeStop("thread-host", 0, "cached process affinity mask is empty");
-
-    uint32_t selected_index = guest_cpu % processor_count;
-    uint64_t selected_mask = 0;
-    for (uint32_t bit = 0; bit < 64; ++bit) {
-        const uint64_t candidate = uint64_t{1} << bit;
-        if ((impl_->allowed_affinity & candidate) != 0 && selected_index-- == 0) {
-            selected_mask = candidate;
-            break;
+    static std::mutex order_lock;
+    static uint64_t ordered_for = 0;
+    static uint16_t ordered_group = 0;
+    static std::vector<uint32_t> ordered;
+    std::vector<uint32_t> processors;
+    {
+        std::lock_guard guard(order_lock);
+        if (ordered.empty() || ordered_for != impl_->allowed_affinity || ordered_group != impl_->processor_group) {
+            ordered = host_processor_order(impl_->allowed_affinity, impl_->processor_group);
+            ordered_for = impl_->allowed_affinity;
+            ordered_group = impl_->processor_group;
+            std::cerr << "NATIVE_HOST_PROCESSORS group=" << impl_->processor_group << " order=";
+            for (size_t i = 0; i < ordered.size(); ++i) std::cerr << (i ? "," : "") << ordered[i];
+            std::cerr << '\n';
         }
+        processors = ordered;
     }
+    if (processors.empty())
+        throw RuntimeStop("thread-host", 0, "cached process affinity mask is empty");
+    const uint64_t selected_mask = uint64_t{1} << processors[guest_cpu % processors.size()];
     if (selected_mask == 0)
         throw RuntimeStop("thread-host", guest_cpu, "could not select an allowed host processor");
     if (SetThreadAffinityMask(impl_->handle, static_cast<DWORD_PTR>(selected_mask)) == 0)

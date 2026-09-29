@@ -31,7 +31,54 @@ public class LauncherActivity extends SDLActivity {
     @Override
     protected void onCreate(Bundle state) {
         copyBundledShaderPack();
+        copyBundledPoseModel();
         super.onCreate(state);
+    }
+
+    // The camera's motion input reads its models from pose/ beside the game's
+    // files (src/pose_estimator_onnx.cpp: the MediaPipe pose and person
+    // detection models). An APK that carries them (scripts/package_android.py
+    // --pose) puts them there once per install.
+    private void copyBundledPoseModel() {
+        File directory = getExternalFilesDir(null);
+        if (directory == null) return;
+        File folder = new File(directory, "pose");
+        File marker = new File(folder, "models.bundled");
+        String version;
+        String[] models;
+        try {
+            version = Long.toString(getPackageManager().getPackageInfo(getPackageName(), 0).lastUpdateTime);
+            models = getAssets().list("pose");
+        } catch (Exception error) {
+            return;
+        }
+        if (models == null || models.length == 0) return;  // an APK without them: the pad stays in charge
+        String copied = "";
+        try (InputStream in = new FileInputStream(marker)) {
+            byte[] text = new byte[64];
+            int length = Math.max(in.read(text), 0);
+            copied = new String(text, 0, length, "UTF-8");
+        } catch (Exception missing) {
+        }
+        if (copied.equals(version)) return;
+        if (!folder.isDirectory() && !folder.mkdirs()) return;
+        for (String name : models) {
+            File model = new File(folder, name);
+            File partial = new File(folder, name + ".partial");
+            try (InputStream in = getAssets().open("pose/" + name); OutputStream out = new FileOutputStream(partial)) {
+                byte[] buffer = new byte[1 << 16];
+                for (int read; (read = in.read(buffer)) > 0; ) out.write(buffer, 0, read);
+            } catch (Exception error) {
+                partial.delete();
+                return;
+            }
+            model.delete();
+            if (!partial.renameTo(model)) return;
+        }
+        try (OutputStream out = new FileOutputStream(marker)) {
+            out.write(version.getBytes("UTF-8"));
+        } catch (Exception ignored) {
+        }
     }
 
     // A release APK carries shaders.pack (scripts/package_android.py --pack).
