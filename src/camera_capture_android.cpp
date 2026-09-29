@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <iostream>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -114,42 +115,33 @@ uint32_t display_rotation() {
     }
 }
 
-void device_disconnected(void*, ACameraDevice*) {
-    std::cerr << "NATIVE_CAMERA android=disconnected\n";
-}
-void device_error(void*, ACameraDevice*, int error) {
-    std::cerr << "NATIVE_CAMERA android=error code=" << error << '\n';
-}
-void session_state(void*, ACameraCaptureSession*) {}
-
 class AndroidCamera final : public CameraCapture {
 public:
     ~AndroidCamera() override {
-        if (session_) {
-            ACameraCaptureSession_stopRepeating(session_);
-            ACameraCaptureSession_close(session_);
-        }
-        if (request_) ACaptureRequest_free(request_);
-        if (target_) ACameraOutputTarget_free(target_);
-        if (container_ && output_) ACaptureSessionOutputContainer_remove(container_, output_);
-        if (output_) ACaptureSessionOutput_free(output_);
-        if (container_) ACaptureSessionOutputContainer_free(container_);
-        if (device_) ACameraDevice_close(device_);
-        if (reader_) AImageReader_delete(reader_);
+        close_connection();
         if (manager_) ACameraManager_delete(manager_);
     }
 
     bool start(ACameraManager* manager, const CameraInfo& camera, uint32_t width, uint32_t height) {
         manager_ = manager;
+        camera_ = camera;
+        width_ = width;
+        height_ = height;
         front_ = camera.front;
         orientation_ = uint32_t(camera.orientation);
-        const auto [reader_width, reader_height] = nearest_size(manager_, camera.id, width, height);
+        return open_connection();
+    }
+
+private:
+    bool open_connection() {
+        lost_.store(false);
+        const auto [reader_width, reader_height] = nearest_size(manager_, camera_.id, width_, height_);
         if (AImageReader_new(reader_width, reader_height, AIMAGE_FORMAT_YUV_420_888, 3, &reader_) != AMEDIA_OK)
             return fail("reader");
         ANativeWindow* window = nullptr;
         if (AImageReader_getWindow(reader_, &window) != AMEDIA_OK || !window) return fail("window");
         device_callbacks_ = {this, device_disconnected, device_error};
-        if (ACameraManager_openCamera(manager_, camera.id.c_str(), &device_callbacks_, &device_) != ACAMERA_OK)
+        if (ACameraManager_openCamera(manager_, camera_.id.c_str(), &device_callbacks_, &device_) != ACAMERA_OK)
             return fail("open");
         if (ACaptureSessionOutputContainer_create(&container_) != ACAMERA_OK ||
             ACaptureSessionOutput_create(window, &output_) != ACAMERA_OK ||
@@ -158,17 +150,35 @@ public:
             ACameraDevice_createCaptureRequest(device_, TEMPLATE_PREVIEW, &request_) != ACAMERA_OK ||
             ACaptureRequest_addTarget(request_, target_) != ACAMERA_OK)
             return fail("request");
-        session_callbacks_ = {this, session_state, session_state, session_state};
-        if (ACameraDevice_createCaptureSession(device_, container_, &session_callbacks_, &session_) != ACAMERA_OK)
-            return fail("session");
-        if (ACameraCaptureSession_setRepeatingRequest(session_, nullptr, 1, &request_, nullptr) != ACAMERA_OK)
-            return fail("repeat");
-        std::cerr << "NATIVE_CAMERA android=open camera=\"" << camera.name << "\" size=" << reader_width << 'x'
+        session_callbacks_ = {this, session_closed, session_state, session_state};
+        {
+            std::lock_guard lock(session_mutex_);
+            if (ACameraDevice_createCaptureSession(device_, container_, &session_callbacks_, &session_) != ACAMERA_OK)
+                return fail("session");
+            if (lost_.load() || !session_ ||
+                ACameraCaptureSession_setRepeatingRequest(session_, nullptr, 1, &request_, nullptr) != ACAMERA_OK)
+                return fail("repeat");
+        }
+        std::cerr << "NATIVE_CAMERA android=open camera=\"" << camera_.name << "\" size=" << reader_width << 'x'
                   << reader_height << " orientation=" << orientation_ << '\n';
         return true;
     }
 
+public:
     bool next(CameraFrame& frame) override {
+        if (lost_.load() || !device_) {
+            // Device close synchronously stops capture and drains callbacks;
+            // keep their context and request alive until it returns.
+            close_connection();
+            const uint64_t now = SDL_GetTicks64();
+            if (now < retry_at_) return false;
+            retry_at_ = now + 1000;
+            if (!open_connection()) {
+                close_connection();
+                return false;
+            }
+        }
+        if (lost_.load()) return false;
         AImage* image = nullptr;
         // Non-blocking: no new picture leaves the last one in place.
         if (AImageReader_acquireLatestImage(reader_, &image) != AMEDIA_OK || !image) return false;
@@ -205,6 +215,44 @@ public:
     }
 
 private:
+    static void device_disconnected(void* context, ACameraDevice*) {
+        static_cast<AndroidCamera*>(context)->lost_.store(true);
+        std::cerr << "NATIVE_CAMERA android=disconnected\n";
+    }
+    static void device_error(void* context, ACameraDevice*, int error) {
+        static_cast<AndroidCamera*>(context)->lost_.store(true);
+        std::cerr << "NATIVE_CAMERA android=error code=" << error << '\n';
+    }
+    static void session_closed(void* context, ACameraCaptureSession*) {
+        auto* camera = static_cast<AndroidCamera*>(context);
+        camera->lost_.store(true);
+        std::lock_guard lock(camera->session_mutex_);
+        camera->session_ = nullptr;
+    }
+    static void session_state(void*, ACameraCaptureSession*) {}
+
+    void close_connection() {
+        lost_.store(true);
+        // Device close stops capture and drains its callback looper. Do this
+        // before touching the session: onClosed may already be in flight and
+        // its handle is invalid as soon as that callback is invoked.
+        if (device_) ACameraDevice_close(std::exchange(device_, nullptr));
+        {
+            std::lock_guard lock(session_mutex_);
+            // NDK permits session_close after device_close. Release the app's
+            // session reference if onClosed did not already clear it. No
+            // asynchronous callback can now race this call; onClosed can run
+            // synchronously inside it (hence the recursive mutex).
+            if (session_) ACameraCaptureSession_close(std::exchange(session_, nullptr));
+        }
+        if (request_) ACaptureRequest_free(std::exchange(request_, nullptr));
+        if (target_) ACameraOutputTarget_free(std::exchange(target_, nullptr));
+        if (container_ && output_) ACaptureSessionOutputContainer_remove(container_, output_);
+        if (output_) ACaptureSessionOutput_free(std::exchange(output_, nullptr));
+        if (container_) ACaptureSessionOutputContainer_free(std::exchange(container_, nullptr));
+        if (reader_) AImageReader_delete(std::exchange(reader_, nullptr));
+    }
+
     bool fail(const char* step) {
         std::cerr << "NATIVE_CAMERA android=failed step=" << step << '\n';
         return false;
@@ -218,8 +266,13 @@ private:
     ACameraOutputTarget* target_ = nullptr;
     ACaptureRequest* request_ = nullptr;
     ACameraCaptureSession* session_ = nullptr;
+    std::recursive_mutex session_mutex_;
     ACameraDevice_StateCallbacks device_callbacks_{};
     ACameraCaptureSession_stateCallbacks session_callbacks_{};
+    std::atomic<bool> lost_{false};
+    CameraInfo camera_;
+    uint32_t width_ = 0, height_ = 0;
+    uint64_t retry_at_ = 0;
     bool front_ = false;
     uint32_t orientation_ = 0;
     uint64_t number_ = 0;
