@@ -51,8 +51,9 @@ std::string kinect_open_failure(const std::string& v1, const std::string& v2) {
 }
 
 void kinect_v2_body(const std::array<KinectV2Joint, kinect_v2_joint_count>& joints, uint32_t tracking_id,
-                    KinectBody& body) {
+                    uint32_t sensor_index, KinectBody& body) {
     body.tracking_id = tracking_id;
+    body.sensor_index = sensor_index;
     for (uint32_t j = 0; j < nui_joint_count; ++j) {
         // v1's shoulder centre is v2's spine-shoulder, not its neck.
         const KinectV2Joint& joint = joints[j == nui_joint::shoulder_center ? kinect_v2_joint::spine_shoulder : j];
@@ -61,6 +62,21 @@ void kinect_v2_body(const std::array<KinectV2Joint, kinect_v2_joint_count>& join
     }
     // v2 reports no centre of its own; v1's sits near the hips.
     body.position = joints[kinect_v2_joint::spine_base].position;
+}
+
+bool kinect_expire_frame(KinectFrame& frame, std::chrono::steady_clock::time_point now) {
+    if (frame.bodies.empty()) return false;
+    if (frame.number && frame.captured_at != std::chrono::steady_clock::time_point{} &&
+        now >= frame.captured_at && now - frame.captured_at <= std::chrono::milliseconds(500)) return false;
+    frame.bodies.clear();
+    return true;
+}
+
+void kinect_prune_identities(const KinectFrame& frame, std::unordered_map<uint32_t, uint32_t>& identities) {
+    std::erase_if(identities, [&](const auto& entry) {
+        return std::none_of(frame.bodies.begin(), frame.bodies.end(),
+                           [&](const KinectBody& body) { return body.tracking_id == entry.first; });
+    });
 }
 
 std::array<const KinectBody*, KinectPlayerSlots::players> KinectPlayerSlots::assign(const KinectFrame& frame) {
@@ -87,6 +103,13 @@ std::array<const KinectBody*, KinectPlayerSlots::players> KinectPlayerSlots::ass
             }
     }
     return chosen;
+}
+
+void KinectPlayerSlots::retain(KinectFrame& frame) {
+    assign(frame);
+    std::erase_if(frame.bodies, [&](const KinectBody& body) {
+        return !body.tracking_id || std::find(tracking_.begin(), tracking_.end(), body.tracking_id) == tracking_.end();
+    });
 }
 
 }

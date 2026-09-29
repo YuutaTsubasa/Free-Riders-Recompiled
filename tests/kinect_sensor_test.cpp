@@ -2,11 +2,14 @@
 #include "kinect_sensor.h"
 #include "kinect_preview.h"
 #include "pose_skeleton.h"
+#include <algorithm>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 
 static void require(bool value, const char* message) {
     if (!value) throw std::runtime_error(message);
@@ -56,6 +59,43 @@ int main() {
         players = slots.assign(frame);
         require(!players[0] && !players[1], "a skeleton without a tracking id is not a player");
 
+        {
+            sfr::KinectPlayerSlots tracked;
+            sfr::KinectFrame many;
+            const auto six_bodies = [] {
+                std::vector<sfr::KinectBody> bodies;
+                for (uint32_t index = 0; index < 6; ++index) {
+                    auto candidate = body(100 + index, float(index));
+                    candidate.sensor_index = index;
+                    bodies.push_back(candidate);
+                }
+                return bodies;
+            };
+            many.bodies = six_bodies();
+            tracked.retain(many);
+            require(many.bodies.size() == 2 && many.bodies[0].tracking_id == 100 && many.bodies[1].tracking_id == 101,
+                    "at most two fully tracked v2 bodies reach the title's two-entry body list");
+            many.bodies = six_bodies();
+            std::reverse(many.bodies.begin(), many.bodies.end());
+            tracked.retain(many);
+            require(many.bodies.size() == 2 && many.bodies[0].tracking_id == 101 && many.bodies[1].tracking_id == 100,
+                    "source reordering does not replace either selected player");
+            many.bodies = six_bodies();
+            many.bodies.erase(many.bodies.begin());
+            tracked.retain(many);
+            require(many.bodies.size() == 2 && many.bodies[0].tracking_id == 101 && many.bodies[1].tracking_id == 102,
+                    "a tracked newcomer replaces only the selected player who leaves");
+            require(many.bodies[0].sensor_index == 1 && many.bodies[1].sensor_index == 2,
+                    "selected bodies preserve their original sensor slots and depth player indices");
+            many.bodies.clear();
+            tracked.retain(many);
+            many.bodies = {body(200, 0.0f)};
+            many.bodies[0].sensor_index = 5;
+            tracked.retain(many);
+            require(many.bodies.size() == 1 && many.bodies[0].tracking_id == 200 && many.bodies[0].sensor_index == 5,
+                    "empty tracking releases selection and a later body keeps its sensor slot");
+        }
+
         // The frame the title reads: the sensor's floor, its joint states,
         // and the body's own centre.
         constexpr uint32_t address = 0x10000;
@@ -92,8 +132,12 @@ int main() {
         v2[sfr::nui_joint::hand_left].state = 1;
         v2[sfr::kinect_v2_joint::spine_shoulder].state = 7;
         sfr::KinectBody from_v2;
-        sfr::kinect_v2_body(v2, 42, from_v2);
+        sfr::kinect_v2_body(v2, 42, 2, from_v2);
         require(from_v2.tracking_id == 42, "a v2 body keeps its tracking id");
+        sfr::KinectBody second_v2;
+        sfr::kinect_v2_body(v2, 43, 5, second_v2);
+        require(from_v2.sensor_index == 2 && second_v2.sensor_index == 5,
+                "two v2 bodies retain their distinct source slots instead of overwriting slot zero");
         require(from_v2.joints[sfr::nui_joint::shoulder_center][0] == float(sfr::kinect_v2_joint::spine_shoulder),
                 "v1's shoulder centre comes from v2's spine-shoulder");
         require(from_v2.joint_states[sfr::nui_joint::shoulder_center] == sfr::nui_tracked,
@@ -103,6 +147,58 @@ int main() {
                 require(from_v2.joints[j][0] == float(j), "the other joints keep their places");
         require(from_v2.joint_states[sfr::nui_joint::hand_left] == 1, "an inferred v2 joint stays inferred");
         require(from_v2.position[0] == float(sfr::kinect_v2_joint::spine_base), "the body's centre is its spine base");
+
+        {
+            // A skeleton-only backend must not claim either image stream.
+            struct SkeletonOnly final : sfr::KinectSensor {
+                bool next(sfr::KinectFrame&) override { return false; }
+                const char* model() const override { return "skeleton only"; }
+            } sensor;
+            require(!sensor.has_depth_stream() && !sensor.has_colour_stream(),
+                    "image capabilities default to absent for skeleton-only backends");
+        }
+        {
+            using Clock = std::chrono::steady_clock;
+            using namespace std::chrono_literals;
+            const auto acquired = Clock::time_point{} + 10s;
+            sfr::KinectFrame sample;
+            require(!sfr::kinect_expire_frame(sample, acquired) && sample.bodies.empty(),
+                    "startup without a frame stays empty");
+            sample.number = 1;
+            sample.captured_at = acquired;
+            sample.bodies = {body(77, 0.3f)};
+            std::unordered_map<uint32_t, uint32_t> identities{{77, 0}};
+            require(!sfr::kinect_expire_frame(sample, acquired + 500ms) && sample.bodies.size() == 1,
+                    "a short sensor stall keeps its last real body within the grace period");
+            require(sfr::kinect_expire_frame(sample, acquired + 501ms) && sample.bodies.empty(),
+                    "a disconnected sensor expires its tracked body after 500 ms");
+            sfr::kinect_prune_identities(sample, identities);
+            require(identities.empty(), "expiring tracking also discards the old enrollment");
+            require(sample.captured_at == acquired && sample.number == 1,
+                    "expiry never stamps the cached sample as newly captured");
+            require(!sfr::kinect_expire_frame(sample, acquired + 900ms),
+                    "an expired frame is not repeatedly reported as a tracking change");
+
+            // The consumer may first see a sample long after its worker acquired it.
+            sample.number = 2;
+            sample.bodies = {body(88, -0.2f)};
+            sample.captured_at = acquired + 1s;
+            require(sfr::kinect_expire_frame(sample, acquired + 1600ms) && sample.bodies.empty(),
+                    "a delayed consumer uses acquisition time rather than receipt time");
+            sample.number = 3;
+            sample.captured_at = acquired + 2s;
+            sample.bodies = {body(99, 0.1f)};
+            require(!sfr::kinect_expire_frame(sample, acquired + 2010ms) && sample.bodies[0].tracking_id == 99,
+                    "a new captured frame recovers tracking after disconnect expiry");
+            sample.number = 4;
+            sample.captured_at = acquired + 2100ms;
+            sample.bodies.clear();
+            identities = {{99, 0}};
+            require(!sfr::kinect_expire_frame(sample, acquired + 2110ms) && sample.bodies.empty(),
+                    "a fresh empty frame clears tracking immediately without a grace period");
+            sfr::kinect_prune_identities(sample, identities);
+            require(identities.empty(), "fresh empty frames clear identities too");
+        }
 
         // The preview's projections: a point straight ahead is the image's
         // centre, and up is towards the top.

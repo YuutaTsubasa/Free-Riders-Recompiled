@@ -174,16 +174,19 @@ private:
                 continue;
             }
             IBody* bodies[body_count] = {};
+            const auto captured_at = std::chrono::steady_clock::now();
             const bool read = SUCCEEDED(body_frame->GetAndRefreshBodyData(body_count, bodies));
             Vector4 floor{};
             if (FAILED(body_frame->get_FloorClipPlane(&floor))) floor = {};
             release(body_frame);
             if (!read) continue;
+            frame.captured_at = captured_at;
             frame.floor_plane = {floor.x, floor.y, floor.z, floor.w};
             // v2 gives no gravity of its own; the floor's normal is up.
             frame.gravity = {floor.x, floor.y, floor.z};
             frame.bodies.clear();
-            for (IBody*& body : bodies) {
+            for (uint32_t index = 0; index < body_count; ++index) {
+                IBody*& body = bodies[index];
                 BOOLEAN is_tracked = FALSE;
                 UINT64 id = 0;
                 Joint joints[kinect_v2_joint_count] = {};
@@ -196,7 +199,7 @@ private:
                     // The player slots key on 32 bits; v2's ids count up
                     // from a large base, so the low half stays distinct.
                     const uint32_t short_id = uint32_t(id) ? uint32_t(id) : uint32_t(id >> 32) | 1u;
-                    kinect_v2_body(mapped, short_id, frame.bodies.emplace_back());
+                    kinect_v2_body(mapped, short_id, index, frame.bodies.emplace_back());
                 }
                 release(body);
             }

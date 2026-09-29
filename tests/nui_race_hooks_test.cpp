@@ -38,6 +38,7 @@ uint64_t camera_pose_generation() { return 0; }
 uint64_t camera_motion_clock_ns() { return 0; }
 std::optional<GamepadState> second_player_pad() { return std::nullopt; }
 GamepadState nui_gamepad() { return harness::input; }
+bool nui_sensor_has_depth() { return false; }
 bool nui_body_from_sensor() { return harness::sensor_body; }
 uint64_t kinect_frame_generation() { return harness::kinect_sequence; }
 void enter_function_observed(PPCContext&, const char*, uint32_t) {}
@@ -247,6 +248,9 @@ void run() {
     // A real Kinect tracks the player: the race reads the title's own body
     // record and detectors, whatever the pad does.
     sensor_body = true;
+    memory().store<uint32_t>(original+768,original+900);
+    memory().store<uint32_t>(original+900,2);
+    memory().store<uint32_t>(original+904,42);
     m.store<uint32_t>(race_flag_global, 1);
     frame(sfr::gamepad_button::b, -32768);
     require(m.load<uint32_t>(box + 0x78) == original, "a sensor's body must stay the title's record");

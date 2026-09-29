@@ -42,6 +42,11 @@
 
 ## Kinect v2（Xbox One 版）
 
+v2 目前只提供骨架，會自動啟用骨架轉向與蹲跳，不必額外設定 `SFR_KINECT_DEPTH=0`。
+1P／2P 各自校正站姿與計時；遊戲最多接收兩位玩家，追蹤身分與原始感測器槽位保持穩定。
+`SFR_KINECT_BODY_LEAN`、`SFR_KINECT_BODY_GESTURES` 仍可用 `1`／`0` 強制開關。
+這條路徑有自動測試，尚未完成 Kinect v2 實機遊玩驗證。
+
 1. 需要 **Kinect v2**（Xbox One 版需另購 *Kinect Adapter for Windows*，副廠也可）與
    電腦上的 **USB 3.0** 連接埠（Intel 或 Renesas 晶片的控制器較穩，部分 AMD 控制器有相容性問題）。
 2. 安裝 [Kinect for Windows SDK 2.0](https://www.microsoft.com/download/details.aspx?id=44561)，
@@ -78,6 +83,9 @@ COM 介面依 SDK 2.0 的 `Kinect.h` 宣告到用得到的最後一個方法為�
 | `initialize-0x…` | 感測器在但無法啟動：被別的程式佔用，或 Xbox 360 版只裝了 Runtime |
 | `unsupported-platform` | 非 Windows（見下方） |
 
+感測器啟動後若超過 500 ms 沒有新骨架，會清除追蹤與玩家身分，不會持續送出凍結姿勢。
+此時仍保留實體感測器模式；收到新框架後恢復追蹤，不會自動改送手把模擬骨架。
+
 ## 做了什麼
 
 - [`kinect_sensor_win32.cpp`](../src/kinect_sensor_win32.cpp)：執行時才 `LoadLibrary`
@@ -91,30 +99,29 @@ COM 介面依 SDK 2.0 的 `Kinect.h` 宣告到用得到的最後一個方法為�
   都會印出 `level=`（轉掉的度數），`NATIVE_KINECT_BODY` 另有髖、肩、頭、雙手的位置與雙手的
   追蹤狀態（2 追蹤到、1 推測、0 沒有）。
 - 比賽轉向（[`nui_race_hooks.cpp`](../src/nui_race_hooks.cpp)）：遊戲的傾斜判斷讀身體紀錄
-  +640／+644，在主機上是深度影像裡玩家左右兩側的像素數，不是關節。這裡沒有深度影像送進
-  遊戲，所以 1P 的傾斜改由骨架算：沿用 webcam 體感的做法，比賽開始先保持站姿約 0.6 秒
+  +640／+644，在主機上是深度影像裡玩家左右兩側的像素數，不是關節。成功開啟深度串流時保留
+  原版判定；v2、停用深度或深度開啟失敗時，1P／2P 各自由骨架計算：比賽開始先保持站姿約 0.6 秒
   校正，之後以肩膀相對髖部的左右傾角換成那一對數值（`NUI_RACE_SENSOR_LEAN active=1`，
   `CAMERA_RACE_CALIBRATION ready=1`；`SFR_CAMERA_RACE_TRACE=1` 每 30 格印出 `lean=`）。
   傾角約 4° 起算、30° 算傾到底（`lean=±1`）；傾到底時寫入遊戲可讀的最大值 3.5（兩數相差
   4.5 倍），`SFR_KINECT_LEAN_SCALE`（0.1–3.5）可調小。原本傾到底只給 1，彎到極限也只轉一點點。
-  其他動作仍由遊戲自己的判斷器讀骨架，但**蹲下**（連帶蓄力與起跳）原版判斷器從來不成立，
-  它要的應該是主機上深度影像給的資料。所以原版判斷「沒有」時，改看 1P 骨架：髖部比校正時的
+  其他動作仍由遊戲自己的判斷器讀骨架。沒有深度串流時，**蹲下**（連帶蓄力與起跳）
+  原版判斷「沒有」時，改看該玩家的骨架：髖部比校正時的
   站姿低一段距離持續 0.12 秒算蹲下，再明顯站起來算起跳（同 webcam 體感）。感應器放高時常
   看不到腳，猜出來的腳踝會讓「髖部離腳踝多高」忽大忽小，所以 Kinect 改量髖部比校正時低了
   多少（地板在校正時固定）：預設降 0.15 公尺算蹲下，`SFR_KINECT_CROUCH_DEPTH`（0.05–0.35）可調。
   `SFR_KINECT_BODY_GESTURES=0` 關掉；`SFR_CAMERA_RACE_TRACE=1` 時每次結果改變印出
   `KINECT_GESTURE address= original= result=`（822C8778 蹲、822CB840 蓄力、822C9050 跳、
-  822CA6B0 Side）。2P 的傾斜與蹲跳還沒接。
-- [`KinectPlayerSlots`](../src/kinect_sensor.h)：感測器最多完整追蹤兩個人。
-  每個人只要還被追蹤就留在原本的欄位（遊戲以欄位與 tracking id 1／2 認人，
-  第 1 位是登入的設定檔），新走進來的人補空的欄位。
+  822CA6B0 Side）。1P／2P 分別校正，追蹤身分改變時會清除舊的動作狀態。
+- [`KinectPlayerSlots`](../src/kinect_sensor.h)：遊戲最多接收兩副完整骨架。
+  每個人只要還被追蹤就保留其身分與感測器槽位，新走進來的人補上離開者的位置。
 - [`nui_hooks.cpp`](../src/nui_hooks.cpp) 的 `NuiSkeletonGetNextFrame`：
   `SFR_CAMERA=kinect` 時，框架表頭的地板平面與重力方向用感測器的，兩個欄位寫入
   真實的關節、每個關節的追蹤狀態（追蹤／推測）與身體中心。沒有人站在前面就是空框架，
   遊戲會像在主機上一樣請玩家站到感測器前。
 - [`nui_race_hooks.cpp`](../src/nui_race_hooks.cpp)：有實體感測器時
-  （`nui_body_from_sensor()`），比賽**不**換掉身體紀錄、**不**覆寫手勢判斷器，
-  也**不**跳過「On your Gear!」的身體量測——全部交還給遊戲原本的程式。
+  （`nui_body_from_sensor()`），比賽保留原生身體紀錄與「On your Gear!」身體量測。
+  深度串流可用時沿用原版判定，否則套用上述骨架轉向與蹲跳補充判定。
 - **語音指令**：launcher 的「語音指令」（`SFR_VOICE=1`，Windows）用 Windows 語音辨識（SAPI）
   聽預設麥克風。Kinect 的麥克風陣列在 Windows 上就是一個錄音裝置，設成預設就會用它。
   [`voice_commands.cpp`](../src/voice_commands.cpp) 列出聽的詞：遊戲詞彙的 start、ok、back、

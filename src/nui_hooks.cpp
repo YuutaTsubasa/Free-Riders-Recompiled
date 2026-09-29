@@ -51,9 +51,12 @@ bool camera_has_joints = false;
 // Its skeletons go to the title untouched, and the race reads them through
 // the title's own detectors instead of the pad (nui_body_from_sensor).
 std::unique_ptr<sfr::KinectSensor> kinect;
+std::once_flag kinect_start_once;
 std::atomic<bool> sensor_body{false};
+std::atomic<bool> sensor_depth{false};
 std::atomic<uint64_t> kinect_generation{0};  // kinect_frame_generation
 sfr::KinectFrame kinect_frame;
+sfr::KinectPlayerSlots kinect_players;
 // A real Kinect's skeletons reach the title as the sensor gives them: in the
 // sensor's own six slots, under its own tracking ids, so the depth image's
 // player index (slot + 1) marks the same people and a person who steps back
@@ -75,6 +78,21 @@ sfr::NuiPadEdges edges;
 uint16_t pressed=0;  // buttons newly pressed at the last input update
 uint32_t frame_number = 0;
 const auto started = std::chrono::steady_clock::now();
+
+// Image streams can be requested before the first skeleton. Resolve the
+// backend at either entry point so stream-open success reflects its cameras.
+void start_kinect() {
+    std::call_once(kinect_start_once,[] {
+        std::string why;
+        kinect=sfr::KinectSensor::open(&why);
+        sensor_depth.store(kinect && kinect->has_depth_stream(),std::memory_order_relaxed);
+        sensor_body.store(kinect!=nullptr,std::memory_order_relaxed);
+        std::cerr << "NATIVE_KINECT started=" << (kinect?1:0);
+        if(kinect) std::cerr << " model=" << kinect->model() << " depth=" << kinect->has_depth_stream();
+        else std::cerr << " reason=" << why << " fallback=pad";
+        std::cerr << '\n';
+    });
+}
 }
 
 namespace sfr {
@@ -125,6 +143,7 @@ uint64_t input_frames=0;
 
 
 bool sfr::nui_body_from_sensor() { return sensor_body.load(std::memory_order_relaxed); }
+bool sfr::nui_sensor_has_depth() { return sensor_depth.load(std::memory_order_relaxed); }
 uint64_t sfr::kinect_frame_generation() { return kinect_generation.load(std::memory_order_relaxed); }
 
 // NuiInitialize(flags, ?)
@@ -216,7 +235,9 @@ SFR_HOOK(sub_82768C40) {
     sfr::enter_function(ctx,"sub_82768C40",0x82768C40);
     const uint32_t type=ctx.r3.u32,resolution=ctx.r4.u32,flags=ctx.r5.u32,limit=ctx.r6.u32,event=ctx.r7.u32,
                    handle=ctx.r8.u32;
-    const bool ours=kinect_images_wanted() && handle && ((type==0 && resolution==1) || (type==1 && resolution==2));
+    if(kinect_images_wanted()) start_kinect();
+    const bool ours=kinect && handle && ((type==0 && resolution==1 && kinect->has_depth_stream()) ||
+                                         (type==1 && resolution==2 && kinect->has_colour_stream()));
     if(ours) {
         auto& memory=*sfr::active_memory;
         ImageStream& stream=image_streams[type];
@@ -374,23 +395,15 @@ SFR_HOOK(sub_827707B0) {
     // [83E52F8C] is the race flag: the hands leave the menu cursor pose.
     const bool racing=sfr::active_memory->load<uint32_t>(0x83E52F8C) != 0;
     sfr::set_touch_racing(racing);
-    if(!camera_started) {
+    const char* const choice=std::getenv("SFR_CAMERA");
+    if(choice && std::string_view(choice)=="kinect") {
+        // Every Kinect caller waits for initialization, including one that
+        // arrives while an image-stream request is opening the backend.
+        start_kinect();
+    } else if(!camera_started) {
         camera_started=true;
-        const char* const choice=std::getenv("SFR_CAMERA");
-        if(choice && std::string_view(choice)=="kinect") {
-            std::string why;
-            kinect=sfr::KinectSensor::open(&why);
-            sensor_body.store(kinect!=nullptr);
-            // Without a sensor the pad's emulated player carries on, so a
-            // Kinect left unplugged does not leave the title unplayable.
-            std::cerr << "NATIVE_KINECT started=" << (kinect?1:0);
-            if(kinect) std::cerr << " model=" << kinect->model();
-            else std::cerr << " reason=" << why << " fallback=pad";
-            std::cerr << '\n';
-        } else {
-            camera_debug=sfr::CameraDebugWindow::start();
-            camera_player=sfr::CameraPlayer::start();
-        }
+        camera_debug=sfr::CameraDebugWindow::start();
+        camera_player=sfr::CameraPlayer::start();
     }
     if(kinect) {
         // Both players are whoever the sensor sees; nobody in front of it is
@@ -398,20 +411,25 @@ SFR_HOOK(sub_827707B0) {
         // console (asking the player to step in). The pads keep their voice
         // commands and menu buttons (the input update below).
         auto& memory=*sfr::active_memory;
-        const auto elapsed=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-started);
         // Turned once per new frame: the last one is kept as it was turned.
-        if(kinect->next(kinect_frame)) {
+        const bool received=kinect->next(kinect_frame);
+        const bool expired=sfr::kinect_expire_frame(kinect_frame,std::chrono::steady_clock::now());
+        if(received || expired) {
+            // The title stores two fully tracked body indices, even though
+            // the sensor frame has six slots. Keep the same two real bodies
+            // until they leave, preserving their source slot numbers.
+            kinect_players.retain(kinect_frame);
+            ++frame_number;
             // Levelling turns the bodies, which the console never did: it is
-            // for the skeleton-only fallback (SFR_KINECT_DEPTH=0), and
+            // for the skeleton-only fallback, and
             // SFR_KINECT_LEVEL=1 or 0 chooses either way.
             static const bool level=[]{
                 const char* t=std::getenv("SFR_KINECT_LEVEL");
                 if(t && *t) return *t!='0';
-                const char* depth=std::getenv("SFR_KINECT_DEPTH");
-                return depth && *depth=='0';
+                return !sfr::nui_sensor_has_depth();
             }();
             const float gravity_y=kinect_frame.gravity[1];
-            const float tilt=level?sfr::kinect_level(kinect_frame):0.0f;
+            const float tilt=received && level?sfr::kinect_level(kinect_frame):0.0f;
             const uint64_t generation=kinect_generation.fetch_add(1,std::memory_order_relaxed)+1;
             // Every three seconds, what reaches the title: the tilt taken
             // out and the first body's centre line and hands, with the hands'
@@ -438,16 +456,17 @@ SFR_HOOK(sub_827707B0) {
             }
         }
         sfr::publish_second_player_pad(std::nullopt);
-        sfr::NuiSkeletonEmulation::write_header(memory,frame,++frame_number,uint64_t(elapsed.count()));
+        // A cached body retains the source capture time and frame number.
+        // Expiry publishes one empty tracking update, then stays empty until
+        // the acquisition worker supplies a new frame.
+        const auto captured_ms=std::chrono::duration_cast<std::chrono::milliseconds>(kinect_frame.captured_at-started).count();
+        sfr::NuiSkeletonEmulation::write_header(memory,frame,frame_number,uint64_t(std::max<int64_t>(0,captured_ms)));
         sfr::NuiSkeletonEmulation::write_floor(memory,frame,kinect_frame.floor_plane,kinect_frame.gravity);
         {
             std::lock_guard guard(kinect_identity_lock);
             // Ids the sensor no longer tracks are gone: whoever steps in next
             // is a new skeleton.
-            std::erase_if(kinect_identities,[&](const auto& entry) {
-                return std::none_of(kinect_frame.bodies.begin(),kinect_frame.bodies.end(),
-                                    [&](const sfr::KinectBody& body) { return body.tracking_id==entry.first; });
-            });
+            sfr::kinect_prune_identities(kinect_frame,kinect_identities);
             // The profile is user 0; everyone else a user after it, in the
             // sensor's order, as the pads' players were 1, 2 and 3.
             uint32_t next_user=1;

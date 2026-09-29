@@ -2,10 +2,12 @@
 #include "nui_skeleton.h"
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <utility>
+#include <unordered_map>
 #include <vector>
 
 namespace sfr {
@@ -41,6 +43,8 @@ struct KinectBody {
 
 struct KinectFrame {
     uint64_t number = 0;  // counts from one; 0 means nothing has arrived
+    // Set by the acquisition worker, never by a consumer reading its cache.
+    std::chrono::steady_clock::time_point captured_at{};
     // The floor as the sensor sees it (ax + by + cz + d = 0) and the normal
     // to gravity (straight up); all zero when it could not tell.
     std::array<float, 4> floor_plane{};
@@ -66,6 +70,9 @@ public:
     // image.number. A Kinect v1 opens its cameras unless SFR_KINECT_DEPTH=0;
     // others have none.
     virtual bool image(KinectImageKind, KinectImage&) { return false; }
+    // Successfully opened streams, rather than requested configuration.
+    virtual bool has_depth_stream() const { return false; }
+    virtual bool has_colour_stream() const { return false; }
     // The sensor's tilt motor, in degrees above level (a Kinect v1 turns
     // from -27 to 27). False when the sensor has no motor or will not say.
     virtual bool elevation(int& degrees) { (void)degrees; return false; }
@@ -97,7 +104,13 @@ struct KinectV2Joint {
 };
 // A v2 body as the v1 skeleton the title reads.
 void kinect_v2_body(const std::array<KinectV2Joint, kinect_v2_joint_count>& joints, uint32_t tracking_id,
-                    KinectBody& body);
+                    uint32_t sensor_index, KinectBody& body);
+
+// Remove stale bodies after a brief acquisition gap. The source number and
+// capture time stay unchanged; true means tracking was cleared this call.
+bool kinect_expire_frame(KinectFrame& frame, std::chrono::steady_clock::time_point now);
+// Enrollment only lasts while its real body remains tracked.
+void kinect_prune_identities(const KinectFrame& frame, std::unordered_map<uint32_t, uint32_t>& identities);
 
 // Turns a frame so that its gravity points straight down. Skeleton space is
 // the sensor's own: a sensor tilted up at the player (set low, as under a
@@ -124,6 +137,9 @@ public:
     static constexpr uint32_t players = 2;
     // The body in each slot for this frame, or null for an empty slot.
     std::array<const KinectBody*, players> assign(const KinectFrame& frame);
+    // The title has space for two fully tracked bodies. Retain those stable
+    // players without changing their original sensor/depth-image indices.
+    void retain(KinectFrame& frame);
 private:
     std::array<uint32_t, players> tracking_{};  // sensor ids; 0 is free
 };

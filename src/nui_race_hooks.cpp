@@ -55,18 +55,15 @@ bool pad_racing() { return swapped; }
 bool camera_player(uint32_t player) {
     return sfr::camera_controls_player(player,sfr::camera_motion_active());
 }
-// A real Kinect's race: the title reads its bodies through its own record
-// and detectors, but steers by the lean pair (+640 / +644), which on the
-// console are pixel counts from the depth view. No depth image reaches the
-// title here, so the first player's lean is taken from the body the camera
-// motion's way (the torso's roll against a calibrated stance) and written as
-// that pair.
+// Real sensors retain the title's native depth detectors when available.
+// Skeleton-only backends keep separate calibration and gesture timers for
+// every live body read by the title, including P2's non-manager record.
 bool sensor_steering = false;
 uint32_t sensor_record = 0;
-void write_camera_lean(uint32_t record,float scale=1.f) {
+void write_camera_lean(uint32_t record,float scale=1.f,const sfr::CameraRaceMotion& motion=camera_motion) {
     // These are depth-image pixel counts in the original game, not joints.
     // RGB pose input supplies their ratio; zero/zero means full right lean.
-    const float lean=camera_motion.lean()*scale;
+    const float lean=motion.lean()*scale;
     store_float(record+640,1.f+std::max(lean,0.f));
     store_float(record+644,1.f+std::max(-lean,0.f));
 }
@@ -74,20 +71,18 @@ void write_camera_lean(uint32_t record,float scale=1.f) {
 // up to 3.5 from the depth view, so the default uses its whole range (a
 // full lean at 1 turned the board only a little). SFR_KINECT_LEAN_SCALE
 // changes it, 0.1..3.5.
-// With the sensor's depth images reaching the title (unless
-// SFR_KINECT_DEPTH=0) its own depth view makes the lean and its own
+// With an opened depth stream, the title's own depth view makes the lean
+// and its own
 // detectors see the crouch, as on the console, so nothing here stands in for
 // them. Without the depth images the skeleton does, as a fallback.
 // SFR_KINECT_BODY_LEAN and SFR_KINECT_BODY_GESTURES (1 or 0) choose either way.
 bool sensor_fallback(const char* setting) {
     const char* value=std::getenv(setting);
     if(value && *value) return *value!='0';
-    const char* depth=std::getenv("SFR_KINECT_DEPTH");
-    return depth && *depth=='0';
+    return !sfr::nui_sensor_has_depth();
 }
 bool sensor_body_lean() {
-    static const bool enabled=sensor_fallback("SFR_KINECT_BODY_LEAN");
-    return enabled;
+    return sensor_fallback("SFR_KINECT_BODY_LEAN");
 }
 // The title's own pair on the last manager update, before the body's lean.
 float depth_lean_right=0,depth_lean_left=0;
@@ -110,23 +105,53 @@ float sensor_floor_below_hips() {
     }();
     return depth/.2f;
 }
-float sensor_floor=0;
-void update_camera_motion(uint32_t record,uint64_t generation,bool fixed_floor=false) {
+struct SensorMotion {
+    sfr::CameraRaceMotion motion;
+    uint64_t tick=0, epoch=0;
+    float floor=0;
+    uint32_t tracking_id=0;
+};
+std::unordered_map<uint32_t,SensorMotion> sensor_motions;
+uint64_t sensor_epoch=0;
+uint32_t sensor_manager=0;
+bool sensor_depth=false;
+void update_motion(uint32_t record,uint64_t generation,sfr::CameraRaceMotion& motion,uint64_t& last_tick,float* floor=nullptr) {
     const uint64_t now=sfr::camera_motion_clock_ns();
-    const float seconds=camera_last_tick && now>camera_last_tick?float(double(now-camera_last_tick)*1e-9):1.f/60.f;
-    camera_last_tick=now;
+    const float seconds=last_tick && now>last_tick?float(double(now-last_tick)*1e-9):1.f/60.f;
+    last_tick=now;
     const auto point=[&](uint32_t offset) {
         return std::array{load_float(record+offset),load_float(record+offset+4),load_float(record+offset+8)};
     };
-    const bool ready=camera_motion.ready();
+    const bool ready=motion.ready();
     sfr::CameraRacePose pose{point(0),point(32),point(224),point(288),point(64),point(128),point(192),point(256),point(80),point(96),point(144),point(160),point(208),point(272)};
-    if(fixed_floor) {
-        if(!ready)sensor_floor=pose.hip[1]-sensor_floor_below_hips();
-        pose.floor_y=sensor_floor;
+    if(floor) {
+        if(!ready)*floor=pose.hip[1]-sensor_floor_below_hips();
+        pose.floor_y=*floor;
     }
-    camera_motion.observe(pose,seconds,generation);
-    if(camera_motion.ready()!=ready)
-        std::cerr<<"CAMERA_RACE_CALIBRATION ready="<<camera_motion.ready()<<'\n';
+    motion.observe(pose,seconds,generation);
+    if(motion.ready()!=ready)
+        std::cerr<<"CAMERA_RACE_CALIBRATION ready="<<motion.ready()<<'\n';
+}
+
+void update_camera_motion(uint32_t record,uint64_t generation) {
+    update_motion(record,generation,camera_motion,camera_last_tick);
+}
+sfr::CameraRaceMotion& sensor_motion(uint32_t record) {
+    auto& state=sensor_motions[record];
+    // Native race records retain a pointer to their NUI_SKELETON_DATA at
+    // +768 (82438A98). Its state/id detect a new person reusing the allocation.
+    const uint32_t data=memory().readable(uint64_t(record)+768,4)?memory().load<uint32_t>(uint64_t(record)+768):0;
+    const bool tracked=data && memory().readable(data,8) && memory().load<uint32_t>(data)==2;
+    const uint32_t id=tracked?memory().load<uint32_t>(uint64_t(data)+4):0;
+    if(!id || state.tracking_id!=id) {state={};state.tracking_id=id;}
+    if(!id)return state.motion;
+    // Multiple readers/detectors in one update must not consume a jump pulse
+    // or advance calibration twice. Only dereference the current live record.
+    if(state.epoch!=sensor_epoch) {
+        update_motion(record,sfr::kinect_frame_generation(),state.motion,state.tick,&state.floor);
+        state.epoch=sensor_epoch;
+    }
+    return state.motion;
 }
 
 // The body record the title itself would read for the player a detector is
@@ -194,33 +219,33 @@ void set_byte(uint32_t address, uint8_t value) { memory().store<uint8_t>(address
 
 // Only gestures whose inputs are missing/unreliable in RGB pose need a bridge.
 // All joint XYZ and unrelated camera detectors keep their original path.
-std::optional<uint32_t> camera_gesture(uint32_t address,uint32_t detector,uint32_t results) {
+std::optional<uint32_t> camera_gesture(uint32_t address,uint32_t detector,uint32_t results,const sfr::CameraRaceMotion& motion=camera_motion) {
     const auto primary=[&](uint32_t bits){set_bits(entry(results)+4,bits);};
     switch(address) {
     case 0x822C9050:
-        memory().store<uint32_t>(detector+88,camera_motion.jump()?0xFFFFFFFFu:1u);
-        memory().store<uint32_t>(detector+92,camera_motion.jump()?0xFFFFFFFFu:1u);
-        if(camera_motion.jump()){primary(0x200);return 1;}
+        memory().store<uint32_t>(detector+88,motion.jump()?0xFFFFFFFFu:1u);
+        memory().store<uint32_t>(detector+92,motion.jump()?0xFFFFFFFFu:1u);
+        if(motion.jump()){primary(0x200);return 1;}
         return 2;
     case 0x822C8778: case 0x822CB840:
-        if(camera_motion.crouch()){primary(0x7000);return 1;}
+        if(motion.crouch()){primary(0x7000);return 1;}
         return 2;
     case 0x822C9A80: case 0x822CAF48:
-        if(camera_motion.boost()){primary(0x8000);return 1;}
+        if(motion.boost()){primary(0x8000);return 1;}
         return 0;
     case 0x822CA6B0:
-        if(!camera_motion.brake_ready()){set_bits(entry(results)+20,0x2000);return 2;}
+        if(!motion.brake_ready()){set_bits(entry(results)+20,0x2000);return 2;}
         break;
     case 0x822C9BF0:
-        if(!camera_motion.brake_ready()){set_byte(entry(results)+80,0);store_float(detector+72,0);return 2;}
+        if(!motion.brake_ready()){set_byte(entry(results)+80,0);store_float(detector+72,0);return 2;}
         break;
     case 0x822CA518:
-        if(camera_motion.jump_protected()||(camera_motion.arm_action()&&!camera_motion.kick_leg_action())) {
+        if(motion.jump_protected()||(motion.arm_action()&&!motion.kick_leg_action())) {
             set_byte(detector+72,0);return 2;
         }
         break;
     case 0x822CBD28:
-        if(camera_motion.jump_protected()||(camera_motion.arm_action()&&!camera_motion.kick_leg_action())) {
+        if(motion.jump_protected()||(motion.arm_action()&&!motion.kick_leg_action())) {
             memory().store<uint32_t>(detector+72,0);return 2;
         }
         break;
@@ -373,26 +398,37 @@ SFR_HOOK(sub_82438930) {
     const bool was_steering=sensor_steering;
     sensor_steering=!disabled && sfr::nui_body_from_sensor() && box && m.load<uint32_t>(race_flag)!=0 &&
                     m.load<uint32_t>(box+0x78);
-    sensor_record=sensor_steering?m.load<uint32_t>(box+0x78):0;
+    const uint32_t current_sensor_record=sensor_steering?m.load<uint32_t>(box+0x78):0;
+    const bool depth=sfr::nui_sensor_has_depth();
+    if(!sensor_steering || sensor_manager!=box || sensor_record!=current_sensor_record || sensor_depth!=depth)
+        sensor_motions.clear();
+    sensor_record=current_sensor_record;
+    sensor_manager=sensor_steering?box:0;
+    sensor_depth=depth;
+    ++sensor_epoch;
+    // Retire absent records without ever following their saved guest pointers.
+    std::erase_if(sensor_motions,[](const auto& item){return sensor_epoch-item.second.epoch>30;});
     if(sensor_steering!=was_steering)
         std::cerr<<"NUI_RACE_SENSOR_LEAN active="<<sensor_steering<<" record=0x"<<std::hex<<sensor_record<<std::dec<<'\n';
     if(racing && box && original_body && camera_player(0))update_camera_motion(original_body,sfr::camera_pose_generation());
     else if(sensor_steering) {
-        update_camera_motion(sensor_record,sfr::kinect_frame_generation(),true);
+        camera_motion.reset();camera_last_tick=0;
+        auto& motion=sensor_motion(sensor_record);
         depth_lean_right=load_float(sensor_record+640);
         depth_lean_left=load_float(sensor_record+644);
-        if(sensor_body_lean())write_camera_lean(sensor_record,sensor_lean_scale());
+        if(sensor_body_lean())write_camera_lean(sensor_record,sensor_lean_scale(),motion);
     }
     else {camera_motion.reset();camera_last_tick=0;}
     static const bool motion_trace=[] {const char* p=std::getenv("SFR_CAMERA_RACE_TRACE");return p && *p=='1';}();
     static uint32_t motion_frames=0;
-    if(motion_trace && (racing || sensor_steering) && (++motion_frames%30==0 || camera_motion.jump() || camera_motion.overthrow())) {
-        std::cerr<<"CAMERA_RACE_MOTION title_step="<<seconds<<" generation="<<sfr::camera_pose_generation()
-                 <<" camera="<<camera_player(0)<<" ready="<<camera_motion.ready()
-                 <<" lean="<<camera_motion.lean()<<" depth_pair="<<depth_lean_right<<'/'<<depth_lean_left
-                 <<" crouch="<<camera_motion.crouch()
-                 <<" jump="<<camera_motion.jump()<<" acceleration="<<camera_motion.boost()<<" arm_action="<<camera_motion.arm_action()
-                 <<" overthrow="<<camera_motion.overthrow()<<" kick_leg="<<camera_motion.kick_leg_action()<<'\n';
+    const auto& traced_motion=sensor_steering?sensor_motion(sensor_record):camera_motion;
+    if(motion_trace && (racing || sensor_steering) && (++motion_frames%30==0 || traced_motion.jump() || traced_motion.overthrow())) {
+        std::cerr<<"CAMERA_RACE_MOTION title_step="<<seconds<<" generation="<<(sensor_steering?sfr::kinect_frame_generation():sfr::camera_pose_generation())
+                 <<" camera="<<camera_player(0)<<" ready="<<traced_motion.ready()
+                 <<" lean="<<traced_motion.lean()<<" depth_pair="<<depth_lean_right<<'/'<<depth_lean_left
+                 <<" crouch="<<traced_motion.crouch()
+                 <<" jump="<<traced_motion.jump()<<" acceleration="<<traced_motion.boost()<<" arm_action="<<traced_motion.arm_action()
+                 <<" overthrow="<<traced_motion.overthrow()<<" kick_leg="<<traced_motion.kick_leg_action()<<'\n';
     }
 }
 
@@ -417,10 +453,10 @@ SFR_HOOK(sub_82918418) {
     __imp__sub_82918418(ctx, base);
     const uint32_t record = ctx.r3.u32;
     // The depth view's worker can refill the pair between the manager's
-    // update and this read: a sensor's first player gets its lean again here.
-    if (sensor_steering && live_race_source && record && record == sensor_record &&
+    // update and this read: each sensor player gets its own lean again here.
+    if (sensor_steering && live_race_source && record &&
         memory().load<uint32_t>(live_race_source) == object) {
-        if(sensor_body_lean())write_camera_lean(record,sensor_lean_scale());
+        if(sensor_body_lean())write_camera_lean(record,sensor_lean_scale(),sensor_motion(record));
         return;
     }
     if (pad_racing() && live_race_source && record &&
@@ -494,22 +530,23 @@ void finish_camera_overthrow(uint32_t detector,uint32_t results,uint64_t& result
     camera_motion.consume_overthrow();result=1;
 }
 
-// A real Kinect's race runs the title's own detectors, but crouch (and the
-// charge and jump that follow it) never fire: they need what the depth view
-// gives on the console, and none reaches the title here. When the original
-// does not recognize one, the first player's skeleton decides as the webcam
+// A skeleton-only Kinect backend cannot supply the native depth features
+// used by crouch and the charge/jump that follow it. When the original
+// does not recognize one, the current player's skeleton decides as the webcam
 // motion does (the hips dropping below the calibrated stance, then rising).
 // Only the skeleton-only fallback does this (sensor_fallback above).
 void finish_sensor_detector(PPCContext& ctx,uint8_t* base,uint32_t address,uint32_t detector,uint32_t source,
                             uint32_t results) {
     if(address!=0x822C8778 && address!=0x822CB840 && address!=0x822C9050 && address!=0x822CA6B0)return;
-    static const bool bridge=sensor_fallback("SFR_KINECT_BODY_GESTURES");
+    const bool bridge=sensor_fallback("SFR_KINECT_BODY_GESTURES");
     static const bool trace=[] {const char* p=std::getenv("SFR_CAMERA_RACE_TRACE");return p && *p=='1';}();
-    if(body_of_source(ctx,base,source)!=sensor_record)return;
+    const uint32_t record=body_of_source(ctx,base,source);
+    if(!record)return;
+    auto& motion=sensor_motion(record);
     const uint32_t original=ctx.r3.u32;
-    const bool wanted=address==0x822C9050?camera_motion.jump():address==0x822CA6B0?false:camera_motion.crouch();
+    const bool wanted=address==0x822C9050?motion.jump():address==0x822CA6B0?false:motion.crouch();
     if(bridge && original!=1 && wanted) {
-        if(const auto bridged=camera_gesture(address,detector,results))ctx.r3.u64=*bridged;
+        if(const auto bridged=camera_gesture(address,detector,results,motion))ctx.r3.u64=*bridged;
     }
     if(!trace)return;
     static std::unordered_map<uint32_t,std::pair<uint32_t,uint32_t>> last;
@@ -517,7 +554,7 @@ void finish_sensor_detector(PPCContext& ctx,uint8_t* base,uint32_t address,uint3
     if(last.contains(address) && last[address]==now)return;
     last[address]=now;
     std::cerr<<"KINECT_GESTURE address=0x"<<std::hex<<address<<std::dec<<" original="<<original
-             <<" result="<<ctx.r3.u32<<" crouch="<<camera_motion.crouch()<<" jump="<<camera_motion.jump()<<'\n';
+             <<" result="<<ctx.r3.u32<<" crouch="<<motion.crouch()<<" jump="<<motion.jump()<<'\n';
 }
 
 // One detector override: while the pad drives the race the body decides,

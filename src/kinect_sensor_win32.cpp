@@ -131,6 +131,8 @@ public:
     }
 
     const char* model() const override { return "Kinect v1"; }
+    bool has_depth_stream() const override { return streams_[0].handle != nullptr; }
+    bool has_colour_stream() const override { return streams_[1].handle != nullptr; }
 
     bool start(std::string* why) {
         library_ = LoadLibraryW(L"Kinect10.dll");
@@ -266,8 +268,12 @@ private:
             if (const HRESULT result = next_frame_(wait_in_sdk_ ? 100 : 0, &raw); FAILED(result)) {
                 ++failures;
                 last_failure = result;
+                // Disconnection can fail immediately even with an SDK timeout.
+                // Bound retries so this worker cannot spin on that error.
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
                 continue;
             }
+            frame.captured_at = std::chrono::steady_clock::now();
             if (smooth_ && smooth_frames_) smooth_(&raw, &smoothing);
             frame.floor_plane = {raw.floor_clip_plane.x, raw.floor_clip_plane.y, raw.floor_clip_plane.z,
                                  raw.floor_clip_plane.w};

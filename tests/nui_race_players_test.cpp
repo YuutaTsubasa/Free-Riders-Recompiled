@@ -28,6 +28,7 @@ uint32_t original_overthrow_result = 99;
 uint32_t original_kick_bits = 0;
 bool consumer_throws = false;
 bool camera_active = false;
+bool sensor_active = false, sensor_depth = false;
 uint64_t camera_sequence=0;
 uint64_t camera_now=1000000000;
 uint32_t consumed_record = 0;
@@ -46,8 +47,9 @@ bool camera_motion_active() { return harness::camera_active; }
 uint64_t camera_pose_generation() { return harness::camera_sequence; }
 uint64_t camera_motion_clock_ns() { return harness::camera_now; }
 GamepadState nui_gamepad() { return harness::first; }
-bool nui_body_from_sensor() { return false; }
-uint64_t kinect_frame_generation() { return 0; }
+bool nui_body_from_sensor() { return harness::sensor_active; }
+bool nui_sensor_has_depth() { return harness::sensor_depth; }
+uint64_t kinect_frame_generation() { return harness::camera_sequence; }
 std::optional<GamepadState> second_player_pad() { return harness::second; }
 void enter_function_observed(PPCContext&, const char*, uint32_t) {}
 void guest_checkpoint_permit() {}
@@ -156,6 +158,7 @@ bool braking(unsigned source) {
     return invoke("sub_822C9BF0", source) == 1;
 }
 void begin() {
+    sensor_active=false; sensor_depth=false;
     original_kick_bits=0;
     mem().store<uint32_t>(0x83E516A0,0);
     camera_active = false;
@@ -677,6 +680,115 @@ void camera_returns_to_pad() {
     reset_results();
     require(invoke("sub_822C9050", 0) == 1, "a new P1 pad A press and release must jump after camera handoff");
 }
+void sensor_pose(uint32_t record,float x=0,float y=1) {
+    mem().store<uint32_t>(record+768,record+900);
+    mem().store<uint32_t>(record+900,2);
+    mem().store<uint32_t>(record+904,record);
+    for(uint32_t off=0;off<320;off+=4)store_float(record+off,0);
+    store_float(record+4,y);store_float(record+32,x);store_float(record+36,y+.5f);
+    store_float(record+228,0);store_float(record+292,0);
+}
+void sensor_begin() {
+    mem().store<uint32_t>(race_flag_global,0);frame();
+    sensor_active=true;
+    mem().store<uint32_t>(box+0x78,original);
+    mem().store<uint32_t>(race_flag_global,1);
+    bind(0,0,original);bind(1,1,other);
+    sensor_pose(original);sensor_pose(other);
+    for(int i=0;i<60;++i){frame();consume(0);consume(1);}
+}
+void sensor_independent() {
+    sensor_begin();
+    require(f(original+640)==1 && f(other+640)==1,"no-depth sensors must default to neutral skeleton lean for both players");
+    sensor_pose(original,-.5f);sensor_pose(other,.5f);
+    for(int i=0;i<60;++i){frame();consume(0);consume(1);}
+    require(f(original+640)>f(original+644) && f(other+640)<f(other+644),"live P2 reader must use its own opposite lean");
+    sensor_pose(original);sensor_pose(other,0,.6f);
+    for(int i=0;i<30;++i){frame();consume(0);consume(1);}
+    require(invoke("sub_822C8778",0)!=1 && invoke("sub_822C8778",1)==1,"only P2 crouching must trigger P2 crouch");
+    sensor_pose(other);
+    bool jumped=false;
+    for(int i=0;i<30;++i){
+        frame();consume(0);consume(1);
+        if(invoke("sub_822C9050",1)==1){
+            jumped=true;consume(1);
+            require(invoke("sub_822C9050",1)==1,"repeated reader must preserve this frame's jump pulse");
+            require(invoke("sub_822C9050",0)!=1,"P2 jump must not trigger P1");break;
+        }
+    }
+    require(jumped,"P2 rising from crouch must jump");
+    bind(1,1,next_other);sensor_pose(next_other,0,.6f);frame();consume(1);
+    require(invoke("sub_822C8778",1)!=1,"new P2 body must calibrate afresh");
+}
+void sensor_lifecycle() {
+    sensor_begin();sensor_pose(other,0,.6f);
+    for(int i=0;i<30;++i){frame();consume(1);}
+    require(invoke("sub_822C8778",1)==1,"fixture must begin with a calibrated crouch");
+    // A record can be recycled after race exit; old neutral height must not follow it.
+    mem().store<uint32_t>(race_flag_global,0);frame();
+    mem().store<uint32_t>(race_flag_global,1);frame();consume(1);
+    require(invoke("sub_822C8778",1)!=1,"race reentry must clear crouch calibration");
+    sensor_pose(other);for(int i=0;i<60;++i){frame();consume(1);}
+    sensor_pose(other,0,.6f);for(int i=0;i<30;++i){frame();consume(1);}
+    require(invoke("sub_822C8778",1)==1,"crouch must recover after recalibration");
+    for(int i=0;i<40;++i){frame();} // P2 no longer consumed: retire its state.
+    consume(1);
+    require(invoke("sub_822C8778",1)!=1,"absent P2 record must not reuse expired calibration");
+}
+void sensor_identity_reuse() {
+    sensor_begin();sensor_pose(other,0,.6f);
+    for(int i=0;i<30;++i){frame();consume(1);}
+    require(invoke("sub_822C8778",1)==1,"fixture must begin crouching");
+    // Same guest allocation, but the sensor now tracks a different person.
+    mem().store<uint32_t>(other+904,123);consume(1);
+    require(invoke("sub_822C8778",1)!=1,"new tracking identity must clear old crouch even within one game update");
+    sensor_pose(other);for(int i=0;i<60;++i){frame();consume(1);}
+    sensor_pose(other,0,.6f);for(int i=0;i<30;++i){frame();consume(1);}
+    require(invoke("sub_822C8778",1)==1,"crouch must recover");
+    mem().store<uint32_t>(other+900,0);consume(1);
+    require(invoke("sub_822C8778",1)!=1,"untracked skeleton must not replay cached crouch");
+}
+
+void sensor_overrides() {
+    sensor_begin();sensor_depth=true;
+#ifdef _WIN32
+    _putenv_s("SFR_KINECT_BODY_LEAN","1");_putenv_s("SFR_KINECT_BODY_GESTURES","1");
+#else
+    setenv("SFR_KINECT_BODY_LEAN","1",1);setenv("SFR_KINECT_BODY_GESTURES","1",1);
+#endif
+    for(int i=0;i<60;++i){frame();consume(0);consume(1);}
+    sensor_pose(other,0,.6f);for(int i=0;i<30;++i){frame();consume(1);}
+    const bool forced=f(other+640)>=1 && invoke("sub_822C8778",1)==1;
+#ifdef _WIN32
+    _putenv_s("SFR_KINECT_BODY_LEAN","0");_putenv_s("SFR_KINECT_BODY_GESTURES","0");
+#else
+    setenv("SFR_KINECT_BODY_LEAN","0",1);setenv("SFR_KINECT_BODY_GESTURES","0",1);
+#endif
+    sensor_depth=false;frame();consume(1);
+    const bool disabled=f(other+640)==0 && invoke("sub_822C8778",1)==99;
+#ifdef _WIN32
+    _putenv_s("SFR_KINECT_BODY_LEAN","");_putenv_s("SFR_KINECT_BODY_GESTURES","");
+#else
+    unsetenv("SFR_KINECT_BODY_LEAN");unsetenv("SFR_KINECT_BODY_GESTURES");
+#endif
+    require(forced && disabled,"explicit overrides must take precedence over actual depth capability");
+}
+
+void sensor_depth_capability() {
+    sensor_begin();sensor_depth=true;frame();
+    store_float(original+640,31);store_float(original+644,47);
+    // Accessor alone, within the original consumer scope, must retain native depth.
+    PPCContext ctx;ctx.r3.u64=objects;
+    {RaceSourceScope scope(sources);hooks().at("sub_82918418")(ctx,mem().base());}
+    require(f(original+640)==31 && f(original+644)==47,"opened depth stream must retain native depth pair");
+    sensor_pose(other,0,.6f);
+    for(int i=0;i<30;++i){frame();consume(1);}
+    require(invoke("sub_822C8778",1)==99,"native depth must retain original gesture result");
+    sensor_depth=false;
+    for(int i=0;i<60;++i){frame();consume(0);consume(1);}
+    require(f(other+640)>=1,"capability change must enable fallback without restart");
+}
+
 }
 int main() {
     using namespace harness;
@@ -690,6 +802,7 @@ int main() {
     memory.store<uint32_t>(results + 8, 1);
     unsigned failures = 0;
     const std::pair<const char*, void (*)()> cases[] = {
+        {"sensor independent players", sensor_independent}, {"sensor lifecycle", sensor_lifecycle}, {"sensor identity reuse", sensor_identity_reuse}, {"sensor overrides", sensor_overrides}, {"sensor depth capability", sensor_depth_capability},
         {"two objects per player", baseline}, {"source reuse", source_reuse},
         {"record rebind", record_rebind}, {"zero then valid", zero_then_valid},
         {"original alias", original_alias}, {"disconnect", disconnect},
