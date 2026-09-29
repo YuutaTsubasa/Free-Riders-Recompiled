@@ -67,7 +67,7 @@ class BenchmarkScenariosTests(unittest.TestCase):
             self.assertIn('voice=0', settings)
             self.assertIn('camera=' + ('motion' if scenario == 'camera' else 'off'), settings)
             self.assertIn('player2_device=' + ('keyboard' if scenario == '2p' else 'off'), settings)
-            self.assertIn('avatar_model=' + (str(self.root / 'rider.vrm') if scenario == 'vrm' else '') + '\n', settings)
+            self.assertIn('avatar_model=' + (str((self.root / 'rider.vrm').resolve()) if scenario == 'vrm' else '') + '\n', settings)
 
     def test_validation_requires_assets_and_feature_inputs(self):
         self.runner.validate_plan(self.plan())
@@ -152,11 +152,19 @@ class BenchmarkScenariosTests(unittest.TestCase):
             def wait(child):
                 return exit_code
 
-        with patch.object(self.runner.subprocess, 'Popen', FakeLauncher), redirect_stdout(io.StringIO()):
+        # Linux may run uname through subprocess while resolving processor().
+        # Keep host discovery outside this fixture's fake launcher boundary.
+        with (patch.object(self.runner.platform, 'platform', return_value='fixture OS'),
+              patch.object(self.runner.platform, 'processor', return_value='fixture CPU'),
+              patch.object(self.runner.subprocess, 'Popen', FakeLauncher),
+              redirect_stdout(io.StringIO())):
             result = self.runner.capture(plan)
         records = list((self.root / 'runs').glob('*/run.json'))
         self.assertEqual(len(records), 1)
-        return result, json.loads(records[0].read_text())
+        metadata = json.loads(records[0].read_text())
+        self.assertEqual(metadata['host']['system'], 'fixture OS')
+        self.assertEqual(metadata['host']['processor'], 'fixture CPU')
+        return result, metadata
 
     def test_capture_cannot_claim_runtime_success_from_frames_after_crash(self):
         result, metadata = self.fake_capture('NATIVE_PRESENT frame=1\nNATIVE_PRESENT frame=2\n', exit_code=7)
