@@ -83,6 +83,7 @@ PPC_FUNC(__imp__sub_822C6200) {
     harness::consumed_record = ctx.r3.u32;
 }
 #define ORIGINAL(address) PPC_FUNC(__imp__sub_##address) { ++harness::original_calls; ctx.r3.u64 = 99; }
+ORIGINAL(822A6988)
 ORIGINAL(822C9050)
 ORIGINAL(822B60F8)
 ORIGINAL(822C8778)

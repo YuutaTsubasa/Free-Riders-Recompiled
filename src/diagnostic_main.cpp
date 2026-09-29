@@ -142,7 +142,11 @@ static std::unique_ptr<NativeInput> native_input;
 // so several guest threads may count them at once.
 static std::atomic<uint64_t> hid_queries{0}, keystroke_queries{0};
 static uint64_t critical_region_calls = 0, printf_calls = 0;
-static InputTrace input_trace;
+static InputTrace input_trace([] {
+    const char* text = std::getenv("SFR_TRACE_INPUT");
+    if (!text) text = std::getenv("SFR_TRACE_IMPORTS");
+    return !text || *text != '0';
+}());
 static NativeInput& input() {
     if (!native_input)
         native_input = std::make_unique<NativeInput>(NativeInput::host([]() -> void* {
@@ -1143,7 +1147,8 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         if ((flags & ~1u) || !output)
             throw RuntimeStop("native-input", flags, "unsupported XamInputGetState flags or null state");
         ctx.r3.u64 = input().get_state(*active_memory, user, output);
-        // Polled every frame: each player's first query and state changes.
+        // Normal play logs first queries and connection changes. Explicit
+        // SFR_TRACE_INPUT=1 also logs packet changes for input diagnosis.
         // A missing second controller must not reset the first player's packet.
         const uint32_t packet = ctx.r3.u32 == xinput_success ? active_memory->load<uint32_t>(output) : 0;
         if (input_trace.changed(user, ctx.r3.u32, packet)) {
@@ -3980,6 +3985,16 @@ int main(int argc, char** argv) {
         sfr::memory_statistics = &statistics;
         ctx.r1.u64 = stack + stack_size - 0x100;
         ctx.r13.u64 = pcr;
+#ifdef _WIN32
+        // NativeThread places workers on the console-core host mapping, but
+        // the original process thread is not a NativeThread. Place guest 1
+        // too, within its inherited mask, instead of leaving it on E-cores.
+        // The override is for matched benchmarks; guest clocks are unchanged.
+        if (const char* setting = std::getenv("SFR_MAIN_AFFINITY"); !setting || *setting != '0') {
+            const auto mask = sfr::pin_current_guest_processor(0);
+            std::cerr << "MAIN_HOST_AFFINITY mask=0x" << std::hex << mask << std::dec << '\n';
+        }
+#endif
         ctx.fpscr.loadFromHost();
         {
             struct Shutdown {

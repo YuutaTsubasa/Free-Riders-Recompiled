@@ -314,6 +314,30 @@ void rejects_cross_kind_operations_without_state_changes() {
             "cross-kind semaphore release preserves event state");
 }
 
+void zero_timeout_wait_all_checks_and_consumes_atomically() {
+    sfr::NativeSyncObjects objects;
+    const auto event = objects.create_event(false, true).handle;
+    const auto semaphore = objects.create_semaphore(0, 2).handle;
+    auto first = objects.retain_wait(event), second = objects.retain_wait(semaphore);
+    std::vector<sfr::NativeSyncObjects::WaitHandle*> waits{first.get(), second.get()};
+    using Wait = sfr::NativeSyncObjects::WaitHandle;
+    require(Wait::wait_multiple(waits, true, 0).status == status_timeout,
+            "a partial wait-all set is not satisfied");
+    objects.release_semaphore(semaphore, 1);
+    require(Wait::wait_multiple(waits, true, 0).status == status_success,
+            "zero-time wait-all must check ready objects and preserve a previous partial signal");
+    require(first->wait(0).status == status_timeout && second->wait(0).status == status_timeout,
+            "successful wait-all consumes each auto-event and semaphore exactly once");
+    objects.set_event(event);
+    objects.release_semaphore(semaphore, 1);
+    std::stop_source stopped;
+    stopped.request_stop();
+    require(Wait::wait_multiple(waits, true, 0, stopped.get_token()).cancelled,
+            "pre-requested cancellation takes priority over ready wait-all targets");
+    require(Wait::wait_multiple(waits, true, 0).status == status_success,
+            "cancellation must not consume the signaled objects");
+}
+
 void destructor_closes_remaining_native_handles() {
     {
         sfr::NativeSyncObjects warmup;
@@ -357,6 +381,7 @@ int main() {
         manual_reset_events_remain_signaled_until_reset();
         rejects_cross_kind_operations_without_state_changes();
         destructor_closes_remaining_native_handles();
+        zero_timeout_wait_all_checks_and_consumes_atomically();
         std::cout << "Native sync object checks passed\n";
         return 0;
     } catch (const std::exception& error) {

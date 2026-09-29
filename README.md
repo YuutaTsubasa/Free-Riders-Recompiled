@@ -205,6 +205,23 @@ Troubleshooting and platform details: [VRM Avatar guide](docs/vrm-avatar.md).
 
 ## FAQ
 
+**How do I choose Vulkan or D3D12?** On Windows, open **Display > Graphics backend**
+and choose either backend before starting the game. New settings default to Vulkan;
+existing saved choices are preserved. Linux and Android use Vulkan.
+
+**Can I change the game's internal resolution?** Yes. **Rendering resolution**
+offers 360p, 540p, native 720p (default), 1080p and 1440p, independently of output
+window size. Apply it before starting the game. Lower values may help a limited
+GPU; higher values draw more detail at a greater cost. See
+[Internal resolution](docs/internal-resolution.md).
+
+**How can I compare performance without changing game speed?** Keep the normal
+60 FPS cap and compare the same part of the same course, including slower-frame
+times. Uncapping currently speeds up the game logic too. Recording instructions
+and the limits of testing on a faster PC: [Performance measurements](docs/benchmarking.md).
+Guided 1P, 2P, Camera and VRM comparisons: [Benchmark scenarios](docs/benchmark-scenarios.md).
+Current local verification and hardware limits: [Validation report](docs/performance-resolution-validation.md).
+
 **Where are the settings and saves?** Beside the launcher: `settings.ini`,
 `save/` and `game.log` (on Android, in the app's files directory). The game
 plays as a local profile named "Player"; answer *Yes* when it asks "Are you

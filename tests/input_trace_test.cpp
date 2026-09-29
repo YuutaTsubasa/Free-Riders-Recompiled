@@ -39,6 +39,17 @@ void packet_changes_belong_to_one_player() {
     require(trace.changed(0, 0, 0xffffffffu), "full-width packet is retained");
     require(trace.changed(0, 0, 0), "packet wraparound is a change");
 }
+
+void quiet_trace_keeps_connection_changes_without_packet_spam() {
+    sfr::InputTrace trace(false);
+    require(trace.changed(0, 0, 1), "quiet mode keeps the initial connection");
+    for (uint32_t packet = 2; packet < 1000; ++packet)
+        require(!trace.changed(0, 0, packet), "quiet mode ignores advancing packets");
+    require(trace.changed(1, 0x48f, 0), "second player has independent status");
+    require(trace.changed(0, 0x48f, 0), "disconnection remains visible");
+    require(trace.changed(0, 0, 1000), "reconnection remains visible");
+    require(!trace.changed(1, 0x48f, 12), "disconnected packets remain irrelevant");
+}
 }
 
 int main() {
@@ -46,6 +57,7 @@ int main() {
         alternating_players_do_not_repeat_unchanged_states();
         first_queries_and_connection_changes_are_visible();
         packet_changes_belong_to_one_player();
+        quiet_trace_keeps_connection_changes_without_packet_spam();
         std::cout << "Input trace checks passed\n";
         return 0;
     } catch (const std::exception& error) {

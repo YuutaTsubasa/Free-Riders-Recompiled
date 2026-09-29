@@ -221,6 +221,98 @@ void host_processor_order_spreads_over_physical_cores() {
         for (size_t j = 0; j < i; ++j) require(core[order[i]] != core[order[j]]);
 }
 
+void calling_guest_thread_uses_allowed_core_mapping() {
+    GROUP_AFFINITY original{};
+    require(GetThreadGroupAffinity(GetCurrentThread(), &original) != FALSE);
+    struct Restore {
+        GROUP_AFFINITY original;
+        ~Restore() { if (!SetThreadGroupAffinity(GetCurrentThread(), &original, nullptr)) std::terminate(); }
+    } restore{original};
+    const auto order = sfr::host_processor_order(original.Mask, original.Group);
+    require(!order.empty());
+    for (uint32_t cpu = 0; cpu < 6; ++cpu) {
+        require(SetThreadGroupAffinity(GetCurrentThread(), &original, nullptr) != FALSE);
+        const uint64_t expected = uint64_t{1} << order[cpu % order.size()];
+        require(sfr::pin_current_guest_processor(cpu) == expected);
+        require(queried_thread_affinity(GetCurrentThreadId()) == expected);
+    }
+    // An existing thread restriction must not be widened back to the process mask.
+    auto limited = original;
+    limited.Mask = uint64_t{1} << order.back();
+    require(SetThreadGroupAffinity(GetCurrentThread(), &limited, nullptr) != FALSE);
+    require(sfr::pin_current_guest_processor(0) == limited.Mask);
+    require(queried_thread_affinity(GetCurrentThreadId()) == limited.Mask);
+    bool rejected = false;
+    try { sfr::pin_current_guest_processor(6); }
+    catch (const sfr::RuntimeStop& stop) { rejected = stop.category == "thread-host"; }
+    require(rejected && queried_thread_affinity(GetCurrentThreadId()) == limited.Mask);
+}
+
+void explicit_cpu_sets_keep_the_calling_thread_affinity() {
+    const HMODULE kernel = GetModuleHandleW(L"kernel32.dll");
+    const auto get_thread = reinterpret_cast<decltype(&GetThreadSelectedCpuSets)>(GetProcAddress(kernel, "GetThreadSelectedCpuSets"));
+    const auto get_process = reinterpret_cast<decltype(&GetProcessDefaultCpuSets)>(GetProcAddress(kernel, "GetProcessDefaultCpuSets"));
+    const auto set_thread = reinterpret_cast<decltype(&SetThreadSelectedCpuSets)>(GetProcAddress(kernel, "SetThreadSelectedCpuSets"));
+    const auto set_process = reinterpret_cast<decltype(&SetProcessDefaultCpuSets)>(GetProcAddress(kernel, "SetProcessDefaultCpuSets"));
+    const auto get_system = reinterpret_cast<decltype(&GetSystemCpuSetInformation)>(GetProcAddress(kernel, "GetSystemCpuSetInformation"));
+    if (!get_thread || !get_process || !set_thread || !set_process || !get_system) return;
+    GROUP_AFFINITY original{};
+    require(GetThreadGroupAffinity(GetCurrentThread(), &original) != FALSE);
+    const auto order = sfr::host_processor_order(original.Mask, original.Group);
+    if (order.size() < 2) return;
+    ULONG size = 0;
+    get_system(nullptr, 0, &size, GetCurrentProcess(), 0);
+    std::vector<unsigned char> bytes(size);
+    require(get_system(reinterpret_cast<PSYSTEM_CPU_SET_INFORMATION>(bytes.data()), size, &size, GetCurrentProcess(), 0) != FALSE);
+    ULONG selected = 0;
+    bool found = false;
+    for (size_t offset = 0; offset < size;) {
+        const auto* entry = reinterpret_cast<const SYSTEM_CPU_SET_INFORMATION*>(bytes.data() + offset);
+        require(entry->Size != 0 && entry->Size <= size - offset);
+        if (entry->Type == CpuSetInformation && entry->CpuSet.Group == original.Group &&
+            entry->CpuSet.LogicalProcessorIndex != order[0] &&
+            (original.Mask & (uint64_t{1} << entry->CpuSet.LogicalProcessorIndex)) &&
+            (!entry->CpuSet.Allocated || entry->CpuSet.AllocatedToTargetProcess)) {
+            selected = entry->CpuSet.Id; found = true; break;
+        }
+        offset += entry->Size;
+    }
+    require(found);
+    const auto read = [](auto query, HANDLE handle) {
+        ULONG count = 0;
+        query(handle, nullptr, 0, &count);
+        std::vector<ULONG> sets(count);
+        require(query(handle, sets.data(), count, &count) != FALSE);
+        sets.resize(count);
+        return sets;
+    };
+    struct Restore {
+        GROUP_AFFINITY affinity;
+        std::vector<ULONG> thread, process;
+        decltype(&SetThreadSelectedCpuSets) set_thread;
+        decltype(&SetProcessDefaultCpuSets) set_process;
+        ~Restore() {
+            if (!set_thread(GetCurrentThread(), thread.data(), ULONG(thread.size())) ||
+                !set_process(GetCurrentProcess(), process.data(), ULONG(process.size())) ||
+                !SetThreadGroupAffinity(GetCurrentThread(), &affinity, nullptr)) std::terminate();
+        }
+    } restore{original, read(get_thread, GetCurrentThread()), read(get_process, GetCurrentProcess()), set_thread, set_process};
+    require(set_process(GetCurrentProcess(), nullptr, 0) != FALSE);
+    require(set_thread(GetCurrentThread(), &selected, 1) != FALSE);
+    require(sfr::pin_current_guest_processor(0) == original.Mask);
+    require(queried_thread_affinity(GetCurrentThreadId()) == original.Mask);
+    require(read(get_thread, GetCurrentThread()) == std::vector<ULONG>{selected});
+    require(set_thread(GetCurrentThread(), nullptr, 0) != FALSE);
+    require(set_process(GetCurrentProcess(), &selected, 1) != FALSE);
+    require(sfr::pin_current_guest_processor(0) == original.Mask);
+    require(queried_thread_affinity(GetCurrentThreadId()) == original.Mask);
+    require(read(get_process, GetCurrentProcess()) == std::vector<ULONG>{selected});
+    sfr::NativeThread worker([](std::stop_token) { return 0; });
+    const auto worker_mask = worker.affinity_mask();
+    require(worker.set_guest_processor(0, true) == worker_mask);
+    require(worker.affinity_mask() == worker_mask);
+}
+
 void six_guest_processors_map_to_allowed_native_processors() {
     const uint64_t allowed = allowed_process_mask();
     for (uint32_t guest_cpu = 0; guest_cpu < 6; ++guest_cpu) {
@@ -238,6 +330,26 @@ void six_guest_processors_map_to_allowed_native_processors() {
     }
 }
 
+void migrating_workers_keep_their_guest_processor_preference() {
+    const auto allowed = allowed_process_mask();
+    const auto order = sfr::host_processor_order(allowed, 0);
+    uint64_t pool = 0;
+    for (size_t i = 0; i < (std::min)(size_t{6}, order.size()); ++i) pool |= uint64_t{1} << order[i];
+    sfr::NativeThread worker([](std::stop_token) { return 0; });
+    for (uint32_t cpu = 0; cpu < 6; ++cpu) {
+        require(worker.set_guest_processor(cpu, true) == pool);
+        require(worker.affinity_mask() == pool);
+        PROCESSOR_NUMBER ideal{};
+        require(GetThreadIdealProcessorEx(worker.native_handle(), &ideal) != FALSE);
+        require(ideal.Group == 0 && ideal.Number == order[cpu % order.size()]);
+        require(worker.suspended() && !worker.entry_started());
+    }
+    bool rejected = false;
+    try { worker.set_guest_processor(6, true); }
+    catch (const sfr::RuntimeStop& stop) { rejected = stop.category == "thread-host"; }
+    require(rejected && worker.affinity_mask() == pool);
+}
+
 void invalid_guest_processor_is_rejected_without_mutation() {
     sfr::NativeThread thread([](std::stop_token) { return 0; });
     const uint64_t selected = thread.set_guest_processor(0);
@@ -247,6 +359,29 @@ void invalid_guest_processor_is_rejected_without_mutation() {
     require(rejected);
     require(thread.affinity_mask() == selected);
     require(queried_thread_affinity(thread.native_id()) == selected);
+}
+
+void migrating_workers_respect_small_process_cpu_masks() {
+    const auto allowed = allowed_process_mask();
+    GROUP_AFFINITY original{};
+    require(GetThreadGroupAffinity(GetCurrentThread(), &original) != FALSE);
+    struct Restore {
+        uint64_t process;
+        GROUP_AFFINITY thread;
+        ~Restore() {
+            if (!SetProcessAffinityMask(GetCurrentProcess(), DWORD_PTR(process)) ||
+                !SetThreadGroupAffinity(GetCurrentThread(), &thread, nullptr)) std::terminate();
+        }
+    } restore{allowed, original};
+    const auto order = sfr::host_processor_order(allowed, original.Group);
+    uint64_t limited = 0;
+    // Exercise all six guest processors with only one or two available host
+    // processors. The pool and preferred CPU must never escape the restriction.
+    for (size_t i = 0; i < (std::min)(size_t{2}, order.size()); ++i) {
+        limited |= uint64_t{1} << order[i];
+        require(SetProcessAffinityMask(GetCurrentProcess(), DWORD_PTR(limited)) != FALSE);
+        migrating_workers_keep_their_guest_processor_preference();
+    }
 }
 
 void parked_cancel_joins_without_running_entry_and_keeps_handle_open() {
@@ -318,7 +453,11 @@ int main() {
         priority_changes_are_native_and_return_the_previous_value();
         unsupported_priority_is_rejected_without_mutation();
         host_processor_order_spreads_over_physical_cores();
+        calling_guest_thread_uses_allowed_core_mapping();
+        explicit_cpu_sets_keep_the_calling_thread_affinity();
         six_guest_processors_map_to_allowed_native_processors();
+        migrating_workers_keep_their_guest_processor_preference();
+        migrating_workers_respect_small_process_cpu_masks();
         invalid_guest_processor_is_rejected_without_mutation();
         parked_cancel_joins_without_running_entry_and_keeps_handle_open();
         active_cancel_waits_for_cooperative_entry_completion();

@@ -4,6 +4,7 @@
 #include "nui_race.h"
 #include "camera_input.h"
 #include "camera_race_motion.h"
+#include "avatar_state.h"
 #include <bit>
 #include <cstdlib>
 #include <cmath>
@@ -280,10 +281,8 @@ struct RaceSourceScope {
     ~RaceSourceScope() { live_race_source = previous; }
 };
 
-uint32_t player_of_record(uint32_t record) {
-    // One player's race is asked about through two objects of their own, so
-    // telling players apart is only right when there really are two.
-    if (!two_players) return 0;
+uint32_t input_player(uint32_t slot, bool multiple) {
+    if (!multiple) return 0;
     // SFR_RACE_TWO_PLAYERS=0 puts both riders back on the first pad, which
     // is what they shared before any of this.
     static const bool split = [] { const char* t = std::getenv("SFR_RACE_TWO_PLAYERS");
@@ -291,8 +290,13 @@ uint32_t player_of_record(uint32_t record) {
     if (!split) return 0;
     static const bool swap = [] { const char* t = std::getenv("SFR_RACE_PLAYERS_SWAP");
                                   return t && *t && *t != '0'; }();
-    const uint32_t player = record && record != body_address && record != original_body ? 1u : 0u;
-    return swap ? 1u - player : player;
+    return swap ? 1u - slot : slot;
+}
+
+uint32_t player_of_record(uint32_t record) {
+    // One player's race is asked about through two objects of their own.
+    const uint32_t slot = record && record != body_address && record != original_body ? 1u : 0u;
+    return input_player(slot, two_players);
 }
 
 uint32_t player_of_source(PPCContext& ctx, uint8_t* base, uint32_t source) {
@@ -311,6 +315,33 @@ uint32_t player_of_source(PPCContext& ctx, uint8_t* base, uint32_t source) {
 
 const sfr::RaceBody& body() { return race[0].body(); }
 
+}
+
+PPC_FUNC_IMPL(__imp__sub_822A6988);
+
+SFR_HOOK(sub_822A6988) {
+    sfr::enter_function(ctx, "sub_822A6988", 0x822A6988);
+    // 822A5140 interprets controller-overwritten body fields as joint XYZ.
+    // Keep authored animation and gesture handling; omit only its seven
+    // tracked-body rotation overlays for the current local controller rider.
+    const auto tracked_rotation = [&] {
+        switch (uint32_t(ctx.lr)) {
+        case 0x822A46E0: return ctx.r4.u32 == 2;
+        case 0x822A46F4: return ctx.r4.u32 == 5;
+        case 0x822A4708: return ctx.r4.u32 == 7;
+        case 0x822A471C: return ctx.r4.u32 == 9;
+        case 0x822A4730: return ctx.r4.u32 == 6;
+        case 0x822A4744: return ctx.r4.u32 == 8;
+        case 0x822A4758: return ctx.r4.u32 == 10;
+        default: return false;
+        }
+    };
+    if (pad_racing() && !sfr::nui_body_from_sensor() && tracked_rotation()) {
+        const auto slot = sfr::local_rider_slot(memory(), ctx.r3.u32);
+        if (slot && !camera_player(input_player(*slot, two_players)))
+            return;
+    }
+    __imp__sub_822A6988(ctx, base);
 }
 
 PPC_FUNC_IMPL(__imp__sub_82438930);

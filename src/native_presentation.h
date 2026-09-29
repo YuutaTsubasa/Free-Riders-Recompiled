@@ -41,11 +41,17 @@ public:
 
     [[nodiscard]] uint32_t width() const noexcept;
     [[nodiscard]] uint32_t height() const noexcept;
+    // Guest coordinates stay at width()/height(); attachments and readback use
+    // these physical dimensions. Window output size is independently chosen.
+    [[nodiscard]] uint32_t render_width() const noexcept;
+    [[nodiscard]] uint32_t render_height() const noexcept;
+    [[nodiscard]] plume::RenderRect render_rectangle(const plume::RenderRect&) const;
     plume::RenderTexture& color();
     plume::RenderTexture& depth();
     void clear(const NativeClear& clear, std::span<const plume::RenderRect> rectangles = {});
     void set_raster_state(const plume::RenderViewport&, const plume::RenderRect&);
     const NativeRasterState& raster_state() const noexcept;
+    // Tightly packed BGRA at render_width() x render_height().
     [[nodiscard]] std::vector<uint8_t> readback_color();
     // Presents the framebuffer. When the frame only drew into the top-left
     // area (a title rendering at a back buffer smaller than the framebuffer),
@@ -68,7 +74,8 @@ public:
     // frame still in flight), then runs the after_flush callbacks with
     // complete set (resource recycling).
     void flush();
-    // Runs each wait for the GPU, process-wide (there is one presentation).
+    // Runs waits for unfinished GPU work, process-wide (one presentation).
+    // Already-signaled fences are consumed without invoking this wrapper.
     // The default just waits; the diagnostic releases the guest execution
     // permit around it, so a guest worker can run while the frame renders
     // instead of queueing behind a thread that is only waiting

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pack the runtime shader cache into one file the game reads without tools.
 
-Every entry of out/shaders/runtime (the current "v8-" key) that has been
+Every entry of out/shaders/runtime (the current shader ABI key) that has been
 compiled is written with its original container, specialization mask and
 whichever bytecode exists: DXIL (built by a D3D12 run) and SPIR-V (built by a
 Vulkan run, SFR_GRAPHICS=vulkan). The game consults the pack (SFR_SHADER_PACK,

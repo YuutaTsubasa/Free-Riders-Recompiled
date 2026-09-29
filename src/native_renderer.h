@@ -34,10 +34,13 @@ struct SharedConstants {
     // shader outputs pixel coordinates, mapped to clip space by
     // xy * scale + (-w, w). Zero leaves positions unchanged.
     float screen_space_scale[2];
-    uint64_t reserved;
+    // Logical/physical texture-size ratio for resolved framebuffer samples.
+    // Only descriptors marked by the renderer consume it; assets stay native.
+    float resolved_texture_scale[2];
 };
 static_assert(sizeof(SharedConstants) == 336);
 static_assert(offsetof(SharedConstants, screen_space_scale) == 320);
+static_assert(offsetof(SharedConstants, resolved_texture_scale) == 328);
 
 struct NativeDraw {
     plume::RenderPrimitiveTopology topology = plume::RenderPrimitiveTopology::TRIANGLE_LIST;

@@ -29,7 +29,7 @@ int main(int argc, char** argv) {
         if (kind != "missing") {
             std::ofstream out(pack, std::ios::binary);
             if (kind == "zero") {
-                const std::array<char, 16> header{'S','F','R','S','H','P','K','2',8,0,0,0,0,0,0,0};
+                const std::array<char, 16> header{'S','F','R','S','H','P','K','2',9,0,0,0,0,0,0,0};
                 out.write(header.data(), header.size());
             }
         }

@@ -16,7 +16,7 @@ class ShaderPackTests(unittest.TestCase):
     def test_producer_only_uses_current_cache_and_stamps_native_abi(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for version in (6, 8):
+            for version in (8, SHADER_ABI):
                 folder = root / f'v{version}-example'
                 folder.mkdir()
                 (folder / 'original.bin').write_bytes(b'\0\0\0\1')
@@ -27,8 +27,8 @@ class ShaderPackTests(unittest.TestCase):
                             '--cache', str(root), '--output', str(output)], check=True, capture_output=True)
             data = output.read_bytes()
             validate_shader_pack(data)
-            self.assertEqual(data[:16], b'SFRSHPK2' + struct.pack('<II', 8, 1))
-            self.assertEqual(data[-1], 8)
+            self.assertEqual(data[:16], b'SFRSHPK2' + struct.pack('<II', SHADER_ABI, 1))
+            self.assertEqual(data[-1], SHADER_ABI)
             native = (ROOT / 'src/shader_pack_format.h').read_text()
             self.assertEqual(int(re.search(r'shader_abi_version = (\d+)', native)[1]), SHADER_ABI)
             self.assertIn(MAGIC.decode(), native)
