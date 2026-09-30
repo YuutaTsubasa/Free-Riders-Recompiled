@@ -103,4 +103,55 @@ SHA-256. The launcher opens normally. Final APK SHA-256:
 `1a2fa9e295c7feeb90e43872b16a0713410a79d9f27e6a6a888e9f5b6d49b18d`.
 The final game's `.text` and `.rodata` sections and all assets match the
 measured targeted-wakeup candidate byte for byte. 3D race performance still
-needs the user's same-course play test.
+needed the user's same-course play test at delivery time; see the follow-up below.
+
+## Follow-up: actual race and race CPU profile
+
+The user reported that 3D gameplay still felt about the same. The first new
+race log contains sustained high-draw sections around 14–16 FPS. Frames with
+700–999 draws average 68.88 ms (14.52 FPS, 1,150 samples; median 63.55 ms,
+p95 108.68 ms). The older API 28 log's corresponding draw-count bucket averages
+80.50 ms (12.42 FPS, 428 samples). Draw-count matching is not a fixed scene or
+input replay: the recordings cover different race durations and positions, so
+this is descriptive evidence, not a controlled improvement percentage.
+Settings files match. In the new high-draw bucket, mean `pipeline_ms` is zero,
+`main_queued_ms` 18.79, `main_blocked_ms` 6.60, CPU `draw_ms` 9.33, `present_ms`
+1.44 and measured `gpu_wait_ms` 0.61. CPU draw time is not a GPU timestamp.
+
+A second user-driven race supplied a 30.0235-second simpleperf CPU profile,
+400 Hz with call stacks, 22,650 samples and zero loss. Sampling started when
+the game reached 798 draws/frame, at present 3,317 / process time 110.165 s.
+The game continued normally during sampling. This is the race itself, not
+an extrapolation from the Intro.
+
+- Main guest 1 (TID 6006): 33.87% of total CPU samples, 19.18 CPU seconds.
+  Samples ran on cores 2/3/4 (99.7%) and core 7 (0.3%), not little cores 0/1.
+  Pinning the main thread away from little cores is therefore not supported
+  as the explanation for this run. This does not test alternative placements.
+- Main-thread `native_draw`, including children, accounts for 21.69% of that
+  thread's CPU; `NativeRenderer::draw` 9.01% is nested within it. Checkpoint
+  handling accounts for 9.05% including children. TLS resolver self time is
+  6.47%, memmove 3.06%, index decode 2.35%. Do not sum nested percentages.
+- Guest 29 (TID 6089): 26.41% of total CPU samples, 14.955 CPU seconds, pinned
+  to core 5. The guest chain `827C9508 -> 827D7250 -> 827D66C0 -> 827D6088`
+  accounts for about 93% of its CPU including children. TLS resolver self
+  time is 13.06%, `store_float_single_update` 7.29%, `sub_827E4C68` 5.82%,
+  observed function entry 5.23%, vector loads 4.68%, vector stores 3.58%.
+  The numbered functions' game-level purpose remains unverified.
+- Guest 16 contributes another 7.28% of total CPU samples. Its stacks include
+  synchronization calls and the guest `824A7EE0 -> 824A82C8` path.
+
+The next optimization candidates are repeated CPU work in guest execution,
+memory/TLS helpers and draw preparation. Simply reducing pipeline compilation
+cannot address a race window where compilation time is already zero. Any
+declaration/index caching must validate content changes, not just pointers;
+any helper specialization must preserve memory checks and guest semantics.
+The profile does not prove that a particular change will improve race FPS.
+
+Evidence: `out/handheld-042/android-targeted-race/{game.log,comparison.json}`
+and `out/handheld-042/android-targeted-race-profile/` containing `perf-race.data`,
+`game.log`, `game-final.log`, `attribution.json`, `main-functions.json`, and
+`profile-start-frame.txt`. The temporary profileable APK was replaced with the
+normal candidate only after verifying the game process had ended. The original
+debug settings were read back and matched byte for byte. No additional runtime
+code changes were made during this follow-up.
