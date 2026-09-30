@@ -228,3 +228,29 @@ lists Sonic Free Riders with the
 [No Kinect Patch](https://gamebanana.com/mods/456720). This is a candidate route
 to a playable comparison, not a measured performance result. A specific build,
 patch version and matching scene/quality settings still need to be validated.
+
+### Completed modified race capture and Xenia source review
+
+`swap-optimized-2` completed the scripted 11,500-present capture (intentional
+present-limit exit 3), zero overlap, 11,500 complete rows and zero dropped waits.
+This covers the opening race segment, not a finished lap. The frame-11,250
+screenshot was inspected alongside the original; both render the track,
+character and HUD, with different race/AI states. This is a visual smoke check,
+not a pixel-identical replay or complete visual regression test.
+
+| Capture | Mean ms | p95 ms | p99 ms | Mean draws | Draw ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| swap-original-1 | 17.9204 | 20.3538 | 21.5929 | 831.81 | 5.3945 |
+| swap-optimized-2 | 17.6087 | 19.9010 | 21.3398 | 843.54 | 5.5519 |
+
+Window: frames 9,500–11,000 inclusive, 1,501 samples per capture. Frame times
+improved in this pair but drawing cost did not, and race workloads differ.
+One pair does not separate an optimization effect from run-to-run variation.
+Do not present it as a proven FPS gain. The native_formats, guest_graphics and
+native_pipeline_key tests were rerun after capture: 3/3 passed.
+
+The user's requested [Xenia source comparison](xenia-performance-comparison-2026-09-30.md)
+pins upstream and Canary revisions, identifies GPU-side vertex conversion and
+audio-pump differences, and corrects the assumption that all Xenia variants
+map a guest priority of 16 above normal. Source review and this desktop capture
+do not resolve the handheld A/V symptom or establish a win over Xenia.

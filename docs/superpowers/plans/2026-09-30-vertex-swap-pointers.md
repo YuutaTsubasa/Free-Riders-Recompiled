@@ -30,3 +30,11 @@ automatically stopped at frame 7,843 when Claude started a benchmark. Do not use
 that aborted run to assess speed or stability. Claude's next benchmark was
 observed live as PID 38680 after PID 47808 completed; do not assume a stale PID
 or this note grants the test machine to Codex.
+
+Follow-up: swap-optimized-2 completed 11,500 presents with no overlap and no
+dropped waits. Inspected frame-11,250 alongside original; track/character/HUD
+render, but race states differ. Three targeted CTests passed again. The late
+window averaged 17.6087 ms versus original 17.9204 ms, with different draw counts
+and higher measured draw cost; no stable FPS gain is established by this pair.
+The scripted capture covers early racing, not a completed lap. Repeated paired
+measurements and handheld acceptance remain outstanding.
