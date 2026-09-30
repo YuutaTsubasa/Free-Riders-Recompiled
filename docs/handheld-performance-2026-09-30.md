@@ -397,5 +397,38 @@ terminal status after 72.476 seconds, consistent with the original 72.4824
 seconds and source 72.414 seconds. The mid-movie screenshot shows the same
 segment rendering correctly (not an exact-frame visual regression comparison).
 This reduces measured helper work while preserving playback duration on the
-desktop; it is not proof of a handheld FPS gain. Race smoke validation and
-an updated distributable candidate remain pending.
+desktop; it is not proof of a handheld FPS gain.
+
+### Refreshed private candidate and race validation
+
+`vector-load-race-1` completes 11,500 presents in 195.718 seconds, intentional
+present-limit exit 3, with no overlapping game process or dropped wait events.
+The screenshot at present 11,250 shows the rider, track and HUD in the race.
+This is a roughly 40-second race segment after menu/loading automation, not a
+completed lap. The late 1,501-frame window averages 17.917 ms, p95 20.095 ms,
+and p99 21.334 ms. It is a desktop smoke test, not an isolated speedup result.
+All 11,500 frames satisfy cached bytes + swapped bytes = source vertex bytes.
+Late means are 34.43 MB source, 29.79 MB cached, 4.64 MB swapped, with 0.787 ms
+swapping and 0.817 ms repacking. Repacked output bytes use a different unit of
+accounting and must not be added to source bytes.
+
+Windows runtime/launcher and Android ARM64 runtime/launcher/SDL builds succeed.
+Windows CTest passes 118/118. A subsequent complete build relinks nine shader
+and render executables; the affected test selection then passes 10/10.
+Android compilation retains existing generated-code FPCR operand warnings;
+Android tests and the application have not been run on a handheld.
+
+The second private package is based on source commit `98d6534`, named
+`0.4.2-handheld-test2-20260930`, in the primary checkout's
+`out/handheld-vector-candidate-20260930`. It includes the retained pointer and
+partial-vector improvements and new opt-in tracing. The earlier candidate in
+`out/handheld-wait-candidate-20260930` remains intact. Android keeps version
+0.4.2/code 12 and the same signing certificate, shader pack and pose-asset scope
+as the official APK. Windows retains camera models and runtime dependencies.
+No game data, personal settings or save files are included.
+
+Claude's separate timing/priority commits `eafeba9` and `567ab89` have been
+reviewed read-only, not integrated into this candidate. A claimed handheld
+coarse-timer cause still requires measurements on that device. No Xenia runtime
+comparison or handheld acceptance has occurred; the next useful comparison is
+this package versus v0.4.2 on the same powered device, settings and scene.
