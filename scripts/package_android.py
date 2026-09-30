@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 PROJECT = ROOT / 'android' / 'app' / 'src' / 'main'
 SDL_JAVA = ROOT / 'tools' / 'SDL' / 'android-project' / 'app' / 'src' / 'main' / 'java'
 MIN_SDK, TARGET_SDK = 28, 35
-VERSION_CODE, VERSION_NAME = 12, '0.4.2'
+VERSION_CODE, VERSION_NAME = 13, '0.4.3'
 
 
 def version_key(path):
@@ -124,6 +124,11 @@ def main():
                 apk.write(library, 'lib/%s/%s' % (abi, library.name), compress_type=zipfile.ZIP_STORED)
         if args.pack:
             apk.write(args.pack, 'assets/shaders.pack', compress_type=zipfile.ZIP_DEFLATED)
+            manifest = Path(args.pack).parent / 'pipelines-vulkan.manifest'
+            if not manifest.is_file():
+                manifest = ROOT / 'data/pipeline-manifests' / manifest.name
+            if manifest.is_file():
+                apk.write(manifest, 'assets/pipelines-vulkan.manifest', compress_type=zipfile.ZIP_DEFLATED)
         if args.pose:
             for model in sorted(Path(args.pose).glob('*.onnx')):
                 apk.write(model, 'assets/pose/' + model.name, compress_type=zipfile.ZIP_DEFLATED)

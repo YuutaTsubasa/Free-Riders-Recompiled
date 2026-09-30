@@ -107,23 +107,27 @@ __attribute__((target("ssse3")))
 #endif
 void swap_words_into(std::span<uint8_t> to, std::span<const uint8_t> from) {
     const size_t size = (std::min)(to.size(), from.size());
+    // Byte stores can alias the ABI's span objects. Keep their pointers in
+    // locals so the copy loop need not reload them after every vector store.
+    auto* const destination = to.data();
+    const auto* const source = from.data();
     size_t i = 0;
 #if defined(_M_X64) || defined(__x86_64__)
     const __m128i order = _mm_setr_epi8(3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12);
     for (; i + 16 <= size; i += 16)
-        _mm_storeu_si128(reinterpret_cast<__m128i*>(to.data() + i),
-                         _mm_shuffle_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(from.data() + i)), order));
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(destination + i),
+                         _mm_shuffle_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(source + i)), order));
 #elif defined(__ARM_NEON)
     for (; i + 16 <= size; i += 16)
-        vst1q_u8(to.data() + i, vrev32q_u8(vld1q_u8(from.data() + i)));
+        vst1q_u8(destination + i, vrev32q_u8(vld1q_u8(source + i)));
 #endif
     for (; i + 4 <= size; i += 4) {
-        to[i] = from[i + 3];
-        to[i + 1] = from[i + 2];
-        to[i + 2] = from[i + 1];
-        to[i + 3] = from[i];
+        destination[i] = source[i + 3];
+        destination[i + 1] = source[i + 2];
+        destination[i + 2] = source[i + 1];
+        destination[i + 3] = source[i];
     }
-    for (; i < size; ++i) to[i] = from[i];
+    for (; i < size; ++i) destination[i] = source[i];
 }
 
 // Eight or four indices a step: a race frame decodes three quarters of a

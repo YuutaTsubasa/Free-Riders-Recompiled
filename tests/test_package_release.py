@@ -46,6 +46,25 @@ class CameraPackageTests(unittest.TestCase):
 
 
 class ShaderPackageTests(unittest.TestCase):
+    def test_manifest_defaults_and_adjacent_override(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ('FreeRidersRecompiled', 'sfr_cpu_diagnostic'):
+                (root / name).write_bytes(b'program')
+            pack = root / 'shaders.pack'
+            pack.write_bytes(b'SFRSHPK2' + struct.pack('<II', SHADER_ABI, 1) +
+                             struct.pack('<5I', 0, 0, 4, 1, 1) + b'gameDS')
+            defaults = root / 'data/pipeline-manifests'
+            defaults.mkdir(parents=True)
+            name = 'pipelines-vulkan.manifest'
+            (defaults / name).write_bytes(b'recorded default')
+            with mock.patch.object(package, 'ROOT', root):
+                files = dict(package.desktop_files('linux', root, pack))
+                self.assertEqual(files[name], defaults / name)
+                self.assertNotIn('pipelines-d3d12.manifest', files)
+                (root / name).write_bytes(b'pack-specific capture')
+                self.assertEqual(dict(package.desktop_files('linux', root, pack))[name], root / name)
+
     def test_release_rejects_shader_pack_without_current_abi(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -1299,6 +1299,79 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height) {
     }
 }
 
+// Small built-in 5x7 glyphs keep the startup screen independent of font
+// files, guest shaders, game assets, and the shader pack being prepared.
+bool NativePresentation::preparation_progress(size_t completed, size_t total, bool cancelling) {
+    pump_events();
+#ifdef _WIN32
+    if (GetForegroundWindow() == impl_->window && (GetAsyncKeyState(VK_ESCAPE) & 0x8000))
+        impl_->close_requested = true;
+#else
+    if (SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_ESCAPE]) impl_->close_requested = true;
+#endif
+    cancelling = cancelling || close_requested();
+    static constexpr uint8_t letters[26][5] = {
+        {126,17,17,17,126},{127,73,73,73,54},{62,65,65,65,34},{127,65,65,34,28},
+        {127,73,73,73,65},{127,9,9,9,1},{62,65,73,73,122},{127,8,8,8,127},
+        {0,65,127,65,0},{32,64,65,63,1},{127,8,20,34,65},{127,64,64,64,64},
+        {127,2,12,2,127},{127,4,8,16,127},{62,65,65,65,62},{127,9,9,9,6},
+        {62,65,81,33,94},{127,9,25,41,70},{70,73,73,73,49},{1,1,127,1,1},
+        {63,64,64,64,63},{31,32,64,32,31},{63,64,56,64,63},{99,20,8,20,99},
+        {7,8,112,8,7},{97,81,73,69,67}};
+    static constexpr uint8_t digits[10][5] = {
+        {62,81,73,69,62},{0,66,127,64,0},{66,97,81,73,70},{33,65,69,75,49},
+        {24,20,18,127,16},{39,69,69,69,57},{60,74,73,73,48},{1,113,9,5,3},
+        {54,73,73,73,54},{6,73,73,41,30}};
+    const int w = int(width()), h = int(height());
+    const int scale = (std::max)(1, (std::min)(w / 200, h / 110));
+    const auto rectangle = [&](int x, int y, int right, int bottom) -> plume::RenderRect {
+        return {std::clamp(x,0,w), std::clamp(y,0,h), std::clamp(right,0,w), std::clamp(bottom,0,h)};
+    };
+    const auto text = [&](const std::string& value, int y, const std::array<float,4>& color) {
+        std::vector<plume::RenderRect> pixels;
+        int x = (w - int(value.size()) * 6 * scale) / 2;
+        for (char c : value) {
+            const uint8_t* glyph = c >= 'A' && c <= 'Z' ? letters[c-'A'] :
+                c >= '0' && c <= '9' ? digits[c-'0'] : nullptr;
+            if (glyph) for (int col=0; col<5; ++col) for (int row=0; row<7; ++row)
+                if (glyph[col] & (1 << row)) {
+                    auto rect = rectangle(x+col*scale,y+row*scale,x+(col+1)*scale,y+(row+1)*scale);
+                    if (rect.left < rect.right && rect.top < rect.bottom) pixels.push_back(rect);
+                }
+            x += 6*scale;
+        }
+        // Keep clear batches small: some D3D12 drivers fail with hundreds of
+        // rectangles in one ClearRenderTargetView call.
+        for (size_t offset = 0; offset < pixels.size(); offset += 16)
+            clear(NativeClear{.color=true,.color_value=color},
+                  std::span(pixels).subspan(offset, (std::min)(size_t(16), pixels.size() - offset)));
+    };
+    clear(NativeClear{.color=true,.depth=true,.stencil=true,.color_value={0.018f,0.025f,0.048f,1}});
+    text(cancelling ? "CANCELLING" : "PREPARING PIPELINES", h/2-20*scale,{0.90f,0.95f,1,1});
+    const int left=w/6, right=w-w/6, top=h/2;
+    auto background=rectangle(left,top,right,top+4*scale);
+    if (background.left < background.right && background.top < background.bottom)
+        clear(NativeClear{.color=true,.color_value={0.10f,0.15f,0.22f,1}},std::span(&background,1));
+    const int fill = total ? int(double(right-left)*double((std::min)(completed,total))/double(total)) : 0;
+    auto bar=rectangle(left,top,left+fill,top+4*scale);
+    if (bar.left < bar.right && bar.top < bar.bottom)
+        clear(NativeClear{.color=true,.color_value={0.10f,0.72f,0.95f,1}},std::span(&bar,1));
+    text(std::to_string(completed)+" OF "+std::to_string(total),h/2+10*scale,{0.60f,0.78f,0.9f,1});
+#ifdef __ANDROID__
+    text("HOLD BACK TO CANCEL",h/2+25*scale,{0.45f,0.55f,0.65f,1});
+#else
+    text("ESC TO CANCEL",h/2+25*scale,{0.45f,0.55f,0.65f,1});
+#endif
+    present();
+    return !close_requested();
+}
+
+void NativePresentation::finish_preparation() {
+    flush();
+    clear(NativeClear{.color=true,.depth=true,.stencil=true,.color_value={0,0,0,1}});
+    flush();
+}
+
 void NativePresentation::pump_events() {
 #ifdef _WIN32
     MSG message{};

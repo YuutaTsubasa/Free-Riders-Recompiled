@@ -68,6 +68,10 @@ struct NativeDraw {
     std::span<const uint8_t> palette;
     const plume::RenderShader* vertex_shader = nullptr;
     const plume::RenderShader* pixel_shader = nullptr;
+    // Source identity for portable pipeline recipes; null for non-game draws.
+    const ShaderCacheEntry* vertex_entry = nullptr;
+    const ShaderCacheEntry* pixel_entry = nullptr;
+    uint32_t pixel_link_constants = 0;
     // Vulkan: the pixel shader's specialization constant (constant_id 0),
     // set in its pipeline; D3D12 links it into the shader instead.
     uint32_t pixel_spec_constants = 0;
@@ -114,6 +118,9 @@ public:
     // the next draw that uses one uploads it again.
     void invalidate(uint32_t physical, uint32_t size);
     void draw(const NativeDraw& draw);
+    // Called once at initial device setup, before the title's first frame.
+    // Compiles known recipes while the presentation thread remains responsive.
+    void prepare_pipelines();
     // Room in the upload ring for the next draw's vertices (and, after them,
     // the rest of that draw's data with index_bytes of indices), so the
     // caller writes the vertices there instead of into scratch that draw()
@@ -149,6 +156,10 @@ public:
         // is recorded and waits for the GPU. Texture work: the uploads a
         // draw makes before it can bind what it fetches.
         uint32_t ring_flushes, textures; double texture_milliseconds;
+        // Opt-in probe of requested bytes and exact matches; the probe itself
+        // does not skip writes. Reuse savings are reported independently.
+        uint64_t constant_upload_bytes = 0, constant_reusable_bytes = 0;
+        uint64_t constant_saved_bytes = 0; // Actual skipped writes when reuse is enabled.
     };
     PipelineWork take_pipeline_work() noexcept;
     // Unchanged while texture() and sampler() would answer the same fetch

@@ -1,6 +1,7 @@
 #include "guest_threads.h"
 #include "guest_memory.h"
 #include "system_time.h"
+#include "host_timing.h"
 #include <algorithm>
 #include <cstdlib>
 #include <bit>
@@ -9,6 +10,8 @@
 #include <vector>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <thread>
 namespace sfr {
 namespace {
@@ -40,6 +43,11 @@ struct GuestThreads::Impl {
         uint32_t references = 0;
         // Guest-only suspensions of a running thread (see GuestThreads::suspend).
         std::atomic<uint32_t> guest_suspends{0};
+        // The registry is mutated under guest execution, but a retained waiter
+        // runs without that permit. Serialize its predicate check with count
+        // publication so a resume cannot be lost between checking and parking.
+        std::mutex suspension_mutex;
+        std::condition_variable_any suspension_changed;
         bool prepared_self_suspend = false;
         uint32_t prepared_previous = 0;
         bool handle_open = true;
@@ -51,6 +59,10 @@ struct GuestThreads::Impl {
     EntryFactory factory;
     std::vector<std::unique_ptr<Record>> records;
     uint32_t next_slot = 0, next_handle = 0x72200004, next_id = 2;
+    const bool suspend_notify = [] {
+        const char* setting = std::getenv("SFR_SUSPEND_NOTIFY");
+        return !setting || *setting != '0';
+    }();
     Impl(GuestMemory& m, TlsTemplate t, uint32_t stack, TargetValidator v, EntryFactory f)
         : memory(m), tls(t), default_stack(stack), validator(std::move(v)), factory(std::move(f)) {
         if (!validator || !factory || !tls.slots || tls.slots > 2048 || tls.data_size > 65536 ||
@@ -135,13 +147,18 @@ GuestThreads::ResumeResult GuestThreads::resume(uint32_t handle, uint32_t previo
             throw RuntimeStop("thread-output", previous_output, "resume output overlaps suspend count");
     }
     memory.check_write(count_address, 1);
+    std::unique_lock suspension_lock(record->suspension_mutex);
     if (record->guest_suspends) {
         const auto previous = memory.load<uint8_t>(count_address);
         if (previous != record->guest_suspends + (record->native->suspended() ? 1u : 0u))
             throw RuntimeStop("thread-resume", handle, "guest suspend count differs from recorded suspensions");
-        --record->guest_suspends;
         memory.store<uint8_t>(count_address, uint8_t(previous - 1));
         if (previous_output) memory.store<uint32_t>(previous_output, previous);
+        // Publish the guest-visible outputs before either the notified or the
+        // polling waiter can observe the final decrement.
+        const bool released = record->guest_suspends.fetch_sub(1, std::memory_order_release) == 1;
+        suspension_lock.unlock();
+        if (released) record->suspension_changed.notify_all();
         return {0, previous, record->state.id};
     }
     const auto expected = record->native->suspended() ? 1u : 0u;
@@ -166,13 +183,14 @@ GuestThreads::ResumeResult GuestThreads::suspend(uint32_t handle, uint32_t previ
             throw RuntimeStop("thread-output", previous_output, "suspend output overlaps suspend count");
     }
     memory.check_write(count_address, 1);
+    std::lock_guard suspension_lock(record->suspension_mutex);
     const auto previous = memory.load<uint8_t>(count_address);
     if (previous != record->guest_suspends + (record->native->suspended() ? 1u : 0u))
         throw RuntimeStop("thread-suspend", handle, "guest suspend count differs from recorded suspensions");
     if (previous >= 0x7F) return {0xC000004A, previous, record->state.id};  // STATUS_SUSPEND_COUNT_EXCEEDED
-    ++record->guest_suspends;
     memory.store<uint8_t>(count_address, uint8_t(previous + 1));
     if (previous_output) memory.store<uint32_t>(previous_output, previous);
+    record->guest_suspends.fetch_add(1, std::memory_order_release);
     return {0, previous, record->state.id};
 }
 uint32_t GuestThreads::handle_for_object(uint32_t object) const {
@@ -224,9 +242,18 @@ GuestThreads::ResumeResult GuestThreads::suspend_self(uint32_t handle, uint32_t 
 std::function<void(std::stop_token)> GuestThreads::suspension_waiter(uint32_t handle) const {
     auto* record = impl_->find_handle(handle);
     if (!record) throw RuntimeStop("thread-suspend", handle, "unknown suspension waiter");
-    return [record](std::stop_token stop) {
-        while (!stop.stop_requested() && record->guest_suspends.load(std::memory_order_acquire))
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    return [record, notify = impl_->suspend_notify](std::stop_token stop) {
+        if (!notify) {
+            while (!stop.stop_requested() && record->guest_suspends.load(std::memory_order_acquire))
+                precise_sleep(std::chrono::milliseconds(1));
+            return;
+        }
+        std::unique_lock lock(record->suspension_mutex);
+        record->suspension_changed.wait(lock, stop, [record] {
+            return record->guest_suspends.load(std::memory_order_acquire) == 0;
+        });
+        // The lock is destroyed before this callback returns to the caller
+        // that reacquires the guest execution permit.
     };
 }
 void GuestThreads::shutdown() noexcept {
@@ -312,7 +339,21 @@ uint32_t GuestThreads::close(uint32_t handle) {
     return 0;
 }
 int32_t GuestThreads::set_priority(uint32_t object, int32_t increment) {
+    // An increment of 16 saturates the thread at the top of its range (the
+    // NT kernel's rule, |increment| >= 16). The title asks it for its
+    // time-critical threads (guests 10, 17, 28, 30 in a race) and gives every
+    // other thread -2..2. This experiment raises those threads one host level;
+    // its scheduling benefit needs device measurements. Pinned Xenia Canary
+    // instead leaves 16 at normal, above this title's 0..2 at lowest, and
+    // raises 17 to above-normal. Negative increments retain
+    // the existing mapping. Opt in with SFR_GUEST_SATURATED_PRIORITY=1 until
+    // device measurements establish a benefit.
+    static const bool saturated_above = [] {
+        const char* setting = std::getenv("SFR_GUEST_SATURATED_PRIORITY");
+        return setting && *setting == '1';
+    }();
     const int32_t host_priority = increment > 34 ? 2 : increment > 17 ? 1 :
+                                  saturated_above && increment >= 16 ? 1 :
                                   increment < -34 ? -2 : increment < -17 ? -1 : 0;
     return impl_->find_object(object).native->set_priority(host_priority);
 }

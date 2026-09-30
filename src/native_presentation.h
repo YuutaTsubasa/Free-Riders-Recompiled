@@ -88,6 +88,8 @@ public:
     void after_flush(std::function<void(bool complete)> callback);
     void clear_after_flush();
     void pump_events();
+    bool preparation_progress(size_t completed, size_t total, bool cancelling = false);
+    void finish_preparation();
     [[nodiscard]] bool close_requested() const noexcept;
     [[nodiscard]] void* window_handle() const noexcept;
 

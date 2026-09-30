@@ -1,10 +1,12 @@
 #include "ppc_recomp_shared.h"
 #include "diagnostic_hooks.h"
+#include "wait_trace.h"
 #include "guest_memory.h"
 #include "native_input.h"
 #include "avatar_state.h"
 #include "avatar_transform.h"
 #include "avatar_clip_pose.h"
+#include <algorithm>
 #include <bit>
 #include <atomic>
 #include <chrono>
@@ -40,16 +42,15 @@ PPC_FUNC_IMPL(__imp__sub_82817B48);
 
 // Movie frame: the game calls the XMV player's RenderNextFrame (vtable +80)
 // every frame with flag bit 0 (return at once when no decoded frame is
-// queued). On the console the decoder thread has its own core and a frame is
-// always ready; here all guest threads share one permit, the decoder falls
-// behind and two thirds of the frames were presented without the movie
-// (black). Without the flag the player waits on its frame/end/error events
-// (828266C8), which also gives the decoder the permit.
+// queued). This compatibility patch predates the per-core scheduler: when
+// the decoder fell behind, presents without a movie frame appeared black.
+// Without the flag the player waits for decoder readiness (828266C8),
+// releasing its execution permit while blocked. Keep that behavior while
+// measuring the current decoder rather than assuming the old bottleneck.
 //
 // Skipping: A, B, START or BACK on the pad (or SFR_SKIP_MOVIES=1) ends the
 // movie as the player's end of file does (XMV_ENDOFFILE, which the callers
-// 8243A728 and 8243A968 test), since the decoder is still slower than real
-// time.
+// 8243A728 and 8243A968 test). Decoder throughput depends on the host.
 SFR_HOOK(sub_82817B48) {
     sfr::enter_function(ctx,"sub_82817B48",0x82817B48);
     // A movie ended before its first frames leaves the title waiting on a
@@ -63,12 +64,20 @@ SFR_HOOK(sub_82817B48) {
     // the movie then left the title on the white screen this allowance is
     // meant to avoid. A player that renders nothing at all still has to end,
     // so a wall-clock allowance runs beside it.
-    struct Progress { uint32_t rendered=0; std::chrono::steady_clock::time_point first{}; };
+    struct Progress {
+        uint32_t rendered=0, trace_calls=0, trace_success=0;
+        uint64_t trace_total_calls=0;
+        uint32_t trace_last_status=0;
+        double trace_ms=0, trace_max_ms=0;
+        std::chrono::steady_clock::time_point first{}, trace_reported{};
+    };
     static std::unordered_map<uint32_t,Progress> players;
     const uint32_t player=ctx.r3.u32;
     auto& progress=players[player];
     const auto now=std::chrono::steady_clock::now();
     if(progress.first==std::chrono::steady_clock::time_point{}) progress.first=now;
+    static const bool trace_movie=[]{ const char* t=std::getenv("SFR_WAIT_TRACE"); return t && *t=='1'; }();
+    if(trace_movie && progress.trace_reported==std::chrono::steady_clock::time_point{}) progress.trace_reported=now;
     static const uint32_t allowance_ms=[]{
         const char* t=std::getenv("SFR_MOVIE_ALLOWANCE_MS");
         const long value=t?std::strtol(t,nullptr,10):10000;
@@ -86,9 +95,36 @@ SFR_HOOK(sub_82817B48) {
         ctx.r3.u64=0x16660026u;  // XMV_ENDOFFILE
         return;
     }
+    const uint32_t input_flags=ctx.r4.u32, caller=uint32_t(ctx.lr);
     ctx.r4.u32&=~1u;
+    const auto call_started=trace_movie?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};
     __imp__sub_82817B48(ctx,base);
-    if(ctx.r3.u32==0) ++progress.rendered;  // a frame the player really drew
+    if(ctx.r3.u32==0) ++progress.rendered;  // retain the existing success-based skip policy
+    if(trace_movie) {
+        const auto ended=std::chrono::steady_clock::now();
+        const double ms=std::chrono::duration<double,std::milli>(ended-call_started).count();
+        ++progress.trace_calls;
+        ++progress.trace_total_calls;
+        progress.trace_success+=ctx.r3.u32==0;
+        progress.trace_ms+=ms;
+        progress.trace_max_ms=std::max(progress.trace_max_ms,ms);
+        if(progress.trace_total_calls==1 || ctx.r3.u32!=progress.trace_last_status ||
+           progress.trace_calls>=30 || ended-progress.trace_reported>=std::chrono::seconds(2)) {
+            std::cerr << "MOVIE_TRACE player=0x" << std::hex << player << " last_status=0x" << ctx.r3.u32 << std::dec
+                << " frame=" << sfr::present_count.load() << " host_ms="
+                << std::chrono::duration_cast<std::chrono::milliseconds>(ended.time_since_epoch()).count()
+                << " window_ms=" << std::chrono::duration<double,std::milli>(ended-progress.trace_reported).count()
+                << " calls=" << progress.trace_calls << " success_returns=" << progress.trace_success
+                << " call_ms=" << progress.trace_ms << " max_call_ms=" << progress.trace_max_ms
+                << " total_calls=" << progress.trace_total_calls << " success_total=" << progress.rendered
+                << " elapsed_ms=" << std::chrono::duration<double,std::milli>(ended-progress.first).count()
+                << " caller=0x" << std::hex << caller << " input_flags=0x" << input_flags << std::dec << '\n';
+            progress.trace_calls=progress.trace_success=0;
+            progress.trace_ms=progress.trace_max_ms=0;
+            progress.trace_reported=ended;
+        }
+        progress.trace_last_status=ctx.r3.u32;
+    }
 }
 
 // How many of the dispatcher's helper threads (823B60C0) may still be inside
@@ -175,7 +211,7 @@ SFR_CONCURRENT_HOOK(sub_824D0B10) {
         }();
         const auto deadline=std::chrono::steady_clock::now()+std::chrono::milliseconds(wait_ms);
         while(helpers_in_jobs.load(std::memory_order_acquire) && std::chrono::steady_clock::now()<deadline)
-            sfr::wait_without_permit([](void*){ std::this_thread::sleep_for(std::chrono::microseconds(50)); },nullptr);
+            sfr::traced_host_wait([](void*){ std::this_thread::sleep_for(std::chrono::microseconds(50)); },nullptr,"poll_50us",50000);
         static std::atomic<uint32_t> waits{0}, left{0};
         const uint32_t count=++waits;
         if(helpers_in_jobs.load(std::memory_order_acquire)) ++left;
@@ -218,7 +254,7 @@ SFR_HOOK(sub_82A53BC0) {
             call=sfr::active_memory->load<uint32_t>(uint64_t(job)+168);
             if(call && call!=0x82A53BC0) break;
             call=0;
-            sfr::wait_without_permit([](void*){ std::this_thread::sleep_for(std::chrono::microseconds(100)); },nullptr);
+            sfr::traced_host_wait([](void*){ std::this_thread::sleep_for(std::chrono::microseconds(100)); },nullptr,"poll_100us",100000);
         }
         static std::atomic<uint32_t> late{0}, skipped{0};
         const uint32_t count=call?++late:++skipped;

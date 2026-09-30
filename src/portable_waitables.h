@@ -7,8 +7,8 @@
 namespace sfr::portable {
 // The Windows kernel objects the guest's synchronization maps onto (events,
 // semaphores, a thread's exit), for hosts without them. Every object shares
-// one lock and one condition variable: a signal wakes all waiters, which
-// re-check their objects. Waits follow WaitForMultipleObjects: wait-any
+// one lock; a signal wakes only waits containing that object, which then
+// re-check their complete object sets. Waits follow WaitForMultipleObjects: wait-any
 // takes the first signaled object in order, wait-all takes all of them at
 // once; an auto-reset event and a semaphore are consumed by the wait that
 // takes them.
@@ -47,4 +47,8 @@ constexpr int wait_timeout = -1, wait_cancelled = -2;
 // or wait_cancelled when stop is requested first.
 int wait_any(std::span<Waitable* const> objects, uint32_t timeout_ms, std::stop_token stop = {});
 int wait_all(std::span<Waitable* const> objects, uint32_t timeout_ms, std::stop_token stop = {});
+#ifdef SFR_PORTABLE_WAITABLE_TESTING
+// Only compiled into the standalone test, for deterministic blocked-wait tests.
+uint32_t testing_blocked_wait_count();
+#endif
 }

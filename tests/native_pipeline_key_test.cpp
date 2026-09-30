@@ -55,8 +55,9 @@ int main(int argc, char** argv) {
         compare();
         require(bulk == no_stencil, "disabled stencil fields do not split pipelines");
         draw.stencil_enabled = true;
-        // Use valid fields with deliberately different padding, as the old key
-        // includes the object representation of blend and stencil descriptors.
+        // Identical blend fields must reuse a pipeline even when the source
+        // object's padding contains different bytes.
+        std::vector<uint8_t> blend_identity;
         for (unsigned char pattern : {0u, 0x55u, 0xAAu}) {
             std::memset(&draw.blend, pattern, sizeof(draw.blend));
             draw.blend.srcBlend = plume::RenderBlend::ONE;
@@ -67,13 +68,15 @@ int main(int argc, char** argv) {
             draw.blend.blendOpAlpha = plume::RenderBlendOperation::ADD;
             draw.blend.blendEnabled = true;
             compare();
+            if (blend_identity.empty()) blend_identity = bulk;
+            require(bulk == blend_identity, "blend padding does not split identical pipelines");
         }
-        const auto changes_identity = [&](auto change) {
+        const auto changes_identity = [&](auto change, const char* message = "a keyed state change produces a different pipeline identity") {
             compare();
             const auto before = bulk;
             change();
             compare();
-            require(before != bulk, "a keyed state change produces a different pipeline identity");
+            require(before != bulk, message);
         };
         int shader_tokens[2]; // Identity only; the serializer never dereferences shaders.
         changes_identity([&] { draw.vertex_shader = reinterpret_cast<const plume::RenderShader*>(&shader_tokens[0]); });
@@ -81,9 +84,22 @@ int main(int argc, char** argv) {
         changes_identity([&] { draw.topology = plume::RenderPrimitiveTopology::LINE_LIST; });
         changes_identity([&] { draw.cull = plume::RenderCullMode::BACK; });
         changes_identity([&] { draw.blend.dstBlend = plume::RenderBlend::ONE; });
+        changes_identity([&] { draw.blend.srcBlend = plume::RenderBlend::SRC_ALPHA; });
+        changes_identity([&] { draw.blend.blendOp = plume::RenderBlendOperation::SUBTRACT; });
+        changes_identity([&] { draw.blend.srcBlendAlpha = plume::RenderBlend::SRC_ALPHA; });
+        changes_identity([&] { draw.blend.dstBlendAlpha = plume::RenderBlend::ONE; });
+        changes_identity([&] { draw.blend.blendOpAlpha = plume::RenderBlendOperation::REV_SUBTRACT; });
+        changes_identity([&] { draw.blend.blendEnabled = false; });
         changes_identity([&] { draw.stencil_front.passOp = plume::RenderStencilOp::REPLACE; });
+        changes_identity([&] { draw.stencil_front.failOp = plume::RenderStencilOp::REPLACE; });
+        changes_identity([&] { draw.stencil_front.depthFailOp = plume::RenderStencilOp::REPLACE; });
+        changes_identity([&] { draw.stencil_front.compareFunction = plume::RenderComparisonFunction::LESS_EQUAL; });
+        changes_identity([&] { draw.stencil_back.passOp = plume::RenderStencilOp::REPLACE; });
+        changes_identity([&] { draw.stencil_back.failOp = plume::RenderStencilOp::REPLACE; });
+        changes_identity([&] { draw.stencil_back.depthFailOp = plume::RenderStencilOp::REPLACE; });
         changes_identity([&] { draw.stencil_back.compareFunction = plume::RenderComparisonFunction::LESS_EQUAL; });
         changes_identity([&] { draw.elements[0].semanticIndex += 1; });
+        changes_identity([&] { draw.elements[0].location += 1; }, "Vulkan attribute location changes pipeline identity");
         changes_identity([&] { draw.elements[0].format = plume::RenderFormat::R32G32_FLOAT; });
         changes_identity([&] { draw.elements[0].slotIndex += 1; });
         changes_identity([&] { draw.elements[0].alignedByteOffset += 4; });
