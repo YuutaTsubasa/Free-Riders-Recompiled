@@ -28,6 +28,28 @@ int main() {
                 require(bytes[i] == expected, "swap_words reverses each whole word and leaves a partial one");
             }
         }
+        // Separate, unaligned buffers and unequal spans must preserve the
+        // source and bytes outside the common prefix, including SIMD tails.
+        for (size_t source_offset = 0; source_offset < 16; ++source_offset)
+            for (size_t destination_offset = 0; destination_offset < 16; ++destination_offset)
+                for (size_t length = 0; length <= 80; ++length) {
+                    std::vector<uint8_t> source(length + 40), destination(length + 40, 0xD7);
+                    for (size_t i = 0; i < source.size(); ++i) source[i] = uint8_t(i * 19 + 7);
+                    const auto original = source;
+                    const size_t destination_length = length / 2 + (length % 3);
+                    const size_t common = (std::min)(length, destination_length);
+                    sfr::swap_words_into(std::span(destination).subspan(destination_offset, destination_length),
+                        std::span<const uint8_t>(source).subspan(source_offset, length));
+                    require(source == original, "swap copy must leave its source unchanged");
+                    for (size_t i = 0; i < destination.size(); ++i) {
+                        uint8_t expected = 0xD7;
+                        if (i >= destination_offset && i - destination_offset < common) {
+                            const size_t local = i - destination_offset, word = local / 4 * 4;
+                            expected = original[source_offset + (word + 4 <= common ? word + 3 - local % 4 : local)];
+                        }
+                        require(destination[i] == expected, "unaligned swap must respect both span bounds and partial words");
+                    }
+                }
         // Index decoding matches a byte-at-a-time reference for both widths,
         // with and without restart indices, over lengths with vector tails.
         for (const bool wide : {false, true})

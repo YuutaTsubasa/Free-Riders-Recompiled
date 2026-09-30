@@ -183,3 +183,48 @@ Both diagnostic runs used executable SHA-256
 `f49e3253b0e14202ed7a6d3825ac39d726f9c56ddb1a927c20f0df2968055a3d`.
 Raw probe/capture/analysis files are under `out/handheld-042` in Codex's worktree.
 This follow-up is not repackaged into the previously delivered test ZIP/APK.
+
+## Main-thread profile and vertex conversion follow-up
+
+`main-cpu-profile-1` profiled guest 1 after present 9,500 with the same f49e3253
+executable. It reached the intentional 11,500-present limit, no overlapping game,
+and no wait overflow. Of 23,006 instruction samples, 32.22% were outside the
+executable's code. Leading executable symbols included `swap_words_into`
+(1,007 samples, 4.38%), `native_draw` (749, 3.26%), `memcpy_repmovs` (747, 3.25%)
+and `MoveAbove15` (706, 3.07%). These are sample fractions, not CPU-only fractions
+or frame-time speedup estimates. The executable and matching map were preserved
+under `out/handheld-042/swap-baseline` before further changes.
+
+Disassembly showed the byte-swap loop reloading both span pointers after each
+16-byte store. Caching `.data()` in local pointers eliminates those repeated
+loads. The conversion still uses the same SSSE3/NEON/scalar paths, byte bounds,
+tail semantics and output format; it adds no instruction-set requirement.
+Characterization covers independent source/destination offsets 0–15, lengths
+0–80, unequal spans, scalar-reference output, immutable source and destination
+guard bytes. It passed before and after the optimization. The Windows runtime
+built, and native_formats, guest_graphics and native_pipeline_key passed (3/3).
+
+An isolated microbenchmark compared the compiled original function with the
+pointer variant in old/new/new/old order, using 32 KiB, 1 MiB and 8 MiB buffers,
+aligned/one-byte-offset pointers, and ordinary/write-combined destination
+memory. Each sample transferred 128 MiB repeatedly from the same warm source.
+Across those cases the two-sample mean conversion time was 4–21% lower. Samples
+lasted only 2–5 ms and are noisy; this establishes neither a game FPS percentage
+nor a handheld speedup. The raw source, outputs and disassembly are saved in
+`out/handheld-042/swap-*`.
+
+`swap-original-1` completed a race baseline at 11,500 presents, with no overlap.
+The modified run `swap-optimized-1` was intentionally aborted at present 7,843
+because another game started in Claude's checkout (PID 47808). That run is
+excluded from performance comparison. The modified executable SHA-256 is
+`f229f0564f0e6ea665bd7ca65c2b2a467e38297fbcb128b86ae8654dfdf6df08`.
+Full-race validation and an uncontended original/modified comparison remain
+pending while Claude runs its own priority experiments. The published release
+and previously delivered private candidate have not been replaced.
+
+For the future Xenia baseline, the fork maintainer's
+[netplay compatibility list](https://github.com/AdrianCassar/xenia-canary/wiki/Netplay-Compatibility)
+lists Sonic Free Riders with the
+[No Kinect Patch](https://gamebanana.com/mods/456720). This is a candidate route
+to a playable comparison, not a measured performance result. A specific build,
+patch version and matching scene/quality settings still need to be validated.
