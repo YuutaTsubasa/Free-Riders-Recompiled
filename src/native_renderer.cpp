@@ -228,6 +228,14 @@ struct NativeRenderer::Impl {
     struct TextureRange { std::array<uint32_t, 4> key; uint64_t begin, end; uint64_t hash; bool dynamic;
                           uint64_t checked_frame = 0; uint64_t seen_frame = 0; };
     uint64_t frame = 1;  // counts flushes
+    // Opt-in probe only: compare CPU bytes, never read write-combined uploads.
+    // Actual uploads and bindings remain unchanged while measuring reuse.
+    struct ConstantReuseProbe {
+        std::array<std::array<uint32_t, 1024>, 2> previous{};
+        bool valid = false;
+        uint64_t uploaded = 0, reusable = 0;
+    };
+    std::unique_ptr<ConstantReuseProbe> constant_reuse_probe;
     std::set<uint64_t> dynamic_ranges;  // physical starts of rewritten textures
     std::map<uint32_t, TextureRange> texture_ranges;  // by descriptor index
     // Destination address of a resolve to its descriptor index (the copy of
@@ -330,6 +338,8 @@ struct NativeRenderer::Impl {
 
 NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& presentation)
     : impl_(std::make_unique<Impl>(graphics, presentation)) {
+    if (const char* setting = std::getenv("SFR_CONSTANT_REUSE_TRACE"); setting && *setting == '1')
+        impl_->constant_reuse_probe = std::make_unique<Impl::ConstantReuseProbe>();
     auto& device = graphics.device();
     plume::RenderPipelineLayoutBuilder layout;
     layout.begin(false, true);
@@ -415,6 +425,7 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
     }
     auto* state = impl_.get();
     presentation.after_flush([state](bool complete) {
+        if (state->constant_reuse_probe) state->constant_reuse_probe->valid = false;
         ++state->frame;
         ++state->texture_generation;
         state->ring_offset = 0;
@@ -450,8 +461,13 @@ NativeRenderer::~NativeRenderer() {
 uint32_t NativeRenderer::draws() const noexcept { return impl_->draws; }
 
 NativeRenderer::PipelineWork NativeRenderer::take_pipeline_work() noexcept {
-    const PipelineWork work{impl_->pipelines_created, impl_->pipeline_ms,
+    PipelineWork work{impl_->pipelines_created, impl_->pipeline_ms,
                             impl_->ring_flushes, impl_->textures_uploaded, impl_->texture_ms};
+    if (auto* probe = impl_->constant_reuse_probe.get()) {
+        work.constant_upload_bytes = probe->uploaded;
+        work.constant_reusable_bytes = probe->reusable;
+        probe->uploaded = probe->reusable = 0;
+    }
     impl_->pipelines_created = 0;
     impl_->pipeline_ms = 0;
     impl_->ring_flushes = 0;
@@ -933,6 +949,19 @@ void NativeRenderer::draw(const NativeDraw& draw) {
     auto* upload = impl_->rings[impl_->ring_index].get();
     uint8_t* mapped = impl_->rings_mapped[impl_->ring_index] + base_offset;
     if (!in_place) std::memcpy(mapped, draw.vertices.data(), vertex_bytes);
+    if (auto* probe = impl_->constant_reuse_probe.get()) {
+        const std::array<const std::array<uint32_t, 1024>*, 2> stages{
+            &draw.vertex_constants, &draw.pixel_constants};
+        for (size_t stage = 0; stage < stages.size(); ++stage) {
+            const auto& current = *stages[stage];
+            probe->uploaded += sizeof(current);
+            if (probe->valid && std::memcmp(probe->previous[stage].data(), current.data(), sizeof(current)) == 0)
+                probe->reusable += sizeof(current);
+            else
+                probe->previous[stage] = current;
+        }
+        probe->valid = true;
+    }
     std::memcpy(mapped + vs_rel, draw.vertex_constants.data(), 4096);
     std::memcpy(mapped + ps_rel, draw.pixel_constants.data(), 4096);
     std::memcpy(mapped + shared_rel, &draw.shared, sizeof(draw.shared));

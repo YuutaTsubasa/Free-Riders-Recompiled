@@ -432,3 +432,43 @@ reviewed read-only, not integrated into this candidate. A claimed handheld
 coarse-timer cause still requires measurements on that device. No Xenia runtime
 comparison or handheld acceptance has occurred; the next useful comparison is
 this package versus v0.4.2 on the same powered device, settings and scene.
+
+### Remaining main-thread work and constant upload probe
+
+Fresh `main-cpu-profile-current-1` samples guest 1 after present 9,500 with the
+test2 runtime (`0811e711...`). There are 22,534 samples, 35.10% unresolved outside
+the executable. `swap_words_into` accounts for 2.39% and `load_vector_left`
+0.76%, versus 4.38% and 1.56% in the earlier profile. These sampling differences
+are consistent with the isolated helper improvements, but scene timing/draw
+counts differ and they are not an exact end-to-end speedup measurement.
+The current late race metrics show index decoding at 0.215 ms, while native
+command recording/upload work costs about 2.49 ms per frame. Avoid investing
+in a new index cache based only on the million indices processed per frame.
+
+`SFR_CONSTANT_REUSE_TRACE=1` instruments the two 4 KiB constant uploads per draw.
+It keeps CPU-only prior-byte snapshots and invalidates both at every upload-ring
+flush. It does not skip uploads or change bindings. Disabled mode allocates no
+shadow storage and makes no byte comparisons. The verifier correctly rejects
+the older capture without these fields before checking the probe capture.
+
+`constant-upload-probe-1` completes 11,500 presents / 195.157 seconds without
+overlap, dropped waits or a crash (intentional present-limit exit 3). All frames
+satisfy upload bytes = draw count * 8192, reusable bytes <= upload bytes minus
+the first draw's two buffers, and whole-buffer accounting. In the late
+1,501-frame window, the mean is 860.85 draws, 7,052,117 uploaded bytes and
+4,342,674 reusable bytes per frame: **61.58% of constant upload bytes repeat**.
+Runtime SHA-256:
+`3f5f4acbecc4e21ceb4d316377add20ced431acb215187c368cf7ec941c4ba95`.
+The present-11,250 image shows the race, rider and HUD. Windows graphics,
+resolution and guest-graphics tests pass (3/3) with the probe disabled.
+The Android ARM64 runtime also builds successfully; no device run is implied.
+The exact probe executable and map are archived under
+`out/handheld-042/constant-probe-baseline` for the next comparison.
+
+This is sufficient evidence to investigate reusing exact constant uploads
+within one ring lifetime, not evidence that a cache already saves time. The
+probe adds comparison/shadow-copy work, so its frame time must not be compared
+as a speedup. The experiment should keep allocation layout/ABI unchanged,
+invalidate on every flush, bind the original immutable upload offset on a hit,
+and test changed bytes and ring reuse on both Vulkan and D3D12. The distributed
+test2 ZIP/APK remain unchanged and do not contain this newer probe.

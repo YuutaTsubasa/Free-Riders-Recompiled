@@ -89,3 +89,19 @@ fingerprints and allocation/protection diagnostic bookkeeping. Import tracing
 still enables those diagnostics. Shader content validation at startup remains
 unconditional. Pipeline keys also serialize semantic state without structure
 padding; the on-disk driver cache and shader-pack ABI remain compatible.
+
+## Shader constant upload probe
+
+`SFR_CONSTANT_REUSE_TRACE=1` with `SFR_FRAME_METRICS=1` adds
+`constant_upload_bytes` and `constant_reusable_bytes` to each present record.
+The first counts the two complete 4 KiB constant buffers uploaded per draw;
+the second counts buffers bit-identical to their preceding upload within the
+current upload-ring lifetime. Every presentation flush invalidates that history.
+Comparisons and shadow copies read/write only ordinary CPU memory, never mapped
+GPU upload memory. No upload is skipped and no GPU binding changes.
+
+The probe is off by default. With it off both counters are zero and the shadow
+buffers are not allocated. Its comparison cost makes enabled frame timings
+unsuitable for claiming a performance improvement; the counters measure an
+opportunity for reuse, not bytes already saved. This probe is newer than the
+private `handheld-test2-20260930` packages and is not included in those packages.
