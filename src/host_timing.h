@@ -4,11 +4,11 @@
 
 namespace sfr {
 // What configure_host_timing asked the host for, and what a short sleep then
-// really took. A handheld on battery (the ROG Xbox Ally X) ran every frame in
-// whole 15.625 ms timer ticks: two per race frame, 32 fps with the CPU half
-// idle, because Windows ignored the process's 1 ms timer request.
+// really took. The Ally X capture's roughly 31 ms race frames motivate testing
+// timer policy, but do not by themselves establish ignored timer requests.
 struct HostTiming {
     bool throttling_opt_out = false;  // SetProcessInformation(ProcessPowerThrottling) accepted
+    bool timer_resolution_opt_out = false; // IGNORE_TIMER_RESOLUTION policy accepted too
     bool timer_period = false;        // timeBeginPeriod(1) accepted
     bool high_resolution_timer = false;
     double sleep_1ms_ms = 0;          // mean of a few std::this_thread::sleep_for(1 ms)
@@ -16,9 +16,9 @@ struct HostTiming {
     std::string describe() const;
 };
 
-// Once, early in the game process: keep Windows from power-throttling it
-// (EcoQoS, which also moves threads to efficiency cores and ignores timer
-// resolution requests) and ask for 1 ms timer resolution. No-op elsewhere.
+// Once, early in the game process: request execution-speed and timer-resolution
+// policies independently of Windows heuristics, plus a 1 ms timer period.
+// Policy changes are Windows-only; sleep measurements also run elsewhere.
 // SFR_HOST_TIMING=0 leaves the host defaults, for comparison runs.
 HostTiming configure_host_timing();
 

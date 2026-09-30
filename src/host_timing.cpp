@@ -1,4 +1,5 @@
 #include "host_timing.h"
+#include "native_timer_resolution.h"
 #include <algorithm>
 #include <cstdlib>
 #include <sstream>
@@ -7,7 +8,6 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
-#include <timeapi.h>
 #endif
 
 namespace sfr {
@@ -35,7 +35,8 @@ HANDLE thread_timer() {
 
 std::string HostTiming::describe() const {
     std::ostringstream text;
-    text << "HOST_TIMING throttling_opt_out=" << throttling_opt_out << " timer_period=" << timer_period
+    text << "HOST_TIMING throttling_opt_out=" << throttling_opt_out
+         << " timer_resolution_opt_out=" << timer_resolution_opt_out << " timer_period=" << timer_period
          << " high_resolution_timer=" << high_resolution_timer << " sleep_1ms_ms=" << sleep_1ms_ms
          << " precise_1ms_ms=" << precise_1ms_ms;
     return text.str();
@@ -72,13 +73,15 @@ HostTiming configure_host_timing() {
         state.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
         state.StateMask = 0;
         result.throttling_opt_out = SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &state, sizeof state) != 0;
+        result.timer_resolution_opt_out = result.throttling_opt_out;
         if (!result.throttling_opt_out) {
             // Older Windows 10 only knows the execution-speed policy.
             state.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
             result.throttling_opt_out = SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &state, sizeof state) != 0;
         }
-        // Held for the life of the process; Windows releases it at exit.
-        result.timer_period = timeBeginPeriod(1) == TIMERR_NOERROR;
+        // Process-lifetime request paired with timeEndPeriod during teardown.
+        static const NativeTimerResolution timer_resolution;
+        result.timer_period = timer_resolution.active();
     }
     result.high_resolution_timer = thread_timer() != nullptr;
 #endif

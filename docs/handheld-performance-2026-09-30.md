@@ -533,3 +533,70 @@ Matching playback duration is a timing regression check, not per-frame A/V sync
 validation or proof that handheld video slowdown is fixed. Final Intro runtime
 SHA-256: `8bdc26ee7e0333fba9e10ab73749f3fd02907fc38033d8a1a20ed7f872e46e0b`;
 the race A/B/A used the separately archived executable identified above.
+
+### Integrating Claude's host timing and priority experiments
+
+The prior turn's constant upload work was committed as `aee1d56`. This turn
+imports Claude's `eafeba9` and `567ab89` as `467ccb9` and `852e2a7`, retaining
+original authorship, only in Codex's checkout. The suspension conflict keeps
+the stop-aware notification path; precise_sleep is used only by the optional
+legacy poll. Claude's checkout remains unchanged.
+
+Integration corrections pair the host timer request through the existing
+NativeTimerResolution owner, report execution-only versus combined policy
+acceptance separately, and test host timing on/off and priority on/off/default
+in separate processes. The original tests failed for their documented opt-out
+modes because they always expected enabled behavior. Those cases now pass.
+Scheduler upper-latency bounds are measurements rather than correctness asserts.
+Docs now distinguish the Ally timer hypothesis from evidence and correct the
+Canary comparison (pinned Canary leaves guest priority 16 at normal).
+
+Four same-executable serial races complete 11,500 presents each, no overlap or
+crash, intentional present-limit exit 3, zero dropped waits. No sampling
+profiler or detailed wait trace; Vulkan 720p/100%, 60 FPS/audio, notification
+wait on, older timer-resolution switch off, constant reuse/probe off.
+Late frames 9,500..11,000 (1,501 frames) give:
+
+| Run | Host timing | Raised priority | Mean ms | P95 ms | P99 ms | Draws/frame |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| timing-combined-off-1 | off | off | 17.9702 | 20.8162 | 21.9287 | 866.04 |
+| timing-combined-host-1 | on | off | 17.2980 | 19.5143 | 20.8234 | 834.22 |
+| timing-combined-both-1 | on | on | 16.9346 | 18.8396 | 20.2009 | 817.23 |
+| timing-combined-off-2 | off | off | 17.2528 | 19.8649 | 21.1967 | 853.83 |
+
+The off controls differ by 0.7174 ms (~4%). Timing-only lies inside that range;
+the both-on run also processes fewer draws. These results do not establish a
+stable end-to-end gain. All four startup ordinary 1 ms sleep means are
+1.35–1.48 ms: this desktop does not reproduce ignored/coarse timer requests.
+Both enabled runs report successful execution-speed and timer-policy opt-out.
+The both-on race image at present 11,250 shows the track, rider and HUD.
+
+Measured runtime SHA-256:
+`11116d470c5bb437301ec3d2b6fa880c12f00a193df9bfd5e4a520edc6e2dacc`.
+Exact exe/map, source delta, mode environments and verified comparison JSON are
+archived under `out/handheld-042/timing-integration-experiment`.
+
+Priority boosting is therefore opt-in in the final source (`=1`); its new
+default test failed before the default changed, then passed. Host timing remains
+enabled in this private candidate as a foreground Windows process policy, with
+an explicit opt-out for device comparison; this is not a proven FPS fix or a
+release-default decision. Android's existing native priority setter only stores
+the relative value and does not elevate OS scheduling, so this priority change
+must not be described as an Android performance optimization.
+
+Final Windows suite passes 123/123. Android runtime and host timing/guest thread
+tests compile/link; no Android execution occurred. Read-only independent review
+found no actionable bugs, including the opt-in default and capture-script follow-up.
+The script adds HostTiming/Priority modes, restores them on exit, and records
+both explicitly; its syntax parses successfully. Existing private packages and
+public releases remain unchanged.
+
+Final `timing-combined-intro-1` uses the rebuilt opt-in-priority runtime SHA-256
+`7012329882638475252fb198c0ff5fb038fde46726009338d29ab47beb08adb7`.
+It completes 4,000 presents in 104.094 seconds, with intended exit 3, no game
+overlap and zero dropped waits. Movie trace structure/accounting passes:
+completion after 72,475 ms, consistent with earlier ~72.48-second captures.
+The present-2,000 screenshot contains the Intro movie. This checks full playback
+duration, not frame-by-frame A/V alignment or a fix for the handheld symptom.
+No game remains running. Next deliverable is an isolated combined candidate
+with clearly labeled mode comparisons, preserving all existing packages.

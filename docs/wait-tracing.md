@@ -114,3 +114,18 @@ allocation layout and shader ABI are unchanged; unused reserved slots remain.
 When both are enabled, requested bytes minus saved bytes gives actual constant
 writes. With the probe off, its two counters stay zero. Reuse is currently off
 by default, pending performance comparison, and is absent from the test2 package.
+
+## Combined host timing / priority comparison
+
+The newer combined branch also includes Claude's Windows host timing and guest
+priority experiments (not present in the existing test2 ZIP/APK). Capture with
+`-HostTiming on|off -Priority on|off`; both default to off in the capture script
+so its baseline is explicit and unaffected by inherited environment values.
+The script restores those variables on exit and records both in `run.json`.
+Keep `-Timer off` when comparing `-HostTiming`: the older timer-period switch is
+independent. Use timing on / priority off before testing both on.
+
+See [handheld timing](handheld-timing.md) for exact policy and fallback semantics.
+The legacy suspension poll now uses precise_sleep in this combined branch;
+notification waiting remains unchanged. These controls compare modes of this
+binary, not an exact recreation of v0.4.2.

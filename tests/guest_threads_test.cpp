@@ -278,11 +278,12 @@ void object_references_and_native_configuration() {
         threads.set_priority(object, increment);
         require(threads.priority(object) == 0, "normal priority reference mapping");
     }
-    // +16 saturates to the top of the guest range (the title's time-critical
-    // threads); it has to rank above the plain workers on the host too.
+    const char* priority_setting = std::getenv("SFR_GUEST_SATURATED_PRIORITY");
+    const bool saturated_above = priority_setting && *priority_setting == '1';
     for (const int increment : {16, 17}) {
         threads.set_priority(object, increment);
-        require(threads.priority(object) == 1, "saturated guest priority runs above normal");
+        require(threads.priority(object) == (saturated_above ? 1 : 0),
+                "saturated guest priority follows the comparison option");
     }
     threads.set_priority(object, 18); require(threads.priority(object) == 1, "above-normal mapping");
     threads.set_priority(object, -18); require(threads.priority(object) == -1, "below-normal mapping");

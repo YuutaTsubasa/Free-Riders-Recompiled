@@ -1,79 +1,74 @@
-# Handheld timing: whole timer ticks on the Ally X
+# Handheld timing experiments
 
-The v0.4.2 capture from a ROG Xbox Ally X (Ryzen Z2 Extreme, Windows 11,
-1280x720 windowed, 60 fps cap) ran a 1P race at 32 fps. Its frames were
-not slow in general; they were quantized:
+The v0.4.2 Ally X capture has race intervals near 31.28 ms, roughly 32 FPS,
+with substantial time reported as main-thread blocked. This motivates testing
+host timer policy and scheduling. It does **not** establish that short sleeps
+lasted 15.625 ms, that the CPU/GPU was idle, or that Windows ignored a timer
+request. We have no contemporaneous sleep-latency or power-policy measurement
+from that device. Intro and menu frames must also be separated by actual movie
+activity; present counts alone do not identify the scene.
 
-| Frames | Median interval | Most frames last |
-| --- | ---: | --- |
-| menus and intro (1–2500) | 15.8–16.1 ms | 1 × 15.625 ms |
-| race (3000–7418) | 31.2–31.5 ms | 2 × 15.625 ms |
+## Host timing experiment
 
-15.625 ms is the Windows default timer tick. In the race window the main guest
-thread ran for 11.5 ms per frame and drew in about 3 ms, close to a desktop
-(12.2 ms on an i9-14900KF), but was blocked for 18.9 ms of which only 0.5 ms
-had a busy guest thread to blame. Nothing was working: somebody was asleep.
+`configure_host_timing()` in `src/host_timing.cpp` runs before runtime workers.
+On Windows it requests execution-speed throttling off and asks Windows to honor
+process timer-resolution requests. If the combined policy is unsupported, it
+retries with only execution-speed throttling disabled. The two outcomes are
+reported separately as `throttling_opt_out` and `timer_resolution_opt_out`.
+It also holds a 1 ms `NativeTimerResolution` request until process teardown,
+where it is paired with `timeEndPeriod`.
 
-Every short sleep in the runtime (`sleep_for(1 ms)` in the frame cap and the
-self-suspend poll, the 50/100 µs job polls, guest `KeDelayExecutionThread`)
-lasts a whole tick when the process's timer resolution is 15.625 ms. SDL
-already asks for 1 ms (`timeBeginPeriod`), so on that device Windows ignored
-the request. Windows 11 does that for processes it power-throttles
-(`PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION`, part of EcoQoS, which
-also prefers efficiency cores and lower clocks). A desktop on mains power
-does not show it: `sleep_for(1 ms)` takes about 1.5 ms there with or without
-any request.
+Microsoft documents execution-speed policy and ignoring timer resolution as
+separate flags. Their existence does not establish either was active on the
+Ally. See [SetProcessInformation](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessinformation)
+and [timeBeginPeriod](https://learn.microsoft.com/en-us/windows/win32/api/timeapi/nf-timeapi-timebeginperiod).
 
-## What the game process does now
+`SFR_HOST_TIMING=0` skips both policy changes and this timer-period request;
+`1` enables them. It is currently enabled by default in the imported experiment.
+The older `SFR_TIMER_RESOLUTION` option remains independent: set it to `0` for
+these comparisons to avoid adding another request. SDL or other libraries may
+also request timer resolution, so mode 0 is not a promise of coarse host ticks.
 
-`configure_host_timing()` (src/host_timing.cpp) runs first in `main`:
+Both modes measure four ordinary 1 ms sleeps and four `precise_sleep(1 ms)`
+calls and emit a `HOST_TIMING` line. Startup measurements are observations at
+that moment, not guarantees of in-game scheduling latency. There is no fixed
+upper-latency assertion in unit tests: a busy host can delay a ready thread.
 
-- `SetProcessInformation(ProcessPowerThrottling)` with `ControlMask =
-  EXECUTION_SPEED | IGNORE_TIMER_RESOLUTION` and `StateMask = 0`: the
-  documented way to say "never throttle this process, always honour its timer
-  resolution". Older Windows 10 takes the execution-speed half only.
-- `timeBeginPeriod(1)`, held for the life of the process.
-- It measures four `sleep_for(1 ms)` and four `precise_sleep(1 ms)` and logs
-  one line, for example on the desktop:
+`precise_sleep()` uses a thread-local high-resolution waitable timer on Windows,
+falling back to `sleep_for` if creation, arming or waiting fails. It remains
+available with `SFR_HOST_TIMING=0`; that switch controls process policy, not the
+helper. Non-Windows builds use `sleep_for` and make no Windows policy requests.
 
-  ```
-  HOST_TIMING throttling_opt_out=1 timer_period=1 high_resolution_timer=1 sleep_1ms_ms=1.36 precise_1ms_ms=1.50
-  ```
+The combined branch keeps Codex's stop-aware notification wait for guest
+self-suspension (`SFR_SUSPEND_NOTIFY=1`, default). Only its legacy comparison
+poll (`SFR_SUSPEND_NOTIFY=0`) uses `precise_sleep`. Other guest waits, frame
+pacing deadlines and audio timing remain unchanged.
 
-  A capture whose `sleep_1ms_ms` is near 15.6 still has the problem; one near
-  1–2 does not.
+## Guest priority experiment
 
-`precise_sleep()` waits on a per-thread `CREATE_WAITABLE_TIMER_HIGH_RESOLUTION`
-timer, which does not depend on the process timer resolution at all. The
-self-suspend poll (`GuestThreads::suspension_waiter`) uses it. The other short
-sleeps are the same kind of candidate; they sit in lines the wait-tracing work
-(`SFR_WAIT_TRACE`, docs/wait-tracing.md) is changing, so they are left for
-after that lands.
+`SFR_GUEST_SATURATED_PRIORITY=1` raises guest increments 16 and 17 from host
+normal to above-normal; `0` retains the previous mapping. Other boundaries and
+negative increments are unchanged. This combined branch leaves it off by
+default: desktop control runs vary enough that a stable benefit is unproven.
+Explicitly set it to `1` to test the higher priority on the handheld.
 
-`SFR_HOST_TIMING=0` skips the opt-out and `timeBeginPeriod`, for comparison
-runs; the log line is still written.
+Windows documents saturation for large increments to
+[KeSetBasePriorityThread](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddk/nf-ntddk-kesetbaseprioritythread).
+This is motivation for investigating title priorities, not proof that our
+host mapping is an exact Xbox kernel implementation or that it improves FPS.
+The pinned Xenia Canary revision maps 16 to normal and 17 to above-normal,
+so this experiment is not identical to Canary. See the
+[Xenia source comparison](xenia-performance-comparison-2026-09-30.md).
 
-## Checking it on the device
+## Validation
 
-Run the launcher as usual with frame metrics (`SFR_FRAME_METRICS=1`) and look
-for the `HOST_TIMING` line at the top of `game.log`, then at the race frame
-intervals: the median should no longer sit on 31.25 ms. A desktop cannot
-reproduce the ignored request, so only the handheld shows the effect.
+CTest runs host timing enabled/disabled and guest priority enabled/disabled in
+separate processes, alongside timer lifetime and notification/cancellation tests.
+Record exact executable hashes, flags and scene timing for performance runs.
+Compare timing on with priority off before adding priority, and repeat the off
+control. Keep the graphics backend, resolution, frame cap, audio and suspension
+mode identical. Full Intro playback checks duration separately from race FPS.
 
-## Also from reading xenia-canary
-
-- **Saturated guest priority.** `KeSetBasePriorityThread` with +16 saturates a
-  thread at the top of its range. The title gives it to guests 10, 17, 28 and
-  30 and -2..2 to everything else, but our old mapping (±17/±34, Xenia's
-  earlier one) put all of them at host Normal. +16 now maps to Above Normal
-  (`SFR_GUEST_SATURATED_PRIORITY=0` restores the old mapping). On the i9
-  desktop the race is unchanged (17.5 vs 17.3 ms, noise); it matters when a
-  handheld's cores are busy.
-- **Sub-100 µs sleeps yield in Xenia** (`xe::threading::Sleep`), and its yield
-  is `NtDelayExecution(0)`, not `SwitchToThread`, which only hands the core to
-  a thread already queued on the same processor. Our job polls sleep 50/100 µs
-  with `sleep_for` (1.5 ms on the desktop, a whole tick on the Ally), and the
-  frame cap's last 2 ms spins on `std::this_thread::yield()` with the main
-  thread pinned to one processor: a busy loop that spends a handheld's power
-  budget. Both belong to lines the wait-tracing branch is changing; switch
-  them to `precise_sleep` after it lands.
+Desktop tests cannot establish handheld benefit. Device acceptance still needs
+the same powered device, scene and settings, including a full Intro with audio.
+Do not claim the handheld slowdown is fixed from a desktop sleep probe alone.
