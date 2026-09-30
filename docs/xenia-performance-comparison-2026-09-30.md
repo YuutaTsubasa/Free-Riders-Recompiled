@@ -60,7 +60,10 @@ forwards the argument unchanged.
 
 Neither reference maps input 16 to above-normal. Claude's >=16 experiment must
 therefore be evaluated as its own hypothesis, not described as the same mapping
-as this Canary revision. Canary's comments/handling also differ from an NT signed
+as this Canary revision. However, Canary maps the title's 0..2 increments to
+lowest, so 16 at normal still ranks above those workers. The difference is the
+absolute mapping, not whether Canary distinguishes these groups.
+Canary's comments/handling also differ from an NT signed
 offset interpretation. Check title/kernel expectations before transplanting it.
 Codex left scheduling edits in Claude's checkout untouched and recorded this
 finding in the shared handoff file.

@@ -51,6 +51,8 @@ Malformed, zero or one selections add no worker collector. This switch requires
 
 The older `WAIT_GRAPH` requires a separate `SFR_WAIT_GRAPH=1` opt-in; its worker
 signal mutex/map updates add overhead and are disabled in normal wait captures.
+Use `1` to enable it and `0` or an unset variable to disable it. Values such as
+`on` and `2` no longer enable the graph; the runtime checks for a leading `1`.
 `setters` contains observed
 guest signal-producer counts and is only a **correlation hint**: asynchronous
 host producers may be absent, multiple waits use the first target in that older

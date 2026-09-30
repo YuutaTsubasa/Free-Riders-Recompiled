@@ -344,7 +344,8 @@ int32_t GuestThreads::set_priority(uint32_t object, int32_t increment) {
     // time-critical threads (guests 10, 17, 28, 30 in a race) and gives every
     // other thread -2..2. This experiment raises those threads one host level;
     // its scheduling benefit needs device measurements. Pinned Xenia Canary
-    // instead leaves 16 at normal and raises 17. Negative increments retain
+    // instead leaves 16 at normal, above this title's 0..2 at lowest, and
+    // raises 17 to above-normal. Negative increments retain
     // the existing mapping. Opt in with SFR_GUEST_SATURATED_PRIORITY=1 until
     // device measurements establish a benefit.
     static const bool saturated_above = [] {
