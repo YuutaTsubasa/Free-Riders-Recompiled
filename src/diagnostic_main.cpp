@@ -19,6 +19,8 @@
 #include "video_mode.h"
 #include "ansi_string.h"
 #include "guest_execution.h"
+#include "wait_trace.h"
+#include "native_timer_resolution.h"
 #include "guest_critical_sections.h"
 #include "debug_monitor.h"
 #include "nui_device_status.h"
@@ -765,9 +767,13 @@ void zero_cache_line(uint32_t address) {
 }
 // SFR_WAIT_GRAPH=1: every five seconds, the main thread's time blocked on
 // each wait object and which guests signalled it: what a frame waits for.
+static const bool wait_trace_enabled = [] {
+    const char* text = std::getenv("SFR_WAIT_TRACE");
+    return text && *text == '1';
+}();
 static const bool wait_graph = [] {
     const char* const text = std::getenv("SFR_WAIT_GRAPH");
-    return text && *text != '0';
+    return text && *text == '1';
 }();
 struct WaitGraph {
     std::mutex mutex;
@@ -796,7 +802,7 @@ static void wait_graph_wait(uint32_t object, std::chrono::steady_clock::time_poi
     for (const auto& [waited, ms] : graph.main_ms) top.push_back({ms, waited});
     std::sort(top.rbegin(), top.rend());
     for (size_t i = 0; i < top.size() && i < 4; ++i) {
-        std::cerr << "WAIT_GRAPH object=0x" << std::hex << top[i].second << std::dec << " main_ms=" << top[i].first << " setters=";
+        std::cerr << "WAIT_GRAPH frame=" << present_count.load() << " correlation=hint object=0x" << std::hex << top[i].second << std::dec << " main_ms=" << top[i].first << " setters=";
         for (const auto& [id, count] : graph.setters[top[i].second]) std::cerr << id << ':' << count << ',';
         std::cerr << char(10);
     }
@@ -809,19 +815,46 @@ static void wait_graph_wait(uint32_t object, std::chrono::steady_clock::time_poi
 // run_blocking when it holds the permit, and otherwise (a detached guest)
 // releasing only the core it holds, so a detached guest waits without first
 // queueing for the permit.
-template<class Operation> static void block_guest(Operation&& operation) {
+static WaitTrace& main_wait_trace() { static WaitTrace trace; return trace; }
+static auto wait_trace_reported = std::chrono::steady_clock::now();
+void flush_main_wait_trace(uint32_t frame, bool force) {
+    if (!wait_trace_enabled) return;
+    const auto now = std::chrono::steady_clock::now();
+    if (!force && now - wait_trace_reported < std::chrono::seconds(5)) return;
+    main_wait_trace().write_and_reset(std::cerr, frame,
+        std::chrono::duration<double, std::milli>(now - wait_trace_reported).count());
+    wait_trace_reported = now;
+}
+template<class Operation> static void measured_guest_wait(Operation&& operation, const WaitSite& site,
+                                                         bool global = false, const uint32_t* status = nullptr) {
+    auto runner = [&](auto&& callback) {
+        if (global) execution_permit->run_blocking(std::forward<decltype(callback)>(callback));
+        else execution_permit->run_wait(std::forward<decltype(callback)>(callback));
+    };
+    if (!wait_trace_enabled || current_id != 1) { runner(std::forward<Operation>(operation)); return; }
+    observe_wait(true, main_wait_trace(), site, runner, std::forward<Operation>(operation), [] {
+        return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    }, status);
+}
+template<class Operation> static void block_guest(Operation&& operation, const WaitSite& site,
+                                                  const uint32_t* status = nullptr) {
     // Marks this thread as inside a native wait, leaving what it is waiting
     // for (the import's name and address) as the import dispatch recorded it.
     struct Blocked {
         Blocked() { own_activity().blocked.store(true, std::memory_order_relaxed); }
         ~Blocked() { own_activity().blocked.store(false, std::memory_order_relaxed); }
     } blocked_note;
-    execution_permit->run_wait(std::forward<Operation>(operation));
+    measured_guest_wait(std::forward<Operation>(operation), site, false, status);
 }
 
 void wait_without_permit(void (*wait)(void*), void* argument) {
+    traced_host_wait(wait, argument, "host", -1);
+}
+void traced_host_wait(void (*wait)(void*), void* argument, const char* kind, int64_t timeout_ns) {
     if (!execution_permit) { wait(argument); return; }
-    block_guest([&](std::stop_token) { wait(argument); });
+    block_guest([&](std::stop_token) { wait(argument); },
+        {kind, current_context ? uint32_t(current_context->lr) : 0, {guest_entry.current_address}, timeout_ns});
 }
 
 // Who resumed a created-suspended thread, and how many times that resumer
@@ -1276,28 +1309,32 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         return; // Void ABI; the original wrapper reads status from output + 12.
     }
     if (address == 0x82ACB98C && std::string_view(name) == "__imp__NtFreeVirtualMemory") {
-        std::cerr << "ORIGINAL_VIRTUAL_FREE_REQUEST lr=0x" << std::hex << ctx.lr << " base_ptr=0x" << ctx.r3.u32
-                  << " size_ptr=0x" << ctx.r4.u32 << " type=0x" << ctx.r5.u32;
-        try {
-            active_memory->check_write(ctx.r3.u32, 4);
-            active_memory->check_write(ctx.r4.u32, 4);
-            std::cerr << " base=0x" << active_memory->load<uint32_t>(ctx.r3.u32)
-                      << " size=0x" << active_memory->load<uint32_t>(ctx.r4.u32);
-        } catch (const RuntimeStop&) { std::cerr << " unreadable=1"; }
-        std::cerr << std::dec << '\n';
+        if (trace_imports) {
+            std::cerr << "ORIGINAL_VIRTUAL_FREE_REQUEST lr=0x" << std::hex << ctx.lr << " base_ptr=0x" << ctx.r3.u32
+                      << " size_ptr=0x" << ctx.r4.u32 << " type=0x" << ctx.r5.u32;
+            try {
+                active_memory->check_write(ctx.r3.u32, 4);
+                active_memory->check_write(ctx.r4.u32, 4);
+                std::cerr << " base=0x" << active_memory->load<uint32_t>(ctx.r3.u32)
+                          << " size=0x" << active_memory->load<uint32_t>(ctx.r4.u32);
+            } catch (const RuntimeStop&) { std::cerr << " unreadable=1"; }
+            std::cerr << std::dec << '\n';
+        }
         if (virtual_memory) {
             const auto base_ptr = ctx.r3.u32, size_ptr = ctx.r4.u32;
-            const auto before = virtual_memory->statistics();
+            const auto before = trace_imports ? virtual_memory->statistics() : VirtualMemory::Statistics{};
             ctx.r3.u64 = virtual_memory->free(base_ptr, size_ptr, ctx.r5.u32, ctx.r6.u32);
-            std::cerr << "RESULT NtFreeVirtualMemory status=0x" << std::hex << ctx.r3.u32;
-            if (!ctx.r3.u32) {
-                const auto after = virtual_memory->statistics();
-                std::cerr << " base=0x" << active_memory->load<uint32_t>(base_ptr)
-                          << " size=0x" << active_memory->load<uint32_t>(size_ptr)
-                          << " reclaimed=0x" << before.committed_bytes - after.committed_bytes
-                          << " reserved=0x" << after.reserved_bytes;
+            if (trace_imports) {
+                std::cerr << "RESULT NtFreeVirtualMemory status=0x" << std::hex << ctx.r3.u32;
+                if (!ctx.r3.u32) {
+                    const auto after = virtual_memory->statistics();
+                    std::cerr << " base=0x" << active_memory->load<uint32_t>(base_ptr)
+                              << " size=0x" << active_memory->load<uint32_t>(size_ptr)
+                              << " reclaimed=0x" << before.committed_bytes - after.committed_bytes
+                              << " reserved=0x" << after.reserved_bytes;
+                }
+                std::cerr << std::dec << '\n';
             }
-            std::cerr << std::dec << '\n';
             return;
         }
     }
@@ -1348,27 +1385,31 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         ctx.r3.u64 = protection;
         // Asked thousands of times in a race, and the answer for an address
         // rarely changes: only the first of each answer is written down.
-        static std::unordered_map<uint32_t, uint32_t> reported;
-        if (const auto [entry, fresh] = reported.try_emplace(queried_address, protection);
-            fresh || entry->second != protection) {
-            entry->second = protection;
-            std::cerr << "RESULT MmQueryAddressProtect address=0x" << std::hex << queried_address
-                      << " protection=0x" << protection << " lr=0x" << ctx.lr << std::dec << '\n';
+        if (trace_imports) {
+            static std::unordered_map<uint32_t, uint32_t> reported;
+            if (const auto [entry, fresh] = reported.try_emplace(queried_address, protection);
+                fresh || entry->second != protection) {
+                entry->second = protection;
+                std::cerr << "RESULT MmQueryAddressProtect address=0x" << std::hex << queried_address
+                          << " protection=0x" << protection << " lr=0x" << ctx.lr << std::dec << '\n';
+            }
         }
         return;
     }
     if (address == 0x82ACBA0C && std::string_view(name) == "__imp__MmAllocatePhysicalMemoryEx" && physical_memory) {
-        std::cerr << "REQUEST MmAllocatePhysicalMemoryEx flags=0x" << std::hex << ctx.r3.u32
+        if (trace_imports) std::cerr << "REQUEST MmAllocatePhysicalMemoryEx flags=0x" << std::hex << ctx.r3.u32
                   << " size=0x" << ctx.r4.u32 << " protect=0x" << ctx.r5.u32
                   << " min=0x" << ctx.r6.u32 << " max=0x" << ctx.r7.u32
                   << " alignment=0x" << ctx.r8.u32 << std::dec << '\n';
         const bool write_combined = ctx.r5.u32 == 0x404;
         ctx.r3.u64 = physical_memory->allocate(ctx.r3.u32, ctx.r4.u32, ctx.r5.u32,
                                               ctx.r6.u32, ctx.r7.u32, ctx.r8.u32);
-        std::cerr << "RESULT MmAllocatePhysicalMemoryEx base=0x" << std::hex << ctx.r3.u32
-                  << " committed_bytes=0x" << physical_memory->statistics().committed_bytes << std::dec;
-        if (ctx.r3.u32) std::cerr << " cache=" << (write_combined ? "write-combined" : "normal");
-        std::cerr << '\n';
+        if (trace_imports) {
+            std::cerr << "RESULT MmAllocatePhysicalMemoryEx base=0x" << std::hex << ctx.r3.u32
+                      << " committed_bytes=0x" << physical_memory->statistics().committed_bytes << std::dec;
+            if (ctx.r3.u32) std::cerr << " cache=" << (write_combined ? "write-combined" : "normal");
+            std::cerr << '\n';
+        }
         return;
     }
     // MmFreePhysicalMemory(type, address): the D3D runtime releases texture
@@ -1631,9 +1672,11 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
                     execution_permit->attach();
                     parallel_attached(0);
                 }
+                const uint32_t trace_owner = wait_trace_enabled && current_id == 1
+                    ? active_memory->load<uint32_t>(uint64_t(section) + 24) : 0;
                 block_guest([&](std::stop_token stop) {
                     ready = pending->wait(stop);
-                });
+                }, {"critical", uint32_t(ctx.lr), {section}, -1, trace_owner});
                 if (!ready) {
                     if (!execution->stopped())
                         throw RuntimeStop("critical-section-cancelled", section,
@@ -1706,7 +1749,8 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         NativeSyncObjects::WaitResult result{prepared.status, false};
         if (!prepared.status) {
             const auto started = std::chrono::steady_clock::now();
-            block_guest([&](std::stop_token stop) { result = prepared.wait(stop); });
+            block_guest([&](std::stop_token stop) { result = prepared.wait(stop); },
+                {"ke_single", uint32_t(ctx.lr), {object}, prepared.infinite ? -1 : int64_t(prepared.milliseconds * 1000000)}, &result.status);
             wait_graph_wait(object, started);
             if (result.cancelled) throw GuestExecutionCancelled();
         }
@@ -1739,7 +1783,7 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
             while (!stop.stop_requested() && std::chrono::steady_clock::now() < until)
                 std::this_thread::sleep_for(std::min<std::chrono::nanoseconds>(until - std::chrono::steady_clock::now(),
                                                                                 std::chrono::milliseconds(10)));
-        });
+        }, {"delay", uint32_t(ctx.lr), {}, duration.count()});
         ctx.r3.u64 = 0;
         return;
     }
@@ -1771,7 +1815,8 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         const auto started = std::chrono::steady_clock::now();
         block_guest([&](std::stop_token stop) {
             result = NativeSyncObjects::WaitHandle::wait_multiple(waits, wait_type == 0, milliseconds, stop);
-        });
+        }, {wait_type == 0 ? "ke_all" : "ke_any", uint32_t(ctx.lr), WaitTargets(guest_objects),
+            milliseconds == 0xFFFFFFFF ? -1 : int64_t(milliseconds) * 1000000}, &result.status);
         wait_graph_wait(guest_objects[0], started);
         if (result.cancelled) throw GuestExecutionCancelled();
         // Satisfied auto-reset events are consumed.
@@ -1830,7 +1875,7 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
             const auto started = std::chrono::steady_clock::now();
             block_guest([&](std::stop_token stop) {
                 result = prepared.wait(stop);
-            });
+            }, {"nt_single", uint32_t(ctx.lr), {handle}, prepared.infinite ? -1 : int64_t(prepared.milliseconds * 1000000)}, &result.status);
             wait_graph_wait(handle, started);
             if (result.cancelled) throw GuestExecutionCancelled();
         }
@@ -1862,12 +1907,17 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         }
         std::vector<NativeSyncObjects::WaitHandle*> waits;
         for (const auto& item : prepared) waits.push_back(item.target.get());
+        WaitTargets trace_targets;
+        if (wait_trace_enabled && current_id == 1)
+            for (uint32_t i = 0; i < count; ++i)
+                trace_targets.values[trace_targets.count++] = active_memory->load<uint32_t>(uint64_t(handles) + i * 4);
         const uint32_t timeout = prepared[0].infinite ? 0xFFFFFFFFu
             : uint32_t((std::min<uint64_t>)(prepared[0].milliseconds, 0xFFFFFFFEull));
         NativeSyncObjects::WaitResult result{};
-        execution_permit->run_blocking([&](std::stop_token stop) {
+        measured_guest_wait([&](std::stop_token stop) {
             result = NativeSyncObjects::WaitHandle::wait_multiple(waits, wait_type == 0, timeout, stop);
-        });
+        }, {wait_type == 0 ? "nt_all" : "nt_any", uint32_t(ctx.lr), trace_targets,
+            timeout == 0xFFFFFFFF ? -1 : int64_t(timeout) * 1000000}, true, &result.status);
         if (result.cancelled) throw GuestExecutionCancelled();
         ctx.r3.u64 = result.status;
         if (trace_wait_results || (result.status & 0x80000000u))
@@ -1913,7 +1963,8 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
             // A thread that suspends itself stops until another thread resumes it.
             // Capture the stable record while serialized. The wait reads only
             // its atomic count, never the registry while another guest edits it.
-            execution_permit->run_blocking(guest_threads->suspension_waiter(handle));
+            measured_guest_wait(guest_threads->suspension_waiter(handle),
+                {"suspend", uint32_t(ctx.lr), {handle}}, true);
             if (trace_imports) std::cerr << "RESULT NtSuspendThread resumed handle=0x" << std::hex << handle << std::dec << '\n';
         }
         return;
@@ -2345,13 +2396,15 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         const auto result=request.event && guest_async_files
             ? guest_async_files->read(request,*execution_permit) : guest_files->read(request);
         ctx.r3.u64=result.status;
-        std::cerr << "RESULT NtReadFile handle=0x" << std::hex << request.handle
-                  << " buffer=0x" << request.buffer << std::dec << " requested=" << request.length
-                  << " offset=" << result.offset << " transferred=" << result.transferred
-                  << " status=0x" << std::hex << result.status << std::dec;
-        if (result.transferred)
-            std::cerr << " sha1=" << fingerprint(active_memory->base()+request.buffer,result.transferred);
-        std::cerr << '\n';
+        if (trace_imports) {
+            std::cerr << "RESULT NtReadFile handle=0x" << std::hex << request.handle
+                      << " buffer=0x" << request.buffer << std::dec << " requested=" << request.length
+                      << " offset=" << result.offset << " transferred=" << result.transferred
+                      << " status=0x" << std::hex << result.status << std::dec;
+            if (result.transferred)
+                std::cerr << " sha1=" << fingerprint(active_memory->base()+request.buffer,result.transferred);
+            std::cerr << '\n';
+        }
         return;
     }
     if (address == 0x82ACB66C && std::string_view(name) == "__imp__NtQueryInformationFile" && active_memory && guest_files) {
@@ -3539,6 +3592,13 @@ int main(int argc, char** argv) {
             std::cerr << "Usage: sfr_cpu_diagnostic IMAGE-DUMP-DIRECTORY [EXTRACTED-ASSET-DIRECTORY] [--game-region=ntsc-us]\nThis is a CPU diagnostic, not a playable game.\n";
             return 2;
         }
+        // Opt-in until handheld A/B measurements establish a benefit. Keep the
+        // request in this process and alive until all runtime workers stop.
+        const char* timer_setting = std::getenv("SFR_TIMER_RESOLUTION");
+        const sfr::NativeTimerResolution timer_resolution(timer_setting && *timer_setting == '1');
+        if (timer_setting && *timer_setting)
+            std::cerr << "TIMER_RESOLUTION requested=" << (*timer_setting == '1')
+                      << " active=" << timer_resolution.active() << '\n';
         std::string_view region_option;
         bool mount_assets = false;
         if (argc >= 3) {
@@ -3766,7 +3826,8 @@ int main(int argc, char** argv) {
             sfr::NativePresentation::set_gpu_wait([](const std::function<void()>& wait) {
                 if (!sfr::execution_permit || sfr::current_id != 1) { wait(); return; }
                 const auto started = std::chrono::steady_clock::now();
-                sfr::execution_permit->run_blocking([&](std::stop_token) { wait(); }, {});
+                sfr::measured_guest_wait([&](std::stop_token) { wait(); },
+                    {"gpu", sfr::current_context ? uint32_t(sfr::current_context->lr) : 0, {}}, true);
                 sfr::main_gpu_wait_ns.fetch_add(uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now() - started).count()), std::memory_order_relaxed);
             });
@@ -3970,7 +4031,11 @@ int main(int argc, char** argv) {
             sfr::guest_files = files.get();
             async_files=std::make_unique<sfr::GuestAsyncFiles>(memory,*assets,sync_objects,execution,
                 [&memory](const sfr::GuestFiles::ReadRequest& request,const sfr::GuestFiles::ReadResult& result){
-                    if (sfr::trace_imports) std::cerr << "NATIVE_ASYNC_FILE_DATA handle=0x" << std::hex << request.handle
+                    // Hashing a streamed buffer is diagnostic work. Completion
+                    // holds the execution permit and has not signalled the
+                    // guest event yet, so do none of it when tracing is off.
+                    if (!sfr::trace_imports) return;
+                    std::cerr << "NATIVE_ASYNC_FILE_DATA handle=0x" << std::hex << request.handle
                               << " event=0x" << request.event << " io=0x" << request.io_output
                               << " buffer=0x" << request.buffer << std::dec << " offset=" << result.offset
                               << " requested=" << request.length << " transferred=" << result.transferred
@@ -4144,6 +4209,7 @@ int main(int argc, char** argv) {
             } catch (...) {
                 execution.fail(std::current_exception());
             }
+            sfr::flush_main_wait_trace(sfr::present_count.load(), true);
             sfr::execution_permit = nullptr;
             sfr::current_context = nullptr;
         } // Permit released, then workers stopped/joined before their dependencies.

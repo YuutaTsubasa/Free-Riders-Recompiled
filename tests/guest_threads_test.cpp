@@ -381,11 +381,109 @@ void completion_before_self_suspend_does_not_lose_an_early_resume() {
     require(threads.guest_suspends(handle) == 1, "cancellation does not fabricate a resume");
     threads.resume(handle, 0);
 }
+
+void suspension_waiter_preserves_nested_counts_and_publishes_resume() {
+    sfr::GuestMemory memory;
+    prepare(memory);
+    sfr::GuestThreads threads(memory, {4, 0x10000040, 8, 4}, 0x40000, target,
+        [](const auto&) { return [](std::stop_token) { return 0u; }; });
+    threads.create(request());
+    const auto handle = memory.load<uint32_t>(0x10000000);
+    const auto count_address = threads.snapshot(handle).state.thread_object + 0xBC;
+    threads.resume(handle, 0);
+    threads.suspend(handle, 0);
+    threads.suspend(handle, 0);
+    const auto waiter = threads.suspension_waiter(handle);
+    std::stop_source cancel;
+    std::promise<void> entered;
+    auto waiting = std::async(std::launch::async, [&] {
+        entered.set_value();
+        waiter(cancel.get_token());
+        return memory.load<uint8_t>(count_address) == 0 &&
+               memory.load<uint32_t>(0x10000010) == 1;
+    });
+    entered.get_future().wait();
+    const bool initially_blocked = waiting.wait_for(std::chrono::milliseconds(20)) == std::future_status::timeout;
+    const auto first = threads.resume(handle, 0x10000010);
+    const bool still_blocked = waiting.wait_for(std::chrono::milliseconds(20)) == std::future_status::timeout;
+    const auto last = threads.resume(handle, 0x10000010);
+    const bool woke = waiting.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+    cancel.request_stop();
+    const bool published = waiting.get();
+    require(initially_blocked && still_blocked && first.previous == 2 && last.previous == 1,
+            "only the last nested resume releases the waiter");
+    require(woke && published, "resume publishes guest count and previous output before releasing the waiter");
+}
+
+void suspension_waiter_handles_repeated_early_and_racing_resumes() {
+    sfr::GuestMemory memory;
+    prepare(memory);
+    sfr::GuestThreads threads(memory, {4, 0x10000040, 8, 4}, 0x40000, target,
+        [](const auto&) { return [](std::stop_token) { return 0u; }; });
+    threads.create(request());
+    const auto handle = memory.load<uint32_t>(0x10000000);
+    threads.resume(handle, 0);
+    const auto waiter = threads.suspension_waiter(handle);
+    for (unsigned attempt = 0; attempt < 128; ++attempt) {
+        threads.prepare_self_suspend(handle);
+        if (attempt % 2 == 0) threads.resume(handle, 0);
+        threads.suspend_self(handle, 0);
+        std::stop_source cancel;
+        std::promise<void> entered;
+        auto waiting = std::async(std::launch::async, [&] {
+            entered.set_value();
+            waiter(cancel.get_token());
+        });
+        entered.get_future().wait();
+        if (attempt % 2) threads.resume(handle, 0);
+        const bool woke = waiting.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+        cancel.request_stop();
+        waiting.get();
+        require(woke && threads.guest_suspends(handle) == 0,
+                "early or racing resume must not lose a wakeup or re-add a prepared suspension");
+    }
+}
+
+void shutdown_cancels_a_native_worker_in_its_suspension_wait() {
+    sfr::GuestMemory memory;
+    prepare(memory);
+    std::promise<void> begin, entered;
+    auto ready = begin.get_future().share();
+    std::function<void(std::stop_token)> waiter;
+    std::atomic<bool> exited = false;
+    sfr::GuestThreads threads(memory, {4, 0x10000040, 8, 4}, 0x40000, target,
+        [&](const auto&) { return [&](std::stop_token stop) {
+            ready.wait();
+            entered.set_value();
+            waiter(stop);
+            exited = true;
+            return 0u;
+        }; });
+    threads.create(request());
+    const auto handle = memory.load<uint32_t>(0x10000000);
+    threads.resume(handle, 0);
+    threads.suspend_self(handle, 0);
+    waiter = threads.suspension_waiter(handle);
+    begin.set_value();
+    entered.get_future().wait();
+    threads.shutdown();
+    require(exited && threads.guest_suspends(handle) == 1,
+            "shutdown joins a cancelled suspension wait without fabricating a resume");
+
+    // Cancellation already requested before the wait must also return.
+    std::stop_source cancelled;
+    cancelled.request_stop();
+    waiter(cancelled.get_token());
+    require(threads.guest_suspends(handle) == 1, "pre-cancelled wait preserves suspension count");
+}
 }
 int main() { try { independent_state_and_owned_suspension();
     creation_affinity_selects_guest_and_native_processor_while_parked();
     preflight_rejects_without_publishing_or_allocating();
     creation_failures_retire_slots_without_publishing(); invalid_templates_reject_before_allocation();
     object_references_and_native_configuration(); actual_resume_and_owned_shutdown();
-    completion_before_self_suspend_does_not_lose_an_early_resume(); return 0; }
+    completion_before_self_suspend_does_not_lose_an_early_resume();
+    suspension_waiter_preserves_nested_counts_and_publishes_resume();
+    suspension_waiter_handles_repeated_early_and_racing_resumes();
+    shutdown_cancels_a_native_worker_in_its_suspension_wait(); return 0; }
     catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; } }

@@ -12,6 +12,7 @@
 #include "native_renderer.h"
 #include "native_formats.h"
 #include "guest_execution.h"
+#include "wait_trace.h"
 #include <plume_render_interface.h>
 #include <algorithm>
 #include <array>
@@ -351,12 +352,12 @@ static double limit_frame_rate() {
     const bool waited=now<next;
     if(waited) {
         struct Until { clock::time_point at; } until{next};
-        sfr::wait_without_permit([](void* argument) {
+        sfr::traced_host_wait([](void* argument) {
             const auto at=static_cast<Until*>(argument)->at;
             // Sleep to within about a millisecond (the sleep granularity), then yield.
             while(clock::now()+std::chrono::milliseconds(2)<at) std::this_thread::sleep_for(std::chrono::milliseconds(1));
             while(clock::now()<at) std::this_thread::yield();
-        },&until);
+        },&until,"frame_cap",std::chrono::duration_cast<std::chrono::nanoseconds>(next-now).count());
     }
     next+=period;
     return waited?std::chrono::duration<double,std::milli>(clock::now()-now).count():0.0;
@@ -387,6 +388,7 @@ SFR_HOOK(sub_824E65A0) {
     // the run when the player closes it.
     graphics().presentation().pump_events();
     const double pacing_ms=limit_frame_rate();
+    sfr::flush_main_wait_trace(sfr::present_count.load());
     if(graphics().presentation().close_requested())
         throw sfr::RuntimeStop("window-closed",0,"the game window was closed");
     // The frame's commands have completed: run its callbacks here, as the
