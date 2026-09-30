@@ -94,14 +94,23 @@ padding; the on-disk driver cache and shader-pack ABI remain compatible.
 
 `SFR_CONSTANT_REUSE_TRACE=1` with `SFR_FRAME_METRICS=1` adds
 `constant_upload_bytes` and `constant_reusable_bytes` to each present record.
-The first counts the two complete 4 KiB constant buffers uploaded per draw;
+The first counts the two complete 4 KiB constant buffers requested per draw;
 the second counts buffers bit-identical to their preceding upload within the
 current upload-ring lifetime. Every presentation flush invalidates that history.
 Comparisons and shadow copies read/write only ordinary CPU memory, never mapped
-GPU upload memory. No upload is skipped and no GPU binding changes.
+GPU upload memory. The probe itself skips no uploads and changes no bindings.
 
 The probe is off by default. With it off both counters are zero and the shadow
 buffers are not allocated. Its comparison cost makes enabled frame timings
 unsuitable for claiming a performance improvement; the counters measure an
 opportunity for reuse, not bytes already saved. This probe is newer than the
 private `handheld-test2-20260930` packages and is not included in those packages.
+
+`SFR_CONSTANT_UPLOAD_REUSE=1` is a separate, opt-in experiment. For each shader
+stage it compares all 4 KiB of CPU bytes and binds the earlier immutable upload
+offset when identical. Every upload-ring flush invalidates both offsets. The
+allocation layout and shader ABI are unchanged; unused reserved slots remain.
+`constant_saved_bytes` records actual skipped writes, even with the probe off.
+When both are enabled, requested bytes minus saved bytes gives actual constant
+writes. With the probe off, its two counters stay zero. Reuse is currently off
+by default, pending performance comparison, and is absent from the test2 package.

@@ -1,5 +1,6 @@
 #include "native_renderer.h"
 #include "native_pipeline_key.h"
+#include "native_constant_upload.h"
 #ifdef _WIN32
 #include "plume_d3d12.h"
 #endif
@@ -236,6 +237,8 @@ struct NativeRenderer::Impl {
         uint64_t uploaded = 0, reusable = 0;
     };
     std::unique_ptr<ConstantReuseProbe> constant_reuse_probe;
+    std::unique_ptr<std::array<NativeConstantUpload, 2>> constant_uploads;
+    uint64_t constant_saved_bytes = 0;
     std::set<uint64_t> dynamic_ranges;  // physical starts of rewritten textures
     std::map<uint32_t, TextureRange> texture_ranges;  // by descriptor index
     // Destination address of a resolve to its descriptor index (the copy of
@@ -340,6 +343,8 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
     : impl_(std::make_unique<Impl>(graphics, presentation)) {
     if (const char* setting = std::getenv("SFR_CONSTANT_REUSE_TRACE"); setting && *setting == '1')
         impl_->constant_reuse_probe = std::make_unique<Impl::ConstantReuseProbe>();
+    if (const char* setting = std::getenv("SFR_CONSTANT_UPLOAD_REUSE"); setting && *setting == '1')
+        impl_->constant_uploads = std::make_unique<std::array<NativeConstantUpload, 2>>();
     auto& device = graphics.device();
     plume::RenderPipelineLayoutBuilder layout;
     layout.begin(false, true);
@@ -426,6 +431,8 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
     auto* state = impl_.get();
     presentation.after_flush([state](bool complete) {
         if (state->constant_reuse_probe) state->constant_reuse_probe->valid = false;
+        if (state->constant_uploads)
+            for (auto& upload : *state->constant_uploads) upload.reset();
         ++state->frame;
         ++state->texture_generation;
         state->ring_offset = 0;
@@ -468,6 +475,8 @@ NativeRenderer::PipelineWork NativeRenderer::take_pipeline_work() noexcept {
         work.constant_reusable_bytes = probe->reusable;
         probe->uploaded = probe->reusable = 0;
     }
+    work.constant_saved_bytes = impl_->constant_saved_bytes;
+    impl_->constant_saved_bytes = 0;
     impl_->pipelines_created = 0;
     impl_->pipeline_ms = 0;
     impl_->ring_flushes = 0;
@@ -962,8 +971,19 @@ void NativeRenderer::draw(const NativeDraw& draw) {
         }
         probe->valid = true;
     }
-    std::memcpy(mapped + vs_rel, draw.vertex_constants.data(), 4096);
-    std::memcpy(mapped + ps_rel, draw.pixel_constants.data(), 4096);
+    uint64_t vs_offset = base_offset + vs_rel, ps_offset = base_offset + ps_rel;
+    if (auto* constants = impl_->constant_uploads.get()) {
+        // A hit references an immutable slot from this same ring lifetime.
+        // Keep the allocation layout unchanged, including the unused slots.
+        const auto vs = (*constants)[0].upload(draw.vertex_constants, vs_offset, mapped + vs_rel);
+        const auto ps = (*constants)[1].upload(draw.pixel_constants, ps_offset, mapped + ps_rel);
+        vs_offset = vs.offset;
+        ps_offset = ps.offset;
+        impl_->constant_saved_bytes += (uint64_t(vs.reused) + uint64_t(ps.reused)) * 4096;
+    } else {
+        std::memcpy(mapped + vs_rel, draw.vertex_constants.data(), 4096);
+        std::memcpy(mapped + ps_rel, draw.pixel_constants.data(), 4096);
+    }
     std::memcpy(mapped + shared_rel, &draw.shared, sizeof(draw.shared));
     if (impl_->presentation.width() != impl_->presentation.render_width() ||
         impl_->presentation.height() != impl_->presentation.render_height()) {
@@ -975,7 +995,8 @@ void NativeRenderer::draw(const NativeDraw& draw) {
         std::memcpy(mapped + shared_rel, &shared, sizeof(shared));
     }
     const bool vulkan = impl_->graphics.backend() == GraphicsBackend::vulkan;
-    const uint64_t ring_address = vulkan ? upload->getDeviceAddress() + base_offset : 0;
+    const uint64_t upload_address = vulkan ? upload->getDeviceAddress() : 0;
+    const uint64_t ring_address = upload_address + base_offset;
     // Only the entries the palette holds are written. The rest of the
     // allocation keeps whatever an earlier draw left, which a clamped index
     // may read but never reaches past the ring; zeroing sixteen kilobytes for
@@ -985,8 +1006,7 @@ void NativeRenderer::draw(const NativeDraw& draw) {
                     (std::min)(size_t(palette_bytes), draw.palette.size()));
     std::memcpy(mapped + loop_rel, draw.loop_constants.data(), sizeof(draw.loop_constants));
     if (index_bytes) std::memcpy(mapped + index_rel, draw.indices.data(), index_bytes);
-    const uint64_t vs_offset = base_offset + vs_rel, ps_offset = base_offset + ps_rel,
-                   shared_offset = base_offset + shared_rel;
+    const uint64_t shared_offset = base_offset + shared_rel;
 
     impl_->presentation.record([&](plume::RenderCommandList& list) {
         const bool fresh = impl_->bound_generation != impl_->presentation.list_generation();
@@ -1014,7 +1034,7 @@ void NativeRenderer::draw(const NativeDraw& draw) {
             static_cast<plume::D3D12CommandList&>(list).d3d->OMSetStencilRef(draw.stencil_reference);
 #endif
         if (vulkan) {
-            const uint64_t addresses[5] = {ring_address + vs_rel, ring_address + ps_rel, ring_address + shared_rel,
+            const uint64_t addresses[5] = {upload_address + vs_offset, upload_address + ps_offset, ring_address + shared_rel,
                                            draw.palette.empty() ? 0 : ring_address + palette_rel,
                                            ring_address + loop_rel};
             list.setGraphicsPushConstants(0, addresses, 0, sizeof(addresses));

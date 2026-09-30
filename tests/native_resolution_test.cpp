@@ -5,6 +5,7 @@
 #include "vulkan_shader_source.h"
 #include "plume_render_interface.h"
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -85,7 +86,107 @@ std::unique_ptr<plume::RenderShader> compile(sfr::NativeGraphics& graphics, cons
     require(bool(shader), "resolution fixture shader creation succeeds");
     return shader;
 }
+void constant_upload_readback(sfr::NativeGraphics& graphics, const fs::path& directory, const std::string& header) {
+    const auto vertex = compile(graphics, directory, header, R"(
+#ifndef __spirv__
+cbuffer VSConstants : register(b0, space4) { float4 vsConstants[256]; };
+#endif
+struct Output { float4 position : SV_Position; float red : TEXCOORD0; };
+Output shaderMain(uint id : SV_VertexID) {
+ float2 p[3] = {float2(-1,-1), float2(-1,3), float2(3,-1)};
+ Output o; o.position = float4(p[id],0.5,1);
+#ifdef __spirv__
+ o.red = asfloat(vk::RawBufferLoad<uint>(g_PushConstants.VertexShaderConstants + 4092));
+#else
+ o.red = vsConstants[255].w;
+#endif
+ return o;
+})", true);
+    const auto pixel = compile(graphics, directory, header, R"(
+#ifndef __spirv__
+cbuffer PSConstants : register(b1, space4) { float4 psConstants[256]; };
+#endif
+// Retain the VS signature order for D3D12 linkage even though position is unused.
+float4 shaderMain(float4 position : SV_Position, float red : TEXCOORD0) : SV_Target {
+#ifdef __spirv__
+ float green = asfloat(vk::RawBufferLoad<uint>(g_PushConstants.PixelShaderConstants));
+#else
+ float green = psConstants[0].x;
+#endif
+ return float4(red,green,0.25,1);
+})", false);
+    environment("SFR_RENDER_SCALE", "100");
+    for (bool reuse : {false, true}) {
+        std::cerr << "CONSTANT_READBACK reuse=" << reuse << " begin\n";
+        environment("SFR_CONSTANT_UPLOAD_REUSE", reuse ? "1" : "0");
+        unsigned asynchronous_flushes = 0;
+        sfr::NativePresentation presentation(graphics, 16, 16);
+        sfr::NativeRenderer renderer(graphics, presentation);
+        presentation.after_flush([&](bool complete) { if (!complete) ++asynchronous_flushes; });
+        sfr::NativeClear clear{};
+        clear.color = true;
+        presentation.clear(clear);
+        sfr::NativeDraw draw;
+        draw.vertex_count = 3; draw.vertex_shader = vertex.get(); draw.pixel_shader = pixel.get();
+        const std::array<float,4> red{0.25f,0.25f,0.75f,0.75f}, green{0.5f,0.5f,0.5f,0.875f};
+        for (int column = 0; column < 4; ++column) {
+            draw.vertex_constants.back() = std::bit_cast<uint32_t>(red[column]);
+            draw.pixel_constants.front() = std::bit_cast<uint32_t>(green[column]);
+            presentation.set_raster_state({0,0,16,16}, {column*4,0,(column+1)*4,16});
+            renderer.draw(draw);
+        }
+        require(renderer.take_pipeline_work().constant_saved_bytes == (reuse ? 16384 : 0),
+                "identical VS/PS stages skip writes independently, only when enabled");
+        std::cerr << "CONSTANT_READBACK columns recorded\n";
+        const auto pixels = presentation.readback_color();
+        std::cerr << "CONSTANT_READBACK columns read\n";
+        for (uint32_t y=0; y<16; ++y) for (uint32_t x=0; x<16; ++x) {
+            const size_t at = (y*16+x)*4;
+            require(std::abs(int(pixels[at+2])-int(red[x/4]*255+0.5f))<=1 &&
+                    std::abs(int(pixels[at+1])-int(green[x/4]*255+0.5f))<=1 &&
+                    std::abs(int(pixels[at])-64)<=1 && pixels[at+3]==255,
+                    "GPU sees each draw's exact VS and PS constants at its own offset");
+        }
+        // readback flushes and recycles the ring. Identical values must upload
+        // again; merely finding old bytes still in mapped storage is not enough.
+        presentation.set_raster_state({0,0,16,16}, {0,0,16,16});
+        renderer.draw(draw);
+        require(renderer.take_pipeline_work().constant_saved_bytes == 0, "flush invalidates both stage offsets");
+        renderer.draw(draw);
+        require(renderer.take_pipeline_work().constant_saved_bytes == (reuse ? 8192 : 0), "reuse resumes after the fresh upload");
+        const auto repeated = presentation.readback_color();
+        std::cerr << "CONSTANT_READBACK recycled ring read\n";
+        for (size_t at=0; at<repeated.size(); at+=4)
+            require(std::abs(int(repeated[at+2])-191)<=1 && std::abs(int(repeated[at+1])-223)<=1,
+                    "recycled ring produces fresh constants rather than stale addresses");
+        // Rotate through both rings while previous GPU submissions can remain
+        // in flight. Every fresh frame must upload before it can reuse again.
+        for (int frame=0; frame<4; ++frame) {
+            renderer.draw(draw);
+            require(renderer.take_pipeline_work().constant_saved_bytes == 0, "asynchronous ring switch invalidates both stages");
+            renderer.draw(draw);
+            require(renderer.take_pipeline_work().constant_saved_bytes == (reuse ? 8192 : 0), "new ring reuses only its own upload");
+            presentation.present();
+        }
+        require(asynchronous_flushes >= 4, "test exercised asynchronous present callbacks");
+        renderer.draw(draw);
+        renderer.draw(draw);
+        (void)renderer.take_pipeline_work();
+        // A near-capacity reservation forces the 64 MiB ring to flush after
+        // those draws. No huge vertex copy is needed to exercise this path.
+        require(!renderer.vertex_space((64ull << 20) - 32768, 0).empty(), "near-capacity reservation fits one ring");
+        require(renderer.take_pipeline_work().ring_flushes == 1, "reservation exercises the capacity flush path");
+        renderer.draw(draw);
+        require(renderer.take_pipeline_work().constant_saved_bytes == 0, "capacity flush invalidates cached offsets");
+        const auto final = presentation.readback_color();
+        for (size_t at=0; at<final.size(); at+=4)
+            require(std::abs(int(final[at+2])-191)<=1 && std::abs(int(final[at+1])-223)<=1,
+                    "ring switches and capacity flush preserve rendered constants");
+    }
+    environment("SFR_CONSTANT_UPLOAD_REUSE", "0");
+}
 void run() {
+    environment("SFR_GPU_PIPELINE", "1");
     const fs::path directory = fs::temp_directory_path() / ("sfr-resolution-" +
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     fs::create_directories(directory);
@@ -205,6 +306,7 @@ float4 shaderMain() : SV_Target {
             require(screen[(y * extent + x) * 4 + 3] == (x>=extent/4 ? 255 : 0),
                     "translated screen-space and half-pixel epilogue preserve logical geometry edges");
     }
+    constant_upload_readback(graphics, directory, header);
 }
 }
 int main() {

@@ -2,7 +2,8 @@ param(
     [string]$PackageDirectory = $PSScriptRoot,
     [ValidateSet('on','off')][string]$Trace = 'on',
     [ValidateSet('notify','poll')][string]$Suspension = 'notify',
-    [ValidateSet('on','off')][string]$Timer = 'off'
+    [ValidateSet('on','off')][string]$Timer = 'off',
+    [ValidateSet('on','off')][string]$ConstantReuse = 'off'
 )
 $ErrorActionPreference = 'Stop'
 $package = (Resolve-Path -LiteralPath $PackageDirectory).Path
@@ -17,11 +18,12 @@ if (Get-Process sfr_cpu_diagnostic -ErrorAction SilentlyContinue) {
 $power = Read-Host 'Power/TDP mode (optional)'
 $plugged = Read-Host 'Plugged into power? (yes/no)'
 $course = Read-Host 'Course to test (optional)'
-$output = Join-Path $package ('benchmarks/' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '-' + $Suspension + '-wait-' + $Trace + '-timer-' + $Timer)
+$output = Join-Path $package ('benchmarks/' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '-' + $Suspension + '-wait-' + $Trace + '-timer-' + $Timer + '-constants-' + $ConstantReuse)
 New-Item -ItemType Directory -Path $output | Out-Null
 $variables = @('SFR_WAIT_TRACE','SFR_WAIT_GRAPH','SFR_FRAME_METRICS','SFR_TRACE_INPUT',
     'SFR_MAIN_PROFILE','SFR_HOST_PROFILE','SFR_SAMPLE_PROFILE','SFR_PROFILE_GUEST',
-    'SFR_SUSPEND_NOTIFY','SFR_TIMER_RESOLUTION','SFR_TRACE_WAIT_RESULTS')
+    'SFR_SUSPEND_NOTIFY','SFR_TIMER_RESOLUTION','SFR_TRACE_WAIT_RESULTS',
+    'SFR_CONSTANT_UPLOAD_REUSE','SFR_CONSTANT_REUSE_TRACE')
 $previous = @{}
 foreach ($name in $variables) {
     $previous[$name] = [Environment]::GetEnvironmentVariable($name,'Process')
@@ -35,8 +37,9 @@ try {
     [Environment]::SetEnvironmentVariable('SFR_TRACE_WAIT_RESULTS','0','Process')
     [Environment]::SetEnvironmentVariable('SFR_SUSPEND_NOTIFY',$(if ($Suspension -eq 'notify') {'1'} else {'0'}),'Process')
     [Environment]::SetEnvironmentVariable('SFR_TIMER_RESOLUTION',$(if ($Timer -eq 'on') {'1'} else {'0'}),'Process')
+    [Environment]::SetEnvironmentVariable('SFR_CONSTANT_UPLOAD_REUSE',$(if ($ConstantReuse -eq 'on') {'1'} else {'0'}),'Process')
     Write-Host 'Keep the current graphics/input settings. Disable Skip movies for this capture.'
-    Write-Host 'Watch the Intro for 20-30 seconds, then play the slow course for about 2 minutes.'
+    Write-Host 'Watch the complete Intro (about 75 seconds), then play the slow course for about 2 minutes.'
     Write-Host 'Close BOTH game and launcher when done. Leave this console open until the ZIP is saved.'
     # The user needs this interactive launcher to configure and start the game.
     $process = Start-Process -FilePath $launcher -WorkingDirectory $package -WindowStyle Normal -PassThru -Wait
@@ -52,6 +55,7 @@ try {
         trace = $Trace
         suspension = $Suspension
         timerResolution = $Timer
+        constantUploadReuse = $ConstantReuse
         startedUtc = $started.ToString('o')
         endedUtc = [DateTime]::UtcNow.ToString('o')
         executableSha256 = (Get-FileHash -LiteralPath $game -Algorithm SHA256).Hash

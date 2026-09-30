@@ -149,8 +149,10 @@ public:
         // is recorded and waits for the GPU. Texture work: the uploads a
         // draw makes before it can bind what it fetches.
         uint32_t ring_flushes, textures; double texture_milliseconds;
-        // Opt-in CPU byte comparisons; uploads are not actually skipped.
+        // Opt-in probe of requested bytes and exact matches; the probe itself
+        // does not skip writes. Reuse savings are reported independently.
         uint64_t constant_upload_bytes = 0, constant_reusable_bytes = 0;
+        uint64_t constant_saved_bytes = 0; // Actual skipped writes when reuse is enabled.
     };
     PipelineWork take_pipeline_work() noexcept;
     // Unchanged while texture() and sampler() would answer the same fetch

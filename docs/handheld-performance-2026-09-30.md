@@ -472,3 +472,64 @@ as a speedup. The experiment should keep allocation layout/ABI unchanged,
 invalidate on every flush, bind the original immutable upload offset on a hit,
 and test changed bytes and ring reuse on both Vulkan and D3D12. The distributed
 test2 ZIP/APK remain unchanged and do not contain this newer probe.
+
+### Constant upload reuse: correctness and local A/B/A
+
+The opt-in `SFR_CONSTANT_UPLOAD_REUSE=1` experiment retains an exact 4 KiB CPU
+snapshot and immutable ring offset independently for VS and PS. Hits bind that
+offset instead of copying again; misses write the reserved slot and update the
+snapshot. Every flush invalidates both stages, before ring reuse or switching.
+The allocation layout, constant buffer sizes, shader ABI and game clocks are
+unchanged. Default remains off while handheld performance is unverified.
+
+The helper test first failed against always-upload behavior, then passed with
+reuse. It covers initial zeros and offset zero, unchanged bytes, a changed last
+word, signed zero and NaN payloads, immutable earlier uploads and explicit reset.
+GPU readback covers independent stage changes, identical values at different
+draw offsets, synchronous reset, four asynchronous presents through both rings,
+and a near-capacity reservation that forces a flush. Both Vulkan and D3D12 pass.
+The first D3D12 fixture failed before reuse was enabled: DXIL inspection showed
+TEXCOORD at different signature registers because the test PS omitted the VS's
+SV_Position input. Retaining that input fixed the fixture; no backend workaround
+was added. Private debugger output and linker map localize the old failure to
+binding a pipeline after that invalid shader pairing.
+
+Independent read-only review found no actionable defect, including review of
+the additional async/capacity tests. The Windows suite with reuse enabled passes
+119/119, and focused D3D12 readbacks pass 2/2. Android ARM64 runtime and helper
+test compile/link, but no Android execution occurred. A fresh `adb devices -l`
+still shows no connected device. Capture script syntax parses and its new
+`-ConstantReuse on|off` option restores process environment and records the mode.
+
+Same-executable, no sampling profiler, wait trace disabled, 60 FPS cap, 720p/100%
+Vulkan race A/B/A results (1,501 late frames per run):
+
+| Run | Reuse | Frame ms | Record ms | Draws/frame | Record us/draw |
+| --- | --- | ---: | ---: | ---: | ---: |
+| constant-cache-off-1 | off | 17.8727 | 2.5590 | 868.35 | 2.9469 |
+| constant-cache-on-1 | on | 17.5180 | 2.0734 | 873.96 | 2.3724 |
+| constant-cache-off-2 | off | 17.6626 | 2.4851 | 845.04 | 2.9407 |
+
+All runs complete 11,500 presents without overlap/crash; exit 3 is the configured
+present limit. Enabled mode saves 4,392,328 bytes/frame (61.35% of VS/PS requests).
+Every frame's accounting is bounded and whole-buffer aligned; off runs save zero.
+The enabled race screenshot shows the track, rider and HUD. Record time per draw
+is about 19% lower than either control. Overall frame time is only about 0.8–2%
+lower; do not describe this as a 19% FPS gain. Draw counts and scene timing vary,
+and integrated/mobile GPUs may have a different copy/compare cost balance.
+
+Benchmark executable SHA-256:
+`f71877be8dbb24cb90b54dd8cbc2e45650eb93de8e0340a7a895d75b85eecd62`.
+Exact executable/map, patch/new helper sources and comparison JSON are preserved
+under `out/handheld-042/constant-cache-experiment`. No public release or existing
+private package was changed by this experiment.
+
+The final opt-in build also completes `constant-cache-intro-1`: 4,000 presents
+in 103.985 seconds, expected present-limit exit, no overlapping game or dropped
+wait records. Movie trace accounting passes and reports completion after
+72,476.4 ms, consistent with the prior 72,476 / 72,482.4 ms captures (source
+movie approximately 72.414 s). The present-2,000 image contains the Intro movie.
+Matching playback duration is a timing regression check, not per-frame A/V sync
+validation or proof that handheld video slowdown is fixed. Final Intro runtime
+SHA-256: `8bdc26ee7e0333fba9e10ab73749f3fd02907fc38033d8a1a20ed7f872e46e0b`;
+the race A/B/A used the separately archived executable identified above.
