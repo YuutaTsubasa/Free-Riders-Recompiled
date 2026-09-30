@@ -1,8 +1,8 @@
 # Internal rendering resolution
 
-In the launcher's **Display** settings, choose **Rendering resolution** before
-starting the game. This controls the number of pixels drawn by the game and is
-separate from **Output window size**. Restart the game to apply a change.
+In the launcher's **Graphics** settings, choose **Rendering resolution** before
+starting the game. Both resolution choices are together in the **Resolution** section. This controls the number of pixels drawn by the game and is
+separate from **Window resolution**. Restart the game to apply a change.
 
 | Setting | Internal pixels | Relative pixel count |
 | --- | --- | --- |

@@ -72,7 +72,7 @@ namespace fs = std::filesystem;
 // ---------------------------------------------------------------- text
 enum Text {
     TitleLine, Subtitle,
-    TabDisplay, TabSound, TabGame, TabAdvanced, TabFiles,
+    TabDisplay, TabSound, TabGeneral, TabMotion, TabFiles,
     WindowSize, DesktopSize, Fullscreen, FullscreenHint, VSync, VSyncHint, RenderResolution, RenderResolutionHint, NativeResolution,
     Sound, SoundHint, Volume,
     SkipMovies, SkipMoviesHint,
@@ -105,7 +105,10 @@ enum Text {
     PressKey, PressButton, Unbound, ResetBindings, BindingsHint, SticksFixed,
     PlayerOneGamepad, PlayerTwoGamepad, GamepadHint, GamepadAutomatic, GamepadMissing,
     AvatarModel, AvatarModelHint, AvatarModelNone, AvatarModelMissing, AvatarModelImportFailed, Clear,
-    GameLanguageLabel, GameLanguageHint,
+    GameLanguageLabel, GameLanguageHint, TabAvatar,
+    SectionLanguage, SectionPlayback, SectionReset, SectionWindow, SectionRendering, SectionPerformance,
+    SectionGameAudio, SectionLauncherAudio, SectionPlayer1, SectionPlayer2, SectionBindings, SectionTouch, SectionVoice,
+    SectionResolution, WindowResolutionHint,
     TextCount
 };
 
@@ -113,21 +116,21 @@ enum Text {
 constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Free Riders Recompiled", "Free Riders Recompiled"},
     {"Settings take effect when the game starts.", "設定會在遊戲啟動時套用。"},
-    {"Display", "顯示"},
+    {"Graphics", "畫面與效能"},
     {"Sound", "音效"},
-    {"Game", "遊戲"},
-    {"Advanced", "進階"},
+    {"General", "一般"},
+    {"Motion input", "體感與攝影機"},
     {"Game files", "遊戲檔案"},
-    {"Output window size", "輸出視窗大小"},
+    {"Window resolution", "視窗解析度"},
     {"desktop", "桌面大小"},
     {"Full screen", "全螢幕"},
     {"Borderless full screen. Alt+Enter switches while playing.", "無邊框全螢幕。遊戲中可按 Alt+Enter 切換。"},
     {"Vertical sync", "垂直同步"},
     {"Waits for the display between frames. The game never runs above 60 fps either way.",
      "每格畫面等待螢幕更新。無論是否開啟，遊戲都不會超過 60 fps。"},
-    {"Rendering resolution", "繪製解析度"},
-    {"Fewer pixels can improve speed; more improve detail. Applied when the game starts.",
-     "較低解析度可提升效能，較高解析度可增加細節。遊戲啟動時套用。"},
+    {"Rendering resolution", "遊戲渲染解析度"},
+    {"Pixels actually drawn by the game, independent of the window size. Lower values reduce GPU load; higher values improve detail.",
+     "遊戲實際繪製的像素數，與視窗大小分開設定。較低值可減輕 GPU 負擔，較高值可增加畫面細節。"},
     {"native", "原生"},
     {"Sound", "聲音"},
     {"Plays the game's sound on the default output device.", "在預設的輸出裝置播放遊戲聲音。"},
@@ -270,8 +273,8 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Install from a disc image...", "從光碟映像檔安裝..."},
     {"shaders.pack is missing: the game will draw without shaders. Choose one under Game files.",
      "找不到 shaders.pack，遊戲將無法正確繪製。請在「遊戲檔案」選擇一個。"},
-    {"Language", "語言"},
-    {"The launcher's language. Choose the game's language separately in the Game tab.", "啟動器的語言；遊戲語言可在「遊戲」分頁另外設定。"},
+    {"Launcher language", "啟動器語言"},
+    {"The launcher's language. Choose the game's language separately below.", "啟動器的語言；遊戲語言可在下方另外設定。"},
     {"System language", "系統語言"},
     {"English", "English"},
     {"繁體中文", "繁體中文"},
@@ -283,7 +286,7 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"INSTALLER", "安裝"},
     {"INSTALLING", "安裝中"},
     {"STOPPED", "已停止"},
-    {"Controls", "操作"},
+    {"Controls", "控制器與按鍵"},
     {"Player 1", "1P"},
     {"What the first player uses. The keyboard has always been there behind the controller; leaving it there costs nothing.",
      "第一位玩家用什麼操作。鍵盤一直都在手把後面備著，留著它沒有壞處。"},
@@ -324,6 +327,23 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Game language", "遊戲語言"},
     {"Choose the game's language independently of the launcher. System language follows your OS; unsupported languages use English. Applies when the game starts.",
      "獨立選擇遊戲語言。「系統語言」依照作業系統設定，不支援時使用英文。於下次啟動遊戲時套用。"},
+    {"Avatar models", "Avatar 模型"},
+    {"Languages", "語言"},
+    {"Movies", "影片"},
+    {"Restore defaults", "還原設定"},
+    {"Window", "視窗"},
+    {"Rendering", "渲染畫質"},
+    {"Advanced performance options", "進階效能選項"},
+    {"Game audio", "遊戲音效"},
+    {"Launcher audio", "啟動器提示音"},
+    {"Player 1", "玩家 1"},
+    {"Player 2", "玩家 2"},
+    {"Button and key bindings", "按鍵綁定"},
+    {"Touch and tilt", "觸控與傾斜"},
+    {"Voice commands", "語音指令"},
+    {"Resolution", "解析度"},
+    {"Output size in windowed mode. Fullscreen uses the display size; Rendering resolution controls image detail.",
+     "視窗模式下的輸出大小；全螢幕使用螢幕尺寸。畫面精細度由下方的遊戲渲染解析度決定。"},
 }};
 
 int language = 0;
@@ -963,7 +983,7 @@ float draw_prompt(ImDrawList* draw, ImVec2 at, float size, InputKind kind, Promp
 
 // ---------------------------------------------------------------- app
 enum class Page { Settings, Stopped, Install, Installing, Installed };
-enum Tab { DisplayTab, SoundTab, GameTab, ControlsTab, AdvancedTab, FilesTab, TabCount };
+enum Tab { GeneralTab, DisplayTab, SoundTab, ControlsTab, MotionTab, AvatarTab, FilesTab, TabCount };
 enum class Question { none, quit, cancel_install, quit_during_install };
 
 // An installation running on its own thread; the page reads its progress.
@@ -999,7 +1019,7 @@ struct Launcher {
     Fonts fonts;
     float scale = 1.0f;
     Page page = Page::Settings;
-    int tab = DisplayTab;
+    int tab = GeneralTab;
     float tab_fade = 1.0f;
     // The host's cameras, listed while the camera setting is on.
     std::vector<std::string> cameras;
@@ -1227,7 +1247,7 @@ struct Launcher {
         ::play(sfr::UiSound::confirm);
     }
 
-    // The choice in the Display tab (reachable with keys and pads).
+    // The choice in General (reachable with keys and pads).
     void language_row() {
         const float combo_width = 300 * scale;
         setting_row(tr(LanguageLabel), tr(LanguageHint), combo_width, scale, [&] {
@@ -1417,7 +1437,7 @@ struct Launcher {
     void tab_list(ImVec2 size) {
         const float left = ImGui::GetCursorPosX();
         ImGui::PushFont(fonts.heading);
-        constexpr Text names[TabCount] = {TabDisplay, TabSound, TabGame, TabControls, TabAdvanced, TabFiles};
+        constexpr Text names[TabCount] = {TabGeneral, TabDisplay, TabSound, TabControls, TabMotion, TabAvatar, TabFiles};
         for (int i = 0; i < TabCount; ++i) {
             ImGui::SetCursorPosX(left);
             const ImVec2 at = ImGui::GetCursorScreenPos();
@@ -1433,8 +1453,7 @@ struct Launcher {
             const bool clicked = ImGui::Selectable(id, i == tab, 0, ImVec2(size.x, height));
             ImGui::PopItemFlag();
             if (clicked) {
-                if (tab != i) { tab_fade = 0.0f; ::play(sfr::UiSound::move); }
-                tab = i;
+                select_tab(i);
             }
             ImGui::PopStyleColor(4);
             ImGui::PopStyleVar();
@@ -1447,6 +1466,23 @@ struct Launcher {
             }
         }
         ImGui::PopFont();
+    }
+
+    void select_tab(int next) {
+        if (tab == next) return;
+        tab = next;
+        tab_fade = 0.0f;
+        focus_first_control = true;
+        capturing = -1;
+        ::play(sfr::UiSound::move);
+    }
+
+    void settings_section(Text label) {
+        ImGui::Dummy(ImVec2(0, 4 * scale));
+        ImGui::PushStyleColor(ImGuiCol_Text, cyan);
+        ImGui::SeparatorText(tr(label));
+        ImGui::PopStyleColor();
+        ImGui::Dummy(ImVec2(0, 4 * scale));
     }
 
     void display_settings() {
@@ -1465,8 +1501,10 @@ struct Launcher {
             return std::string(text);
         };
         const float combo_width = 300 * scale;
-#ifndef __ANDROID__  // the game fills a phone's screen
-        setting_row(tr(WindowSize), nullptr, combo_width, scale, [&] {
+        const float switch_width = ImGui::GetFrameHeight() * 1.9f;
+        settings_section(SectionResolution);
+#ifndef __ANDROID__  // fullscreen phones have no adjustable output window
+        setting_row(tr(WindowSize), tr(WindowResolutionHint), combo_width, scale, [&] {
             ImGui::SetNextItemWidth(combo_width);
             if (ImGui::BeginCombo("##size", name({settings.window_width, settings.window_height}).c_str())) {
                 for (const auto& s : sizes) {
@@ -1481,30 +1519,9 @@ struct Launcher {
                 ImGui::EndCombo();
             }
         });
-        const float switch_width = ImGui::GetFrameHeight() * 1.9f;
-        setting_row(tr(Fullscreen), tr(FullscreenHint), switch_width, scale, [&] { toggle("##full", &settings.fullscreen); });
 #else
         (void)name;
-        const float switch_width = ImGui::GetFrameHeight() * 1.9f;
 #endif
-        setting_row(tr(VSync), tr(VSyncHint), switch_width, scale, [&] { toggle("##vsync", &settings.vsync); });
-#ifdef _WIN32  // elsewhere the game always draws with Vulkan
-        setting_row(tr(GraphicsBackendLabel), tr(GraphicsBackendHint), combo_width, scale, [&] {
-            ImGui::SetNextItemWidth(combo_width);
-            if (ImGui::BeginCombo("##graphics_backend", settings.vulkan ? "Vulkan" : "D3D12")) {
-                for (const bool vulkan : {true, false}) {
-                    const bool chosen = settings.vulkan == vulkan;
-                    if (ImGui::Selectable(vulkan ? "Vulkan" : "D3D12", chosen)) {
-                        settings.vulkan = vulkan;
-                        ::play(sfr::UiSound::confirm);
-                    }
-                    if (chosen) ImGui::SetItemDefaultFocus();
-                }
-                ImGui::EndCombo();
-            }
-        });
-#endif
-        language_row();
         const auto render_name = [&](uint32_t percent) {
             char text[96];
             if (percent == 100)
@@ -1526,9 +1543,34 @@ struct Launcher {
                 ImGui::EndCombo();
             }
         });
+#ifndef __ANDROID__
+        settings_section(SectionWindow);
+        setting_row(tr(Fullscreen), tr(FullscreenHint), switch_width, scale, [&] { toggle("##full", &settings.fullscreen); });
+#endif
+        settings_section(SectionRendering);
+        setting_row(tr(VSync), tr(VSyncHint), switch_width, scale, [&] { toggle("##vsync", &settings.vsync); });
+#ifdef _WIN32  // elsewhere the game always draws with Vulkan
+        setting_row(tr(GraphicsBackendLabel), tr(GraphicsBackendHint), combo_width, scale, [&] {
+            ImGui::SetNextItemWidth(combo_width);
+            if (ImGui::BeginCombo("##graphics_backend", settings.vulkan ? "Vulkan" : "D3D12")) {
+                for (const bool vulkan : {true, false}) {
+                    const bool chosen = settings.vulkan == vulkan;
+                    if (ImGui::Selectable(vulkan ? "Vulkan" : "D3D12", chosen)) {
+                        settings.vulkan = vulkan;
+                        ::play(sfr::UiSound::confirm);
+                    }
+                    if (chosen) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+        });
+#endif
+        ImGui::Dummy(ImVec2(0, 10 * scale));
+        if (ImGui::CollapsingHeader(tr(SectionPerformance))) performance_settings();
     }
 
     void sound_settings() {
+        settings_section(SectionGameAudio);
         const float switch_width = ImGui::GetFrameHeight() * 1.9f;
         setting_row(tr(Sound), tr(SoundHint), switch_width, scale, [&] { toggle("##audio", &settings.audio); });
         const float slider_width = 300 * scale;
@@ -1539,6 +1581,7 @@ struct Launcher {
             if (ImGui::SliderInt("##volume", &volume, 0, 100, "%d%%")) settings.volume = uint32_t(volume);
         });
         ImGui::EndDisabled();
+        settings_section(SectionLauncherAudio);
         setting_row(tr(UiSoundsLabel), tr(UiSoundsHint), switch_width, scale, [&] {
             if (toggle("##ui", &settings.ui_sounds)) {
                 ui_sounds.enabled = settings.ui_sounds;
@@ -1547,7 +1590,9 @@ struct Launcher {
         });
     }
 
-    void game_settings() {
+    void general_settings() {
+        settings_section(SectionLanguage);
+        language_row();
         setting_row(tr(GameLanguageLabel), tr(GameLanguageHint), 220 * scale, scale, [&] {
             const char* current = tr(LanguageSystem);
             for (const auto& item : sfr::game_languages)
@@ -1564,12 +1609,11 @@ struct Launcher {
                 ImGui::EndCombo();
             }
         });
+        settings_section(SectionPlayback);
         const float switch_width = ImGui::GetFrameHeight() * 1.9f;
         setting_row(tr(SkipMovies), tr(SkipMoviesHint), switch_width, scale, [&] { toggle("##movies", &settings.skip_movies); });
-#ifdef __ANDROID__
-        setting_row(tr(TouchLabel), tr(TouchHint), switch_width, scale, [&] { toggle("##touch", &settings.touch_controls); });
-        setting_row(tr(TiltLabel), tr(TiltHint), switch_width, scale, [&] { toggle("##tilt", &settings.tilt); });
-#endif
+        settings_section(SectionReset);
+        reset_settings();
     }
 
     // ------------------------------------------------ controls
@@ -1641,6 +1685,12 @@ struct Launcher {
     }
 
     void controls_settings() {
+#ifdef __ANDROID__
+        settings_section(SectionTouch);
+        const float switch_width = ImGui::GetFrameHeight() * 1.9f;
+        setting_row(tr(TouchLabel), tr(TouchHint), switch_width, scale, [&] { toggle("##touch", &settings.touch_controls); });
+        setting_row(tr(TiltLabel), tr(TiltHint), switch_width, scale, [&] { toggle("##tilt", &settings.tilt); });
+#endif
         read_bindings();
         const float combo_width = 300 * scale;
         const auto choice = [&](const char* id, Text label, Text hint, std::string& value,
@@ -1663,11 +1713,6 @@ struct Launcher {
                 }
             });
         };
-        choice("##p1device", PlayerOneDevice, PlayerOneDeviceHint, settings.player1_device,
-               {{"both", DeviceBoth}, {"gamepad", DeviceGamepad}, {"keyboard", DeviceKeyboard}});
-        choice("##p2device", PlayerTwoDevice, PlayerTwoDeviceHint, settings.player2_device,
-               {{"gamepad", DeviceGamepad}, {"keyboard", DeviceKeyboard}, {"off", DeviceOff}});
-
         // Which controller each player holds, by name. The list is what is
         // plugged in now, and a name chosen earlier stays on the list even
         // while its controller is away, so unplugging it does not silently
@@ -1704,8 +1749,15 @@ struct Launcher {
             });
             ImGui::EndDisabled();
         };
+        settings_section(SectionPlayer1);
+        choice("##p1device", PlayerOneDevice, PlayerOneDeviceHint, settings.player1_device,
+               {{"both", DeviceBoth}, {"gamepad", DeviceGamepad}, {"keyboard", DeviceKeyboard}});
         gamepad_row("##p1gamepad", PlayerOneGamepad, settings.player1_gamepad, settings.player1_device != "keyboard");
+        settings_section(SectionPlayer2);
+        choice("##p2device", PlayerTwoDevice, PlayerTwoDeviceHint, settings.player2_device,
+               {{"gamepad", DeviceGamepad}, {"keyboard", DeviceKeyboard}, {"off", DeviceOff}});
         gamepad_row("##p2gamepad", PlayerTwoGamepad, settings.player2_gamepad, settings.player2_device == "gamepad");
+        settings_section(SectionBindings);
 
         // Which set the list below changes.
         setting_row(tr(BindingSet), tr(BindingSetHint), combo_width, scale, [&] {
@@ -1818,12 +1870,8 @@ struct Launcher {
         ImGui::PopID();
     }
 
-    void advanced_settings() {
-        avatar_model_settings();
+    void motion_settings() {
         const float switch_width = ImGui::GetFrameHeight() * 1.9f;
-        setting_row(tr(Parallel), tr(ParallelHint), switch_width, scale, [&] { toggle("##parallel", &settings.parallel); });
-        setting_row(tr(VertexCache), tr(VertexCacheHint), switch_width, scale, [&] { toggle("##vertex", &settings.vertex_cache); });
-        setting_row(tr(GpuPipeline), tr(GpuPipelineHint), switch_width, scale, [&] { toggle("##pipeline", &settings.gpu_pipeline); });
         const float camera_width = 150 * scale;
         // The hint says what the chosen setting does, or while the list is
         // open the one under the pointer (from the frame before).
@@ -1934,14 +1982,26 @@ struct Launcher {
 #endif
             }
         }
-        if (sfr::VoiceRecognizer::supported())
+        if (sfr::VoiceRecognizer::supported()) {
+            settings_section(SectionVoice);
             setting_row(tr(VoiceLabel), tr(VoiceHint), switch_width, scale, [&] { toggle("##voice", &settings.voice); });
+        }
+    }
+
+    void performance_settings() {
+        const float switch_width = ImGui::GetFrameHeight() * 1.9f;
+        setting_row(tr(Parallel), tr(ParallelHint), switch_width, scale, [&] { toggle("##parallel", &settings.parallel); });
+        setting_row(tr(VertexCache), tr(VertexCacheHint), switch_width, scale, [&] { toggle("##vertex", &settings.vertex_cache); });
+        setting_row(tr(GpuPipeline), tr(GpuPipelineHint), switch_width, scale, [&] { toggle("##pipeline", &settings.gpu_pipeline); });
         const float slider_width = 220 * scale;
         setting_row(tr(RaceEvery), tr(RaceEveryHint), slider_width, scale, [&] {
             int every = int(settings.race_render_every);
             ImGui::SetNextItemWidth(slider_width);
             if (ImGui::SliderInt("##every", &every, 1, 4)) settings.race_render_every = uint32_t(every);
         });
+    }
+
+    void reset_settings() {
         ImGui::Dummy(ImVec2(0, 6 * scale));
         if (small_button(tr(Defaults), scale)) {
             const auto image = settings.image_directory, assets = settings.asset_directory;
@@ -1950,6 +2010,7 @@ struct Launcher {
             settings.image_directory = image;
             settings.asset_directory = assets;
             ui_sounds.enabled = settings.ui_sounds;
+            apply_language(settings.language);
             bindings_read = false;  // the Controls page reads them again
             capturing = -1;
         }
@@ -2062,6 +2123,7 @@ struct Launcher {
         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * tab_fade);
         const ImGuiWindowFlags panel_flags = ImGuiWindowFlags_NoBackground |
             (tab == ControlsTab ? ImGuiWindowFlags_AlwaysVerticalScrollbar : ImGuiWindowFlags_None);
+        ImGui::PushID(tab); // Each category retains its own scroll and widget state.
         ImGui::BeginChild("settings", inside, ImGuiChildFlags_None, panel_flags);
         // Account for the scrollbar before laying out the rows.
         content_width = ImGui::GetContentRegionAvail().x;
@@ -2069,13 +2131,15 @@ struct Launcher {
         switch (tab) {
         case DisplayTab: display_settings(); break;
         case SoundTab: sound_settings(); break;
-        case GameTab: game_settings(); break;
+        case GeneralTab: general_settings(); break;
         case ControlsTab: controls_settings(); break;
-        case AdvancedTab: advanced_settings(); break;
+        case MotionTab: motion_settings(); break;
+        case AvatarTab: avatar_model_settings(); break;
         case FilesTab: file_settings(); break;
         }
         ImGui::PopTextWrapPos();
         ImGui::EndChild();
+        ImGui::PopID();
         ImGui::PopStyleVar();
 
         if (note) {
@@ -2091,10 +2155,7 @@ struct Launcher {
             : ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) || ImGui::IsKeyPressed(ImGuiKey_Q, false) || ImGui::IsKeyPressed(ImGuiKey_PageUp, false) ? -1
             : ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) || ImGui::IsKeyPressed(ImGuiKey_E, false) || ImGui::IsKeyPressed(ImGuiKey_PageDown, false) ? 1 : 0;
         if (step) {
-            tab = (tab + step + TabCount) % TabCount;
-            tab_fade = 0.0f;
-            focus_first_control = true;
-            ::play(sfr::UiSound::move);
+            select_tab((tab + step + TabCount) % TabCount);
         }
         const int pressed = actions(size, {{tr(Quit), false}, {tr(StartGame), true}}, 1);
         if (pressed == 0) quit_now = true;
@@ -2410,7 +2471,7 @@ struct Launcher {
         ImGui::PopTextWrapPos();
         guide(size, {{Prompt::confirm, GuideSelect}, {Prompt::back, GuideBack}});
         const int pressed = actions(size, {{tr(OpenSettings), false}, {tr(StartGame), true}}, 1);
-        if (pressed == 0) { tab = DisplayTab; set_page(Page::Settings); }
+        if (pressed == 0) { tab = GeneralTab; set_page(Page::Settings); }
         if (pressed == 1) { set_page(Page::Settings); play(); }
     }
 

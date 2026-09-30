@@ -6,7 +6,7 @@ have AVATAR available; the model setting does not unlock it.
 
 ## Choose a model
 
-In the launcher's **Advanced** tab, open **Avatar model > Browse** and select
+In the launcher's **Avatar models** tab, choose **Browse** and select
 your own `.vrm` or binary `.glb` file. VRM 0.x and VRM 1.0 humanoid mappings
 provide animation; an ordinary GLB without that mapping stays static.
 
