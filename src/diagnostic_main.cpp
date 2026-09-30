@@ -771,6 +771,13 @@ static const bool wait_trace_enabled = [] {
     const char* text = std::getenv("SFR_WAIT_TRACE");
     return text && *text == '1';
 }();
+static const uint32_t wait_trace_guest = [] {
+    const char* text = std::getenv("SFR_WAIT_TRACE_GUEST");
+    if (!text || *text < '0' || *text > '9') return uint32_t(0);
+    char* end = nullptr;
+    const auto id = std::strtoull(text, &end, 10);
+    return end && !*end && id > 1 && id <= UINT32_MAX ? uint32_t(id) : uint32_t(0);
+}();
 static const bool wait_graph = [] {
     const char* const text = std::getenv("SFR_WAIT_GRAPH");
     return text && *text == '1';
@@ -816,6 +823,14 @@ static void wait_graph_wait(uint32_t object, std::chrono::steady_clock::time_poi
 // releasing only the core it holds, so a detached guest waits without first
 // queueing for the permit.
 static WaitTrace& main_wait_trace() { static WaitTrace trace; return trace; }
+struct WorkerWaitTrace {
+    WaitTrace trace;
+    std::chrono::steady_clock::time_point reported = std::chrono::steady_clock::now();
+};
+static WorkerWaitTrace& worker_wait_trace() {
+    static thread_local WorkerWaitTrace worker;
+    return worker;
+}
 static auto wait_trace_reported = std::chrono::steady_clock::now();
 void flush_main_wait_trace(uint32_t frame, bool force) {
     if (!wait_trace_enabled) return;
@@ -831,11 +846,30 @@ template<class Operation> static void measured_guest_wait(Operation&& operation,
         if (global) execution_permit->run_blocking(std::forward<decltype(callback)>(callback));
         else execution_permit->run_wait(std::forward<decltype(callback)>(callback));
     };
-    if (!wait_trace_enabled || current_id != 1) { runner(std::forward<Operation>(operation)); return; }
-    observe_wait(true, main_wait_trace(), site, runner, std::forward<Operation>(operation), [] {
+    if (!wait_trace_enabled || (current_id != 1 && (!wait_trace_guest || current_id != wait_trace_guest))) {
+        runner(std::forward<Operation>(operation)); return;
+    }
+    const auto clock = [] {
         return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count());
-    }, status);
+    };
+    if (current_id == 1) {
+        observe_wait(true, main_wait_trace(), site, runner, std::forward<Operation>(operation), clock, status);
+        return;
+    }
+    // The selected worker owns its collector and flushes it itself. Main-thread
+    // Present/shutdown never accesses these rows. A final partial window may
+    // remain unreported if the worker exits or waits indefinitely.
+    auto& worker = worker_wait_trace();
+    observe_wait(true, worker.trace, site, runner, std::forward<Operation>(operation), clock, status);
+    const auto now = std::chrono::steady_clock::now();
+    if (now - worker.reported >= std::chrono::seconds(5)) {
+        std::ostringstream text;
+        worker.trace.write_and_reset(text, present_count.load(),
+            std::chrono::duration<double, std::milli>(now - worker.reported).count(), current_id);
+        std::cerr << text.str();
+        worker.reported = now;
+    }
 }
 template<class Operation> static void block_guest(Operation&& operation, const WaitSite& site,
                                                   const uint32_t* status = nullptr) {

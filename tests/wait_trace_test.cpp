@@ -66,6 +66,20 @@ int main() {
         site.kind = "poll_50us"; site.timeout_ns = 50000;
         trace.record(site, 0, 1, 1000000, 3, 1000004, false);
         require(trace.rows().back().overshoot_ns == 950000, "short host polling sleeps must expose overshoot");
+        sfr::WaitTrace worker;
+        worker.record(site, 0, 1, 2000000, 3, 2000004, false);
+        const auto main_rows = trace.size();
+        std::ostringstream worker_output;
+        worker.write_and_reset(worker_output, 100, 5000, 7);
+        require(worker_output.str().find("WAIT_TRACE_WINDOW frame=100 guest_id=7 ") != std::string::npos &&
+                worker_output.str().find("WAIT_TRACE frame=100 guest_id=7 ") != std::string::npos,
+                "both worker window and detail must identify their guest");
+        require(worker.size() == 0 && trace.size() == main_rows,
+                "flushing a worker must not reset main-thread samples");
+        std::ostringstream main_output;
+        trace.write_and_reset(main_output, 100, 5000);
+        require(main_output.str().find("guest_id=1 ") != std::string::npos,
+                "existing callers must identify the main guest by default");
         std::cout << "wait trace tests passed\n";
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

@@ -104,3 +104,82 @@ Neither handheld's improvement is yet verified. Its original Android
 flag must be restored when the device reconnects.
 
 See [wait tracing](wait-tracing.md) for capture fields and interpretation.
+
+## Xenia acceptance baseline
+
+The user's performance target is to outperform Xenia on the same device,
+without changing game speed or reducing comparable visual quality. This is a
+target, not a measured result: no paired Xenia measurements are available yet.
+The existing desktop results above cannot establish that target has been met.
+
+For a reproducible comparison:
+
+- Record the exact Xenia fork, commit/build, configuration and any input or
+  compatibility patches needed to play Sonic Free Riders. Confirm that both
+  builds reach the same course and preserve normal game timing.
+- Start with the Ally X: use the same power mode/TDP, power connection, driver,
+  internal resolution (initially 1280x720), output resolution, audio and scene.
+  Disable Camera Input and custom VRM for the engine baseline. Record each
+  renderer and any visual differences; do not assume matching option names
+  produce matching work or image quality.
+- Run the same Intro and race route at least three times per build, alternating
+  order, without concurrent game processes. Separate cold shader-cache results
+  from warmed-cache results and allow comparable thermal conditions.
+- Compare normal-speed playback and audio/video alignment first, then sustained
+  FPS, p95/p99 frame times and long stalls. Present rate alone cannot establish
+  movie playback speed. When both reach the 60 FPS cap, report a tie in FPS and
+  compare frame-time consistency and measured resource/power costs; do not
+  uncap a fixed-step game to manufacture a speedup.
+- Claim faster performance only when repeatable paired results exceed run-to-run
+  variation. Keep published v0.4.2 as a third baseline to detect regressions.
+  Desktop results do not substitute for handheld acceptance, and a Windows
+  Xenia result does not establish an equivalent Android comparison.
+
+A targeted local search found a directory named `XeniaProject`, but it contains
+recompilation project sources; no Xenia executable/configuration was found there.
+Selecting and validating a runnable Xenia baseline remains outstanding.
+
+## Producer-side follow-up and Claude coordination
+
+Claude's separate `.worktrees/claude-handheld-perf` checkout investigates
+Windows timer policy and high-resolution timed waits. Codex has not modified
+that checkout. A shared `out/CODEX-PERFORMANCE-HANDOFF.md` in the primary
+repository records locations, evidence and integration cautions; receipt by
+Claude has not been confirmed.
+
+An isolated desktop probe set and read back default, ignored and explicitly
+honored timer-resolution policies in separate processes, then reversed order.
+Across 96 samples per kind per process, ordinary 1 ms and 100 us sleeps averaged
+about 1.45–1.53 ms in all policies. High-resolution waitable timers averaged
+about 1.50–1.52 ms for 1 ms requests and 0.498–0.505 ms for 100 us requests.
+The probe balanced timeBeginPeriod/timeEndPeriod and changed only its own
+process. This supports investigating submillisecond timed waits but does not
+reproduce the Ally's suspected 15.625 ms quantization or establish its cause.
+The Ally's late 6,300–7,418 window has zero reported frame-cap pacing time;
+changing the cap alone therefore cannot explain that race bottleneck.
+
+Selected-worker diagnostics (`SFR_WAIT_TRACE_GUEST=7`) were added without
+changing scheduling. `worker7-notify-1` reached its intentional 11,500-present
+limit, with no overlapping game process, 11,500 complete present rows and no
+collector overflow. Seven late worker windows cover 35.04 seconds: 32.18 seconds
+are suspension awaiting the next frame, 0.220 seconds are suspension permit
+reacquisition, and about 0.099 seconds are native critical waits. No short
+sleep/poll sites were reported. The remaining 2.50 seconds includes execution,
+preemption and logging, not independently measured pure CPU time. Waits are
+charged at completion, so boundary-crossing waits can skew window complements.
+Main-thread and worker time overlap and must not be added together.
+
+A second run, `worker7-cpu-profile-1`, sampled worker 7's host instruction
+pointer after frame 9,500. It also reached 11,500 presents without overlap or
+dropped wait rows. Of 23,188 samples, 92.73% were outside the executable's code
+(unresolved OS waits/libraries). Leading executable symbols were
+`sub_8280F5F8` (158 samples), `sub_8280E170` (92), `sub_8280CB80` (68), and
+`sub_82814758` (68). These are nearest-preceding linker-symbol attributions, not
+call stacks. They identify guest execution to investigate rather than a hot
+short-sleep loop. They do not yet justify replacing guest algorithms or claiming
+a frame-rate improvement. Broader main-thread CPU attribution is still needed.
+
+Both diagnostic runs used executable SHA-256
+`f49e3253b0e14202ed7a6d3825ac39d726f9c56ddb1a927c20f0df2968055a3d`.
+Raw probe/capture/analysis files are under `out/handheld-042` in Codex's worktree.
+This follow-up is not repackaged into the previously delivered test ZIP/APK.

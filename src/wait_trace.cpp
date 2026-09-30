@@ -32,14 +32,14 @@ void WaitTrace::record(const WaitSite& site, uint32_t status, uint64_t before, u
     if (!failed && site.timeout_ns >= 0 && (status == 258 || sleep) && native > uint64_t(site.timeout_ns))
         row.overshoot_ns += native - uint64_t(site.timeout_ns);
 }
-void WaitTrace::write_and_reset(std::ostream& out, uint32_t frame, double window_ms) {
+void WaitTrace::write_and_reset(std::ostream& out, uint32_t frame, double window_ms, uint32_t guest_id) {
     const auto flags = out.flags(); const auto precision = out.precision();
     out << std::dec << std::fixed << std::setprecision(4);
-    out << "WAIT_TRACE_WINDOW frame=" << frame << " window_ms=" << window_ms
+    out << "WAIT_TRACE_WINDOW frame=" << frame << " guest_id=" << guest_id << " window_ms=" << window_ms
         << " sites=" << size_ << " dropped=" << dropped_ << " dropped_total_ms=" << dropped_total_ns_ / 1e6
         << " dropped_native_ms=" << dropped_native_ns_ / 1e6 << " dropped_resume_ms=" << dropped_resume_ns_ / 1e6 << '\n';
     for (const auto& row : rows()) {
-        out << "WAIT_TRACE frame=" << frame << " kind=" << row.site.kind << " caller=0x" << std::hex << row.site.caller
+        out << "WAIT_TRACE frame=" << frame << " guest_id=" << guest_id << " kind=" << row.site.kind << " caller=0x" << std::hex << row.site.caller
             << " targets=";
         for (uint32_t i = 0; i < row.site.targets.count; ++i) {
             if (i) out << ',';

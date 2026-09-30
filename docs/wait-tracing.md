@@ -39,6 +39,16 @@ wait, even though overflow time is preserved. The data is owned by guest 1;
 workers do not write this collector. Disabled mode bypasses its clock reads,
 aggregation and logging.
 
+For producer-side diagnosis, additionally set `SFR_WAIT_TRACE_GUEST=7` (or
+another guest ID greater than one). The selected worker gets a separate
+thread-local collector and flushes it after a completed wait approximately
+every five seconds. Both window and detail lines include `guest_id`; existing
+main-thread collection is `guest_id=1`. Group analysis by that field: worker
+and main waits overlap and must not be added together as frame time. The
+worker's final partial window may not flush when it exits or waits indefinitely.
+Malformed, zero or one selections add no worker collector. This switch requires
+`SFR_WAIT_TRACE=1` and is off in normal captures.
+
 The older `WAIT_GRAPH` requires a separate `SFR_WAIT_GRAPH=1` opt-in; its worker
 signal mutex/map updates add overhead and are disabled in normal wait captures.
 `setters` contains observed

@@ -36,13 +36,13 @@ struct WaitTraceRow {
     uint64_t before_ns = 0, native_ns = 0, resume_ns = 0, overshoot_ns = 0, max_native_ns = 0;
     int64_t requested_min_ns = -1, requested_max_ns = -1;
 };
-// Main-thread-only collector. No heap allocation or cross-thread locks.
+// Single-thread-owned collector. No heap allocation or cross-thread locks.
 class WaitTrace {
 public:
     static constexpr size_t capacity = 128;
     void record(const WaitSite& site, uint32_t status, uint64_t before, uint64_t native,
                 uint64_t resume, uint64_t total, bool failed) noexcept;
-    void write_and_reset(std::ostream& out, uint32_t frame, double window_ms);
+    void write_and_reset(std::ostream& out, uint32_t frame, double window_ms, uint32_t guest_id = 1);
     std::span<const WaitTraceRow> rows() const { return {rows_.data(), size_}; }
     size_t size() const { return size_; }
     uint64_t dropped() const { return dropped_; }
