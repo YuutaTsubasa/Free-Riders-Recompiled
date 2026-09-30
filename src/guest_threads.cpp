@@ -1,6 +1,7 @@
 #include "guest_threads.h"
 #include "guest_memory.h"
 #include "system_time.h"
+#include "host_timing.h"
 #include <algorithm>
 #include <cstdlib>
 #include <bit>
@@ -226,7 +227,7 @@ std::function<void(std::stop_token)> GuestThreads::suspension_waiter(uint32_t ha
     if (!record) throw RuntimeStop("thread-suspend", handle, "unknown suspension waiter");
     return [record](std::stop_token stop) {
         while (!stop.stop_requested() && record->guest_suspends.load(std::memory_order_acquire))
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            precise_sleep(std::chrono::milliseconds(1));  // not a whole timer tick
     };
 }
 void GuestThreads::shutdown() noexcept {
