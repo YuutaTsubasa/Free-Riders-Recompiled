@@ -106,6 +106,74 @@ void many_threads_share_a_semaphore() {
     for (auto& worker : workers) worker.join();
     require(taken == 400, "every count is taken exactly once");
 }
+
+void overlapping_wait_sets_and_cleanup() {
+    auto a = p::make_event(false, false), b = p::make_event(false, false);
+    auto c = p::make_event(true, false), unrelated = p::make_event(false, false);
+    std::atomic<int> finished{0};
+    int any_result = -99, all_result = -99, cancelled_result = -99;
+    std::stop_source stop, cleanup;
+    std::thread any([&] {
+        p::Waitable* objects[] = {a.get(), c.get()};
+        any_result = p::wait_any(objects, p::infinite, cleanup.get_token());
+        ++finished;
+    });
+    std::thread all([&] {
+        p::Waitable* objects[] = {b.get(), c.get()};
+        all_result = p::wait_all(objects, p::infinite, cleanup.get_token());
+        ++finished;
+    });
+    std::thread cancelled([&] {
+        p::Waitable* objects[] = {unrelated.get(), c.get()};
+        cancelled_result = p::wait_all(objects, p::infinite, stop.get_token());
+        ++finished;
+    });
+    const auto registration_deadline = std::chrono::steady_clock::now() + 2s;
+    while (p::testing_blocked_wait_count() != 3 && std::chrono::steady_clock::now() < registration_deadline)
+        std::this_thread::sleep_for(1ms);
+    const bool all_registered = p::testing_blocked_wait_count() == 3;
+    p::set_event(*b);
+    p::set_event(*c);
+    stop.request_stop();
+    // Infinite waits cannot succeed by rechecking at a timeout after a missed
+    // notification. The test's separate watchdog cancels them before joining.
+    const auto completion_deadline = std::chrono::steady_clock::now() + 2s;
+    while (finished.load() != 3 && std::chrono::steady_clock::now() < completion_deadline)
+        std::this_thread::sleep_for(1ms);
+    const bool completed_promptly = finished.load() == 3;
+    cleanup.request_stop();
+    any.join(); all.join(); cancelled.join();
+    require(all_registered, "all overlapping waits must be blocked before signals are sent");
+    require(completed_promptly, "blocked overlapping waits must wake without timeout assistance");
+    require(any_result == 1, "a later shared object wakes wait-any with the correct index");
+    require(all_result == 0, "the same manual event also wakes an overlapping wait-all");
+    require(cancelled_result == p::wait_cancelled, "cancellation works for an incomplete overlapping wait-all");
+    p::Waitable* one[] = {a.get()};
+    require(p::wait_any(one, 5) == p::wait_timeout, "a timed wait completes without taking an event");
+    // Signal after each wait has gone away, including cancellation and timeout.
+    // This also exercises registration cleanup under memory sanitizers.
+    p::set_event(*a); p::set_event(*b); p::set_event(*c); p::set_event(*unrelated);
+    require(p::wait_any(one, 0) == 0, "a signal after timeout remains available to the next wait");
+}
+
+void event_handoffs_do_not_lose_signals() {
+    auto request = p::make_event(false, false), response = p::make_event(false, false);
+    std::atomic<bool> okay{true};
+    std::thread worker([&] {
+        p::Waitable* one[] = {request.get()};
+        for (int i = 0; i < 200; ++i) {
+            if (p::wait_any(one, 1000) != 0) { okay = false; break; }
+            p::set_event(*response);
+        }
+    });
+    p::Waitable* one[] = {response.get()};
+    for (int i = 0; i < 200; ++i) {
+        p::set_event(*request);
+        if (p::wait_any(one, 1000) != 0) { okay = false; break; }
+    }
+    worker.join();
+    require(okay, "back-to-back wait registration and signaling must not lose a handoff");
+}
 }
 
 int main() {
@@ -116,6 +184,8 @@ int main() {
         wait_all_takes_everything_or_nothing();
         waits_wake_time_out_and_cancel();
         many_threads_share_a_semaphore();
+        overlapping_wait_sets_and_cleanup();
+        event_handoffs_do_not_lose_signals();
         std::cout << "Portable waitable checks passed\n";
         return 0;
     } catch (const std::exception& e) {
