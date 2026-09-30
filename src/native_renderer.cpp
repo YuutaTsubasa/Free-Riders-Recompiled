@@ -1,6 +1,10 @@
 #include "native_renderer.h"
 #include "native_pipeline_key.h"
 #include "native_constant_upload.h"
+#include "pipeline_manifest.h"
+#include "runtime_shader_cache.h"
+#include <thread>
+#include <exception>
 #ifdef _WIN32
 #include "plume_d3d12.h"
 #endif
@@ -129,6 +133,51 @@ private:
     uint32_t libraries_ = 0;
 };
 #endif
+
+std::unique_ptr<plume::RenderPipeline> create_draw_pipeline(plume::RenderDevice& device,
+        const plume::RenderPipelineLayout* layout, const NativeDraw& draw, GraphicsBackend backend) {
+    const std::array<plume::RenderInputSlot, 2> slots{plume::RenderInputSlot(0, draw.stride),
+                                                       plume::RenderInputSlot(zero_slot, 0)};
+        plume::RenderGraphicsPipelineDesc desc;
+        desc.pipelineLayout = layout;
+        desc.vertexShader = draw.vertex_shader;
+        desc.pixelShader = draw.pixel_shader;
+        const plume::RenderSpecConstant spec(0, draw.pixel_spec_constants);
+        if (draw.pixel_spec_constants) {
+            desc.specConstants = &spec;
+            desc.specConstantsCount = 1;
+        }
+        desc.primitiveTopology = draw.topology;
+        desc.cullMode = draw.cull;
+        desc.depthEnabled = draw.depth_enabled;
+        desc.depthWriteEnabled = draw.depth_write;
+        desc.depthFunction = draw.depth_function;
+        desc.stencilEnabled = draw.stencil_enabled;
+        if (draw.stencil_enabled) {
+            desc.stencilReference = draw.stencil_reference;
+            desc.stencilReadMask = draw.stencil_read_mask;
+            desc.stencilWriteMask = draw.stencil_write_mask;
+            desc.stencilFrontFace = draw.stencil_front;
+            desc.stencilBackFace = draw.stencil_back;
+        }
+        desc.depthTargetFormat = plume::RenderFormat::D32_FLOAT_S8_UINT;
+        desc.renderTargetCount = 1;
+        desc.renderTargetFormat[0] = plume::RenderFormat::B8G8R8A8_UNORM;
+        desc.renderTargetBlend[0] = draw.blend.description(draw.write_mask);
+        desc.inputSlots = slots.data();
+        desc.inputSlotsCount = uint32_t(slots.size());
+        desc.inputElements = draw.elements.data();
+        desc.inputElementsCount = uint32_t(draw.elements.size());
+        auto pipeline = device.createGraphicsPipeline(desc);
+        if (!pipeline) return {};
+        if (backend == GraphicsBackend::vulkan) {
+            if (static_cast<plume::VulkanGraphicsPipeline*>(pipeline.get())->vk == VK_NULL_HANDLE) return {};
+        }
+#ifdef _WIN32
+        else if (!static_cast<plume::D3D12GraphicsPipeline*>(pipeline.get())->d3d) return {};
+#endif
+        return pipeline;
+}
 
 void report_vulkan_formats(NativeGraphics& graphics);
 
@@ -269,7 +318,15 @@ struct NativeRenderer::Impl {
             return size_t(hash);
         }
     };
-    std::unordered_map<std::vector<uint8_t>, std::unique_ptr<plume::RenderPipeline>, KeyHash> pipelines;
+    std::unordered_map<std::vector<uint8_t>, std::shared_ptr<plume::RenderPipeline>, KeyHash> pipelines;
+    std::unordered_map<std::vector<uint8_t>, std::shared_ptr<plume::RenderPipeline>, KeyHash> recipe_pipelines;
+    std::map<std::vector<uint8_t>, PipelineRecipe> recipes;
+    std::unordered_map<const ShaderCacheEntry*, std::unique_ptr<plume::RenderShader>> prepared_shaders;
+    std::filesystem::path learned_manifest;
+    bool manifest_dirty = false, preparation_started = false;
+    std::chrono::steady_clock::time_point manifest_saved_at{};
+    uint64_t prewarm_hits = 0;
+    void save_manifest() noexcept;
     // Texture uploads are submitted without waiting, so their command lists
     // rotate: a list is only recorded again once the submission that used it
     // has finished. Four is more than a frame's uploads have ever needed.
@@ -338,6 +395,143 @@ struct NativeRenderer::Impl {
 
     Impl(NativeGraphics& g, NativePresentation& p) : graphics(g), presentation(p) {}
 };
+
+void NativeRenderer::Impl::save_manifest() noexcept {
+    manifest_saved_at = std::chrono::steady_clock::now();
+    if (!manifest_dirty || learned_manifest.empty()) return;
+    try {
+        std::vector<PipelineRecipe> entries;
+        entries.reserve(recipes.size());
+        for (const auto& [key, recipe] : recipes) entries.push_back(recipe);
+        const bool saved = save_pipeline_manifest_file(learned_manifest, entries, uint32_t(graphics.backend()));
+        if (saved) manifest_dirty = false;
+        std::cerr << "PIPELINE_MANIFEST saved=" << saved << " recipes=" << entries.size()
+                  << " path=" << learned_manifest.generic_string() << '\n';
+    } catch (const std::exception& error) {
+        std::cerr << "PIPELINE_MANIFEST save_failed=" << error.what() << '\n';
+    }
+}
+
+void NativeRenderer::prepare_pipelines() {
+    if (impl_->preparation_started) return;
+    impl_->preparation_started = true;
+    const uint32_t backend = uint32_t(impl_->graphics.backend());
+    const char* name = backend == 1 ? "vulkan" : "d3d12";
+    const auto path_setting = [](const char* key, std::filesystem::path fallback) {
+        const char* value = std::getenv(key);
+        return value && *value ? std::filesystem::u8path(value) : fallback;
+    };
+    const auto pack = path_setting("SFR_SHADER_PACK", "out/shaders/shaders.pack");
+    const auto bundled = path_setting("SFR_PIPELINE_MANIFEST", pack.parent_path() / (std::string("pipelines-") + name + ".manifest"));
+    impl_->learned_manifest = path_setting("SFR_PIPELINE_MANIFEST_LOCAL",
+        std::filesystem::path("pipeline-cache") / (std::string(name) + ".manifest"));
+    for (const auto& path : {impl_->learned_manifest, bundled}) {
+        try {
+            const auto entries = load_pipeline_manifest_file(path, backend);
+            size_t stale = 0;
+            for (const auto& recipe : entries) {
+                const auto* vs = packed_pipeline_shader(ShaderStage::vertex, recipe.vertex.hash, recipe.vertex.size);
+                const auto* ps = packed_pipeline_shader(ShaderStage::pixel, recipe.pixel.hash, recipe.pixel.size);
+                if (!vs || !ps || (recipe.state.pixel_spec_constants & ~ps->specialization_mask) ||
+                    (recipe.pixel_link_constants & ~ps->specialization_mask)) {
+                    ++stale;
+                    continue;
+                }
+                if (impl_->recipes.size() < pipeline_manifest_max_recipes)
+                    impl_->recipes.emplace(pipeline_recipe_key(recipe), recipe);
+            }
+            if (stale && path == impl_->learned_manifest) impl_->manifest_dirty = true;
+            std::cerr << "PIPELINE_MANIFEST loaded=" << entries.size() << " stale=" << stale
+                      << " path=" << path.generic_string() << '\n';
+        } catch (const std::invalid_argument& error) {
+            std::cerr << "PIPELINE_MANIFEST ignored=" << path.generic_string() << " reason=" << error.what() << '\n';
+        }
+    }
+    const char* enabled = std::getenv("SFR_PIPELINE_PREWARM");
+    if (enabled && *enabled == '0') {
+        std::cerr << "PIPELINE_PREWARM disabled=1 recording=1\n";
+        return;
+    }
+    if (impl_->recipes.empty()) {
+        std::cerr << "PIPELINE_PREWARM total=0 recording=1\n";
+        return;
+    }
+    const auto started = std::chrono::steady_clock::now();
+    std::atomic<size_t> completed{0};
+    std::atomic<bool> done{false}, cancel{false};
+    size_t skipped = 0, compiled = 0;
+    std::exception_ptr failure;
+    const size_t total = impl_->recipes.size();
+    // Present once before any worker/driver activity, including creation of
+    // the preparation screen's own blit resources.
+    if (!impl_->presentation.preparation_progress(0, total))
+        throw RuntimeStop("window-closed", 0, "pipeline preparation cancelled");
+    std::jthread worker([&] {
+        try {
+            for (const auto& [key, recipe] : impl_->recipes) {
+                if (cancel.load(std::memory_order_relaxed)) break;
+                // Only known packaged stages: never launch a translator from
+                // untrusted manifest contents. Pack corruption remains fatal.
+                const auto* vs = packed_pipeline_shader(ShaderStage::vertex, recipe.vertex.hash, recipe.vertex.size);
+                const auto* ps = packed_pipeline_shader(ShaderStage::pixel, recipe.pixel.hash, recipe.pixel.size);
+                if (!vs || !ps || (recipe.state.pixel_spec_constants & ~ps->specialization_mask) ||
+                    (recipe.pixel_link_constants & ~ps->specialization_mask)) {
+                    ++skipped;
+                } else {
+                    const auto shader = [&](const ShaderCacheEntry& entry) -> const plume::RenderShader* {
+                        auto& result = impl_->prepared_shaders[&entry];
+                        if (!result) {
+                            const auto bytes = entry.code(backend == 1);
+                            result = impl_->graphics.device().createShader(bytes.data(), bytes.size(), "shaderMain",
+                                backend == 1 ? plume::RenderShaderFormat::SPIRV : plume::RenderShaderFormat::DXIL);
+                            if (!result || (backend == 1 &&
+                                static_cast<const plume::VulkanShader*>(result.get())->vk == VK_NULL_HANDLE))
+                                throw std::runtime_error("prepared shader creation failed");
+                        }
+                        return result.get();
+                    };
+                    NativeDraw state = recipe.state;
+                    state.vertex_shader = shader(*vs);
+                    state.pixel_shader = backend == 0 && ps->specialization_mask ?
+                        specialized(*ps, recipe.pixel_link_constants) : shader(*ps);
+                    auto pipeline = create_draw_pipeline(impl_->graphics.device(), impl_->layout.get(), state,
+                                                         impl_->graphics.backend());
+                    if (pipeline) {
+                        impl_->recipe_pipelines.emplace(key, std::move(pipeline));
+                        ++compiled;
+                    } else {
+                        ++skipped;
+                        std::cerr << "PIPELINE_PREWARM failed=1 recipe=" << completed.load() << '\n';
+                    }
+                }
+                completed.fetch_add(1, std::memory_order_release);
+            }
+        } catch (...) { failure = std::current_exception(); }
+        done.store(true, std::memory_order_release);
+    });
+    try {
+        while (!done.load(std::memory_order_acquire)) {
+            if (!impl_->presentation.preparation_progress(completed.load(std::memory_order_acquire), total,
+                                                          cancel.load(std::memory_order_relaxed)))
+                cancel.store(true, std::memory_order_relaxed);
+            std::this_thread::sleep_for(std::chrono::milliseconds(33));
+        }
+    } catch (...) {
+        cancel.store(true, std::memory_order_relaxed);
+        worker.join();
+        throw;
+    }
+    worker.join();
+    if (cancel.load(std::memory_order_relaxed))
+        throw RuntimeStop("window-closed", 0, "pipeline preparation cancelled");
+    if (failure) std::rethrow_exception(failure);
+    if (!impl_->presentation.preparation_progress(total, total))
+        throw RuntimeStop("window-closed", 0, "pipeline preparation cancelled");
+    impl_->presentation.finish_preparation();
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+    std::cerr << "PIPELINE_PREWARM complete=1 total=" << total << " compiled=" << compiled
+              << " skipped=" << skipped << " milliseconds=" << ms << '\n';
+}
 
 NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& presentation)
     : impl_(std::make_unique<Impl>(graphics, presentation)) {
@@ -464,10 +658,13 @@ NativeRenderer::~NativeRenderer() {
     // Complete recorded draws while their upload ring and textures still exist.
     try { impl_->presentation.flush(); } catch (...) {}
     impl_->presentation.clear_after_flush();
+    impl_->save_manifest();
 }
 uint32_t NativeRenderer::draws() const noexcept { return impl_->draws; }
 
 NativeRenderer::PipelineWork NativeRenderer::take_pipeline_work() noexcept {
+    if (impl_->manifest_dirty && std::chrono::steady_clock::now() - impl_->manifest_saved_at > std::chrono::seconds(30))
+        impl_->save_manifest();
     PipelineWork work{impl_->pipelines_created, impl_->pipeline_ms,
                             impl_->ring_flushes, impl_->textures_uploaded, impl_->texture_ms};
     if (auto* probe = impl_->constant_reuse_probe.get()) {
@@ -898,43 +1095,44 @@ void NativeRenderer::draw(const NativeDraw& draw) {
     auto& pipeline = impl_->pipelines[key];  // copies the key only when inserting
     const std::array<plume::RenderInputSlot, 2> slots{plume::RenderInputSlot(0, draw.stride),
                                                        plume::RenderInputSlot(zero_slot, 0)};
+    std::optional<PipelineRecipe> recipe;
+    std::vector<uint8_t> recipe_key;
+    if (!pipeline && !impl_->learned_manifest.empty() && draw.vertex_entry && draw.pixel_entry) {
+        try {
+            recipe.emplace();
+            recipe->vertex = pipeline_shader_id(draw.vertex_entry->source);
+            recipe->pixel = pipeline_shader_id(draw.pixel_entry->source);
+            recipe->pixel_link_constants = draw.pixel_link_constants;
+            recipe->state = draw;
+            recipe_key = pipeline_recipe_key(*recipe);
+            if (const auto found = impl_->recipe_pipelines.find(recipe_key); found != impl_->recipe_pipelines.end()) {
+                pipeline = found->second;
+                ++impl_->prewarm_hits;
+                std::cerr << "PIPELINE_PREWARM hit=" << impl_->prewarm_hits << '\n';
+            }
+        } catch (const std::invalid_argument& error) {
+            std::cerr << "PIPELINE_MANIFEST unrecordable=" << error.what() << '\n';
+            recipe.reset();
+        }
+    }
     if (!pipeline) {
         const auto pipeline_start = std::chrono::steady_clock::now();
-        plume::RenderGraphicsPipelineDesc desc;
-        desc.pipelineLayout = impl_->layout.get();
-        desc.vertexShader = draw.vertex_shader;
-        desc.pixelShader = draw.pixel_shader;
-        const plume::RenderSpecConstant spec(0, draw.pixel_spec_constants);
-        if (draw.pixel_spec_constants) {
-            desc.specConstants = &spec;
-            desc.specConstantsCount = 1;
-        }
-        desc.primitiveTopology = draw.topology;
-        desc.cullMode = draw.cull;
-        desc.depthEnabled = draw.depth_enabled;
-        desc.depthWriteEnabled = draw.depth_write;
-        desc.depthFunction = draw.depth_function;
-        desc.stencilEnabled = draw.stencil_enabled;
-        if (draw.stencil_enabled) {
-            desc.stencilReference = draw.stencil_reference;
-            desc.stencilReadMask = draw.stencil_read_mask;
-            desc.stencilWriteMask = draw.stencil_write_mask;
-            desc.stencilFrontFace = draw.stencil_front;
-            desc.stencilBackFace = draw.stencil_back;
-        }
-        desc.depthTargetFormat = plume::RenderFormat::D32_FLOAT_S8_UINT;
-        desc.renderTargetCount = 1;
-        desc.renderTargetFormat[0] = plume::RenderFormat::B8G8R8A8_UNORM;
-        desc.renderTargetBlend[0] = draw.blend.description(draw.write_mask);
-        desc.inputSlots = slots.data();
-        desc.inputSlotsCount = uint32_t(slots.size());
-        desc.inputElements = draw.elements.data();
-        desc.inputElementsCount = uint32_t(draw.elements.size());
-        pipeline = device.createGraphicsPipeline(desc);
+        pipeline = create_draw_pipeline(device, impl_->layout.get(), draw, impl_->graphics.backend());
         if (!pipeline) unsupported(0, "native graphics pipeline creation failed");
         ++impl_->pipelines_created;
         impl_->pipeline_ms += std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - pipeline_start).count();
+        if (recipe) {
+            impl_->recipe_pipelines.emplace(recipe_key, pipeline);
+            if (impl_->recipes.size() < pipeline_manifest_max_recipes) {
+                // Round-trip removes per-draw pointers, spans and constants;
+                // only immutable owned pipeline state is retained.
+                const auto encoded = encode_pipeline_manifest(std::span(&*recipe, 1), uint32_t(impl_->graphics.backend()));
+                auto clean = decode_pipeline_manifest(encoded, uint32_t(impl_->graphics.backend()));
+                impl_->recipes.insert_or_assign(recipe_key, std::move(clean.front()));
+                impl_->manifest_dirty = true;
+            }
+        }
     }
 
     // Per-draw upload: vertices, then the three constant buffers (256-aligned).

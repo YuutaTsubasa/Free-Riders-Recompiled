@@ -766,6 +766,9 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     // links a specialized shader per constant value.
     draw.pixel_shader=ps.shader?ps.shader.get():graphics().renderer().specialized(*ps.entry,alpha_test?2u:0u);
     draw.pixel_spec_constants=vulkan?(alpha_test?2u:0u)&ps.entry->specialization_mask:0u;
+    draw.vertex_entry=vs.entry;
+    draw.pixel_entry=ps.entry;
+    draw.pixel_link_constants=vulkan?0u:(alpha_test?2u:0u)&ps.entry->specialization_mask;
 
     // Skinning palette: a vertex shader that fetches bone matrices reads them
     // from the buffer SetStreamSource bound to stream 1 (vertex fetch constant

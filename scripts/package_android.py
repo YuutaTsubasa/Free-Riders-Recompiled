@@ -124,6 +124,11 @@ def main():
                 apk.write(library, 'lib/%s/%s' % (abi, library.name), compress_type=zipfile.ZIP_STORED)
         if args.pack:
             apk.write(args.pack, 'assets/shaders.pack', compress_type=zipfile.ZIP_DEFLATED)
+            manifest = Path(args.pack).parent / 'pipelines-vulkan.manifest'
+            if not manifest.is_file():
+                manifest = ROOT / 'data/pipeline-manifests' / manifest.name
+            if manifest.is_file():
+                apk.write(manifest, 'assets/pipelines-vulkan.manifest', compress_type=zipfile.ZIP_DEFLATED)
         if args.pose:
             for model in sorted(Path(args.pose).glob('*.onnx')):
                 apk.write(model, 'assets/pose/' + model.name, compress_type=zipfile.ZIP_DEFLATED)

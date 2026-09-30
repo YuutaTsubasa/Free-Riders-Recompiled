@@ -109,6 +109,12 @@ def desktop_files(platform, build, pack):
         sys.exit('a Linux release needs --pack')
     if pack:
         files.append(('shaders.pack', checked_shader_pack(need(pack))))
+        for backend in ('vulkan', 'd3d12'):
+            manifest = pack.parent / ('pipelines-' + backend + '.manifest')
+            if not manifest.is_file():
+                manifest = ROOT / 'data/pipeline-manifests' / manifest.name
+            if manifest.is_file():
+                files.append((manifest.name, manifest))
     return files
 
 
@@ -172,6 +178,7 @@ def main():
         files = desktop_files(args.platform, build, pack) + licenses
         files.append(('VRM-Avatar.md', need(ROOT / 'docs/vrm-avatar.md')))
         files.append(('Internal-resolution.md', need(ROOT / 'docs/internal-resolution.md')))
+        files.append(('Pipeline-preparation.md', need(ROOT / 'docs/pipeline-preparation.md')))
         if args.camera:
             files += camera_files(ROOT / 'tools/onnx')
             files.append(('Camera-input.md', need(ROOT / 'docs/camera-input.md')))

@@ -31,6 +31,7 @@ public class LauncherActivity extends SDLActivity {
     @Override
     protected void onCreate(Bundle state) {
         copyBundledShaderPack();
+        copyBundledPipelineManifest();
         copyBundledPoseModel();
         super.onCreate(state);
     }
@@ -79,6 +80,25 @@ public class LauncherActivity extends SDLActivity {
             out.write(version.getBytes("UTF-8"));
         } catch (Exception ignored) {
         }
+    }
+
+    // This small portable recipe list is release-owned. The separately learned
+    // pipeline-cache/vulkan.manifest and the player's driver cache are retained.
+    private void copyBundledPipelineManifest() {
+        File directory = getExternalFilesDir(null);
+        if (directory == null) return;
+        File target = new File(directory, "pipelines-vulkan.manifest");
+        File partial = new File(directory, "pipelines-vulkan.manifest.partial");
+        try (InputStream in = getAssets().open("pipelines-vulkan.manifest");
+             OutputStream out = new FileOutputStream(partial)) {
+            byte[] buffer = new byte[16384];
+            for (int n; (n = in.read(buffer)) > 0;) out.write(buffer, 0, n);
+        } catch (Exception unavailable) {
+            partial.delete();
+            target.delete(); // APKs without a list must not retain an old bundled list.
+            return;
+        }
+        if (!partial.renameTo(target)) partial.delete();
     }
 
     // A release APK carries shaders.pack (scripts/package_android.py --pack).

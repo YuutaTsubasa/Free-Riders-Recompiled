@@ -248,13 +248,33 @@ std::unordered_multimap<uint64_t, PackedShader> load_shader_pack() {
     return pack;
 }
 
-const PackedShader* find_packed_shader(ShaderStage stage, std::span<const uint8_t> source, uint64_t hash) {
+const auto& packed_shaders() {
     static const auto pack = load_shader_pack();
+    return pack;
+}
+const PackedShader* find_packed_shader(ShaderStage stage, std::span<const uint8_t> source, uint64_t hash) {
+    const auto& pack = packed_shaders();
     const auto [first, last] = pack.equal_range(hash);
     for (auto it = first; it != last; ++it)
         if (it->second.stage == stage && std::ranges::equal(it->second.source, source)) return &it->second;
     return nullptr;
 }
+}
+
+const ShaderCacheEntry* packed_pipeline_shader(ShaderStage stage, uint64_t hash, uint32_t source_size) {
+    const auto& pack = packed_shaders();
+    const auto [first, last] = pack.equal_range(hash);
+    const PackedShader* match = nullptr;
+    for (auto it = first; it != last; ++it) {
+        const auto& shader = it->second;
+        if (shader.stage != stage || shader.source.size() != source_size) continue;
+        if (match && match->source != shader.source) return nullptr;
+        match = &shader;
+    }
+    if (!match) return nullptr;
+    const bool vulkan = selected_graphics_backend() == GraphicsBackend::vulkan;
+    if ((vulkan ? match->spirv : match->dxil).empty()) return nullptr;
+    return &runtime_shader(stage, match->source);
 }
 
 const ShaderCacheEntry& runtime_shader(ShaderStage stage, std::span<const uint8_t> source) {

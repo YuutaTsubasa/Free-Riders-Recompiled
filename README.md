@@ -276,6 +276,13 @@ and the limits of testing on a faster PC: [Performance measurements](docs/benchm
 Guided 1P, 2P, Camera and VRM comparisons: [Benchmark scenarios](docs/benchmark-scenarios.md).
 Current local verification and hardware limits: [Validation report](docs/performance-resolution-validation.md).
 
+**Why is there a preparation screen before the game starts?** Builds with a pipeline
+manifest prepare known graphics pipelines before the first game frame, reducing
+first-use compilation stalls. The first start may take longer; later starts reuse
+this device's cache. Keep the `pipeline-cache` folder. Close the window or press
+Escape to cancel (hold Back on Android). Unrecorded combinations can still compile
+during play. See [Pipeline preparation](docs/pipeline-preparation.md).
+
 **Where are the settings and saves?** Beside the launcher: `settings.ini`,
 `save/` and `game.log` (on Android, in the app's files directory). The game
 plays as a local profile named "Player"; answer *Yes* when it asks "Are you
