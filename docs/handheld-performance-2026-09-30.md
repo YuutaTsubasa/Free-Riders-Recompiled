@@ -277,3 +277,79 @@ These measurements justify evaluating a fused CPU endian/DEC3N conversion to
 avoid the intermediate scratch copy before considering a shader ABI change.
 No conversion behavior changed in this diagnostic step. Raw capture and
 `vertex-analysis.json` are under `out/handheld-042/vertex-costs-1`.
+
+### Fused conversion experiment: not retained
+
+The fused helper removed the intermediate swapped copy and passed byte/bounds
+tests, independent review and Android ARM64 compilation. Actual game layouts
+exposed a 28-byte / three-attribute case that the first synthetic benchmark had
+missed. Specializing the observed strides recovered that microbenchmark, but
+did not establish a stable game benefit.
+
+All rows below use frames 9,500–11,000 inclusive of separate 11,500-present
+captures. Each finished with intentional present-limit exit 3, no competing
+game, zero dropped waits, and valid cached+swapped=source byte accounting.
+
+| Capture | Mean frame ms | p95 ms | p99 ms | Mean draws | Swap+repack ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| vertex-costs-1 (original) | 17.5328 | 20.3751 | 21.7096 | 851.25 | 1.3659 |
+| vertex-fused-1 | 17.6701 | 20.1186 | 21.0903 | 855.87 | 1.5503 |
+| vertex-fused-layouts-1 | 17.9665 | 20.2794 | 21.2500 | 847.02 | 1.6043 |
+| vertex-fused-actual-1 | 18.0601 | 21.0447 | 22.1131 | 861.74 | 1.5966 |
+| vertex-control-repeat-1 (original) | 17.9009 | 21.1285 | 22.2190 | 857.47 | 1.6630 |
+
+The original executable itself drifted from 1.366 to 1.663 ms conversion time.
+The final fused candidate falls inside that variation. This does not prove
+either an improvement or a pure regression; no FPS benefit is claimed.
+Source conversion volume stayed close to 4.63 MB/frame. The archived candidate
+SHA-256 is `7ba93d7acf05f49a847eefaf8f5c765394992f3df9594b5ea26204f0853904e7`.
+
+The four experiment source/test files were restored to commit `50e58c5` after
+saving a reapplicable patch and exact executable/map under
+`out/handheld-042/fused-dec3n-experiment`. `git apply --check` accepts that patch.
+The restored runtime builds and native_formats, guest_graphics and
+native_pipeline_key pass (3/3). Opt-in vertex-cost metrics remain committed.
+Neither the delivered candidate ZIP/APK nor Claude's files were changed.
+
+### Intro coverage gap
+
+Read-only ffprobe metadata reports `titleMovie_j.wmv` as WMV3, 1280x720,
+30000/1001 fps, with WMA Pro audio at 48 kHz and duration 72.414 seconds.
+The earlier `intro-final` capture lasts only 31.969 seconds and contains one
+30-call movie trace window. That proves neither full playback nor A/V sync.
+Movie draws stop around present 671 and the title menu appears; the trace
+does not yet distinguish the game's own state change from player completion.
+Extend diagnostics and capture coverage before changing decoder/audio timing.
+
+### Intro test cancellation isolated
+
+The extended opt-in movie trace records the first call, return-status changes,
+cumulative calls/success returns, elapsed host time, caller and incoming flags.
+It does not change arguments, readiness waits or skipping. The old-log verifier
+failed for missing coverage fields before the edit; new captures pass it.
+
+`intro-coverage-long-1` ran 7,200 presents / 124.703 seconds with the previous
+test environment. Four short movie episodes ended after about 1.6 seconds.
+`intro-flow-1` enabled entry diagnostics (not a performance comparison): the
+game calls `sub_82817C40` from `8243AA44`, setting player stop flags before
+the subsequent `0x16660026` return. It is not natural exhaustion of the file.
+
+Cause of the test cancellation: the race scenario's inherited
+`SFR_NUI_HAND_CENTRED=1` presents an already raised/centred virtual hand. Setting
+only that interaction flag to `0` in `intro-resting-hand-1` sustains playback to
+completion: 2,176 player calls, 2,175 success returns, terminal status at present
+2,801, 72.4824 seconds since the first call began. Source duration is 72.414
+seconds. Intermediate screenshots show changing video content. The full run
+finished 4,000 presents / 104.046 seconds, exit 3, no overlap or dropped waits.
+The private runner now uses resting hands by default for Intro.
+
+This corrects the test harness, not the handheld slowdown. Success-return count
+differs from the file's 2,169 video packets, so do not call it a decoded frame
+counter. Matching overall playback duration on this desktop also does not prove
+per-frame A/V sync or accepted/played audio samples. Earlier short Intro captures
+must not be used to claim full movie validation. Runtime SHA-256:
+`5a211a10094847bcd4ff0b971da4f7735ac644c872c5850e317b1e92521e84ba`.
+
+The diagnostic runtime builds; wait_trace, native_formats, guest_graphics and
+native_pipeline_key pass (4/4). Movie trace accounting passes for the long,
+flow and corrected full-playback captures. No shipped package changed.

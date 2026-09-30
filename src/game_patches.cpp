@@ -50,8 +50,7 @@ PPC_FUNC_IMPL(__imp__sub_82817B48);
 //
 // Skipping: A, B, START or BACK on the pad (or SFR_SKIP_MOVIES=1) ends the
 // movie as the player's end of file does (XMV_ENDOFFILE, which the callers
-// 8243A728 and 8243A968 test), since the decoder is still slower than real
-// time.
+// 8243A728 and 8243A968 test). Decoder throughput depends on the host.
 SFR_HOOK(sub_82817B48) {
     sfr::enter_function(ctx,"sub_82817B48",0x82817B48);
     // A movie ended before its first frames leaves the title waiting on a
@@ -67,6 +66,8 @@ SFR_HOOK(sub_82817B48) {
     // so a wall-clock allowance runs beside it.
     struct Progress {
         uint32_t rendered=0, trace_calls=0, trace_success=0;
+        uint64_t trace_total_calls=0;
+        uint32_t trace_last_status=0;
         double trace_ms=0, trace_max_ms=0;
         std::chrono::steady_clock::time_point first{}, trace_reported{};
     };
@@ -94,6 +95,7 @@ SFR_HOOK(sub_82817B48) {
         ctx.r3.u64=0x16660026u;  // XMV_ENDOFFILE
         return;
     }
+    const uint32_t input_flags=ctx.r4.u32, caller=uint32_t(ctx.lr);
     ctx.r4.u32&=~1u;
     const auto call_started=trace_movie?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};
     __imp__sub_82817B48(ctx,base);
@@ -102,20 +104,26 @@ SFR_HOOK(sub_82817B48) {
         const auto ended=std::chrono::steady_clock::now();
         const double ms=std::chrono::duration<double,std::milli>(ended-call_started).count();
         ++progress.trace_calls;
+        ++progress.trace_total_calls;
         progress.trace_success+=ctx.r3.u32==0;
         progress.trace_ms+=ms;
         progress.trace_max_ms=std::max(progress.trace_max_ms,ms);
-        if(progress.trace_calls>=30 || ended-progress.trace_reported>=std::chrono::seconds(2)) {
+        if(progress.trace_total_calls==1 || ctx.r3.u32!=progress.trace_last_status ||
+           progress.trace_calls>=30 || ended-progress.trace_reported>=std::chrono::seconds(2)) {
             std::cerr << "MOVIE_TRACE player=0x" << std::hex << player << " last_status=0x" << ctx.r3.u32 << std::dec
                 << " frame=" << sfr::present_count.load() << " host_ms="
                 << std::chrono::duration_cast<std::chrono::milliseconds>(ended.time_since_epoch()).count()
                 << " window_ms=" << std::chrono::duration<double,std::milli>(ended-progress.trace_reported).count()
                 << " calls=" << progress.trace_calls << " success_returns=" << progress.trace_success
-                << " call_ms=" << progress.trace_ms << " max_call_ms=" << progress.trace_max_ms << '\n';
+                << " call_ms=" << progress.trace_ms << " max_call_ms=" << progress.trace_max_ms
+                << " total_calls=" << progress.trace_total_calls << " success_total=" << progress.rendered
+                << " elapsed_ms=" << std::chrono::duration<double,std::milli>(ended-progress.first).count()
+                << " caller=0x" << std::hex << caller << " input_flags=0x" << input_flags << std::dec << '\n';
             progress.trace_calls=progress.trace_success=0;
             progress.trace_ms=progress.trace_max_ms=0;
             progress.trace_reported=ended;
         }
+        progress.trace_last_status=ctx.r3.u32;
     }
 }
 
