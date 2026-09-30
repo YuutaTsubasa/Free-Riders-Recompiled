@@ -6,6 +6,7 @@
 #include "hardware_info.h"
 #include "thread_local_storage.h"
 #include "system_time.h"
+#include "host_timing.h"
 #include "guest_clock.h"
 #include "timestamp_bundle.h"
 #include "vector_memory.h"
@@ -3597,6 +3598,7 @@ void call_indirect(PPCContext& ctx, uint8_t* base, uint32_t address) {
 }
 
 int main(int argc, char** argv) {
+    const auto host_timing = sfr::configure_host_timing();  // before any thread starts
     // The trace is written through std::cerr, which is unbuffered: one write
     // per insertion dominated the run time. Buffer it (1 MiB); normal exits
     // and every reported stop flush it. Guest threads still write in order
@@ -3604,6 +3606,7 @@ int main(int argc, char** argv) {
     static char trace_buffer[1 << 20];
     std::setvbuf(stderr, trace_buffer, _IOFBF, sizeof trace_buffer);
     std::cerr.unsetf(std::ios::unitbuf);
+    std::cerr << host_timing.describe() << '\n';
     struct TraceFlush { ~TraceFlush() { std::cerr.flush(); std::fflush(stderr); } } trace_flush;
     // A hang reports nothing, so the buffer is also written out twice a
     // second: a stuck game's log ends where it stopped (stdio locks the stream).

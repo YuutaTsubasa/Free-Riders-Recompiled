@@ -1,6 +1,7 @@
 #include "guest_threads.h"
 #include "guest_memory.h"
 #include "system_time.h"
+#include "host_timing.h"
 #include <algorithm>
 #include <cstdlib>
 #include <bit>
@@ -244,7 +245,7 @@ std::function<void(std::stop_token)> GuestThreads::suspension_waiter(uint32_t ha
     return [record, notify = impl_->suspend_notify](std::stop_token stop) {
         if (!notify) {
             while (!stop.stop_requested() && record->guest_suspends.load(std::memory_order_acquire))
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                precise_sleep(std::chrono::milliseconds(1));
             return;
         }
         std::unique_lock lock(record->suspension_mutex);
