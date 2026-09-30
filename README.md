@@ -231,6 +231,15 @@ Troubleshooting and platform details: [VRM Avatar guide](docs/vrm-avatar.md).
 
 ## FAQ
 
+**How do I select Spanish or another game language?** Open **Game > Game language**
+in the launcher and choose English, Japanese, German, French, Spanish or Italian,
+then start the game. **System language** is the default. This is separate from
+the launcher's English/Traditional Chinese interface. Unsupported system languages
+use English; unavailable or unmapped system countries use the US profile and
+record a warning in `game.log`, without requiring changes to your OS settings.
+For direct runtime launches, set `SFR_GAME_LANGUAGE` to `auto`, `en`, `ja`, `de`,
+`fr`, `es` or `it`. Invalid values behave as `auto`.
+
 **How do I choose Vulkan or D3D12?** On Windows, open **Display > Graphics backend**
 and choose either backend before starting the game. New settings default to Vulkan;
 existing saved choices are preserved. Linux and Android use Vulkan.

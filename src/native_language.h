@@ -7,6 +7,8 @@ namespace sfr {
 struct NativeLanguage {
     uint16_t windows_language_id;
     uint32_t xbox_language;
+    bool fallback = false;
+    bool overridden = false;
 };
 
 uint32_t xbox_language_from_windows(uint16_t language_id);
@@ -16,4 +18,6 @@ uint32_t xbox_language_from_windows(uint16_t language_id);
 std::string native_locale_name();
 uint16_t windows_language_from_locale(std::string_view locale);
 NativeLanguage query_native_language();
+// Resolve host input at the application boundary; strict converters stay strict.
+NativeLanguage resolve_native_language(uint16_t language_id, std::string_view override_code = "auto");
 }

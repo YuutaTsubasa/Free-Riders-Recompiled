@@ -429,8 +429,8 @@ class NativeBootTests(unittest.TestCase):
         self.assertIn('NATIVE_PRIMITIVE_RESTART source=0x824e7f68 value=0x1 enabled=1 retained=1', result.stderr)
         self.assertNotIn('STOP native-graphics-function @0x824e7f68:', result.stderr)
         self.assertNotIn('STOP unsupported-function @0x8222b520:', result.stderr)
-        language = re.search(r'NATIVE_USER_LANGUAGE source=GetUserDefaultUILanguage '
-                             r'windows_langid=0x([0-9a-f]+) xbox_language=(\d+)\n', result.stderr)
+        language = re.search(r'NATIVE_USER_LANGUAGE source=(?:system|SFR_GAME_LANGUAGE) '
+                             r'windows_langid=0x([0-9a-f]+) xbox_language=(\d+) fallback=([01])\n', result.stderr)
         self.assertIsNotNone(language)
         language_id = int(language[2])
         self.assertIn(language_id, range(1, 13))
@@ -467,8 +467,8 @@ class NativeBootTests(unittest.TestCase):
                       'alertable=0x0 timeout_ptr=0x0', result.stderr)
         self.assertIn('REQUEST ExGetXConfigSetting category=3 setting=14 buffer=0x701311d0 '
                       'capacity=0x1 required=0x701311d2 lr=0x824d1bd4', result.stderr)
-        country = re.search(r'NATIVE_USER_COUNTRY source=GetUserDefaultGeoName iso=([A-Z]{2}) '
-                            r'xbox_country=(\d+)\n', result.stderr)
+        country = re.search(r'NATIVE_USER_COUNTRY source=system iso=([^\r\n]*?) '
+                            r'xbox_country=(\d+) fallback=([01])\n', result.stderr)
         self.assertIsNotNone(country)
         self.assertIn('IMPORT ExGetXConfigSetting category=3 setting=14 buffer=0x701311d0 '
                       'capacity=0x1 required=0x701311d2 status=0x0 country=' + country[2] + '\n', result.stderr)
@@ -478,7 +478,7 @@ class NativeBootTests(unittest.TestCase):
         self.assertIsNotNone(translated)
         if country[1] == 'TW':
             self.assertEqual(int(translated[1]), 34)
-        elif country[1] == 'US':
+        elif country[1] == 'US' or country[3] == '1':
             self.assertEqual(int(translated[1]), 36)
         self.assertNotIn('STOP indirect-call @0x824d1d2c:', result.stderr)
         self.assertLess(result.stderr.index('NATIVE_RESOURCE_COHERENCY '), result.stderr.index('ORIGINAL_TEXTURE_TRANSFER_RETURN '))

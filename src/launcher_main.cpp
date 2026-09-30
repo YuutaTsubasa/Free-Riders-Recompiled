@@ -36,6 +36,7 @@
 #include "text_wrap.h"
 #include "voice_commands.h"
 #include "launcher_settings.h"
+#include "game_language.h"
 #include "input_bindings.h"
 #include "pad_devices.h"
 #include "launcher_sound.h"
@@ -104,6 +105,7 @@ enum Text {
     PressKey, PressButton, Unbound, ResetBindings, BindingsHint, SticksFixed,
     PlayerOneGamepad, PlayerTwoGamepad, GamepadHint, GamepadAutomatic, GamepadMissing,
     AvatarModel, AvatarModelHint, AvatarModelNone, AvatarModelMissing, AvatarModelImportFailed, Clear,
+    GameLanguageLabel, GameLanguageHint,
     TextCount
 };
 
@@ -269,7 +271,7 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"shaders.pack is missing: the game will draw without shaders. Choose one under Game files.",
      "找不到 shaders.pack，遊戲將無法正確繪製。請在「遊戲檔案」選擇一個。"},
     {"Language", "語言"},
-    {"The launcher's language. The game itself follows the system's.", "啟動器的語言；遊戲本身依照系統語言。"},
+    {"The launcher's language. Choose the game's language separately in the Game tab.", "啟動器的語言；遊戲語言可在「遊戲」分頁另外設定。"},
     {"System language", "系統語言"},
     {"English", "English"},
     {"繁體中文", "繁體中文"},
@@ -319,6 +321,9 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Model file not found. Choose another file or clear this selection.", "找不到模型檔案，請選擇其他檔案或清除目前選擇。"},
     {"Could not import the model. Your previous selection is unchanged.", "無法匯入模型，已保留原本的選擇。"},
     {"Clear", "清除"},
+    {"Game language", "遊戲語言"},
+    {"Choose the game's language independently of the launcher. System language follows your OS; unsupported languages use English. Applies when the game starts.",
+     "獨立選擇遊戲語言。「系統語言」依照作業系統設定，不支援時使用英文。於下次啟動遊戲時套用。"},
 }};
 
 int language = 0;
@@ -1543,6 +1548,22 @@ struct Launcher {
     }
 
     void game_settings() {
+        setting_row(tr(GameLanguageLabel), tr(GameLanguageHint), 220 * scale, scale, [&] {
+            const char* current = tr(LanguageSystem);
+            for (const auto& item : sfr::game_languages)
+                if (item.code == settings.game_language) current = item.name;
+            ImGui::SetNextItemWidth(220 * scale);
+            if (ImGui::BeginCombo("##game_language", current)) {
+                if (ImGui::Selectable(tr(LanguageSystem), settings.game_language == "auto"))
+                    settings.game_language = "auto";
+                for (const auto& item : sfr::game_languages) {
+                    const bool selected = item.code == settings.game_language;
+                    if (ImGui::Selectable(item.name, selected)) settings.game_language = item.code;
+                    if (selected) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+        });
         const float switch_width = ImGui::GetFrameHeight() * 1.9f;
         setting_row(tr(SkipMovies), tr(SkipMoviesHint), switch_width, scale, [&] { toggle("##movies", &settings.skip_movies); });
 #ifdef __ANDROID__
