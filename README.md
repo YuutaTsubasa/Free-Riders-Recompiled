@@ -3,8 +3,12 @@
 [繁體中文](README.zh-TW.md)
 
 Free Riders Recompiled is an unofficial port of the Xbox 360 version of *Sonic
-Free Riders* made through static recompilation, for Windows, Linux and
-Android. The game's PowerPC code is translated to C++ with
+Free Riders* for Windows, Linux and Android, built through static recompilation.
+Play with a controller or keyboard, use **Kinect / Kinect v2 or webcam motion
+controls on Windows**, and bring your own **VRM model** to the in-game AVATAR
+rider. Kinect v2 support is experimental and still needs hardware validation.
+
+The game's PowerPC code is translated to C++ with
 [XenonRecomp](https://github.com/hedge-dev/XenonRecomp) and its Xenos shaders
 with [XenosRecomp](https://github.com/sonicnext-dev/XenosRecomp), then runs on
 a native runtime that stands in for the console's kernel, graphics, audio,
@@ -29,6 +33,7 @@ page; to build it yourself, see [Building](docs/building.md).
 - [How to Install](#how-to-install)
 - [How to Build](#how-to-build)
 - [Controls](#controls)
+- [Kinect and Kinect v2](#kinect-and-kinect-v2)
 - [Camera motion input](#camera-motion-input)
 - [VRM Avatar models](#vrm-avatar-models)
 - [FAQ](#faq)
@@ -47,18 +52,13 @@ What works today:
 - Playing without Kinect: the Kinect is emulated. Buttons stand in for the
   voice commands the menus understand, and the pad drives the body a race
   reads (leaning, jumping, kick dash, grabbing, tricks).
-- A real Kinect on Windows (Xbox 360 / Kinect for Windows v1 with the Kinect
-  for Windows SDK 1.8, or Kinect v2 with SDK 2.0): the sensor's skeletons go to the game, which
-  reads them with its own gesture detectors, as on the console; or a webcam
-  standing in for it ([docs/kinect-sensor.md](docs/kinect-sensor.md),
-  [docs/camera-input.md](docs/camera-input.md)). Played through races with an
-  Xbox 360 Kinect (SDK 1.8) on Windows 10; the Kinect v2 path is not yet tried
-  on hardware.
+- Physical Kinect and Kinect v2 input on Windows, with sensor skeletons
+  passed to the game. Xbox 360 Kinect has been tested through races;
+  Kinect v2 support is experimental. See [setup and requirements](#kinect-and-kinect-v2).
 - A launcher that installs the game from your disc image and keeps its
   settings, in English or Traditional Chinese, on every platform.
 - Linux (Vulkan, SDL2), and Android (arm64-v8a) with on-screen touch controls
-  and tilt steering; the phone's own camera can stand in for the webcam
-  (Android camera capture, not yet tried on a device).
+  and tilt steering.
 - Optional webcam motion input for 1P on Windows, with estimated 3D body
   joints, controller handoff and a separate skeleton debug window.
 - Experimental custom VRM Avatar models, selected in the launcher, with
@@ -137,6 +137,32 @@ buttons cover the same actions when no controller is connected, and tilting
 the phone steers in a race. Details: [docs/race-controls.md](docs/race-controls.md),
 [docs/pad-menus.md](docs/pad-menus.md).
 
+## Kinect and Kinect v2
+
+The Windows version supports physical **Kinect v1** and **Kinect v2** sensors
+for body tracking. Kinect is optional: controller and keyboard play do not
+require a sensor or its SDK.
+
+| Sensor | What you need | Current status |
+| --- | --- | --- |
+| Kinect for Xbox 360 / Kinect for Windows v1 | SDK 1.8 and a powered USB connection; the Xbox 360 sensor requires the full SDK, while Kinect for Windows v1 can use Runtime 1.8 | Xbox 360 Kinect tested through races on Windows 10 |
+| Kinect v2 / Kinect for Xbox One | SDK 2.0, USB 3.0 and a compatible powered PC adapter | Experimental; skeleton tracking is implemented, but hardware gameplay validation is still pending |
+
+Install the matching SDK, connect the sensor, then select **Kinect** in the
+launcher's **Camera** setting and choose **Open preview** to check tracking.
+Both generations use the same option: the runtime tries v1 first, then v2.
+Keep your whole body visible
+and allow enough space to move.
+
+Kinect v1 can supply skeleton, depth and color data. The current v2 backend
+supplies skeletons only, with additional skeleton-based steering and crouch/jump
+handling. Physical Kinect input is Windows-only; Linux and Android releases
+do not provide it.
+
+SDK links, adapter requirements and troubleshooting:
+[Kinect sensor guide](docs/kinect-sensor.md) (Traditional Chinese).
+For motion controls with an ordinary webcam, see the next section.
+
 ## Camera motion input
 
 ![Camera-controlled gameplay alongside the live skeleton debug window](docs/images/camera-input-skeleton.png)
@@ -145,7 +171,7 @@ the phone steers in a race. Details: [docs/race-controls.md](docs/race-controls.
 recording frame and arranged side by side. The debug window shows front and
 side views of the joints, without displaying the webcam image.*
 
-The Windows v0.2.0 release includes the models and runtime for webcam motion
+Windows releases include the models and runtime for webcam motion
 input. Select **Camera > Motion** in the launcher and keep your whole body
 in view. **Skeleton debug window** opens front and side views of the joints
 the game receives; it does not show the camera image.
