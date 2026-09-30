@@ -274,9 +274,15 @@ void object_references_and_native_configuration() {
     const auto initial = threads.priority(object);
     require(threads.set_priority(object, 35) == initial && threads.priority(object) == 2, "high priority uses real host setting");
     require(threads.set_priority(object, -35) == 2 && threads.priority(object) == -2, "low priority returns actual previous setting");
-    for (const int increment : {-17, 0, 17}) {
+    for (const int increment : {-17, 0, 15}) {
         threads.set_priority(object, increment);
         require(threads.priority(object) == 0, "normal priority reference mapping");
+    }
+    // +16 saturates to the top of the guest range (the title's time-critical
+    // threads); it has to rank above the plain workers on the host too.
+    for (const int increment : {16, 17}) {
+        threads.set_priority(object, increment);
+        require(threads.priority(object) == 1, "saturated guest priority runs above normal");
     }
     threads.set_priority(object, 18); require(threads.priority(object) == 1, "above-normal mapping");
     threads.set_priority(object, -18); require(threads.priority(object) == -1, "below-normal mapping");
