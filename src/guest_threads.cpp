@@ -339,7 +339,20 @@ uint32_t GuestThreads::close(uint32_t handle) {
     return 0;
 }
 int32_t GuestThreads::set_priority(uint32_t object, int32_t increment) {
+    // An increment of 16 saturates the thread at the top of its range (the
+    // NT kernel's rule, |increment| >= 16). The title asks it for its
+    // time-critical threads (guests 10, 17, 28, 30 in a race) and gives every
+    // other thread -2..2, so without a step here they all ran at one host
+    // priority and a busy handheld woke them no sooner than a loader.
+    // xenia-canary ranks them apart the same way. The negative side stays
+    // normal: lowering a guest's host priority risks starving it.
+    // SFR_GUEST_SATURATED_PRIORITY=0 restores the old mapping.
+    static const bool saturated_above = [] {
+        const char* setting = std::getenv("SFR_GUEST_SATURATED_PRIORITY");
+        return !setting || *setting != '0';
+    }();
     const int32_t host_priority = increment > 34 ? 2 : increment > 17 ? 1 :
+                                  saturated_above && increment >= 16 ? 1 :
                                   increment < -34 ? -2 : increment < -17 ? -1 : 0;
     return impl_->find_object(object).native->set_priority(host_priority);
 }
