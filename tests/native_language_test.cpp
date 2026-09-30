@@ -1,6 +1,7 @@
 #include "native_language.h"
 #include "guest_memory.h"
 #include <array>
+#include <cstdlib>
 #include <iostream>
 #include <stdexcept>
 
@@ -95,7 +96,9 @@ static void native_query_uses_actual_user_ui_language() {
         }
     }
     if (!expected) {
-        rejects([] { sfr::query_native_language(); }, actual);
+        const auto result = sfr::query_native_language();
+        require(result.fallback && result.xbox_language == 1 && result.windows_language_id == actual,
+                "unknown Windows language uses English");
         return;
     }
     const auto result = sfr::query_native_language();
@@ -104,7 +107,8 @@ static void native_query_uses_actual_user_ui_language() {
 #else
     const uint16_t actual = sfr::windows_language_from_locale(sfr::native_locale_name());
     if (!actual) {
-        rejects([] { sfr::query_native_language(); }, 0);
+        const auto result = sfr::query_native_language();
+        require(result.fallback && result.xbox_language == 1, "unknown POSIX language uses English");
         return;
     }
     const auto result = sfr::query_native_language();
@@ -125,6 +129,32 @@ static void native_query_uses_actual_user_ui_language() {
 }
 
 int main() {
+#ifdef _WIN32
+    _putenv_s("SFR_GAME_LANGUAGE", "auto");
+#else
+    setenv("SFR_GAME_LANGUAGE", "auto", 1);
+#endif
+    try {
+        for (const auto& item : std::array<std::pair<const char*, uint32_t>, 6>{{
+                {"en", 1}, {"ja", 2}, {"de", 3}, {"fr", 4}, {"es", 5}, {"it", 6}}}) {
+            const auto resolved = sfr::resolve_native_language(0x0404, item.first);
+            require(resolved.xbox_language == item.second && resolved.overridden && !resolved.fallback,
+                    "every disc language overrides a different host language");
+        }
+        for (const uint16_t id : {0x0413, 0x0401, 0x0000, 0xffff}) {
+            const auto resolved = sfr::resolve_native_language(id, "auto");
+            require(resolved.xbox_language == 1 && resolved.fallback && resolved.windows_language_id == id,
+                    "unsupported host language falls back to English without losing its raw ID");
+            const auto spanish = sfr::resolve_native_language(id, "es");
+            require(spanish.xbox_language == 5 && spanish.overridden && !spanish.fallback,
+                    "explicit Spanish works even on an unsupported host language");
+        }
+        for (const auto code : {"auto", "", "invalid", "ES", "5"}) {
+            const auto resolved = sfr::resolve_native_language(0x040a, code);
+            require(resolved.xbox_language == 5 && !resolved.fallback && !resolved.overridden,
+                    "automatic and invalid overrides retain supported host language");
+        }
+    } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     unsigned failures = 0;
     for (auto test : {regional_languages_preserve_guest_enum_values,
                       chinese_script_is_selected_from_explicit_sublanguage,
@@ -134,6 +164,14 @@ int main() {
         catch (const std::exception& error) { std::cerr << error.what() << '\n'; ++failures; }
     }
     if (failures) return 1;
+    // Exercise the actual environment-to-query path, not just the pure resolver.
+#ifdef _WIN32
+    _putenv_s("SFR_GAME_LANGUAGE", "es");
+#else
+    setenv("SFR_GAME_LANGUAGE", "es", 1);
+#endif
+    const auto selected = sfr::query_native_language();
+    if (selected.xbox_language != 5 || !selected.overridden || selected.fallback) return 1;
     std::cout << "Native language checks passed\n";
     return 0;
 }

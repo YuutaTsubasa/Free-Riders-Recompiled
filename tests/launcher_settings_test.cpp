@@ -69,6 +69,19 @@ void settings_round_trip() {
             "non-ASCII directories survive a round trip");
 }
 
+void game_language_settings() {
+    for (const char* code : {"auto", "en", "ja", "de", "fr", "es", "it"}) {
+        const auto loaded = sfr::parse_launcher_settings(std::string("language=zh-TW\ngame_language=") + code + "\n");
+        const auto saved = sfr::parse_launcher_settings(sfr::format_launcher_settings(loaded));
+        require(saved.game_language == code && saved.language == "zh-TW" &&
+                value_of(saved, "SFR_GAME_LANGUAGE") == code,
+                "game language persists and reaches the runtime independently of launcher language");
+    }
+    for (const char* text : {"", "language=en\n", "game_language=invalid\n", "game_language=ES\n"})
+        require(value_of(sfr::parse_launcher_settings(text), "SFR_GAME_LANGUAGE") == "auto",
+                "legacy or invalid game language explicitly resets an inherited override");
+}
+
 void graphics_backend_settings() {
     for (const char* text : {"", "vulkan=invalid\n", "window_width=1920\n"})
         require(value_of(sfr::parse_launcher_settings(text), "SFR_GRAPHICS") == "vulkan",
@@ -339,6 +352,7 @@ void directories_are_found_and_checked() {
 int main() {
     try {
         settings_round_trip();
+        game_language_settings();
         graphics_backend_settings();
         rendering_resolution_settings();
         camera_debug_settings();

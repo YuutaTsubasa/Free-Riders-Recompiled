@@ -26,7 +26,7 @@
    底下的 Audio、Camera、Device 等項目。綠燈亮起表示有電。
 3. （選用）SDK 附的 *Developer Toolkit Browser* 裡的 *Skeleton Basics* 範例可以先確認
    骨架追蹤正常。
-4. launcher → 進階 →「攝影機」選 **Kinect**，按「測試」：
+4. launcher → 體感與攝影機 →「攝影機」選 **Kinect**，按「開啟預覽」：
    - 「Kinect 運作中」：可以玩了。
    - 「尚未安裝 Kinect SDK 1.8」：按「下載 SDK」回到步驟 1。
    - 「沒有連接 Kinect」：檢查電源轉接線與 USB。

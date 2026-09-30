@@ -1,4 +1,5 @@
 #include "native_language.h"
+#include "game_language.h"
 #include "guest_memory.h"
 #include <array>
 #include <cstdlib>
@@ -72,12 +73,23 @@ uint16_t windows_language_from_locale(std::string_view locale) {
     return 0;
 }
 
+NativeLanguage resolve_native_language(uint16_t language_id, std::string_view override_code) {
+    if (const auto selected = game_language_id(override_code))
+        return {language_id, selected, false, true};
+    try {
+        return {language_id, xbox_language_from_windows(language_id)};
+    } catch (const RuntimeStop&) {
+        return {language_id, 1, true, false};
+    }
+}
+
 NativeLanguage query_native_language() {
 #ifdef _WIN32
     const uint16_t language_id = GetUserDefaultUILanguage();
 #else
     const uint16_t language_id = windows_language_from_locale(native_locale_name());
 #endif
-    return {language_id, xbox_language_from_windows(language_id)};
+    const char* selected = std::getenv("SFR_GAME_LANGUAGE");
+    return resolve_native_language(language_id, selected ? selected : "auto");
 }
 }

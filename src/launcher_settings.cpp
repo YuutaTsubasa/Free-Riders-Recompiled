@@ -1,4 +1,5 @@
 #include "launcher_settings.h"
+#include "game_language.h"
 #include <charconv>
 #include <fstream>
 #include <sstream>
@@ -87,6 +88,7 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         else if (key == "player2_keys" && value.size() <= 1024) settings.player2_keys = value;
         else if (key == "player2_pad" && value.size() <= 1024) settings.player2_pad = value;
         else if (key == "language" && (value == "auto" || value == "en" || value == "zh-TW")) settings.language = value;
+        else if (key == "game_language") settings.game_language = validated_game_language(value);
         else if (key == "image_directory") settings.image_directory = utf8_path(value);
         else if (key == "asset_directory") settings.asset_directory = utf8_path(value);
     }
@@ -127,6 +129,7 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "player2_keys=" << s.player2_keys << '\n'
         << "player2_pad=" << s.player2_pad << '\n'
         << "language=" << s.language << '\n'
+        << "game_language=" << validated_game_language(s.game_language) << '\n'
         << "image_directory=" << path_utf8(s.image_directory) << '\n'
         << "asset_directory=" << path_utf8(s.asset_directory) << '\n';
     return out.str();
@@ -181,6 +184,7 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         {"SFR_AUDIO", s.audio ? "1" : "0"},
         // The player is signed in, so the game keeps records (docs/saves.md).
         {"SFR_PROFILE", "1"},
+        {"SFR_GAME_LANGUAGE", std::string(validated_game_language(s.game_language))},
         {"SFR_VOLUME", std::to_string(s.volume)},
         {"SFR_SKIP_MOVIES", s.skip_movies ? "1" : ""},
         {"SFR_WINDOW_WIDTH", std::to_string(s.window_width)},

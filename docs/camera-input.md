@@ -7,7 +7,7 @@
 
 ## 三種設定
 
-launcher 的「攝影機」（`SFR_CAMERA`）有三種 webcam 設定，Windows 另有實體 Kinect：
+launcher「體感與攝影機」分頁的「攝影機」（`SFR_CAMERA`）有三種 webcam 設定，Windows 另有實體 Kinect：
 
 | 設定 | `SFR_CAMERA` | 畫面 | 誰在操作 |
 | --- | --- | --- | --- |

@@ -83,8 +83,9 @@ void native_query_is_an_independent_consistent_snapshot() {
                                  geography[0] >= L'A' && geography[0] <= L'Z' &&
                                  geography[1] >= L'A' && geography[1] <= L'Z';
     if (!supported_shape) {
-        rejects([] { (void)sfr::query_native_country(); },
-                "failed, numeric, custom, or malformed Windows geography fails closed");
+        const auto country = sfr::query_native_country();
+        require(country.fallback && country.xbox_country == 103,
+                "failed, numeric, custom, or malformed Windows geography uses US");
         return;
     }
     const std::string actual{static_cast<char>(geography[0]), static_cast<char>(geography[1])};
@@ -92,8 +93,9 @@ void native_query_is_an_independent_consistent_snapshot() {
     for (const auto& entry : expected)
         if (entry.iso == actual) expected_value = entry.value;
     if (!expected_value) {
-        rejects([] { (void)sfr::query_native_country(); },
-                "unmapped Windows ISO geography fails closed without a country default");
+        const auto country = sfr::query_native_country();
+        require(country.fallback && country.xbox_country == 103 && country.iso_code == actual,
+                "unmapped Windows ISO geography uses US and preserves its raw value");
         return;
     }
     const auto country = sfr::query_native_country();
@@ -111,7 +113,9 @@ void native_query_is_an_independent_consistent_snapshot() {
     for (const auto& entry : expected)
         if (entry.iso == actual) expected_value = entry.value;
     if (!expected_value) {
-        rejects([] { (void)sfr::query_native_country(); }, "unmapped locale region fails closed");
+        const auto country = sfr::query_native_country();
+        require(country.fallback && country.xbox_country == 103 && country.iso_code == actual,
+                "unmapped POSIX geography uses US and preserves its raw value");
         return;
     }
     const auto country = sfr::query_native_country();
@@ -123,6 +127,14 @@ void native_query_is_an_independent_consistent_snapshot() {
 
 int main() {
     try {
+        for (const auto code : {"BD", "RS", "ZZ", "001", "", "us"}) {
+            const auto resolved = sfr::resolve_native_country(code);
+            require(resolved.xbox_country == 103 && resolved.fallback && resolved.iso_code == code,
+                    "unsupported host geography uses US while preserving its diagnostic value");
+        }
+        const auto supported = sfr::resolve_native_country("ES");
+        require(supported.xbox_country == 31 && !supported.fallback,
+                "supported host geography retains its original mapping");
         maps_the_complete_pinned_country_dataset();
         rejects_unmapped_or_malformed_geography_without_defaults();
         native_query_is_an_independent_consistent_snapshot();

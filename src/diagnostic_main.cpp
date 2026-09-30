@@ -3610,11 +3610,16 @@ int main(int argc, char** argv) {
         const auto country = sfr::query_native_country();
         sfr::SystemConfig system_config(memory, language.xbox_language, country.xbox_country);
         sfr::system_config = &system_config;
-        std::cerr << "NATIVE_USER_LANGUAGE source=GetUserDefaultUILanguage windows_langid=0x"
+        std::cerr << "NATIVE_USER_LANGUAGE source=" << (language.overridden ? "SFR_GAME_LANGUAGE" : "system")
+                  << " windows_langid=0x"
                   << std::hex << language.windows_language_id << std::dec
-                  << " xbox_language=" << language.xbox_language << '\n';
-        std::cerr << "NATIVE_USER_COUNTRY source=GetUserDefaultGeoName iso=" << country.iso_code
-                  << " xbox_country=" << country.xbox_country << '\n';
+                  << " xbox_language=" << language.xbox_language << " fallback=" << language.fallback << '\n';
+        std::cerr << "NATIVE_USER_COUNTRY source=system iso=" << country.iso_code
+                  << " xbox_country=" << country.xbox_country << " fallback=" << country.fallback << '\n';
+        if (language.fallback)
+            std::cerr << "LOCALE_WARNING unsupported system language; using English\n";
+        if (country.fallback)
+            std::cerr << "LOCALE_WARNING unavailable or unmapped system country; using US\n";
         sfr::HardwareInfo hardware(memory);
         // XMA decoder (APU) registers at 0x7FEA0000. The audio library locks,
         // kicks contexts and unlocks through them. No XMA decoder is emulated

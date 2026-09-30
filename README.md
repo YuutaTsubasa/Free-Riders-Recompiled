@@ -31,6 +31,7 @@ page; to build it yourself, see [Building](docs/building.md).
 - [Status](#status)
 - [System Requirements](#system-requirements)
 - [How to Install](#how-to-install)
+- [Settings](#settings)
 - [How to Build](#how-to-build)
 - [Controls](#controls)
 - [Kinect and Kinect v2](#kinect-and-kinect-v2)
@@ -96,6 +97,24 @@ with [docs/progress.md](docs/progress.md).
    launcher asks; it copies the game's data beside itself. Then press
    **Start game**.
 
+## Settings
+
+The launcher groups settings by what you want to change:
+
+| Category | Settings |
+| --- | --- |
+| General | Launcher and game languages, movies, restore defaults |
+| Graphics | Window and rendering resolutions, fullscreen, backend, VSync, expandable performance options |
+| Sound | Game volume and launcher sounds |
+| Controls | Each player's input source and controller, button/key bindings, Android touch and tilt |
+| Motion input | Kinect/webcam mode, device and preview, mirror, skeleton debug, voice commands |
+| Avatar models | Select or clear a custom VRM/GLB model |
+| Game files | Installation, data locations and shader pack |
+
+Window and rendering resolutions sit together under **Graphics > Resolution**:
+the first sets the output window size, while the second controls the pixels the
+game draws. Changes to game settings apply on the next game launch.
+
 ## How to Build
 
 In short, on Windows:
@@ -149,7 +168,7 @@ require a sensor or its SDK.
 | Kinect v2 / Kinect for Xbox One | SDK 2.0, USB 3.0 and a compatible powered PC adapter | Experimental; skeleton tracking is implemented, but hardware gameplay validation is still pending |
 
 Install the matching SDK, connect the sensor, then select **Kinect** in the
-launcher's **Camera** setting and choose **Open preview** to check tracking.
+launcher's **Motion input > Camera** setting and choose **Open preview** to check tracking.
 Both generations use the same option: the runtime tries v1 first, then v2.
 Keep your whole body visible
 and allow enough space to move.
@@ -172,7 +191,7 @@ recording frame and arranged side by side. The debug window shows front and
 side views of the joints, without displaying the webcam image.*
 
 Windows releases include the models and runtime for webcam motion
-input. Select **Camera > Motion** in the launcher and keep your whole body
+input. Select **Motion input > Camera > Motion** in the launcher and keep your whole body
 in view. **Skeleton debug window** opens front and side views of the joints
 the game receives; it does not show the camera image.
 
@@ -205,7 +224,7 @@ keyboard controls work with the model too.
 
 *A custom VRM model replacing the in-game AVATAR rider.*
 
-1. Open the launcher's **Advanced** tab and find **Avatar model**.
+1. Open the launcher's **Avatar models** tab.
 2. Choose **Browse** and select a `.vrm` or binary `.glb` file. Desktop users
    can also type its path; Android imports a copy into the app's storage.
 3. Start the game and select **AVATAR** in the character menu, then choose
@@ -231,7 +250,16 @@ Troubleshooting and platform details: [VRM Avatar guide](docs/vrm-avatar.md).
 
 ## FAQ
 
-**How do I choose Vulkan or D3D12?** On Windows, open **Display > Graphics backend**
+**How do I select Spanish or another game language?** Open **General > Game language**
+in the launcher and choose English, Japanese, German, French, Spanish or Italian,
+then start the game. **System language** is the default. This is separate from
+the launcher's English/Traditional Chinese interface. Unsupported system languages
+use English; unavailable or unmapped system countries use the US profile and
+record a warning in `game.log`, without requiring changes to your OS settings.
+For direct runtime launches, set `SFR_GAME_LANGUAGE` to `auto`, `en`, `ja`, `de`,
+`fr`, `es` or `it`. Invalid values behave as `auto`.
+
+**How do I choose Vulkan or D3D12?** On Windows, open **Graphics > Graphics backend**
 and choose either backend before starting the game. New settings default to Vulkan;
 existing saved choices are preserved. Linux and Android use Vulkan.
 

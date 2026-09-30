@@ -4,9 +4,14 @@
 Windows 的使用者地理設定、介面語言、遊戲執行區域是三個獨立來源。
 
 `query_native_country()` 每次快照呼叫一次 `GetUserDefaultGeoName`；實際啟動已記錄
-`iso=TW xbox_country=101`。未使用介面語言推測國家，也沒有採用模擬器的美國預設值。
-API 失敗、numeric M49、自訂或無映射值明確停止。支援資料集為固定來源中的107個
-ISO國家代碼，17及94保留，不接受。Windows API需求為Windows10 1709或更新。
+`iso=TW xbox_country=101`。未使用介面語言推測國家。
+嚴格轉換函式 `xbox_country_from_iso()` 仍會拒絕 numeric M49、自訂或無映射值；
+主機邊界 `resolve_native_country()` 則在 API 失敗或無法映射時改用 US（Xbox 103），
+保留原始輸入並記錄 `fallback=1` 與 `LOCALE_WARNING`，避免啟動直接停止。
+支援資料集為固定來源中的107個 ISO國家代碼，17及94保留，不接受。
+Windows API需求為Windows10 1709或更新。其他平台依序讀取 `LC_ALL`、
+`LC_ADDRESS`、`LANG` 的國家欄位；`C`／`POSIX` 使用 US。
+此相容處理不會變更獨立的遊戲執行區域設定。
 
 原始查詢 `0x82ACB5FC` / LR `0x824D1BD4` 的 buffer=`0x701311D0`，capacity=1，
 required=`0x701311D2`。相容層精確寫入一個國家BYTE與兩個BE required-size bytes。

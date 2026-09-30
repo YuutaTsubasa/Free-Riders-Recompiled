@@ -26,7 +26,7 @@ python scripts/pack_shaders.py            # out/shaders/shaders.pack
 
 Play through what the release should cover first (each run adds the shaders
 it meets to `out/shaders/runtime`), and run it under Vulkan too
-(`SFR_GRAPHICS=vulkan`, or the launcher's Advanced tab), since the pack only
+(`SFR_GRAPHICS=vulkan`, or the launcher's Graphics tab), since the pack only
 holds SPIR-V for shaders a Vulkan run compiled. Linux and Android have no
 shader translator: what the pack lacks, they cannot draw.
 
@@ -87,8 +87,8 @@ packaging. The pack's shader ABI must match the executable; a successful boot
 or title movie does not establish compatibility. Verify the extracted release
 through a 1P race on both Vulkan and D3D12, with a clean cache and save directory.
 
-Pack format `SFRSHPK2` includes shader ABI 8 before its entry count. The packer
-selects `v8-*` cache entries, and the runtime and release scripts reject legacy
+Pack format `SFRSHPK2` includes shader ABI 9 before its entry count. The packer
+selects `v9-*` cache entries, and the runtime and release scripts reject legacy
 or incompatible packs. A previous pack must not merely be relabeled: rebuild
 it from shaders compiled for the current ABI. v0.2.0 shipped a legacy Vulkan
 pack with three buffer addresses while its executable supplied five, causing
