@@ -84,7 +84,10 @@ with [docs/progress.md](docs/progress.md).
   (or Vulkan 1.2).
 - **Linux**: x86-64 with AVX and a Vulkan 1.2 driver (tested on Ubuntu 22.04).
 - **Android**: Android 9 or later, arm64-v8a, Vulkan 1.1; about 2 GB free
-  for the installed game.
+  for the installed game. Releases also offer an **Android 10+** APK using
+  native thread-local storage to reduce CPU overhead; prefer that build on
+  Android 10 or later. Android performance remains experimental: 3D races
+  are still slow on the tested Pocket S2 Pro.
 - Building needs the tools listed in [docs/building.md](docs/building.md).
 
 ## How to Install
@@ -92,6 +95,9 @@ with [docs/progress.md](docs/progress.md).
 1. Download the release for your system from
    [Releases](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases):
    the Windows zip, the Linux tarball, or the Android APK.
+   For Android 10+, choose `android10-arm64.apk`; the `android-arm64.apk`
+   package retains Android 9 compatibility. Both use the same app identity
+   and update existing installations without requiring an uninstall.
 2. Unpack it into a folder of its own (on Android, install the APK).
 3. Start `FreeRidersRecompiled` and choose your disc image (`.iso`) when the
    launcher asks; it copies the game's data beside itself. Then press
