@@ -254,3 +254,26 @@ pins upstream and Canary revisions, identifies GPU-side vertex conversion and
 audio-pump differences, and corrects the assumption that all Xenia variants
 map a guest priority of 16 above normal. Source review and this desktop capture
 do not resolve the handheld A/V symptom or establish a win over Xenia.
+
+### Vertex cost decomposition
+
+Opt-in `SFR_FRAME_METRICS` now separates cached source bytes, swapped source
+bytes, DEC3N expanded output bytes, and swap/repack timings. Disabled metrics
+take no added clock readings. Source totals reset at the existing present
+boundary. Repack output is a different representation and is not added to the
+source-byte total.
+
+`vertex-costs-1` completed 11,500 presents, intentional exit 3, zero competing
+games and zero dropped waits. The verifier first rejected the previous runtime's
+log for missing metrics; it then validated all 11,500 new rows, including
+`vertex_cached_bytes + vertex_swap_bytes == vertex_bytes`. Runtime SHA-256:
+`0f3bd81b2fe1d6c05aae44af5135a2b2c2bcbd69ec096643340ceb148c3d095f`.
+Late-window means (9,500–11,000): 33,908,089 source bytes, 29,274,821 cached,
+4,633,268 swapped, 3,052,335 expanded output bytes; swap 0.6610 ms, repack
+0.7049 ms, total measured draw 5.0680 ms. Added clocks/log fields have observation
+cost, so this is not an FPS comparison against the previous executable.
+
+These measurements justify evaluating a fused CPU endian/DEC3N conversion to
+avoid the intermediate scratch copy before considering a shader ABI change.
+No conversion behavior changed in this diagnostic step. Raw capture and
+`vertex-analysis.json` are under `out/handheld-042/vertex-costs-1`.

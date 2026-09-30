@@ -237,6 +237,10 @@ static uint32_t frame_draws=0, frame_textured_draws=0, foreign_draws=0;
 // How much vertex data one frame gathers, and its largest single draw: the
 // gather is the renderer's main cost, so the present line carries both.
 static uint64_t frame_vertex_bytes=0;
+// Separate cached source bytes from conversion work. Repack bytes describe
+// expanded output, so they are not added to the source-byte total.
+static uint64_t frame_vertex_cached_bytes=0, frame_vertex_swap_bytes=0, frame_vertex_repack_bytes=0;
+static double frame_vertex_swap_ms=0, frame_vertex_repack_ms=0;
 static uint32_t frame_cached_draws=0;  // drawn from vertex_cache buffers
 static uint32_t frame_biggest_draw=0;
 // The distinct stream 0 buffers a frame draws from, and their total size: what
@@ -420,6 +424,9 @@ SFR_HOOK(sub_824E65A0) {
               << " lr=0x" << ctx.lr << std::dec << " frame=" << sfr::present_count.load() << " draws=" << frame_draws
               << " textured=" << frame_textured_draws << " foreign=" << foreign_draws
               << " vertex_bytes=" << frame_vertex_bytes << " cached_draws=" << frame_cached_draws
+              << " vertex_cached_bytes=" << frame_vertex_cached_bytes << " vertex_swap_bytes=" << frame_vertex_swap_bytes
+              << " vertex_repack_bytes=" << frame_vertex_repack_bytes
+              << " vertex_swap_ms=" << frame_vertex_swap_ms << " vertex_repack_ms=" << frame_vertex_repack_ms
               << " biggest=" << frame_biggest_draw
               << " streams=" << frame_streams.size() << " stream_bytes=" << frame_stream_bytes
               << " indices=" << frame_indices << " index_ms=" << frame_index_ms << " cut_ms=" << frame_cut_ms
@@ -453,6 +460,8 @@ SFR_HOOK(sub_824E65A0) {
     }
     frame_draws=frame_textured_draws=foreign_draws=0;
     frame_vertex_bytes=0;
+    frame_vertex_cached_bytes=frame_vertex_swap_bytes=frame_vertex_repack_bytes=0;
+    frame_vertex_swap_ms=frame_vertex_repack_ms=0;
     frame_cached_draws=0;
     sfr::active_memory->advance_write_epoch();  // vertex_cache's frames
     frame_biggest_draw=0;
@@ -655,6 +664,7 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     draw.vertex_buffer=cached.buffer;
     if(cached.buffer && cached.fill.empty()) {
         // Already in its buffer, in host form.
+        if(frame_metrics) frame_vertex_cached_bytes+=vertices.size();
         draw.vertices={};
         draw.stride=wide;
         ++frame_cached_draws;
@@ -669,7 +679,12 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
         if(dec3n_offsets.empty())
             host=cached.fill.empty()?graphics().renderer().vertex_space(vertices.size(),indices.size()*4):cached.fill;
         if(host.size()!=vertices.size()) host=byte_scratch(vertices.size(),3);
+        const auto swap_start=metrics_clock();
         sfr::swap_words_into(host,vertices);
+        if(frame_metrics) {
+            frame_vertex_swap_bytes+=vertices.size();
+            frame_vertex_swap_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-swap_start).count();
+        }
         draw.vertices=host;
     }
     if(!dec3n_offsets.empty()) {
@@ -679,6 +694,7 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
         std::span<uint8_t> repacked=cached.fill.empty()
             ? graphics().renderer().vertex_space(uint64_t(count)*wide,indices.size()*4) : cached.fill;
         if(repacked.size()!=size_t(count)*wide) repacked=byte_scratch(size_t(count)*wide,1);
+        const auto repack_start=metrics_clock();
         // Each component is one of 1024 values, so its SNORM16 form is looked
         // up: rounding it per vertex was a tenth of a race frame's main
         // thread (docs/performance.md).
@@ -704,6 +720,10 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
         }
         draw.vertices=repacked;
         draw.stride=wide;
+        if(frame_metrics) {
+            frame_vertex_repack_bytes+=repacked.size();
+            frame_vertex_repack_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-repack_start).count();
+        }
     }
     }
     for(uint32_t l=0;l<std::size(locations);++l) {
