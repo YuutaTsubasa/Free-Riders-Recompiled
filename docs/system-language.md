@@ -26,11 +26,24 @@ are not probed. Unknown queries stop explicitly; unrelated reference-emulator
 placeholder settings are not supplied.
 
 Mapping preserves Xbox IDs 1 through 12. Chinese Taiwan/Hong Kong/Macau map to
-traditional Chinese; China/Singapore map to simplified Chinese. Unsupported,
-neutral and custom language IDs stop explicitly. This Windows adapter does not
-yet implement other platform locale sources.
+traditional Chinese; China/Singapore map to simplified Chinese. The strict
+`xbox_language_from_windows()` converter still rejects unsupported, neutral and
+custom language IDs. At the host boundary, `resolve_native_language()` instead
+falls back to English (Xbox ID 1), recording `fallback=1` and `LOCALE_WARNING`.
+Non-Windows platforms read `LC_ALL`, then `LC_MESSAGES`, then `LANG`; `C` and
+`POSIX` select English, and unsupported locale languages use the same fallback.
 
-## Real execution and limits
+The launcher's **General > Game language** setting is independent of the launcher
+interface language. It passes `SFR_GAME_LANGUAGE=auto|en|ja|de|fr|es|it` to the
+runtime. A supported manual choice overrides the host language; `auto`, an empty
+value or an invalid value uses host detection and the boundary fallback above.
+The game still selects its original language assets; this adds no translations.
+Startup logs identify the source as `system` or `SFR_GAME_LANGUAGE`.
+
+## Historical bring-up evidence and limits
+
+The following logs describe the initial implementation, before later startup,
+rendering and locale-fallback work. They are not current release limitations.
 
 ```powershell
 ./scripts/build_tools.ps1 -Diagnostic -DiagnosticDirectory out/recomp/diagnostic-eqv
