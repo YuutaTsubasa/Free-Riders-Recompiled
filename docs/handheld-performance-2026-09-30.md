@@ -600,3 +600,37 @@ The present-2,000 screenshot contains the Intro movie. This checks full playback
 duration, not frame-by-frame A/V alignment or a fix for the handheld symptom.
 No game remains running. Next deliverable is an isolated combined candidate
 with clearly labeled mode comparisons, preserving all existing packages.
+
+### Private combined candidate (test3)
+
+`out/handheld-combined-candidate-20260930` in the primary repository now contains
+separate Windows and Android artifacts built from runtime source `fc54993`.
+Existing test1/test2 packages and public releases were not replaced.
+
+- Windows ZIP: 60,771,895 bytes, SHA-256
+  `4dcd34db08ccf7610f9d94fe6ef14b1e9fc834f4ca171a47ee6f103564e61846`.
+- Android APK: 162,366,451 bytes, SHA-256
+  `80a3b40a373df7c3836af0080d608417e83af3f9c08e036ba6f3763a2366cc06`.
+- Android licenses ZIP retains the official v0.4.2 notices, SHA-256
+  `de173c75a4bb4cdc4501527a7b09aef91700c350695af83b49de0ac0ac7e2c10`.
+
+The Windows archive has 39 unique entries; CRC checks, exact runtime/launcher
+identity, shader pack identity, Camera model/runtime and D3D12 DLL presence pass.
+No game assets, personal settings, save or custom VRM were included. The package
+was extracted into a fresh directory and the game run from that directory,
+using its own shader pack/tools. `combined-package-race-1` completes 11,500
+presents in 195.234 s, intended exit 3, no overlap/dropped waits. Its image at
+present 11,250 shows race/character/HUD. This is a packaging smoke test, not a
+full lap or a new performance comparison; the runtime is the same 70123298...
+binary used by the full Intro validation above.
+
+APK signature verification passes with the existing certificate, version 0.4.2
+(code 12), and 16 KB ZIP alignment passes. Native library set, pose asset scope
+and shader pack match the official Android baseline; packaged libmain matches
+the freshly stripped build. No device is connected, so no install/device test
+was performed. Host timing policy does not apply to Android.
+
+How-to-test.txt and five Windows launch scripts explain the default capture,
+trace-off capture, host-policy-off control, constant reuse and priority modes.
+Build-report.json, Evidence and SHA256SUMS.txt record exact scope and results.
+Handheld acceptance and same-hardware Xenia comparison remain unverified.
