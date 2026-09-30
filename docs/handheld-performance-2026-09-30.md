@@ -353,3 +353,49 @@ must not be used to claim full movie validation. Runtime SHA-256:
 The diagnostic runtime builds; wait_trace, native_formats, guest_graphics and
 native_pipeline_key pass (4/4). Movie trace accounting passes for the long,
 flow and corrected full-playback captures. No shipped package changed.
+
+### Movie decoder: exact-range partial vector loads
+
+With resting hands, `intro-decoder-profile-1` samples guest 32 (worker
+`828265B0`, the movie decoder on guest processor 1), starting after present 700
+and ending at present 1,600. The sample contains 19,706 observations; 44.85%
+are outside executable code, including unresolved OS/library/wait samples.
+The checked partial-vector left/right helpers and their runtime wrappers
+account for 2,277 samples (11.55%). Unlike full-vector loads, the partial helpers
+preflight and then redo the page lookup for every byte.
+
+The small `vector_memory.cpp` change reuses `GuestMemory::fast_read` for the
+exact selected slice. Eligible ordinary pages then use ordered volatile byte
+reads. Left loads never read their excluded prefix; right loads never read
+their excluded suffix, and an aligned right load still touches no memory.
+Special pages retain the previous guard/provider checks and per-byte callback
+semantics. No scheduling, game clock, codec math or generated code changes.
+
+The private `vector-load-bench.cpp` compares every offset across a whole page
+against independent copies of the original helpers, then alternates timing
+order over four repeats of two million calls each. The pre-edit ratio was
+1.002 for left loads and failed the experimental <0.7 criterion (exit 3).
+After the change, median current/original ratios are 0.4072 (left) and 0.4917
+(right), with matching checksums. These are warm helper timings, not game FPS.
+
+The same Intro profile after the edit (`intro-decoder-profile-fast-1`) contains
+19,616 samples; partial helpers plus wrappers account for 1,708 (8.71%).
+Outside-executable samples rise to 50.01%, which cannot all be called idle time
+without stack resolution. Both profiles play near the video's normal 30 Hz.
+They finish 1,600 presents with no overlap/dropped waits. Runtime SHA-256:
+`0811e711532a6c6837c222cd97d2d429759526cc8065a452bb839a72ecbe81b2`.
+The exact baseline executable/map are preserved in
+`out/handheld-042/movie-baseline`; analysis checks the executable hash.
+
+Windows guest_memory and vector_memory tests pass (2/2), including all byte
+offsets, guards, providers, top-address and reservation cases. Android ARM64
+vector-memory test compilation/linking passes; it was not run on a device.
+Read-only independent review found no actionable defect. Full post-edit
+playback (`intro-resting-hand-fast-1`) finishes 4,000 presents / 104.046 seconds
+without the sampling profiler, overlap or dropped waits. The movie reaches its
+terminal status after 72.476 seconds, consistent with the original 72.4824
+seconds and source 72.414 seconds. The mid-movie screenshot shows the same
+segment rendering correctly (not an exact-frame visual regression comparison).
+This reduces measured helper work while preserving playback duration on the
+desktop; it is not proof of a handheld FPS gain. Race smoke validation and
+an updated distributable candidate remain pending.

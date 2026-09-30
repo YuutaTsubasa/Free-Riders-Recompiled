@@ -5,6 +5,13 @@ namespace sfr {
 
 VectorBytes load_vector_left(GuestMemory& memory, uint32_t address) {
     const uint32_t count = 16 - (address & 15);
+    if (const volatile uint8_t* bytes = memory.fast_read(address, count)) {
+        VectorBytes result{};
+        // Validate the selected tail once. Volatile byte reads retain the
+        // checked path's access order without touching the excluded prefix.
+        for (uint32_t i = 0; i < count; ++i) result[15 - i] = bytes[i];
+        return result;
+    }
     memory.check(address, count);
     VectorBytes result{};
     for (uint32_t i = 0; i < count; ++i)
@@ -17,6 +24,10 @@ VectorBytes load_vector_right(GuestMemory& memory, uint32_t address) {
     VectorBytes result{};
     if (!count) return result;
     const uint32_t first = address - count;
+    if (const volatile uint8_t* bytes = memory.fast_read(first, count)) {
+        for (uint32_t i = 0; i < count; ++i) result[i] = bytes[count - i - 1];
+        return result;
+    }
     memory.check(first, count);
     for (uint32_t i = 0; i < count; ++i)
         result[i] = memory.load<uint8_t>(uint64_t(address) - i - 1);
