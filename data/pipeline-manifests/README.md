@@ -24,6 +24,15 @@ format, shader-identity and state validation and prepared all 331 entries with
 none skipped on a local Vulkan device. Target-device replay is still required
 to verify the reported hitches are removed.
 
+The follow-up Ally X capture expanded Vulkan coverage to 336 recipes. It
+prepared all previous 331 entries in 87.75 ms, encountered five new combinations,
+and had a maximum frame time of 216.66 ms (190.20 ms pipeline creation), versus
+2,939.57 ms in the previous capture. Its final 131 seconds had no frames over
+50 ms (maximum 30.67 ms); the player reported clear improvement with occasional
+small hitches. Settings and runtime binary matched, but play duration and
+actions were not controlled, so this is not an average-FPS comparison. All 336
+recipes subsequently passed local Vulkan preparation with none skipped.
+
 To update a list, use the matching backend and release shader pack, play the
 scenes to include, exit normally, then copy `pipeline-cache/<backend>.manifest`
 to `pipelines-<backend>.manifest` here. Validate a clean application-cache start
