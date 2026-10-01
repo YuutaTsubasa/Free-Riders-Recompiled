@@ -677,6 +677,14 @@ if(WIN32 OR UNIX)
     target_link_libraries(sfr_native_graphics_test PRIVATE sfr_native_graphics)
     add_test(NAME native_graphics COMMAND sfr_native_graphics_test)
     set_tests_properties(native_graphics PROPERTIES TIMEOUT 20)
+    add_executable(sfr_native_upload_batch_test tests/native_upload_batch_test.cpp src/native_upload_batch.cpp)
+    target_link_libraries(sfr_native_upload_batch_test PRIVATE sfr_native_graphics)
+    add_test(NAME native_upload_batch_vulkan COMMAND sfr_native_upload_batch_test vulkan)
+    set_tests_properties(native_upload_batch_vulkan PROPERTIES TIMEOUT 20)
+    if(WIN32)
+        add_test(NAME native_upload_batch_d3d12 COMMAND sfr_native_upload_batch_test d3d12)
+        set_tests_properties(native_upload_batch_d3d12 PROPERTIES TIMEOUT 20)
+    endif()
     add_library(sfr_native_raster_state STATIC src/native_raster_state.cpp)
     target_link_libraries(sfr_native_raster_state PUBLIC sfr_native_graphics)
     # The backend's own shaders, compiled at build time to DXIL and SPIR-V with
@@ -752,7 +760,7 @@ if(WIN32 OR UNIX)
     add_executable(sfr_native_constant_upload_test tests/native_constant_upload_test.cpp)
     target_include_directories(sfr_native_constant_upload_test PRIVATE src)
     add_test(NAME native_constant_upload COMMAND sfr_native_constant_upload_test)
-    add_library(sfr_guest_graphics STATIC src/guest_graphics.cpp src/guest_graphics_state.cpp src/texture_fetch.cpp src/native_formats.cpp src/native_vertex_layout.cpp src/native_renderer.cpp src/pipeline_manifest.cpp)
+    add_library(sfr_guest_graphics STATIC src/guest_graphics.cpp src/guest_graphics_state.cpp src/texture_fetch.cpp src/native_formats.cpp src/native_vertex_layout.cpp src/native_renderer.cpp src/native_upload_batch.cpp src/pipeline_manifest.cpp)
     add_executable(sfr_pipeline_manifest_test tests/pipeline_manifest_test.cpp src/pipeline_manifest.cpp)
     target_include_directories(sfr_pipeline_manifest_test PRIVATE src)
     target_link_libraries(sfr_pipeline_manifest_test PRIVATE plume)
@@ -905,7 +913,7 @@ if(WIN32)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SFR_D3D12_AGILITY_DIR}/D3D12Core.dll" "${SFR_D3D12_CORE}"
             DEPENDS "${SFR_D3D12_AGILITY_DIR}/D3D12Core.dll")
         add_custom_target(sfr_d3d12_runtime DEPENDS "${SFR_D3D12_CORE}")
-        foreach(target sfr_cpu_diagnostic sfr_native_graphics_test sfr_native_shaders_test sfr_native_presentation_test
+        foreach(target sfr_cpu_diagnostic sfr_native_graphics_test sfr_native_upload_batch_test sfr_native_shaders_test sfr_native_presentation_test
                        sfr_native_resolution_test sfr_native_pipeline_prewarm_test sfr_shader_cache_rebuild sfr_native_shader_abi_test
                        sfr_native_raster_state_test sfr_native_blend_control_test sfr_guest_graphics_test
                        sfr_guest_render_state_test sfr_guest_blend_request_test sfr_guest_sampler_filter_test

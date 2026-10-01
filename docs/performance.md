@@ -1220,3 +1220,90 @@ Installed version is `0.4.5-perf-thor-texture-test`, SHA-256
 `ad81403c17f7e8253f50bfa562357e827e9162d1afe9946d2deef53b3ea02ccc`.
 The fixture's debug.env is removed and the launcher restored. User saves and
 settings were not cleared; the scripted run uses the separate benchmark save.
+
+## 2026-10-01: Batched texture upload experiment
+
+`NativeUploadBatch` accumulates texture copies in two command-list/fence
+slots instead of submitting once per texture. `NativePresentation` drains
+pending copies on the same graphics queue before each consuming submission,
+including explicit flush/readback and an otherwise empty flush. Complete
+flushes wait upload fences before descriptor recycling. Asynchronous presents
+retain submitted staging until its copy fence completes on slot reuse.
+
+Retained staging has a 32 MiB budget across both slots. Reaching it submits
+and finishes copies without flushing the partially recorded graphics list or
+resetting the vertex ring. One oversized staging buffer is allowed and is
+immediately submitted and waited. The incoming allocation exists before the
+helper owns it, so the retained-byte counter is not a total-process-memory
+cap; GPU textures, allocator overhead and the incoming buffer are additional.
+The upload path retains destination textures before recording, so failure in
+later metadata work cannot leave teardown submitting a dangling destination.
+
+`SFR_TEXTURE_UPLOAD_BATCH=0` selects the old per-texture submission path.
+`SFR_TEXTURE_UPLOAD_WAIT=1` also retains its existing synchronous legacy
+behavior. Normal default enables batching. Frame diagnostics add
+`upload_submissions` and `upload_wait_ms` for batched work since the prior
+sample, and cumulative `upload_peak_bytes` / `upload_budget_drains`. Zero
+values in legacy mode do not mean its uploads perform no submissions/waits.
+
+Validation so far:
+
+- Real GPU helper tests on Vulkan and D3D12 verify 54 immutable buffer copies
+  across six submissions, repeated slot reuse, bounded-budget and oversized
+  drains, empty finish and destructor behavior.
+- Renderer texture readback tests on both backends verify 16 successive
+  versions of the same guest range, drawn into separate columns, across five
+  frames including asynchronous presents. Each column retains the intended
+  version. Legacy and batch paths produce identical expected pixels; the
+  batch path submits once per graphics batch, and an empty graphics flush
+  drains a pending texture upload.
+- Presentation tests verify upload callbacks precede completion callbacks
+  for empty/recorded flushes and run during present. Callback removal is
+  checked. Windows and Android production builds pass.
+- Independent source review found an exception-lifetime issue; destination
+  retention was moved before command recording. Re-review found no remaining
+  concrete correctness findings in integration or helper lifetimes.
+
+Thor A/B/A captures use one APK and one isolated benchmark save, with only
+the batching switch changed. Results must account for different scene
+progression; fixed present indices alone do not establish equivalent work.
+
+All three 14,400-present runs completed, in off/on/off order:
+
+| Metric | Off A | Batch on | Off B |
+| --- | ---: | ---: | ---: |
+| Textures uploaded | 993 | 1,005 | 1,013 |
+| Texture work in frames with uploads (ms) | 501.614 | 283.855 | 461.304 |
+| P95 frame ms after present 9000 | 52.729 | 52.926 | 53.159 |
+| P99 frame ms after present 9000 | 67.723 | 66.998 | 69.183 |
+| Maximum frame ms in that window | 162.182 | 150.052 | 231.927 |
+| Frames over 100 ms in that window | 12 | 7 | 9 |
+
+The on run groups 1,005 texture copies into **163 submissions**, compared
+with one submission per texture in the legacy path. Batched upload fence
+waits total **7.171 ms**. Peak retained staging is **33,397,760 bytes**
+(31.851 MiB), with one budget drain. One 26-texture burst costs
+36.918 / 6.228 / 37.135 ms in the texture path across off/on/off; its overall
+frame durations are 77.061 / 40.882 / 76.765 ms. Draw counts differ slightly
+(567/563/567), so this is supporting evidence rather than a controlled
+identical-frame timing claim. A 237-texture burst in both Off A and Batch on
+still costs about 65 ms in texture handling: that remaining cost is not
+eliminated by fewer submissions.
+
+These results support reduced submission overhead and upload spikes, not a
+proven sustained-FPS increase. The aggregate P95 is effectively unchanged.
+Loading and race transitions occur at different present indices; even upload
+groupings vary (Off B has a 342-texture burst). The percentile/max table is
+descriptive, not a matched-scene speedup estimate. Actual battery temperatures
+are retained in the run metadata and are not GPU/CPU temperature measurements.
+
+Evidence: `out/thor-race-perf/batch-off-a*`, `batch-on*`, `batch-off-b*` and
+`upload-batch-comparison.json`. The on-run final screenshot shows Dolphin
+Resort with rider, track, HUD and race clock 01:24.25. The fixture includes
+frame metrics; it does not contain private duplicate-conversion instrumentation.
+
+The installed normal APK is `0.4.5-perf-thor-batch-test`, SHA-256
+`b036b5381a43388926b6085cb56c16014f25939d25abd03f479cd86c5de96326`.
+After the last control capture, debug.env was removed and the app restarted
+to its launcher; normal operation uses the batching default. User save and
+settings remain intact. This is a local test package, not a published release.

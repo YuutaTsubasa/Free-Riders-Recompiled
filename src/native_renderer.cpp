@@ -1,6 +1,7 @@
 #include "native_renderer.h"
 #include "native_pipeline_key.h"
 #include "native_constant_upload.h"
+#include "native_upload_batch.h"
 #include "pipeline_manifest.h"
 #include "runtime_shader_cache.h"
 #include <thread>
@@ -329,7 +330,7 @@ struct NativeRenderer::Impl {
     void save_manifest() noexcept;
     // Texture uploads are submitted without waiting, so their command lists
     // rotate: a list is only recorded again once the submission that used it
-    // has finished. Four is more than a frame's uploads have ever needed.
+    // has finished. Kept for the legacy upload diagnostic path.
     static constexpr uint32_t upload_lists = 4;
     struct Upload {
         std::unique_ptr<plume::RenderCommandList> list;
@@ -342,6 +343,9 @@ struct NativeRenderer::Impl {
     };
     std::array<Upload, upload_lists> uploads;
     uint32_t upload_slot = 0;
+    std::unique_ptr<NativeUploadBatch> upload_batch;
+    uint64_t batch_submissions_seen = 0;
+    double batch_wait_ms_seen = 0;
     std::vector<std::unique_ptr<plume::RenderBuffer>> retired;
 #ifdef _WIN32
     std::unique_ptr<DxcLinker> dxc;
@@ -622,8 +626,14 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
         if (!impl_->rings[i]) unsupported(0, "native upload ring creation failed");
         impl_->rings_mapped[i] = static_cast<uint8_t*>(impl_->rings[i]->map());
     }
+    const char* batch_setting = std::getenv("SFR_TEXTURE_UPLOAD_BATCH");
+    const char* wait_setting = std::getenv("SFR_TEXTURE_UPLOAD_WAIT");
+    if ((!batch_setting || *batch_setting != '0') && (!wait_setting || *wait_setting != '1'))
+        impl_->upload_batch = std::make_unique<NativeUploadBatch>(device, graphics.queue());
     auto* state = impl_.get();
+    presentation.before_submit([state] { if (state->upload_batch) state->upload_batch->submit(); });
     presentation.after_flush([state](bool complete) {
+        if (complete && state->upload_batch) state->upload_batch->finish();
         if (state->constant_reuse_probe) state->constant_reuse_probe->valid = false;
         if (state->constant_uploads)
             for (auto& upload : *state->constant_uploads) upload.reset();
@@ -657,6 +667,7 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
 NativeRenderer::~NativeRenderer() {
     // Complete recorded draws while their upload ring and textures still exist.
     try { impl_->presentation.flush(); } catch (...) {}
+    impl_->presentation.clear_before_submit();
     impl_->presentation.clear_after_flush();
     impl_->save_manifest();
 }
@@ -671,6 +682,15 @@ NativeRenderer::PipelineWork NativeRenderer::take_pipeline_work() noexcept {
         work.constant_upload_bytes = probe->uploaded;
         work.constant_reusable_bytes = probe->reusable;
         probe->uploaded = probe->reusable = 0;
+    }
+    if (impl_->upload_batch) {
+        const auto& stats = impl_->upload_batch->stats();
+        work.upload_submissions = stats.submissions - impl_->batch_submissions_seen;
+        work.upload_wait_ms = stats.wait_ms - impl_->batch_wait_ms_seen;
+        work.upload_peak_bytes = stats.peak_bytes;
+        work.upload_budget_drains = stats.budget_drains;
+        impl_->batch_submissions_seen = stats.submissions;
+        impl_->batch_wait_ms_seen = stats.wait_ms;
     }
     work.constant_saved_bytes = impl_->constant_saved_bytes;
     impl_->constant_saved_bytes = 0;
@@ -964,46 +984,7 @@ uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
     staging->unmap();
     auto texture = device.createTexture(plume::RenderTextureDesc::Texture2D(layout->width, layout->height, 1, layout->format));
     if (!texture) unsupported(fetch.format, "native texture creation failed");
-    // SFR_TEXTURE_UPLOAD_WAIT=1 restores the old behaviour, waiting for each
-    // upload before the draw that asked for it: a way to tell whether a hang
-    // is this path's doing.
-    static const bool wait_for_uploads = [] {
-        const char* text = std::getenv("SFR_TEXTURE_UPLOAD_WAIT");
-        return text && *text == '1';
-    }();
-    const uint32_t upload_slot = wait_for_uploads ? 0 : impl_->upload_slot;
-    impl_->upload_slot = (upload_slot + 1) % Impl::upload_lists;
-    auto& upload = impl_->uploads[upload_slot];
-    if (upload.in_flight) {
-        impl_->graphics.queue().waitForCommandFence(upload.fence.get());
-        upload.in_flight = false;
-        upload.staging.clear();  // the GPU has finished with them
-    }
-    auto& list = *upload.list;
-    list.begin();
-    list.barriers(plume::RenderBarrierStage::COPY, plume::RenderTextureBarrier(texture.get(), plume::RenderTextureLayout::COPY_DEST));
-    list.copyTextureRegion(plume::RenderTextureCopyLocation::Subresource(texture.get()),
-        plume::RenderTextureCopyLocation::PlacedFootprint(staging.get(), layout->format, layout->width, layout->height, 1,
-                                                          copy_row / layout->block_bytes * layout->block_width));
-    list.barriers(plume::RenderBarrierStage::GRAPHICS,
-                  plume::RenderTextureBarrier(texture.get(), plume::RenderTextureLayout::SHADER_READ));
-    list.end();
-    // Submitted without waiting: a queue runs its submissions in order, so
-    // this copy is done before the frame that samples the texture, which is
-    // submitted after it. Waiting here cost a GPU round trip per texture -
-    // about 1.3 ms each, and nearly half of the slowest race frames. The
-    // staging buffer has to outlive the copy, so it is kept as long as a
-    // retired vertex buffer is.
-    impl_->graphics.queue().executeCommandLists(&list, upload.fence.get());
-    upload.in_flight = true;
-    upload.staging.push_back(std::move(staging));
-    if (wait_for_uploads) {
-        impl_->graphics.queue().waitForCommandFence(upload.fence.get());
-        upload.in_flight = false;
-        upload.staging.clear();
-    }
-
-    // Every draw waits for its command list, so a released slot is unused.
+    // Released indices are recycled only after their consuming frame finishes.
     uint32_t index;
     if (!impl_->free_texture_indices.empty()) {
         index = impl_->free_texture_indices.back();
@@ -1021,6 +1002,62 @@ uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
     }
     impl_->texture_objects[slot] = std::move(texture);
     impl_->texture_views[slot] = std::move(view);
+    // Retain the destination before recording a copy. A later descriptor or
+    // metadata failure must not leave teardown submitting a dangling texture.
+    auto* upload_texture = impl_->texture_objects[slot].get();
+    if (impl_->upload_batch) {
+        impl_->upload_batch->record(std::move(staging), uint64_t(copy_row) * layout->rows,
+            [&](plume::RenderCommandList& list, plume::RenderBuffer& source_buffer) {
+                list.barriers(plume::RenderBarrierStage::COPY,
+                    plume::RenderTextureBarrier(upload_texture, plume::RenderTextureLayout::COPY_DEST));
+                list.copyTextureRegion(plume::RenderTextureCopyLocation::Subresource(upload_texture),
+                    plume::RenderTextureCopyLocation::PlacedFootprint(&source_buffer, layout->format,
+                        layout->width, layout->height, 1, copy_row / layout->block_bytes * layout->block_width));
+                list.barriers(plume::RenderBarrierStage::GRAPHICS,
+                    plume::RenderTextureBarrier(upload_texture, plume::RenderTextureLayout::SHADER_READ));
+            });
+    } else {
+        // SFR_TEXTURE_UPLOAD_WAIT=1 restores the old behaviour, waiting for each
+        // upload before the draw that asked for it: a way to tell whether a hang
+        // is this path's doing.
+        static const bool wait_for_uploads = [] {
+            const char* text = std::getenv("SFR_TEXTURE_UPLOAD_WAIT");
+            return text && *text == '1';
+        }();
+        const uint32_t upload_slot = wait_for_uploads ? 0 : impl_->upload_slot;
+        impl_->upload_slot = (upload_slot + 1) % Impl::upload_lists;
+        auto& upload = impl_->uploads[upload_slot];
+        if (upload.in_flight) {
+            impl_->graphics.queue().waitForCommandFence(upload.fence.get());
+            upload.in_flight = false;
+            upload.staging.clear();  // the GPU has finished with them
+        }
+        auto& list = *upload.list;
+        list.begin();
+        list.barriers(plume::RenderBarrierStage::COPY, plume::RenderTextureBarrier(upload_texture, plume::RenderTextureLayout::COPY_DEST));
+        list.copyTextureRegion(plume::RenderTextureCopyLocation::Subresource(upload_texture),
+            plume::RenderTextureCopyLocation::PlacedFootprint(staging.get(), layout->format, layout->width, layout->height, 1,
+                                                              copy_row / layout->block_bytes * layout->block_width));
+        list.barriers(plume::RenderBarrierStage::GRAPHICS,
+                      plume::RenderTextureBarrier(upload_texture, plume::RenderTextureLayout::SHADER_READ));
+        list.end();
+        // Submitted without waiting: a queue runs its submissions in order, so
+        // this copy is done before the frame that samples the texture, which is
+        // submitted after it. Waiting here cost a GPU round trip per texture -
+        // about 1.3 ms each, and nearly half of the slowest race frames. The
+        // staging buffer has to outlive the copy, so it is kept as long as a
+        // retired vertex buffer is.
+        impl_->graphics.queue().executeCommandLists(&list, upload.fence.get());
+        upload.in_flight = true;
+        upload.staging.push_back(std::move(staging));
+        if (wait_for_uploads) {
+            impl_->graphics.queue().waitForCommandFence(upload.fence.get());
+            upload.in_flight = false;
+            upload.staging.clear();
+        }
+    }
+
+
     impl_->texture_indices.emplace(key, index);
     ++impl_->texture_generation;
     const uint64_t physical = fetch.base_address;

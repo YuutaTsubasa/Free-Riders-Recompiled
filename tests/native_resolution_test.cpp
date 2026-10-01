@@ -1,6 +1,7 @@
 #include "native_graphics.h"
 #include "native_presentation.h"
 #include "native_renderer.h"
+#include "guest_memory.h"
 #include "resolution_shader_source.h"
 #include "vulkan_shader_source.h"
 #include "plume_render_interface.h"
@@ -86,6 +87,62 @@ std::unique_ptr<plume::RenderShader> compile(sfr::NativeGraphics& graphics, cons
     require(bool(shader), "resolution fixture shader creation succeeds");
     return shader;
 }
+void batched_texture_readback(sfr::NativeGraphics& graphics, const fs::path& directory, const std::string& header) {
+    const auto vertex = compile(graphics, directory, header, R"(
+float4 shaderMain(uint id : SV_VertexID) : SV_Position {
+ float2 p[3] = {float2(-1,-1), float2(-1,3), float2(3,-1)};
+ return float4(p[id],0.5,1);
+})", true);
+    const auto pixel = compile(graphics, directory, header, R"(
+float4 shaderMain() : SV_Target { return tfetch2D(textures0,samplers0,float2(0.5,0.5),float2(0,0)); }
+)", false);
+    environment("SFR_RENDER_SCALE", "100");
+    for (bool batch : {false, true}) {
+        environment("SFR_TEXTURE_UPLOAD_BATCH", batch ? "1" : "0");
+        sfr::GuestMemory memory;
+        constexpr uint32_t physical = 0x100000, address = 0xA0100000;
+        memory.map(address, 0x10000);
+        sfr::NativePresentation presentation(graphics, 16, 16);
+        sfr::NativeRenderer renderer(graphics, presentation);
+        sfr::FetchWords fetch{2u | (1u << 22), physical | 6u | (2u << 6), 0u, 0x688u << 1, 0u, 1u << 9};
+        sfr::NativeDraw draw;
+        draw.vertex_count = 3; draw.vertex_shader = vertex.get(); draw.pixel_shader = pixel.get();
+        draw.shared.sampler[0] = renderer.sampler({});
+        for (unsigned frame=0; frame<5; ++frame) {
+            sfr::NativeClear clear{}; clear.color = true; presentation.clear(clear);
+            for (unsigned column=0; column<16; ++column) {
+                const uint32_t red = 8 + column*15, green = 20 + frame*40;
+                memory.store<uint32_t>(address, 0xFF000000u | (green << 8) | red);
+                renderer.invalidate(physical, 128);
+                draw.shared.texture_2d[0] = renderer.texture(memory, fetch);
+                presentation.set_raster_state({0,0,16,16}, {int(column),0,int(column+1),16});
+                renderer.draw(draw);
+            }
+            auto before = renderer.take_pipeline_work();
+            require(before.upload_submissions == 0, "texture copies accumulate without per-texture submissions");
+            if (frame == 0 || frame == 4) {
+                const auto pixels = presentation.readback_color();
+                for (unsigned y=0; y<16; ++y) for (unsigned x=0; x<16; ++x) {
+                    const auto at = (y*16+x)*4;
+                    require(pixels[at+2] == 8+x*15 && pixels[at+1] == 20+frame*40 && pixels[at+3] == 255,
+                        "batched textures retain each guest version and survive asynchronous slot reuse");
+                }
+            } else {
+                presentation.present();
+            }
+            const auto after = renderer.take_pipeline_work();
+            require(after.upload_submissions == (batch ? 1u : 0u), "one copy submission per graphics batch");
+        }
+        // An upload with no draw must still be drained before owner teardown.
+        renderer.invalidate(physical, 128);
+        renderer.texture(memory, fetch);
+        presentation.flush();
+        require(renderer.take_pipeline_work().upload_submissions == (batch ? 1u : 0u),
+            "empty graphics flush drains uploads");
+    }
+    environment("SFR_TEXTURE_UPLOAD_BATCH", "1");
+}
+
 void constant_upload_readback(sfr::NativeGraphics& graphics, const fs::path& directory, const std::string& header) {
     const auto vertex = compile(graphics, directory, header, R"(
 #ifndef __spirv__
@@ -217,6 +274,7 @@ uint g_SpecConstants() { return 0; }
 )";
     sfr::NativeGraphics graphics;
     graphics.initialize();
+    batched_texture_readback(graphics, directory, header);
     const auto vertex = compile(graphics, directory, header, R"(
 float4 shaderMain(uint id : SV_VertexID) : SV_Position {
  float2 p[3] = {float2(-1,-1), float2(-1,3), float2(3,-1)};

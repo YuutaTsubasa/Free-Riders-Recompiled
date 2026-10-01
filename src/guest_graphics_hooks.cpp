@@ -478,6 +478,10 @@ SFR_HOOK(sub_824E65A0) {
               << " constant_upload_bytes=" << pipeline_work.constant_upload_bytes
               << " constant_reusable_bytes=" << pipeline_work.constant_reusable_bytes
               << " constant_saved_bytes=" << pipeline_work.constant_saved_bytes
+              << " upload_submissions=" << pipeline_work.upload_submissions
+              << " upload_wait_ms=" << pipeline_work.upload_wait_ms
+              << " upload_peak_bytes=" << pipeline_work.upload_peak_bytes
+              << " upload_budget_drains=" << pipeline_work.upload_budget_drains
               << " textures=" << pipeline_work.textures << " texture_ms=" << pipeline_work.texture_milliseconds
               << " frame_ms=" << frame_ms << " pacing_ms=" << pacing_ms
               << " present_ms=" << present_ms << " main_queued_ms="

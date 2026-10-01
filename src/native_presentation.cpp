@@ -353,6 +353,7 @@ struct NativePresentation::Impl {
     plume::RenderCommandSemaphore* wait_semaphore = nullptr;
     plume::RenderCommandSemaphore* signal_semaphore = nullptr;
     void run_list() {
+        for (auto& callback : before_submit) callback();
         const plume::RenderCommandList* lists[] = {command_list.get()};
         uint32_t waits = wait_semaphore ? 1 : 0, signals = signal_semaphore ? 1 : 0;
         graphics->queue().executeCommandLists(lists, 1, &wait_semaphore, waits, &signal_semaphore, signals, fence.get());
@@ -384,6 +385,7 @@ struct NativePresentation::Impl {
     // Draws and clears accumulate in one open list per frame; present,
     // readback and explicit flushes submit it.
     bool open = false;
+    std::vector<std::function<void()>> before_submit;
     std::vector<std::function<void(bool)>> after_flush;
     // Binding generation: new lists and custom passes both invalidate the
     // layout/pipeline/descriptors cached by NativeRenderer.
@@ -408,6 +410,7 @@ struct NativePresentation::Impl {
             execute();
             open = false;
         } else {
+            for (auto& callback : before_submit) callback();
             wait_in_flight();
         }
         for (auto& callback : after_flush) callback(true);
@@ -1006,6 +1009,12 @@ void NativePresentation::set_gpu_wait(std::function<void(const std::function<voi
 void NativePresentation::after_flush(std::function<void(bool)> callback) {
     impl_->after_flush.push_back(std::move(callback));
 }
+
+void NativePresentation::before_submit(std::function<void()> callback) {
+    impl_->before_submit.push_back(std::move(callback));
+}
+
+void NativePresentation::clear_before_submit() { impl_->before_submit.clear(); }
 
 void NativePresentation::clear_after_flush() { impl_->after_flush.clear(); }
 

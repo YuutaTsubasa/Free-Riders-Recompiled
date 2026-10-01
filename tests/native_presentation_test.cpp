@@ -296,6 +296,33 @@ struct RestrictedSurface {
     }
 };
 
+void submissions_drain_uploads_before_completion_callbacks() {
+    sfr::NativeGraphics graphics;
+    graphics.initialize();
+    sfr::NativePresentation presentation(graphics, 64, 48);
+    std::vector<char> events;
+    presentation.before_submit([&] { events.push_back('U'); });
+    presentation.after_flush([&](bool complete) { events.push_back(complete ? 'C' : 'F'); });
+    presentation.flush();
+    require(events == std::vector<char>{'U','C'}, "empty flush drains pending uploads before resource recycling");
+    events.clear();
+    sfr::NativeClear clear{};
+    clear.color = true;
+    presentation.clear(clear);
+    presentation.flush();
+    require(events == std::vector<char>{'U','C'}, "draw flush submits uploads exactly once before completion");
+    events.clear();
+    presentation.clear(clear);
+    presentation.present();
+    require(!events.empty() && events.front() == 'U', "present submits uploads before the frame");
+    presentation.flush();
+    presentation.clear_before_submit();
+    presentation.clear_after_flush();
+    events.clear();
+    presentation.flush();
+    require(events.empty(), "renderer callback removal prevents stale owner access");
+}
+
 void completed_frames_do_not_release_guest_execution() {
     sfr::NativeGraphics graphics;
     graphics.initialize();
@@ -601,6 +628,7 @@ int main() {
         avatar_draws_keep_viewport_order_and_independent_poses();
         for (uint32_t percent : {50u, 75u, 150u, 200u})
             avatar_draws_keep_viewport_order_and_independent_poses(percent);
+        submissions_drain_uploads_before_completion_callbacks();
         completed_frames_do_not_release_guest_execution();
         pending_fence_queries_use_the_guarded_wait();
         vulkan_swapchain_respects_surface_usage();
