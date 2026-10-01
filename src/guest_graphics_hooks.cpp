@@ -11,6 +11,7 @@
 #include "render_state_entries.h"
 #include "native_renderer.h"
 #include "native_formats.h"
+#include "native_vertex_layout.h"
 #include "guest_execution.h"
 #include "wait_trace.h"
 #include <plume_render_interface.h>
@@ -654,6 +655,29 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     // instead of allocating/freeing it for each skinned draw.
     static thread_local std::vector<uint32_t> dec3n_offsets;
     dec3n_offsets.clear();
+    static thread_local sfr::NativeVertexLayoutCache layout_cache;
+    static const bool cache_layout=[] { const char* t=std::getenv("SFR_VERTEX_LAYOUT_CACHE"); return !t || *t!='0'; }();
+    static const bool verify_layout=[] { const char* t=std::getenv("SFR_VERTEX_LAYOUT_VERIFY"); return t && *t=='1'; }();
+    const sfr::NativeVertexLayout* layout=nullptr;
+    if(cache_layout) {
+        // A cached pointer alone is insufficient: the title may rewrite or
+        // reuse the same declaration. Compare fresh ordinary-memory bytes.
+        // Special words, short mappings and page crossings keep the original
+        // scalar decoder below, including its exact read/exception order.
+        const auto* bytes=elements?memory.fast_read(uint64_t(declaration)+52,12*elements):nullptr;
+        if(bytes || !elements) {
+            try { layout=&layout_cache.get(declaration,stride,{bytes,size_t(12*elements)}); }
+            catch(const sfr::NativeVertexLayoutError& error) {
+                throw sfr::RuntimeStop("native-draw",error.value,error.what());
+            }
+        }
+    }
+    if(layout && !verify_layout) {
+        draw.elements=layout->elements;
+        dec3n_offsets=layout->dec3n_offsets;
+        for(uint32_t usage=0;usage<8;++usage)
+            if(swapped[usage]) *swapped[usage]=layout->swapped[usage];
+    } else
     for(uint32_t i=0;i<elements;++i) {
         const uint64_t e=uint64_t(declaration)+52+12*i;
         const uint32_t stream=memory.load<uint16_t>(e), offset=memory.load<uint16_t>(e+2);
@@ -769,12 +793,28 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
         }
     }
     }
+    if(!layout || verify_layout)
     for(uint32_t l=0;l<std::size(locations);++l) {
         if(std::any_of(draw.elements.begin(),draw.elements.end(),[&](const auto& e){ return e.location==l; })) continue;
         const uint32_t usage=locations[l].usage;
         const bool vector3=usage==3 || usage==6 || usage==7 || usage==2;
         draw.elements.emplace_back(sfr::declaration_semantic(usage),locations[l].index,l,
             vector3?plume::RenderFormat::R32G32B32_FLOAT:plume::RenderFormat::R32_FLOAT,15,0);
+    }
+
+    if(layout && verify_layout) {
+        bool same=draw.elements.size()==layout->elements.size() && dec3n_offsets==layout->dec3n_offsets;
+        for(size_t i=0;same && i<draw.elements.size();++i) {
+            const auto& a=draw.elements[i]; const auto& b=layout->elements[i];
+            same=std::strcmp(a.semanticName,b.semanticName)==0 && a.semanticIndex==b.semanticIndex &&
+                 a.location==b.location && a.format==b.format && a.slotIndex==b.slotIndex && a.alignedByteOffset==b.alignedByteOffset;
+        }
+        for(uint32_t usage=0;usage<8;++usage)
+            if(swapped[usage] && *swapped[usage]!=layout->swapped[usage]) same=false;
+        if(!same) throw sfr::RuntimeStop("native-draw",declaration,"cached vertex layout differs from original decoder");
+        static thread_local uint64_t verified=0;
+        if(++verified==1 || verified%100000==0)
+            std::cerr<<"NATIVE_VERTEX_LAYOUT verified="<<verified<<" hits="<<layout_cache.hits()<<" misses="<<layout_cache.misses()<<'\n';
     }
 
     // Shaders: objects at +12872 (VS) and +12868 (PS) map to native shaders.

@@ -984,3 +984,63 @@ cores）；正常啟動紀錄確認 bulk=1、verify=0，暖快取載入 2,781,26
 第一個硬體執行緒（效率等級高的核心，也就是混合架構的 P 核，排前面），用完才輪到各核心的
 第二個。啟動時印出一次 `NATIVE_HOST_PROCESSORS group= order=`。
 `SFR_HOST_PROCESSORS=sequential` 還原舊的順序，方便 A/B 比較。
+
+## 2026-10-01: Bounded vertex-declaration cache on AYN Thor
+
+`native_draw` used to rebuild vertex input locations, DEC3N offsets and component-swap
+masks on every draw. `NativeVertexLayoutCache` keeps 16 decoded layouts per thread.
+A hit requires the same declaration identity, stride, length and every declaration
+byte. It takes one bounded snapshot for comparison, decoding and the stored key,
+so a rewrite cannot associate an old decoded layout with a newer cache key.
+Addresses alone are never sufficient. Guest ranges rejected by `fast_read` retain
+the original scalar parser and its memory-check/exception order.
+
+`SFR_VERTEX_LAYOUT_CACHE=0` selects the old parser. `SFR_VERTEX_LAYOUT_VERIFY=1`
+compares cached and original results (all input fields, DEC3N offsets and swap masks),
+throwing on a mismatch. Both are diagnostic environment controls, not launcher settings.
+The cache does not change shaders, rendering resolution, game time or frame limits.
+
+Validation:
+
+- Host `native_vertex_layout`, `native_formats` and `native_pipeline_key` tests pass.
+  Layout tests cover mutation at the same address, stride/count changes, eviction,
+  component-swap invalidation, maximum declarations, failed decodes and invalid input.
+- Android arm64 tests pass. Thor reference verification exceeded 3 million draws,
+  including a Dolphin Resort race; Windows D3D12 and Vulkan reference runs exceeded
+  6.1 and 5.8 million draws respectively, also into races, with no mismatch.
+- The snapshot-only review fix followed the Thor reference run and preceded the
+  final Windows reference runs and Android performance measurements.
+- Android screenshots show the race clock advancing 12.38 to 38.97 seconds while
+  file timestamps advance 26.568 seconds. Timing remains real-time.
+
+Measurements use the same profileable APK, saved race fixture, warm pipelines,
+720p/100% rendering and normal game timing. Whole 120-frame summary intervals
+inside race-clock seconds 10–45 are selected using screenshot HUD anchors. Each
+row includes 720 frames; the game is not a deterministic replay.
+
+| Run | FPS | Draws/frame | Main queued ms/frame | GPU wait ms/frame |
+| --- | ---: | ---: | ---: | ---: |
+| Cache on | 23.07 | 827.16 | 6.89 | 0.89 |
+| Cache off | 23.59 | 784.43 | 7.76 | 1.29 |
+| Cache on, repeat | 23.43 | 791.42 | 8.02 | 0.99 |
+
+These runs do **not** establish an FPS improvement or regression: rendering work
+also differs by about 5%, race trajectories diverge and SoC clocks are not locked.
+Battery temperature was 36–37 C for on and 37 C for off. Main-thread CPU leaf samples
+for `native_draw` plus the layout/parser helpers total about 3.16% with cache and
+3.96% without, but their sampling windows start at different race times. This is
+supporting evidence of reduced parsing work, not a frame-time saving or an FPS claim.
+The repeated cache-on run is within 0.7% of cache-off, with about 0.9% more draws.
+No repeatable FPS gain is demonstrated. The cache is retained in the local test
+branch for further evaluation; this work has not achieved 30 FPS.
+
+Remaining sampled work includes generated guest functions, dynamic TLS resolution
+and guest memory helpers. A private local-function-link binary was prepared but
+not installed or adopted: earlier experiments had an unexplained loading failure
+and no repeatable speedup. No new linker, affinity or global power policy is shipped.
+
+Raw logs, profiles, matching native symbols, screenshots and runners are retained
+locally under `out/thor-race-perf/`, including `layout-measure`, `layout-off`,
+`layout-verify`, the two Windows verifier directories and `phase_compare.py`.
+The normal test APK uses the exact measured `libmain.so` and shader pack, with the
+shell profiling permission removed. It is a local test, not a published release.
