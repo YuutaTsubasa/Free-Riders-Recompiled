@@ -416,6 +416,46 @@ SFR_HOOK(sub_824E65A0) {
     const auto queued_ns=sfr::GuestExecution::main_thread_ready_wait_ns.exchange(0,std::memory_order_relaxed);
     const auto blocked_ns=sfr::GuestExecution::main_thread_blocked_ns.exchange(0,std::memory_order_relaxed);
     const auto gpu_ns=sfr::main_gpu_wait_ns.exchange(0,std::memory_order_relaxed);
+#ifdef __ANDROID__
+    // Quiet Android runs still provide useful phone-export evidence. Reuse
+    // measurements already collected above; never enable per-draw profiling.
+    // These are guest frame intervals and CPU wall times, not GPU timestamps.
+    if(!frame_metrics && frame_ms>0.0) {
+        struct Summary {
+            unsigned frames=0, rendered=0;
+            double elapsed=0, maximum=0, present=0, pacing=0, queued=0, blocked=0, gpu_wait=0;
+            double pipelines=0, textures=0, draws=0;
+        };
+        static Summary summary;
+        ++summary.frames;
+        summary.rendered+=rendering_this_frame()?1:0;
+        summary.elapsed+=frame_ms;
+        summary.maximum=std::max(summary.maximum,frame_ms);
+        summary.present+=present_ms;
+        summary.pacing+=pacing_ms;
+        summary.queued+=double(queued_ns)/1e6;
+        summary.blocked+=double(blocked_ns)/1e6;
+        summary.gpu_wait+=double(gpu_ns)/1e6;
+        summary.pipelines+=pipeline_work.milliseconds;
+        summary.textures+=pipeline_work.texture_milliseconds;
+        summary.draws+=frame_draws;
+        if(summary.frames>=120) {
+            const double count=summary.frames;
+            std::ostringstream log;
+            log << "NATIVE_FRAME_SUMMARY frame=" << sfr::present_count.load()
+                << " seconds=" << std::chrono::duration<double>(frame_end-process_start).count()
+                << " frames=" << summary.frames << " rendered=" << summary.rendered
+                << " interval_ms=" << summary.elapsed << " guest_fps=" << count*1000.0/summary.elapsed
+                << " avg_ms=" << summary.elapsed/count << " max_ms=" << summary.maximum
+                << " present_avg_ms=" << summary.present/count << " pacing_avg_ms=" << summary.pacing/count
+                << " main_queued_avg_ms=" << summary.queued/count << " main_blocked_avg_ms=" << summary.blocked/count
+                << " gpu_wait_avg_ms=" << summary.gpu_wait/count << " pipeline_total_ms=" << summary.pipelines
+                << " texture_total_ms=" << summary.textures << " draws_avg=" << summary.draws/count << '\n';
+            std::cerr << log.str();
+            summary={};
+        }
+    }
+#endif
     if(frame_metrics) {
     uint64_t main_ready_ns=execution_work[0].main_ready_unowned_ns;
     for(const auto ns:execution_work[0].main_ready_by_owner_ns) main_ready_ns+=ns;
