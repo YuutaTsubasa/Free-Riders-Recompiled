@@ -1044,3 +1044,60 @@ locally under `out/thor-race-perf/`, including `layout-measure`, `layout-off`,
 `layout-verify`, the two Windows verifier directories and `phase_compare.py`.
 The normal test APK uses the exact measured `libmain.so` and shader pack, with the
 shell profiling permission removed. It is a local test, not a published release.
+
+
+## 2026-10-01: Jump-rating UI timing on AYN Thor
+
+The race clock was already real-time, but the jump-rating UI advanced one
+60 Hz timeline frame per rendered update. The UI task runs on guest thread 16,
+while the race clock runs on guest 1. A first thread-local implementation had
+no runtime effect; a metadata probe identified the thread mismatch.
+
+The completed race delta is now published through an atomic scalar. Known UI
+wrappers snapshot it once, replay bounded steps of at most one authored frame,
+and evaluate intermediate actions instead of skipping them. Playback speed is
+restored afterwards, including exceptions. Completion stops catch-up so the
+owner can process it before a new cycle. Unknown timeline classes and explicit
+reverse or greater-than-one playback rates retain their original path.
+Inactive/unsupported race clocks publish a normal one-frame step.
+`SFR_REALTIME_UI=0` retains original UI behavior for diagnosis. Desktop defaults
+remain unchanged because real-time race timing is Android-only by default.
+
+The child probe observes the actual rating timeline reaching frame 79, where
+it deliberately pauses pending a later game event. Measuring `rank_in` through
+`rank_roll` includes that wait, so it is not a pure animation-duration metric.
+
+| Probe | Presents to observed frame 79 | Approximate wall seconds |
+| --- | --- | --- |
+| Original child probe, three ratings | 79 / 79 / 82 | 3.41 / 3.34 / 2.79 |
+| Shared race delta, three ratings | 37 / 34 / 42 | 1.58 / 1.44 / 1.53 |
+
+These are sampled upper endpoints (child tracing every fourth present) with
+wall time interpolated from 120-frame summaries, not precise event timestamps.
+The 79 authored frames correspond to about 1.32 seconds at 60 Hz. The trace
+confirms intermediate frame actions and fractional steps are processed; the
+remaining measurement difference does not establish a residual timing bug.
+Both runs complete the 14,400-present fixture. Screenshots retain the race HUD
+and rider. This establishes faster UI progression, not an FPS gain.
+
+Windows and Android builds pass, as do host and ARM64 race-clock tests covering
+20/24/30/60/120 FPS, half-speed playback, intermediate events, completion,
+invalid deltas and bounded catch-up. Normal APK packaging excludes private
+rank tracing and shell profiling permission. Evidence is retained locally in
+`out/thor-race-perf/rank-*-probe*` and `rank-frame79-analysis.json`.
+
+Loading stutters remain a separate issue. A baseline probe also encountered
+an intermittent worker memory fault previously recorded before this UI change
+(guest 46, last function 82918418, caller 822A4C38); repeating the same binary
+completed. Neither the source of that fault nor loading performance is claimed
+fixed here.
+
+The final loop probe (`rank-step-probe`) also completes 14,400 presents. For
+one rating, 35 wrapper invocations apply 80.316 authored frames through the
+frame-79 hold, with no early completion return. Exact `rank_in` to `rank_roll`
+timestamps across four ratings are 1.808/1.665/1.623/1.779 seconds, including
+the game's deliberate hold. This supports preserving that hold.
+
+The normal `0.4.5-perf-thor-ui-test` APK is installed on Thor with no debug.env.
+Its SHA-256 is `2e1b2185e19b4237eba2eafb3518731b1b7dd0060a7dd6d079dc7831075fe2b0`.
+The user's saves/settings were not cleared; fixture runs use benchmark-save.

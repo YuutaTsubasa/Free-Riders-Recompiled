@@ -1,9 +1,24 @@
 #pragma once
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <optional>
 
 namespace sfr {
+template<class Update>
+void for_each_race_ui_step(float frames, Update&& update) {
+    // A guest UI update evaluates this frame's actions and advances at most
+    // one timeline frame. Replay intermediate updates instead of skipping
+    // their actions. The callback stops on the original completion signal.
+    if (!std::isfinite(frames) || frames<=0) frames=1;
+    frames=std::min(frames,15.0f);
+    while(frames>0) {
+        const float step=std::min(frames,1.0f);
+        if(!update(step)) break;
+        frames-=step;
+    }
+}
+
 struct RaceFrameStep {
     double elapsed_seconds = 0;
     float frames = 1;
