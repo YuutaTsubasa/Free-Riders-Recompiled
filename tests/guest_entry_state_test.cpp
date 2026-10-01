@@ -1,5 +1,6 @@
 #include "diagnostic_hooks.h"
 #include <atomic>
+#include <exception>
 #include <iostream>
 #include <stdexcept>
 #include <thread>
@@ -68,4 +69,3 @@ int main() {
         return 1;
     }
 }
-#include <exception>
