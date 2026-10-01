@@ -118,6 +118,42 @@ int main() {
                             require(output.front() == 0xaabbccddu && output.back() == 0xaabbccddu,
                                     "index decoder writes exactly count outputs");
                         }
+        // Texture endian modes operate only on complete pairs/words, even
+        // when the span is unaligned or ends beside unrelated data.
+        for (uint32_t endian=0;endian<=4;++endian)
+            for (size_t offset=0;offset<16;++offset)
+                for (size_t length=0;length<=81;++length) {
+                    std::vector<uint8_t> bytes(offset+length+17);
+                    for(size_t i=0;i<bytes.size();++i)bytes[i]=uint8_t(i*29+11);
+                    auto expected=bytes;
+                    const size_t group=endian==1 ? 2 : 4;
+                    const size_t mask=endian==1 ? 1 : endian==2 ? 3 : 2;
+                    if(endian>=1 && endian<=3)
+                        for(size_t i=0;i+group<=length;i+=group)
+                            for(size_t b=0;b<group;++b)expected[offset+i+b]=bytes[offset+i+(b^mask)];
+                    sfr::swap_texture_bytes(std::span(bytes).subspan(offset,length),endian);
+                    require(bytes==expected,"texture swap preserves endian semantics, span guards and incomplete groups");
+                }
+        for(uint32_t block_bytes : {4u,8u,16u})
+            for(uint32_t pitch : {32u,64u,96u})
+                for(uint32_t rows : {1u,8u,31u,32u,33u,65u}) {
+                    sfr::TextureLayout shape{plume::RenderFormat::R8G8B8A8_UNORM,1,block_bytes,
+                        pitch*block_bytes,rows,pitch,rows,true,(rows+31)&~31u};
+                    const size_t full=size_t(shape.row_bytes)*shape.guest_rows;
+                    for(size_t size : {size_t(0),full/2+1,full-1,full}) {
+                        std::vector<uint8_t> input(size+3);
+                        for(size_t i=0;i<input.size();++i)input[i]=uint8_t(i*37+19);
+                        const auto bytes=std::span<const uint8_t>(input).subspan(3,size);
+                        std::vector<uint8_t> expected(size_t(shape.row_bytes)*rows);
+                        for(uint32_t y=0;y<rows;++y)
+                            for(uint32_t x=0;x<pitch;++x) {
+                                const size_t from=size_t(sfr::tiled_block_index(x,y,pitch,block_bytes))*block_bytes;
+                                if(from+block_bytes<=bytes.size())
+                                    std::copy_n(bytes.data()+from,block_bytes,expected.data()+size_t(y)*shape.row_bytes+size_t(x)*block_bytes);
+                            }
+                        require(sfr::untile_texture(bytes,shape)==expected,"untile preserves every block and zero-fills missing input");
+                    }
+                }
         // Tiling permutes the blocks of each 32x32-block tile within that tile.
         for (const uint32_t bytes : {4u, 8u, 16u}) {
             std::set<uint32_t> seen;

@@ -1159,3 +1159,64 @@ a 222.985 ms maximum frame after present 9000: large stutters are not solved.
 evidence. Installed version is `0.4.5-perf-thor-allocation-test`, SHA-256
 `1f73fcc60939501534789abc695f9d47e72a6d36efd1f8efe848f36e4a02a5c6`.
 The diagnostic override is removed; the user's save/settings were not cleared.
+
+## 2026-10-01: Texture conversion on AYN Thor
+
+The ARM64 compiler emitted scalar byte operations for texture endian modes 1
+and 3, and variable-size `memcpy` calls for each untiled block. The conversion
+now uses 16-byte NEON/SSSE3 permutations with scalar tails, and specializes
+untile copies for the supported 4/8/16-byte blocks. Generic fallback behavior,
+zero filling of unavailable blocks, GPU submission order and resource
+lifetimes remain unchanged.
+
+Host and Thor ARM64 native-format tests cover endian modes, unaligned spans,
+incomplete groups, output guards, tiled row boundaries, padded pitches and
+truncated source data. Windows and Android production builds pass. An
+independent source review found no actionable findings.
+
+A private verifier runs original and optimized conversion on every actual
+uploaded texture, comparing all output bytes before upload. Its complete
+14,400-present fixture includes Loading and Dolphin Resort racing:
+
+| Measurement | Original | Optimized |
+| --- | ---: | ---: |
+| Endian conversion, total | 31.929 ms | 5.800 ms |
+| Untiling, total | 74.037 ms | 44.082 ms |
+
+All **999 uploads (159,179,776 source bytes) match exactly**. There are 777
+tiled uploads; endian modes 1/0/2 occur 854/95/50 times. Mode 3 is covered by
+unit tests and the standalone ARM64 benchmark rather than this live scene.
+The optimized function runs first, then the original on a separate copy;
+these timings include host scheduling/cache effects and are not an FPS or
+end-to-end Loading speed comparison. Standalone paired benchmarks likewise
+reduce endian 1/3 time and untile time for each supported block size.
+
+A separate phase probe records 1,013 uploads, with 134.2 ms total fence wait
+and 8.9 ms staging allocation time. The three longest waits are 33.9, 18.0
+and 12.1 ms, at the fifth upload in their frames. The existing four-command-list
+ring therefore remains a source of synchronous waits during upload bursts;
+this CPU conversion change does not eliminate those waits. A cache observer
+finds one dirty texture, whose bytes really changed, and zero unchanged dirty
+textures in the verifier fixture. There is no measured justification here
+for adding a content hash to every dirty-cache hit.
+
+Local evidence: `out/thor-race-perf/texture-detail-analysis.json`,
+`texture-verification-analysis.json`, `texture-bench-before.txt`,
+`texture-bench-after.txt`, corresponding logs, private binaries and symbols.
+The normal APK excludes the private phase timers, duplicate conversions and
+dirty-texture observer.
+
+The normal APK also completes the 14,400-present fixture. Its frame-14400
+screenshot shows Dolphin Resort racing at HUD time 00:57.27, with rider,
+track and HUD rendered. Frame metrics remain enabled by the fixture, but the
+normal binary has no private per-upload verifier. The maximum frame after
+present 9000 is still 181.634 ms (62.361 ms in the overall texture path);
+other long frames have little texture work. Neither all stutters nor sustained
+race FPS is claimed fixed. Scene alignment differs from previous captures,
+so their maximum frames are not an equivalent-work performance comparison.
+
+`texture-normal.log` and `texture-normal-analysis.json` retain this evidence.
+Installed version is `0.4.5-perf-thor-texture-test`, SHA-256
+`ad81403c17f7e8253f50bfa562357e827e9162d1afe9946d2deef53b3ea02ccc`.
+The fixture's debug.env is removed and the launcher restored. User saves and
+settings were not cleared; the scripted run uses the separate benchmark save.

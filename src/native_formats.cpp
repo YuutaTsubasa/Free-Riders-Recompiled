@@ -220,20 +220,47 @@ IndexScan decode_indices(const uint8_t* bytes, uint32_t count, bool wide, uint32
     return scan;
 }
 
+#if (defined(__clang__) || defined(__GNUC__)) && (defined(_M_X64) || defined(__x86_64__))
+__attribute__((target("ssse3")))
+#endif
 void swap_texture_bytes(std::span<uint8_t> bytes, uint32_t endian) {
+    size_t i = 0;
     switch (endian) {
-    case 1:
-        for (size_t i = 0; i + 2 <= bytes.size(); i += 2) std::swap(bytes[i], bytes[i + 1]);
+    case 1: {
+#if defined(_M_X64) || defined(__x86_64__)
+        const __m128i order = _mm_setr_epi8(1,0,3,2,5,4,7,6,9,8,11,10,13,12,15,14);
+        for (; i + 16 <= bytes.size(); i += 16) {
+            auto* at = reinterpret_cast<__m128i*>(bytes.data() + i);
+            _mm_storeu_si128(at, _mm_shuffle_epi8(_mm_loadu_si128(at), order));
+        }
+#elif defined(__ARM_NEON)
+        for (; i + 16 <= bytes.size(); i += 16)
+            vst1q_u8(bytes.data() + i, vrev16q_u8(vld1q_u8(bytes.data() + i)));
+#endif
+        for (; i + 2 <= bytes.size(); i += 2) std::swap(bytes[i], bytes[i + 1]);
         break;
+    }
     case 2:
         swap_words(bytes);
         break;
-    case 3:
-        for (size_t i = 0; i + 4 <= bytes.size(); i += 4) {
+    case 3: {
+#if defined(_M_X64) || defined(__x86_64__)
+        const __m128i order = _mm_setr_epi8(2,3,0,1,6,7,4,5,10,11,8,9,14,15,12,13);
+        for (; i + 16 <= bytes.size(); i += 16) {
+            auto* at = reinterpret_cast<__m128i*>(bytes.data() + i);
+            _mm_storeu_si128(at, _mm_shuffle_epi8(_mm_loadu_si128(at), order));
+        }
+#elif defined(__ARM_NEON)
+        for (; i + 16 <= bytes.size(); i += 16)
+            vst1q_u8(bytes.data() + i, vreinterpretq_u8_u16(vrev32q_u16(
+                vreinterpretq_u16_u8(vld1q_u8(bytes.data() + i)))));
+#endif
+        for (; i + 4 <= bytes.size(); i += 4) {
             std::swap(bytes[i], bytes[i + 2]);
             std::swap(bytes[i + 1], bytes[i + 3]);
         }
         break;
+    }
     default:
         break;
     }
@@ -249,9 +276,32 @@ uint32_t tiled_block_index(uint32_t x, uint32_t y, uint32_t pitch_blocks, uint32
             (((((y & 8) >> 2) + (x >> 3)) & 3) << 6)) >> log_bpp;
 }
 
+namespace {
+template<uint32_t BlockBytes>
+void untile_blocks(std::span<const uint8_t> tiled, const TextureLayout& layout,
+                   std::span<uint8_t> linear) {
+    const uint32_t pitch = layout.row_bytes / BlockBytes;
+    for (uint32_t y = 0; y < layout.rows; ++y)
+        for (uint32_t x = 0; x < pitch; ++x) {
+            const size_t from = size_t(tiled_block_index(x, y, pitch, BlockBytes)) * BlockBytes;
+            if (from + BlockBytes > tiled.size()) continue;
+            // Constant-sized copies become unaligned loads/stores, instead
+            // of one out-of-line memcpy call per texel/compressed block.
+            std::memcpy(linear.data() + size_t(y) * layout.row_bytes + size_t(x) * BlockBytes,
+                        tiled.data() + from, BlockBytes);
+        }
+}
+}
+
 std::vector<uint8_t> untile_texture(std::span<const uint8_t> tiled, const TextureLayout& layout) {
     const uint32_t pitch_blocks = layout.row_bytes / layout.block_bytes;
     std::vector<uint8_t> linear(size_t(layout.row_bytes) * layout.rows);
+    switch (layout.block_bytes) {
+    case 4: untile_blocks<4>(tiled, layout, linear); return linear;
+    case 8: untile_blocks<8>(tiled, layout, linear); return linear;
+    case 16: untile_blocks<16>(tiled, layout, linear); return linear;
+    default: break;
+    }
     for (uint32_t y = 0; y < layout.rows; ++y)
         for (uint32_t x = 0; x < pitch_blocks; ++x) {
             const size_t from = size_t(tiled_block_index(x, y, pitch_blocks, layout.block_bytes)) * layout.block_bytes;
