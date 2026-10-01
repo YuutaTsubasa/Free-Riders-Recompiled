@@ -1101,3 +1101,61 @@ the game's deliberate hold. This supports preserving that hold.
 The normal `0.4.5-perf-thor-ui-test` APK is installed on Thor with no debug.env.
 Its SHA-256 is `2e1b2185e19b4237eba2eafb3518731b1b7dd0060a7dd6d079dc7831075fe2b0`.
 The user's saves/settings were not cleared; fixture runs use benchmark-save.
+
+
+## 2026-10-01: Physical allocation search on AYN Thor
+
+Loading guest thread 12 spends sampled CPU time in physical allocation and
+reservation queries. The prior allocator restarted a binary conflict search
+from the arena's top for every allocation, calling both `available` and
+`lowest_conflict` for each occupied candidate. A private probe records up to
+3,551 candidates per request. The 3,391 logged requests total 3,780,956 probes
+and 464 ms before mapping; that last measure includes pre-query bookkeeping,
+and the logger filters out requests with at most 100 probes and at most 0.5 ms.
+It is not a complete allocation census or pure search timing.
+
+`GuestMemory::find_available_top_down` now walks the sorted reservation vector
+backwards under the existing layout-read contract. It returns the highest free
+host-page-aligned range, with partial reservation tails still occupying full
+host pages. PhysicalMemory retains its original bounds, retained-memory reuse,
+budget check, protection, mapping and publication order. No free-list cache,
+new reservation state, guest timing or rendering change is introduced.
+
+Validation:
+
+- Regression tests compare the query to exhaustive page search across bounded
+  windows, partial tails, holes, release, address zero, invalid ranges and the
+  exclusive 4 GiB limit. Host guest/physical/virtual memory, memory-statistics
+  and pending-write tests pass; guest and physical memory tests pass on Thor.
+- Full Android and Windows production targets build. Source review found no
+  actionable issue and independently compared 200,000 randomized old/new
+  searches, including multi-page partial reservations and arbitrary windows.
+- A private Thor verifier executes both searches against the same live map,
+  checks exact optional address equality before mapping, and completes the
+  14,400-present fixture: **3,569 queries, zero mismatch**. Old queries total
+  **413.920 ms**, new queries **46.352 ms** (88.8% lower query time). New runs
+  first and old immediately afterwards; timing includes host scheduling/cache
+  effects. This is a query-level comparison, not an 88.8% Loading/FPS gain.
+- A separate ARM64 microbenchmark with 2,500 dense reservations and 2,000
+  repetitions measures roughly 235 ms -> 17 ms for 4 KiB searches. Conversely,
+  1 MiB requests are about 2.8 ms -> 17 ms: the old algorithm can skip many
+  small reservations per jump. This tradeoff is retained because the measured
+  live query mix has a clear aggregate saving. An immediately free small
+  range changes only by tens of nanoseconds per query in that microbenchmark.
+
+Artifacts: `out/thor-race-perf/alloc-probe*`, `alloc-verify*`,
+`allocation-bench.txt`, `allocation-query-comparison.json`, matching symbols
+and fixture screenshots. The normal APK excludes ALLOC_PROBE/ALLOC_VERIFY.
+Large Loading stutters and sustained race FPS remain separate bottlenecks;
+this change does not establish an end-to-end loading-time or FPS improvement.
+
+
+The normal non-profileable APK also completed the 14,400-present fixture with
+no memory stop; the saved frame-12000 screenshot shows Dolphin Resort with
+HUD race time 1:07.61. Scene/frame alignment differs from the diagnostic run,
+so their summary FPS must not be directly compared. The normal run still has
+a 222.985 ms maximum frame after present 9000: large stutters are not solved.
+`alloc-normal.log`, its screenshots and `allocation-delivery.json` retain this
+evidence. Installed version is `0.4.5-perf-thor-allocation-test`, SHA-256
+`1f73fcc60939501534789abc695f9d47e72a6d36efd1f8efe848f36e4a02a5c6`.
+The diagnostic override is removed; the user's save/settings were not cleared.

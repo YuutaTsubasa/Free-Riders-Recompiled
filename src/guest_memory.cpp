@@ -258,6 +258,29 @@ bool GuestMemory::available(uint64_t address, uint64_t size) const {
     return !first_conflict(address, end);
 }
 
+std::optional<uint64_t> GuestMemory::find_available_top_down(uint64_t begin, uint64_t end, uint64_t size) const {
+    if (!size || begin >= end || end > address_space_size || size > end - begin)
+        return std::nullopt;
+    const uint64_t rounded = (size + page_size_ - 1) / page_size_ * page_size_;
+    if (rounded > end - begin) return std::nullopt;
+    uint64_t candidate = (end - rounded) / page_size_ * page_size_;
+    if (candidate < begin) return std::nullopt;
+    const auto layout = read_layout();
+    auto next = std::lower_bound(reservations_.begin(), reservations_.end(), end,
+        [](const Region& r, uint64_t bound) { return r.address < bound; });
+    while (next != reservations_.begin()) {
+        const Region& r = *--next;
+        const uint64_t region_end = r.address + (r.size + page_size_ - 1) / page_size_ * page_size_;
+        // Earlier regions cannot reach this candidate: reservations never overlap.
+        if (region_end <= candidate) break;
+        if (r.address >= candidate + rounded) continue;
+        if (r.address < begin + rounded) return std::nullopt;
+        candidate = (r.address - rounded) / page_size_ * page_size_;
+        if (candidate < begin) return std::nullopt;
+    }
+    return candidate;
+}
+
 uint64_t GuestMemory::lowest_conflict(uint64_t address, uint64_t size) const {
     const auto end = address + (size + page_size_ - 1) / page_size_ * page_size_;
     const Region* const conflict = first_conflict(address, end);

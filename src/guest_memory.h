@@ -4,6 +4,7 @@
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <shared_mutex>
 #include <span>
 #include <stdexcept>
@@ -81,6 +82,10 @@ public:
     void decommit(uint64_t address, uint64_t size);
     void release(uint64_t address, uint64_t size);
     bool available(uint64_t address, uint64_t size) const;
+    // Highest host-page-aligned free range inside [begin,end). Reservation
+    // tails occupy whole host pages. Read-only; allocation still requires
+    // exclusive guest execution between this query and reserve/commit.
+    std::optional<uint64_t> find_available_top_down(uint64_t begin, uint64_t end, uint64_t size) const;
     // Lowest start of a reservation overlapping the range (the range's end when none).
     uint64_t lowest_conflict(uint64_t address, uint64_t size) const;
     void check(uint64_t address, uint64_t size) const;

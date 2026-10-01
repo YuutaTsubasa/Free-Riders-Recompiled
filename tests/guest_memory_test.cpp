@@ -3,6 +3,7 @@
 #include <atomic>
 #include <array>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -1412,8 +1413,49 @@ static void teardown_after_release_still_frees_guest_envelope() {
 #endif
 }
 
+static void top_down_search_matches_page_oracle() {
+    sfr::GuestMemory memory;
+    constexpr uint64_t page=4096, start=0x200000, pages=96;
+    // Scattered reservations, including exact logical tails shorter than a page.
+    for (uint64_t i=0;i<pages;i+=3) memory.reserve(start+i*page,(i%2) ? page : 37);
+    const auto oracle=[&](uint64_t begin,uint64_t end,uint64_t size)->std::optional<uint64_t> {
+        if (!size || begin>=end || end>sfr::GuestMemory::address_space_size || size>end-begin)
+            return std::nullopt;
+        const uint64_t rounded=(size+page-1)/page*page;
+        if(rounded>end-begin)return std::nullopt;
+        for(uint64_t at=(end-rounded)/page*page;at>=begin;) {
+            if(memory.available(at,size))return at;
+            if(at<page)break;
+            at-=page;
+        }
+        return std::nullopt;
+    };
+    const auto compare=[&] {
+        for(uint64_t lo=0;lo<pages;lo+=7)
+            for(uint64_t hi=lo+1;hi<=pages;hi+=5)
+                for(uint64_t size : {1ull,4096ull,4097ull,8192ull,12288ull})
+                    for(uint64_t offset : {0ull,13ull}) {
+                        const uint64_t begin=start+lo*page+offset,end=start+hi*page-17;
+                        require(memory.find_available_top_down(begin,end,size)==oracle(begin,end,size),
+                                "top-down range query matches exhaustive page search");
+                    }
+    };
+    compare();
+    memory.release(start+3*page,page);compare();
+    require(memory.find_available_top_down(0,page,page)==0,"address zero is a valid result");
+    require(memory.find_available_top_down(0xffff0000ull,0x100000000ull,1)==0xfffff000ull,
+            "top-down search handles the exclusive 4GB bound");
+    memory.reserve(0xfffff000ull,1);
+    require(memory.find_available_top_down(0xffff0000ull,0x100000000ull,1)==0xffffe000ull,
+            "partial final-page reservation blocks its entire host page");
+    for(const auto range : std::array<std::array<uint64_t,3>,6>{{
+        {0,0,1},{page,0,1},{0,page,0},{0,page,page+1},{0,0x100000001ull,1},{0,page,UINT64_MAX}}})
+        require(!memory.find_available_top_down(range[0],range[1],range[2]),"invalid search has no result");
+}
+
 int main() {
     try {
+        top_down_search_matches_page_oracle();
         partial_page_fast_access();
         sfr::GuestMemory memory;
         memory.map(0x10000, 0x1000);
