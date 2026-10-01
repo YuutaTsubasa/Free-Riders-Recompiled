@@ -174,6 +174,34 @@ IndexScan decode_indices(const uint8_t* bytes, uint32_t count, bool wide, uint32
         scan.lowest = (std::min)(scan.lowest, lanes[lane]);
         scan.highest = (std::max)(scan.highest, lanes[4 + lane]);
     }
+#elif defined(__aarch64__) && defined(__ARM_NEON)
+    uint32x4_t lowest = vdupq_n_u32(~0u), highest = vdupq_n_u32(0);
+    const uint32x4_t offset = vdupq_n_u32(base);
+    if (!wide) {
+        for (; count - i >= 8; i += 8) {
+            const uint16x8_t raw = vreinterpretq_u16_u8(vrev16q_u8(vld1q_u8(bytes + size_t(i) * 2)));
+            // As on x86, leave the first batch containing a restart and
+            // everything after it to the exact scalar path below.
+            if (restart_enabled && vmaxvq_u16(vceqq_u16(raw, vdupq_n_u16(0xffff)))) break;
+            const uint32x4_t low = vaddq_u32(vmovl_u16(vget_low_u16(raw)), offset);
+            const uint32x4_t high = vaddq_u32(vmovl_u16(vget_high_u16(raw)), offset);
+            vst1q_u32(out + i, low);
+            vst1q_u32(out + i + 4, high);
+            lowest = vminq_u32(lowest, vminq_u32(low, high));
+            highest = vmaxq_u32(highest, vmaxq_u32(low, high));
+        }
+    } else {
+        for (; count - i >= 4; i += 4) {
+            const uint32x4_t raw = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(bytes + size_t(i) * 4)));
+            if (restart_enabled && vmaxvq_u32(vceqq_u32(raw, vdupq_n_u32(~0u)))) break;
+            const uint32x4_t value = vaddq_u32(raw, offset);
+            vst1q_u32(out + i, value);
+            lowest = vminq_u32(lowest, value);
+            highest = vmaxq_u32(highest, value);
+        }
+    }
+    scan.lowest = vminvq_u32(lowest);
+    scan.highest = vmaxvq_u32(highest);
 #endif
     for (; i < count; ++i) {
         const uint8_t* at = bytes + size_t(i) * (wide ? 4 : 2);

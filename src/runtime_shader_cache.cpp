@@ -318,6 +318,7 @@ const ShaderCacheEntry& runtime_shader(ShaderStage stage, std::span<const uint8_
     // "v8" loads push constant addresses as uint2 for Adreno and explicitly
     // targets Vulkan 1.2 for PhysicalStorageBuffer64.
     // "v9" preserves guest texel dimensions for scaled framebuffer resolves.
+    // "v10" uses physical uint2 pointers without optional shaderInt64 support.
     std::snprintf(name, sizeof name, "v%u-%016llx-%zu", shader_abi_version,
                   static_cast<unsigned long long>(hash), source.size());
     const fs::path folder = setting("SFR_RUNTIME_SHADER_CACHE", "out/shaders/runtime") / name;

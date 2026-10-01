@@ -46,41 +46,11 @@ extern const bool diagnostic_entries;
 // time and to notice cancellation, so the rest return here, inline.
 void guest_checkpoint_permit();
 
-// What a guest function entry reads and writes, in one object.
-//
-// These were separate thread_local variables, which is the same thing on a
-// desktop and not on Android: there a thread_local lives in a dynamically
-// loaded module's TLS block, and each *variable* costs a call to the
-// linker's tlsdesc resolver. An entry touched seven of them, several million
-// times a second, and that resolver was 9.5% of a race on the phone. One
-// object is one resolution; the fields are offsets from it.
-struct GuestEntryState {
-    // The permit needs one checkpoint in every few dozen (guest_checkpoint).
-    uint32_t checkpoint_countdown = 0;
-    // The function this thread entered last (named when it stops).
-    const char* current_function = "";
-    uint32_t current_address = 0;
-    // Whether this thread's entries do more than checkpoint and name
-    // themselves: a guest running beside the permit, an audit in progress,
-    // the entry diagnostics. Until a thread sets it from what applies, every
-    // entry takes the full path.
-    bool observed = true;
-    // Whether anything beyond the permit wants to see every entry: the entry
-    // diagnostics, a reach log, an audit. A guest playing beside the permit
-    // is observed without being watched, and leaves early -- which keeps the
-    // thread_locals those three read out of every entry of a race.
-    bool watched = true;
-    // A guest running beside the permit rather than holding it, and how it
-    // follows a hooked call (diagnostic_main.cpp's parallel_function_entry).
-    bool parallel = false;
-    bool detach_at_entry = false;
-    uint32_t hook_stack_pointer = 0;
-};
-inline thread_local GuestEntryState guest_entry;
+
 
 inline void guest_checkpoint() {
-    if (guest_entry.checkpoint_countdown) [[likely]] {
-        --guest_entry.checkpoint_countdown;
+    if (guest_thread_state.entry.checkpoint_countdown) [[likely]] {
+        --guest_thread_state.entry.checkpoint_countdown;
         return;
     }
     guest_checkpoint_permit();
@@ -88,7 +58,7 @@ inline void guest_checkpoint() {
 void enter_function_observed(PPCContext&, const char*, uint32_t);
 // Every guest function entry; inline, as it runs millions of times a second.
 inline void enter_function(PPCContext& ctx, const char* name, uint32_t address) {
-    GuestEntryState& entry = guest_entry;
+    GuestEntryState& entry = guest_thread_state.entry;
     if (entry.observed) [[unlikely]] {
         enter_function_observed(ctx, name, address);
         return;
@@ -116,6 +86,8 @@ void zero_cache_line(uint32_t);
 void synchronize_resource_memory(PPCContext&);
 // Frames presented so far (guest_graphics_hooks.cpp).
 extern std::atomic<uint32_t> present_count;
+// Runtime guest identity (the main guest is 1), independent of the host TID.
+uint32_t current_guest_thread_id();
 // SFR_WATCH_WORD=<hex address>: while this holds an address, every guest
 // function entry reports a change of that word together with the function
 // entered, which names the code that wrote it. A hook may set it for an

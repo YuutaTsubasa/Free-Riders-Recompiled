@@ -29,6 +29,7 @@ page; to build it yourself, see [Building](docs/building.md).
 ## Table of Contents
 
 - [Status](#status)
+- [Release notes](#release-notes)
 - [System Requirements](#system-requirements)
 - [How to Install](#how-to-install)
 - [Settings](#settings)
@@ -73,10 +74,45 @@ Known limits:
 - Linux and Android use shaders translated beforehand on Windows
   (`shaders.pack`, included in the releases). The game creates all of its
   shaders while it boots; releases include the matching shader pack.
-- Android has been tried in the emulator and on one Adreno 750 handheld.
+- Android has been tried in the emulator, on Pocket S2 Pro (Adreno 750),
+  and on AYN Thor (Adreno 740). The latest Android 10+ build completed a
+  race on Thor at approximately 23–24 FPS with race time matching real time.
+  Intro movies can still play slowly; this does not imply 60 FPS or the
+  same performance on other devices. See [Android performance](docs/android-performance.md).
 
 Progress notes (mostly in Traditional Chinese) are in [docs/](docs/), starting
 with [docs/progress.md](docs/progress.md).
+
+## Release notes
+
+- [v0.1.0 — First playable preview](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.1.0)
+  Released Windows, Linux and Android builds, with playable menus and races, save support, and controller/keyboard gameplay without Kinect. Included an English/Traditional Chinese launcher and Android touch controls and tilt steering.
+- [v0.1.1 — Early stability and rendering fixes](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.1.1)
+  Fixed a Grand Prix loading failure, removed accidentally enabled profiling overhead, and corrected rendering at non-native window sizes. Improved Android texture compatibility and surface recovery, and bundled a complete shader pack.
+- [v0.1.2 — Race results fix](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.1.2)
+  Fixed the game stopping at race results when it attempted to award an achievement. Achievement requests are now handled locally without Xbox Live.
+- [v0.1.3 — Customizable controls](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.1.3)
+  Added desktop settings for player input sources, controller selection and keyboard/gamepad bindings. Improved Vulkan compatibility with display surfaces that lack certain capabilities.
+- [v0.1.4 — Crouch and jump fixes](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.1.4)
+  Fixed controller input conflicts that could cancel crouch charging or jump release, including when holding the left stick down.
+- [v0.1.5 — Local two-player support](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.1.5)
+  Added independent player input routing and split-screen corrections. Fixed Gear selection getting stuck after Player 1 confirmed, reduced repetitive input logging, and removed unnecessary CPU queries.
+- [v0.2.0 — Webcam motion controls](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.2.0)
+  Added optional Windows webcam controls using estimated 3D body movement, a skeleton debug window, and automatic controller/camera handoff. Improved motion gestures and fixed single-player viewport stretching and exposure when 2P was disabled.
+- [v0.2.1 — Shader and Windows startup fixes](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.2.1)
+  Corrected the incompatible shader pack shipped with v0.2.0, which could cause a white screen or Vulkan device loss. Added shader-pack validation and bundled the D3D12 Agility runtime for affected Windows 10 systems.
+- [v0.3.0 — Custom VRM avatars](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.3.0)
+  Added experimental VRM 0.x/1.0 models for the in-game AVATAR rider, with game-driven animation, stance changes and held-item positioning. Models can be selected through the launcher.
+- [v0.4.0 — Real Kinect support](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.4.0)
+  Added physical Kinect input on Windows, sensor previews and Kinect v1 tilt controls. Improved player tracking, webcam handling and Windows graphics compatibility. Xbox 360 Kinect has been tested in races; Kinect v2 remains experimental.
+- [v0.4.1 — Rendering options and performance work](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.4.1)
+  Fixed shader reload failures during scene changes and controller-related rider pose distortion. Added independent internal rendering resolutions from 360p to 1440p and reduced CPU/rendering overhead.
+- [v0.4.2 — Settings and language selection](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.4.2)
+  Reorganized launcher settings, added game language selection, and fixed startup failures caused by unsupported system regions.
+- [v0.4.3 — Pipeline preparation and handheld improvements](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.4.3)
+  Added startup preparation and caching of known graphics pipelines to reduce compilation stalls during gameplay. Improved Windows timing, worker synchronization and CPU overhead, and introduced an optimized Android 10+ APK alongside the Android 9-compatible build.
+- [v0.4.4 — Android race timing and CPU improvements](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.4.4)
+  Improved Android CPU scheduling and guest execution overhead, corrected race simulation timing at lower frame rates, and fixed Vulkan shader compatibility on GPUs without 64-bit integer support. Racing was verified at approximately 23–24 FPS with time matching real seconds on AYN Thor; Intro movies remain slower than expected.
 
 ## System Requirements
 
@@ -86,8 +122,9 @@ with [docs/progress.md](docs/progress.md).
 - **Android**: Android 9 or later, arm64-v8a, Vulkan 1.1; about 2 GB free
   for the installed game. Releases also offer an **Android 10+** APK using
   native thread-local storage to reduce CPU overhead; prefer that build on
-  Android 10 or later. Android performance remains experimental: 3D races
-  are still slow on the tested Pocket S2 Pro.
+  Android 10 or later. Android performance remains experimental; the latest
+  race timing and performance improvements were tested on AYN Thor and have
+  not yet been re-tested on Pocket S2 Pro.
 - Building needs the tools listed in [docs/building.md](docs/building.md).
 
 ## How to Install

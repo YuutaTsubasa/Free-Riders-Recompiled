@@ -3,7 +3,7 @@ import struct
 
 # Keep in sync with src/shader_pack_format.h and the runtime cache key.
 MAGIC = b'SFRSHPK2'
-SHADER_ABI = 9
+SHADER_ABI = 10
 
 
 def header(count):

@@ -30,6 +30,10 @@ $diagnosticPath = [IO.Path]::GetFullPath((Join-Path $repoRoot $DiagnosticDirecto
 if ($LASTEXITCODE -ne 0) { throw 'Xenon tools configure failed.' }
 $targets = @('XenonAnalyse', 'XenonRecomp', 'sfr_image_dump', 'sfr_memory_test', 'sfr_xex_module_test', 'sfr_virtual_memory_test', 'sfr_critical_section_test', 'sfr_hardware_info_test', 'sfr_thread_local_storage_test', 'sfr_system_time_test', 'sfr_guest_clock_test', 'sfr_timestamp_bundle_test')
 $targets += 'sfr_vector_memory_test'
+$targets += 'sfr_guest_entry_state_test'
+$targets += 'sfr_guest_registers_test'
+$targets += 'sfr_guest_function_table_test'
+$targets += 'sfr_race_frame_clock_test'
 $targets += 'sfr_debug_monitor_test'
 $targets += 'sfr_nui_device_status_test'
 $targets += 'sfr_nui_skeleton_test'

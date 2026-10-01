@@ -12,11 +12,12 @@ void rejects(std::span<const uint8_t> bytes) {
 }
 int main() {
     try {
-        const std::vector<uint8_t> good{'S','F','R','S','H','P','K','2',9,0,0,0,0xD4,1,0,0};
+        const std::vector<uint8_t> good{'S','F','R','S','H','P','K','2',10,0,0,0,0xD4,1,0,0};
         require(sfr::shader_pack_count(good) == 468, "current ABI count decoded");
         for (size_t n=0;n<good.size();++n) rejects(std::span(good).first(n));
         auto old=good;old[7]='1'; rejects(old);
         auto wrong=good;wrong[8]=6; rejects(wrong);
+        wrong=good;wrong[8]=9; rejects(wrong);
         wrong=good;wrong[9]=1; rejects(wrong);
         wrong=good;wrong[0]='X'; rejects(wrong);
         auto empty=good;

@@ -10,6 +10,7 @@
 #include <string>
 #include <type_traits>
 #include <vector>
+#include "guest_thread_state.h"
 
 namespace sfr {
 struct RuntimeStop : std::runtime_error {
@@ -19,18 +20,6 @@ struct RuntimeStop : std::runtime_error {
     RuntimeStop(std::string category, uint64_t address, std::string detail);
 };
 
-// A lwarx/ldarx reservation belongs to the host thread that made it, as each
-// console core has its own: guest threads running at once must not see
-// each other's. Active when owner is the id of the GuestMemory it was made
-// in (never 0; ids are not reused, unlike addresses of destroyed instances).
-// version is the reservation stripe's count of successful conditional stores
-// when the reservation was made (see guest_memory.cpp).
-struct GuestReservation {
-    uint64_t owner = 0;
-    uint64_t address = 0, value = 0, version = 0;
-    uint8_t size = 0;
-};
-inline thread_local GuestReservation guest_reservation;
 
 class GuestMemory {
     struct PendingState;
@@ -110,7 +99,7 @@ public:
     bool store_conditional_word(uint64_t address, uint32_t value);
     uint64_t load_reserved_doubleword(uint64_t address);
     bool store_conditional_doubleword(uint64_t address, uint64_t value);
-    bool has_reservation() const { return guest_reservation.owner == reservation_owner_; }
+    bool has_reservation() const { return guest_thread_state.reservation.owner == reservation_owner_; }
     // The layout (regions, import variables, computed words, pending I/O)
     // changes only under exclusive guest execution. A thread that runs guest
     // code without it (a detached guest) sets concurrent_reader: its checks
@@ -149,10 +138,13 @@ public:
     // one otherwise ran the checks twice over and assembled bytes one at a
     // time (docs/performance.md).
     const uint8_t* fast_read(uint64_t address, uint64_t size) const {
-        return (fast_page(address, size) & fast_access) ? base_ + address : nullptr;
+        uint8_t page = fast_page(address, size);
+        if (page & fast_partial) page = partial_fast_page(address, size, page);
+        return (page & fast_access) ? base_ + address : nullptr;
     }
     uint8_t* fast_write(uint64_t address, uint64_t size) {
-        const uint8_t page = fast_page(address, size);
+        uint8_t page = fast_page(address, size);
+        if (page & fast_partial) page = partial_fast_page(address, size, page);
         if (!(page & fast_access) || has_reservation() || page_pinned(address)) return nullptr;
         if (page & fast_watched) note_watched_write(address / fast_page_size);
         return base_ + address;
@@ -202,6 +194,12 @@ private:
     // a load that touches neither reads it directly. The title reads words
     // beside the XEX's import variables millions of times a race.
     static constexpr uint8_t fast_special = 4;
+    // Commits start on page boundaries but may end inside a page (PCRs,
+    // thread objects and TLS blocks). Keep their exact committed prefix;
+    // rounding it to the host page would expose unmapped guest bytes.
+    static constexpr uint8_t fast_partial = 8;
+    static constexpr uint8_t fast_partial_special = 16;
+    std::unique_ptr<uint16_t[]> partial_page_ends_;
     // Addresses of the import variables and computed words (set at startup).
     std::vector<uint32_t> special_words_;
     bool special_word(uint64_t address, uint64_t size) const {
@@ -210,10 +208,15 @@ private:
         return false;
     }
     uint8_t fast_page(uint64_t address, uint64_t size) const {
-        return address < address_space_size &&
-               ((address + size - 1) / fast_page_size) == address / fast_page_size
-            ? fast_pages_[address / fast_page_size] : uint8_t{0};
+        if (!size || address >= address_space_size || size > fast_page_size - address % fast_page_size)
+            return 0;
+        // Partial pages deliberately stay on the scalar out-of-line path.
+        // Duplicating their bounds check at every recompiled instruction
+        // bloats hot guest functions. read_scalar/store_checked handle them
+        // without taking a layout lock; whole-page instructions stay small.
+        return fast_pages_[address / fast_page_size];
     }
+    uint8_t partial_fast_page(uint64_t address, uint64_t size, uint8_t page) const;
     // Under a pending I/O output range (PendingState::pinned).
     bool page_pinned(uint64_t address) const {
         return pinned_pages_[address / fast_page_size].load(std::memory_order_relaxed) != 0;

@@ -28,6 +28,69 @@ template<typename F> static void require_stop(F operation, const char* category,
 
 static thread_local unsigned provider_permit_requests = 0;
 
+static void partial_page_fast_access() {
+    sfr::GuestMemory memory;
+    memory.reserve(0x90000, 0x3000);
+    memory.commit(0x90000, 0x2d8); // Size of a guest processor control region.
+    memory.commit(0x91000, 0xab0); // Size of a guest thread object.
+    memory.store<uint32_t>(0x90100, 0x91000);
+    require(memory.fast_read(0x90100, 4) != nullptr,
+            "ordinary fields in partial pages must use the checked fast range");
+    require(memory.fast_read(0x902d4, 4) != nullptr && memory.fast_write(0x902d4, 4) != nullptr,
+            "last complete scalar in the logical commit is accessible");
+    require(memory.fast_read(0x902d5, 4) == nullptr && memory.fast_write(0x902d8, 1) == nullptr,
+            "rounded host backing must not expose the uncommitted suffix");
+    require_stop([&] { memory.load<uint32_t>(0x902d5); }, "memory-access", "cross-boundary load rejected");
+    require_stop([&] { memory.store<uint8_t>(0x902d8, 1); }, "memory-access", "suffix store rejected");
+    require(memory.fast_read(0x90000, 0) == nullptr && memory.fast_read(0x90001, UINT64_MAX) == nullptr,
+            "empty and overflowing fast ranges are rejected");
+    memory.watch_writes(0x90000, 0x2d8);
+    memory.take_written(0x90000, 0x2d8);
+    memory.enable_write_epochs();
+    const auto epoch = memory.write_epoch();
+    memory.store<uint32_t>(0x90100, 0x91000);
+    require(memory.take_written(0x90000, 0x2d8) && memory.written_since(0x90000, 0x2d8, epoch),
+            "partial fast writes preserve write watches and epochs");
+    const sfr::GuestMemory::Range range{0x90100, 4};
+    auto pinned = memory.pin_writes(std::span(&range, 1));
+    require(memory.fast_write(0x90100, 4) == nullptr, "pending I/O still protects partial pages");
+    require_stop([&] { memory.store<uint32_t>(0x90100, 0); }, "memory-pending-write", "pinned write rejected");
+    pinned.reset();
+    memory.load_reserved_word(0x90100);
+    require(memory.fast_write(0x90108, 4) == nullptr, "live reservation disables partial fast stores");
+    require(memory.store_conditional_word(0x90100, 0x91000), "reservation completes normally");
+    memory.add_read_only_word(0x90020, [] { return 0x12345678u; });
+    require(memory.fast_read(0x90020, 4) == nullptr && memory.fast_write(0x90020, 4) == nullptr,
+            "computed providers must not be bypassed on partial pages");
+    require(memory.load<uint32_t>(0x90020) == 0x12345678u && memory.load<uint32_t>(0x90100) == 0x91000,
+            "provider and neighboring ordinary reads both remain correct");
+    require_stop([&] { memory.store<uint32_t>(0x90020, 0); }, "memory-readonly", "provider stays read-only");
+    memory.add_import_variable(0x91020, "partial import");
+    require_stop([&] { memory.load<uint32_t>(0x91020); }, "import-variable", "partial import stays guarded");
+    require_stop([&] { memory.load<uint8_t>(0x91ab0); }, "memory-access", "special partial page retains end bound");
+    memory.commit(0x92000, 1);
+    require(memory.fast_read(0x92000, 1) != nullptr && memory.fast_read(0x92000, 2) == nullptr,
+            "single-byte commit bounds remain exact");
+    memory.decommit(0x92000, 0x1000);
+    require(memory.fast_read(0x92000, 1) == nullptr, "decommit invalidates partial fast bounds");
+    memory.commit(0x92000, 0x1000);
+    require(memory.fast_read(0x92fff, 1) != nullptr, "recommit as full page refreshes bounds");
+    memory.reserve(0xa0000, 0x2000);
+    memory.commit(0xa0000, 7);
+    memory.commit(0xa0000, 0x1001);
+    require(memory.fast_read(0xa0fff, 1) != nullptr && memory.fast_read(0xa1000, 1) != nullptr &&
+            memory.fast_read(0xa1000, 2) == nullptr,
+            "extending a partial commit refreshes both full and final partial pages");
+    memory.store<uint16_t>(0xa0fff, 0x1234);
+    require(memory.load<uint16_t>(0xa0fff) == 0x1234, "cross-page scalar retains checked fallback");
+    memory.release(0xa0000, 0x2000);
+    require(memory.fast_read(0xa1000, 1) == nullptr, "release clears the last partial page");
+    memory.map(0xfffff000, 0xfff);
+    require(memory.fast_read(0xfffffffe, 1) != nullptr && memory.fast_read(0xffffffff, 1) == nullptr &&
+            memory.fast_read(0xfffffffe, 4) == nullptr,
+            "top-of-address-space partial commit does not wrap or expose its tail");
+}
+
 static void provider_execution_policy() {
     sfr::GuestMemory memory;
     memory.map(0x90000, 0x1000);
@@ -1351,6 +1414,7 @@ static void teardown_after_release_still_frees_guest_envelope() {
 
 int main() {
     try {
+        partial_page_fast_access();
         sfr::GuestMemory memory;
         memory.map(0x10000, 0x1000);
         memory.store<uint32_t>(0x10003, 0x12345678);
