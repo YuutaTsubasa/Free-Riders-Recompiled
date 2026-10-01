@@ -154,7 +154,8 @@ RuntimeStop::RuntimeStop(std::string category, uint64_t address, std::string det
       address(address), detail(std::move(detail)) {}
 
 GuestMemory::GuestMemory(uint64_t backing_budget)
-    : fast_pages_(std::make_unique<uint8_t[]>(address_space_size / fast_page_size)),
+    : partial_page_ends_(std::make_unique<uint16_t[]>(address_space_size / fast_page_size)),
+      fast_pages_(std::make_unique<uint8_t[]>(address_space_size / fast_page_size)),
       watched_pages_(std::make_unique<uint8_t[]>(address_space_size / fast_page_size)),
       write_combined_pages_(std::make_unique<uint8_t[]>(address_space_size / fast_page_size)),
       backing_budget_(backing_budget), pending_state_(std::make_shared<PendingState>()) {
@@ -709,10 +710,23 @@ void GuestMemory::add_import_variable(uint32_t address, std::string name) {
 }
 
 void GuestMemory::store_checked(uint64_t address, uint64_t value, uint64_t size) {
+    if (volatile uint8_t* bytes = fast_write(address, size)) {
+        for (uint64_t i = 0; i < size; ++i)
+            bytes[i] = static_cast<uint8_t>(value >> ((size - 1 - i) * 8));
+        complete_store(address, size);
+        return;
+    }
     check_write(address, size);
     for (uint64_t i = 0; i < size; ++i)
         base_[address + i] = static_cast<uint8_t>(value >> ((size - 1 - i) * 8));
     complete_store(address, size);
+}
+
+uint8_t GuestMemory::partial_fast_page(uint64_t address, uint64_t size, uint8_t page) const {
+    if (address % fast_page_size + size > partial_page_ends_[address / fast_page_size]) return 0;
+    // Keep special partial pages on the fully checked path: returning only
+    // fast_special to the scalar caller would bypass the partial end bound.
+    return (page & fast_partial_special) ? 0 : uint8_t(fast_access | (page & fast_watched));
 }
 
 void GuestMemory::rebuild_fast_pages(uint64_t begin, uint64_t size) {
@@ -726,12 +740,19 @@ void GuestMemory::rebuild_fast_pages(uint64_t begin, uint64_t size) {
         const uint64_t first = std::max((r.address + fast_page_size - 1) / fast_page_size, first_page);
         const uint64_t end = std::min((r.address + r.size) / fast_page_size, end_page);
         for (uint64_t page = first; page < end; ++page) fast_pages_[page] = 1;
+        const uint64_t tail = (r.address + r.size) / fast_page_size;
+        const uint16_t prefix = uint16_t((r.address + r.size) % fast_page_size);
+        if (prefix && tail >= first_page && tail < end_page) {
+            partial_page_ends_[tail] = prefix;
+            fast_pages_[tail] = fast_partial;
+        }
     }
     const auto clear = [&](uint64_t address, uint64_t length) {
         const uint64_t first = std::max(address / fast_page_size, first_page);
         const uint64_t last = std::min((address + length - 1) / fast_page_size + 1, end_page);
         for (uint64_t page = first; page < last; ++page)
-            fast_pages_[page] = (fast_pages_[page] & (fast_access | fast_special)) ? fast_special : 0;
+            fast_pages_[page] = (fast_pages_[page] & fast_partial) ? (fast_partial | fast_partial_special)
+                : (fast_pages_[page] & (fast_access | fast_special)) ? fast_special : 0;
     };
     for (const auto& variable : variables_) clear(variable.address, 4);
     for (const auto& word : read_only_words_) clear(word.address, 4);
@@ -779,7 +800,7 @@ uint32_t GuestMemory::load_reserved_word(uint64_t address) {
         throw RuntimeStop("memory-cache", address, "reserved word load does not support write-combined memory");
     StripeLock lock(address);
     const auto value = load<uint32_t>(address);
-    guest_reservation = {reservation_owner_, address, value, lock.version(), 4};
+    guest_thread_state.reservation = {reservation_owner_, address, value, lock.version(), 4};
     return value;
 }
 
@@ -789,7 +810,7 @@ bool GuestMemory::store_conditional_word(uint64_t address, uint32_t value) {
     check_store_access(address, 4);
     if (intersects_write_combined(address, 4))
         throw RuntimeStop("memory-cache", address, "conditional word store does not support write-combined memory");
-    auto& reservation = guest_reservation;
+    auto& reservation = guest_thread_state.reservation;
     if (reservation.owner != reservation_owner_) return false;
     if (address != reservation.address)
         throw RuntimeStop("reservation-address", address, "conditional store differs from reserved word address");
@@ -821,7 +842,7 @@ uint64_t GuestMemory::load_reserved_doubleword(uint64_t address) {
                           "reserved doubleword load does not support write-combined memory");
     StripeLock lock(address);
     const auto value = load<uint64_t>(address);
-    guest_reservation = {reservation_owner_, address, value, lock.version(), 8};
+    guest_thread_state.reservation = {reservation_owner_, address, value, lock.version(), 8};
     return value;
 }
 
@@ -833,7 +854,7 @@ bool GuestMemory::store_conditional_doubleword(uint64_t address, uint64_t value)
     if (intersects_write_combined(address, 8))
         throw RuntimeStop("memory-cache", address,
                           "conditional doubleword store does not support write-combined memory");
-    auto& reservation = guest_reservation;
+    auto& reservation = guest_thread_state.reservation;
     if (reservation.owner != reservation_owner_) return false;
     if (address != reservation.address)
         throw RuntimeStop("reservation-address", address,
@@ -979,6 +1000,12 @@ void GuestMemory::add_read_only_word(uint32_t address, std::function<uint32_t()>
 }
 
 uint64_t GuestMemory::read_scalar(uint64_t address, uint64_t size) const {
+    if (const volatile uint8_t* bytes = fast_read(address, size)) {
+        uint64_t value = 0;
+        for (uint64_t i = 0; i < size; ++i)
+            value = (value << 8) | bytes[i];
+        return value;
+    }
     // Validate the complete scalar before querying any computed value.
     check(address, size);
     uint64_t result = 0;

@@ -33,6 +33,13 @@ small hitches. Settings and runtime binary matched, but play duration and
 actions were not controlled, so this is not an average-FPS comparison. All 336
 recipes subsequently passed local Vulkan preparation with none skipped.
 
+The manifests now target shader ABI 10, which uses Vulkan buffer addresses
+without requiring 64-bit shader integers. Their ABI field and checksum were
+updated; shader identities, pipeline state records and coverage are unchanged
+(336 Vulkan and 280 D3D12 recipes). The record payloads were compared byte for
+byte with the ABI 9 manifests and validated with the runtime decoder. This
+migration does not add coverage or imply new target-device performance results.
+
 To update a list, use the matching backend and release shader pack, play the
 scenes to include, exit normally, then copy `pipeline-cache/<backend>.manifest`
 to `pipelines-<backend>.manifest` here. Validate a clean application-cache start

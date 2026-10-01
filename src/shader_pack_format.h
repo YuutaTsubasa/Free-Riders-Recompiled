@@ -6,7 +6,7 @@
 
 namespace sfr {
 // Keep in sync with scripts/shader_pack_format.py and the runtime cache key.
-inline constexpr uint32_t shader_abi_version = 9;
+inline constexpr uint32_t shader_abi_version = 10;
 inline constexpr size_t shader_pack_header_size = 16;
 inline uint32_t shader_pack_count(std::span<const uint8_t> bytes) {
     if (bytes.size() < shader_pack_header_size ||

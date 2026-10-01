@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
+#include <cstdlib>
 #include <fstream>
 #include <condition_variable>
 #include <exception>
@@ -250,6 +251,17 @@ std::vector<int> processors_by_speed(uint64_t allowed) {
 
 uint64_t NativeThread::set_guest_processor(uint32_t guest_cpu) {
     if (guest_cpu >= 6) throw RuntimeStop("thread-host", guest_cpu, "guest processor index must be below 6");
+#ifdef __ANDROID__
+    // Android's available CPU set can change while the app runs. Selecting
+    // one host core from a startup snapshot can strand a busy guest worker
+    // on a little core even after faster cores become available. Guest CPU
+    // identity and execution serialization live in GuestThreads/the guest
+    // scheduler; they do not require physical host affinity. Preserve the
+    // inherited mask and let Android place workers. Keep the old mapping as
+    // an explicit diagnostic control for matched performance comparisons.
+    const char* affinity = std::getenv("SFR_WORKER_AFFINITY");
+    if (!affinity || *affinity != '1') return affinity_mask();
+#endif
     static std::mutex order_lock;
     static uint64_t ordered_for = 0;
     static std::vector<int> ordered;

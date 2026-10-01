@@ -81,6 +81,43 @@ int main() {
                     require(scan.lowest == lowest && scan.highest == highest && scan.restart == cut,
                             "decode_indices reports the range and restarts of its indices");
                 }
+
+        // Exercise every lane that can end a SIMD batch, unsigned base
+        // wraparound, unaligned input and guards around the output.
+        for (const bool wide : {false, true})
+            for (const bool restart : {false, true})
+                for (uint32_t count : {0u, 1u, 3u, 4u, 7u, 8u, 9u, 15u, 16u, 17u, 33u, 65u, 257u})
+                    for (uint32_t base : {0u, 100u, 0xffff0000u, 0xfffffffdu})
+                        for (int cut_at = -2; cut_at < int(count); ++cut_at) {
+                            const uint32_t size = wide ? 4 : 2;
+                            const uint32_t sentinel = wide ? ~0u : 0xffffu;
+                            std::vector<uint8_t> storage(size_t(count) * size + 3);
+                            auto* bytes = storage.data() + 3;
+                            std::vector<uint32_t> expected(count), output(count + 2, 0xaabbccddu);
+                            sfr::IndexScan expected_scan;
+                            for (uint32_t i = 0; i < count; ++i) {
+                                uint32_t raw = (i * 2654435761u + 0xfffdu) & sentinel;
+                                if (cut_at == -2 || int(i) == cut_at) raw = sentinel;
+                                for (uint32_t b = 0; b < size; ++b)
+                                    bytes[i * size + b] = uint8_t(raw >> (8 * (size - 1 - b)));
+                                if (restart && raw == sentinel) {
+                                    expected[i] = sentinel;
+                                    expected_scan.restart = true;
+                                } else {
+                                    const uint32_t vertex = base + raw;
+                                    expected[i] = vertex;
+                                    expected_scan.lowest = (std::min)(expected_scan.lowest, vertex);
+                                    expected_scan.highest = (std::max)(expected_scan.highest, vertex);
+                                }
+                            }
+                            const auto actual = sfr::decode_indices(bytes, count, wide, base, restart, output.data() + 1);
+                            require(std::equal(expected.begin(), expected.end(), output.begin() + 1),
+                                    "SIMD/tail indices match scalar decoding including base wraparound");
+                            require(actual.lowest == expected_scan.lowest && actual.highest == expected_scan.highest &&
+                                    actual.restart == expected_scan.restart, "SIMD/tail range and restart match scalar");
+                            require(output.front() == 0xaabbccddu && output.back() == 0xaabbccddu,
+                                    "index decoder writes exactly count outputs");
+                        }
         // Tiling permutes the blocks of each 32x32-block tile within that tile.
         for (const uint32_t bytes : {4u, 8u, 16u}) {
             std::set<uint32_t> seen;
