@@ -503,6 +503,54 @@ static void partial_loads_check_exact_selected_ranges_before_provider_reads() {
     }
 }
 
+static void partial_stores_preserve_watches_and_pending_outputs() {
+    sfr::GuestMemory memory;
+    memory.map(0x160000, 0x1000);
+    memory.watch_writes(0x160000, 0x1000);
+    memory.enable_write_epochs();
+    const auto source = distinct_vector();
+    for (bool left : {false, true}) {
+        std::fill_n(memory.base() + 0x160000, 32, uint8_t{0xcc});
+        memory.take_written(0x160000, 32);
+        memory.advance_write_epoch();
+        const uint32_t address = 0x160007;
+        const auto store = [&] {
+            if (left) sfr::store_vector_left(memory, address, source);
+            else sfr::store_vector_right(memory, address, source);
+        };
+        const sfr::GuestMemory::Range range{left ? address : 0x160000u, left ? 9u : 7u};
+        auto lease = memory.pin_writes(std::span(&range, 1));
+        require_stop(store, "memory-pending-write", "partial stores reject overlapping pending output");
+        require(std::all_of(memory.base() + 0x160000, memory.base() + 0x160020,
+                           [](uint8_t byte) { return byte == 0xcc; }),
+                "pending-output rejection writes nothing");
+        lease.reset();
+        // A rejected checked write may already mark the watched page. Test
+        // the successful store's own notifications, independently of that.
+        memory.take_written(0x160000, 32);
+        memory.advance_write_epoch();
+        const auto epoch = memory.write_epoch();
+        store();
+        require(memory.take_written(0x160000, 32) && memory.written_since(0x160000, 32, epoch),
+                "partial stores retain dirty-page and epoch notifications");
+    }
+}
+
+static void partial_loads_preserve_short_logical_tails() {
+    // The selected prefix may be valid even when a whole aligned vector is
+    // not. Exercise every nonempty size with nonzero bytes in every lane.
+    for (uint32_t count = 1; count < 16; ++count) {
+        sfr::GuestMemory memory;
+        memory.map(0x150000, count);
+        for (uint32_t i = 0; i < count; ++i)
+            memory.store<uint8_t>(0x150000 + i, uint8_t(0x80 + i));
+        const auto value = sfr::load_vector_right(memory, 0x150000 + count);
+        for (uint32_t i = 0; i < 16; ++i)
+            require(value[i] == (i < count ? uint8_t(0x80 + count - i - 1) : 0),
+                    "partial right load accepts exactly its short logical prefix and zero fills the rest");
+    }
+}
+
 static void partial_load_edges_and_empty_right_preserve_reservations() {
     sfr::GuestMemory memory;
     memory.map(0, 0x1000);
@@ -560,7 +608,9 @@ int main() {
                           partial_loads_match_independent_architecture_slices_at_all_offsets,
                           paired_partial_loads_merge_to_one_unaligned_vector,
                           partial_loads_check_exact_selected_ranges_before_provider_reads,
-                          partial_load_edges_and_empty_right_preserve_reservations})
+                          partial_load_edges_and_empty_right_preserve_reservations,
+                          partial_loads_preserve_short_logical_tails,
+                          partial_stores_preserve_watches_and_pending_outputs})
             test();
         std::cout << "Vector memory checks passed\n";
         return 0;
