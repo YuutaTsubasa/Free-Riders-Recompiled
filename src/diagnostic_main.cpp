@@ -2980,16 +2980,25 @@ static void refresh_entry_observation() {
     guest_thread_state.entry.observed = guest_thread_state.entry.parallel || guest_thread_state.entry.watched;
 }
 
+static void observe_function_entry(PPCContext&, const char*, uint32_t) __attribute__((noinline));
+
 void enter_function_observed(PPCContext& ctx, const char* name, uint32_t address) {
-    if (guest_thread_state.entry.parallel) parallel_function_entry(ctx, address);
+    auto& entry = guest_thread_state.entry;
+    if (entry.parallel) parallel_function_entry(ctx, address);
     guest_checkpoint();
     // Cheap enough to keep either way: a stop still names the function it
     // happened in.
-    guest_thread_state.entry.current_function = name;
-    guest_thread_state.entry.current_address = address;
+    entry.current_function = name;
+    entry.current_address = address;
     // A guest playing beside the permit is here for parallel_function_entry
     // and nothing below.
-    if (!guest_thread_state.entry.watched) [[likely]] return;
+    if (!entry.watched) [[likely]] return;
+    observe_function_entry(ctx, name, address);
+}
+
+// Keep the audit-only stack frame and register spills out of every ordinary
+// parallel guest entry. This body still runs for exactly the same watched calls.
+static void observe_function_entry(PPCContext& ctx, const char* name, uint32_t address) {
     if (guest_reach && current_id != 1) {
         static thread_local std::unordered_set<uint32_t> reached;
         if (reached.insert(address).second)
