@@ -109,7 +109,7 @@ cbuffer PSConstants : register(b1, space4) { float4 psConstants[256]; };
 // Retain the VS signature order for D3D12 linkage even though position is unused.
 float4 shaderMain(float4 position : SV_Position, float red : TEXCOORD0) : SV_Target {
 #ifdef __spirv__
- float green = asfloat(vk::RawBufferLoad<uint>(g_PushConstants.PixelShaderConstants));
+ float green = asfloat(vk::RawBufferLoad<uint>(g_PushConstants.PixelShaderConstants + 0));
 #else
  float green = psConstants[0].x;
 #endif
@@ -206,7 +206,8 @@ cbuffer Shared : register(b2, space4) {
 };
 uint g_SpecConstants() { return 0; }
 #else
-#define textures0 vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants)
+// Match the pinned translator's explicit byte-offset form, including zero.
+#define textures0 vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 0)
 #define samplers0 vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 192)
 #endif
 #ifndef __spirv__
