@@ -1582,3 +1582,44 @@ pass; this is a long-session stability fix, not a measured frame-rate gain.
 The GP mission-2 retry stress stayed below the old quota (highest guest ID 41),
 so it does not attribute the reporter's GP crash to this defect. See
 [the investigation](issue-31-investigation.md) for reproduction and limits.
+
+### Guarded matrix reads: no demonstrated race improvement
+
+A private replacement of `82534038` preserved its scalar load/store order,
+floating-point operations, checkpoints and callback. Only aligned 4x4 source
+reads on a complete ordinary page, under non-detached guest execution, used
+a shared range check. All other accesses retained their original checks.
+The experiment passes the 140 independent contract cases plus 768 boundary,
+448 special-memory and eight real slow-save prologue-fault comparisons on
+Windows and Thor. These fixtures do not replace testing the actual game.
+
+The strict guard reduced standalone ARM64 call time by 4.81%, 11.90% and
+23.70% for one, four and 64 matrices. The unchanged 3x3 control varied by
+under 0.70%. This is not a frame-rate result: the original routine accounted
+for only 5.08% inclusive main-thread CPU in the earlier game profile.
+
+An original/candidate/original comparison then used the same private APK,
+Dolphin Resort Standard, 720p, normal elapsed race time, audio enabled and
+independent copies of the same save fixture. Screenshots aligned each sample
+to HUD seconds 20–80; measured HUD/wall-time anchor offsets differed by less
+than 0.08 seconds within each run. No drawing was skipped.
+
+| Run | Average FPS | Average frame | p95 frame | Draws/frame |
+|---|---:|---:|---:|---:|
+| Original A | 21.41 | 46.71 ms | 63.70 ms | 901.6 |
+| Guarded reads B | 21.81 | 45.85 ms | 61.10 ms | 869.6 |
+| Original A repeat | 22.02 | 45.41 ms | 61.19 ms | 863.9 |
+
+The candidate is within baseline variation. Opponent, item and course-position
+differences also change the draw workload. No whole-game speedup or stall
+reduction is established, so this replacement is **not adopted**. All three
+runs reached the 16200-present bound normally; these are sampled races, not
+three verified race completions. Each source save was unchanged and the exact
+ordinary v0.4.6 APK and normal launch settings were restored after each run.
+
+Private APK SHA-256:
+`8bc47978cab7668ab139705e803ed97959939d455e897b582717ea4e23d4b09f`.
+Reproducible comparison, screenshot anchors, library/source hashes and raw
+logs are retained in ignored `out/continuation-20261002/matrix-game` and the
+three `thor-matrix-*` directories. The separate renderer lifetime correction
+is present in both A and B, so it is not the variable tested here.
