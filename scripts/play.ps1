@@ -30,6 +30,8 @@ if (-not (Test-Path -LiteralPath $exe)) { throw "Build first: scripts\build_tool
 foreach ($path in 'out/recomp/image-loader', 'private/assets') {
     if (-not (Test-Path -LiteralPath (Join-Path $root $path))) { throw "Missing $path (see README)" }
 }
+# A benchmark kit keeps its own DXC next to the scripts
+if (-not $env:SFR_DXC_LIBRARY -and (Test-Path -LiteralPath (Join-Path $root 'dxc\dxcompiler.dll'))) { $env:SFR_DXC_LIBRARY = Join-Path $root 'dxc' }
 $env:SFR_CALL_BUDGET = '18446744073709551615'
 $env:SFR_WATCHDOG_SECONDS = '31536000'
 # Races render through the title's own surfaces; the native backend aliases
