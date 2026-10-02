@@ -18,7 +18,8 @@ its own.
   order.
 - A failure on the render thread is rethrown by the next `record_async` or
   `drain()` on the calling thread. The failed state remains until `flush()`
-  drains the queue, waits for the prior GPU submission and discards the partial
+  drains the queue, waits for prior GPU submissions (including independent
+  texture uploads) and discards the partial
   recording; reporting an error does not allow failed work to resume or submit.
 
 ## Switch
@@ -52,5 +53,7 @@ copied values across 6,000 queued records, and finish pending work during
 destruction. Injected callback failures cover both observation through `flush`
 and through the next enqueue. A deterministic pending Vulkan-fence query checks
 that failed cleanup waits for the previous GPU submission before owners can
-release its resources. Presentation and resolution tests pass on the local
+release its resources. A separate submission without a presentation frame also
+verifies that failed cleanup waits for independent upload work.
+Presentation and resolution tests pass on the local
 RTX 4090 using both D3D12 and Vulkan; Vulkan remains disabled by default.

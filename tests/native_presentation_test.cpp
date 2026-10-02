@@ -733,6 +733,44 @@ void enqueue_reported_failure_still_discards_the_partial_list() {
     require(cleanup_failed && submissions == 0, "observing the error must not permit the partial list to submit");
 }
 
+struct FenceWaitCounter {
+    inline static PFN_vkWaitForFences original;
+    inline static unsigned calls = 0;
+    static VKAPI_ATTR VkResult VKAPI_CALL wait(VkDevice device, uint32_t count, const VkFence* fences,
+                                              VkBool32 all, uint64_t timeout) {
+        ++calls;
+        return original(device, count, fences, all, timeout);
+    }
+    FenceWaitCounter() { original = vkWaitForFences; calls = 0; vkWaitForFences = wait; }
+    ~FenceWaitCounter() { vkWaitForFences = original; }
+};
+
+void failed_record_waits_for_independent_upload_submissions() {
+    if (d3d12()) return; // Observe a real queue fence through Vulkan's dispatch table.
+    ScopedEnvironment render_thread("SFR_RENDER_THREAD", "1");
+    sfr::NativeGraphics graphics;
+    graphics.initialize();
+    auto upload = graphics.queue().createCommandList();
+    auto fence = graphics.device().createCommandFence();
+    sfr::NativePresentation presentation(graphics, 19, 11);
+    upload->begin();
+    upload->end();
+    graphics.queue().executeCommandLists(upload.get(), fence.get());
+    // No presentation frame is in flight: an independent upload must still
+    // finish before the owner's command lists and staging buffers can die.
+    presentation.record_async([](plume::RenderCommandList&, uint64_t) {
+        throw std::runtime_error("independent upload cleanup");
+    });
+    unsigned waits;
+    {
+        FenceWaitCounter counter;
+        require(rejects_with<std::runtime_error>([&] { presentation.flush(); }), "failed flush reports the record error");
+        waits = FenceWaitCounter::calls;
+    }
+    graphics.queue().waitForCommandFence(fence.get());
+    require(waits != 0, "failed flush waits for queue work even without a prior presentation frame");
+}
+
 void rectangle_clear_preserves_outside_pixels() {
     sfr::NativeGraphics graphics;
     graphics.initialize();
@@ -898,6 +936,7 @@ int main() {
         async_records_keep_the_order_of_everything_asked_for();
         failed_async_record_waits_for_prior_gpu_work();
         enqueue_reported_failure_still_discards_the_partial_list();
+        failed_record_waits_for_independent_upload_submissions();
         rectangle_clear_preserves_outside_pixels();
         scaled_clear_boundaries_and_loading_area();
         invalid_clear_arguments_do_not_mutate_color();

@@ -587,6 +587,9 @@ struct NativePresentation::Impl {
             // Discard this partial list rather than submitting failed work.
             const auto error = std::current_exception();
             wait_in_flight();
+            // Legacy texture uploads can follow the presentation fence or run
+            // without a presentation frame. Complete those submissions too.
+            graphics->wait_idle();
             if (open) {
                 command_list->end();
                 open = false;
