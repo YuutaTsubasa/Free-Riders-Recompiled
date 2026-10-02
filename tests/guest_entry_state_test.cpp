@@ -1,13 +1,23 @@
 #include "diagnostic_hooks.h"
+#include "guest_checkpoint_interval.h"
+#include "guest_execution.h"
 #include <atomic>
+#include <chrono>
 #include <exception>
+#include <future>
 #include <iostream>
 #include <stdexcept>
 #include <thread>
 
 struct PPCContext {};
 namespace sfr {
-void guest_checkpoint_permit() { guest_thread_state.entry.checkpoint_countdown = 31; }
+thread_local uint32_t test_checkpoint_interval = 32, test_checkpoint_calls = 0;
+thread_local GuestExecution::Lease* test_checkpoint_lease = nullptr;
+void guest_checkpoint_permit() {
+    guest_thread_state.entry.checkpoint_countdown = test_checkpoint_interval - 1;
+    ++test_checkpoint_calls;
+    if (test_checkpoint_lease) test_checkpoint_lease->checkpoint();
+}
 void enter_function_observed(PPCContext&, const char* name, uint32_t address) {
     guest_thread_state.entry.observed = false;
     guest_thread_state.entry.current_function = name;
@@ -20,8 +30,95 @@ static void require(bool ok, const char* message) {
     if (!ok) throw std::runtime_error(message);
 }
 
+static void checkpoint_interval_contract() {
+#ifdef _WIN32
+    constexpr uint32_t baseline = 256;
+#else
+    constexpr uint32_t baseline = 32;
+#endif
+    require(sfr::guest_checkpoint_interval(nullptr) == baseline, "platform default matches measured support");
+    require(sfr::guest_checkpoint_interval("256") == 256, "comparison interval is selectable");
+    require(sfr::guest_checkpoint_interval("1") == 1 && sfr::guest_checkpoint_interval("4096") == 4096,
+            "supported interval bounds are inclusive");
+    for (const char* invalid : {"", "0", "-1", "+256", "256junk", " 256", "4097", "1000000", "4294967296"})
+        require(sfr::guest_checkpoint_interval(invalid) == baseline, "invalid intervals safely retain the platform baseline");
+    for (const char* setting : {"1", "32", "64", "128", "256", "4096"}) {
+        const auto interval = sfr::guest_checkpoint_interval(setting);
+        sfr::test_checkpoint_interval = interval;
+        sfr::test_checkpoint_calls = 0;
+        sfr::guest_thread_state.entry = {};
+        sfr::guest_thread_state.entry.observed = false;
+        PPCContext context;
+        for (uint32_t i=0; i<3*interval; ++i) {
+            if (i%2) sfr::guest_checkpoint();
+            else sfr::enter_function(context, "cadence", 0x82000000);
+        }
+        require(sfr::test_checkpoint_calls == 3 && sfr::guest_thread_state.entry.checkpoint_countdown == 0,
+                "function entries and loop checkpoints share the exact interval");
+        sfr::GuestExecution gate;
+        auto lease = gate.enter(1);
+        sfr::test_checkpoint_lease = lease.get();
+        struct ResetLease { ~ResetLease() { sfr::test_checkpoint_lease = nullptr; } } reset;
+        sfr::guest_checkpoint();
+        gate.stop();
+        uint32_t calls = 0;
+        bool cancelled = false;
+        for (; calls<interval; ++calls) {
+            try {
+                if (calls%2) sfr::guest_checkpoint();
+                else sfr::enter_function(context, "cancel", 0x82000004);
+            } catch (const sfr::GuestExecutionCancelled&) { cancelled = true; ++calls; break; }
+        }
+        require(cancelled && calls == interval, "stopping is observed by the next permit call, within one entry interval");
+    }
+    sfr::test_checkpoint_interval = 32;
+    sfr::test_checkpoint_calls = 0;
+    sfr::guest_thread_state.entry = {};
+}
+
+static void urgent_handoff_at_next_entry_interval() {
+    for (const auto interval : {1u, 32u, 256u, 4096u}) {
+        sfr::GuestExecution gate;
+        gate.set_scheduling_quantum(std::chrono::hours(1));
+        gate.set_urgent(3, true);
+        auto owner = gate.enter(1);
+        sfr::test_checkpoint_interval = interval;
+        sfr::test_checkpoint_calls = 0;
+        sfr::guest_thread_state.entry = {};
+        sfr::guest_thread_state.entry.observed = false;
+        sfr::test_checkpoint_lease = owner.get();
+        struct ResetLease { ~ResetLease() { sfr::test_checkpoint_lease = nullptr; } } reset;
+        sfr::guest_checkpoint();
+
+        std::atomic<bool> ran = false;
+        auto urgent = std::async(std::launch::async, [&] {
+            auto lease = gate.enter(3);
+            ran.store(true);
+        });
+        // Stop before the future's destructor waits if an assertion fails.
+        struct StopOnExit { sfr::GuestExecution& gate; ~StopOnExit() { gate.stop(); } } stop{gate};
+        gate.wait_until_ready(3);
+        PPCContext context;
+        for (uint32_t i = 1; i < interval; ++i) {
+            if (i % 2) sfr::guest_checkpoint();
+            else sfr::enter_function(context, "urgent-wait", 0x82000008);
+        }
+        require(!ran.load() && sfr::test_checkpoint_calls == 1,
+                "inline entries retain the permit until the configured boundary");
+        sfr::guest_checkpoint();
+        require(ran.load() && sfr::test_checkpoint_calls == 2,
+                "urgent guest runs at the next permit call despite an unexpired quantum");
+        urgent.get();
+    }
+    sfr::test_checkpoint_interval = 32;
+    sfr::test_checkpoint_calls = 0;
+    sfr::guest_thread_state.entry = {};
+}
+
 int main() {
     try {
+        checkpoint_interval_contract();
+        urgent_handoff_at_next_entry_interval();
         sfr::GuestMemory memory;
         memory.map(0x10000, 0x1000);
         memory.store<uint32_t>(0x10000, 11);

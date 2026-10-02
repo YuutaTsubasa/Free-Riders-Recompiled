@@ -31,12 +31,21 @@ Independent review found no remaining concrete blockers after fixes.
 
 ## 2. Checkpoint interval
 
-- [ ] Import ac62398 separately on the updated main, retain original author.
-- [ ] Carry forward strict parsing and real scheduler/entry tests already
+- [x] Import ac62398 separately, retain original author; publish after PR #34.
+- [x] Carry forward strict parsing and real scheduler/entry tests already
       validated in camera-debug; consider measured Windows256/other32 default.
-- [ ] Validate current code, cancellation, urgent handoff, platform defaults;
+- [x] Validate current code, cancellation, urgent handoff, platform defaults;
       use prior recorded throughput/input/audio evidence without repeating it.
 - [ ] Review, create/attach separate PR and merge after checks.
+
+Checkpoint integration: Windows default 256, other platforms 32; accepted
+overrides 1..4096. Platform-default regression failed before the change and
+passed afterward. Real entry/cancellation/urgent tests and all 18 scheduler
+groups passed. Changed native units compiled/linked; a separate 242.25-second
+D3D12 smoke logged interval 256, reached the race, and ended on its configured
+limit with normal time/audio/full drawing. Screenshot verified. Independent
+review found no concrete blocker. Existing paired measurements are summarized
+with their limitations in docs/checkpoint-interval.md.
 
 ## 3. Render thread
 
