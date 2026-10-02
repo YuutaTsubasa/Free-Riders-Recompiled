@@ -742,3 +742,21 @@ This demonstrates a resource-lifetime defect, not the cause of the reporter's
 Grand Prix crashes or bright corners. Reporter logs/screenshots are still needed
 to connect those symptoms to a specific fault. No new release is implied by this
 investigation entry.
+
+The corrected private Windows build subsequently completed Frozen Forest
+Standard and Dolphin Resort Standard in one Vulkan process, with post-race
+Replay screens at presents 34800 and 67800. It ended at its 80000-present bound
+after 820.641 seconds with the source save unchanged. This used fixed-one-frame
+functional timing, so it is neither a performance measurement nor Grand Prix
+progression coverage.
+
+The matching private Android build completed Dolphin Resort Standard under
+normal elapsed-time simulation on AYN Thor, with Replay at present 21600 and a
+bounded exit after 633.609 seconds. The source fixture remained unchanged. Its
+instrumented 13200–17400 window averaged 46.274 ms per present, with a 91.106 ms
+maximum. Course positions and draw counts differ from the earlier baseline;
+this does not establish an improvement or regression. The exact ordinary
+v0.4.6 Android 10+ APK was restored and checked by SHA-256, and `debug.env` was
+removed. Visual verification, provenance, logs and cleanup records are in
+`out/continuation-20261002/resolve-two-courses-vulkan` and
+`out/continuation-20261002/thor-resolve-dolphin`.
