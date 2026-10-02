@@ -8,7 +8,7 @@ its own.
 - The body is copied into a fixed-size slot (256 bytes) of a single-producer,
   single-consumer queue of 4096 slots, together with the viewport, scissor and
   `list_generation` the caller saw. It must be trivially copyable and capture
-  values, never references to the caller's locals.
+  values, never references to the caller's locals. Alignment cannot exceed 16 bytes.
 - Everything else that touches the open command list (`record`, `clear`,
   `draw_player_model`, `present`, `flush`, beginning a list, the work before a
   submission including `before_submit` callbacks) first waits for the queue to
@@ -17,7 +17,9 @@ its own.
   creation stay on the calling thread. The GPU sees the same commands in the same
   order.
 - A failure on the render thread is rethrown by the next `record_async` or
-  `drain()` on the calling thread.
+  `drain()` on the calling thread. The failed state remains until `flush()`
+  drains the queue, waits for the prior GPU submission and discards the partial
+  recording; reporting an error does not allow failed work to resume or submit.
 
 ## Switch
 
@@ -33,7 +35,9 @@ below on a software driver, never on a device.
 | i5-3470 / RX 480 | median 0.88 (5 of 5 clean rounds slower) | 5.3 / 7.4 |
 | Ryzen AI MAX+ 395 | median 1.00 (no effect) | 1.6 / 1.8 |
 
-It helps a slow CPU and costs nothing on a fast one. Not re-measured on v0.4.6.
+These reported v0.4.5 results suggest a benefit on that slower CPU and no clear
+effect on the other host. They do not establish a gain or zero overhead on all
+devices or newer runtime versions.
 
 ## Test
 
@@ -41,3 +45,11 @@ It helps a slow CPU and costs nothing on a fast one. Not re-measured on v0.4.6.
 `tests/native_presentation_test.cpp` forces the thread on, then alternates
 `clear`, an asynchronous clear and, every other round, another `clear`, reading
 the colour back: the last command asked for must be the one the GPU holds.
+
+Additional tests verify that callbacks actually run on the worker, preserve
+copied values across 6,000 queued records, and finish pending work during
+destruction. Injected callback failures cover both observation through `flush`
+and through the next enqueue. A deterministic pending Vulkan-fence query checks
+that failed cleanup waits for the previous GPU submission before owners can
+release its resources. Presentation and resolution tests pass on the local
+RTX 4090 using both D3D12 and Vulkan; Vulkan remains disabled by default.

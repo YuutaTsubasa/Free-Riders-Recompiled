@@ -512,8 +512,9 @@ struct NativePresentation::Impl {
         std::exception_ptr error;
         {
             std::lock_guard lock(queue_mutex);
-            error = std::exchange(worker_error, nullptr);
-            worker_failed.store(false, std::memory_order_release);
+            // Reporting an error does not make a partially recorded list safe.
+            // Keep skipping queued work until flush drains and discards it.
+            error = worker_error;
         }
         if (error) std::rethrow_exception(error);
     }
@@ -579,7 +580,24 @@ struct NativePresentation::Impl {
         open = true;
     }
     void flush() {
-        drain();
+        try { drain(); }
+        catch (...) {
+            // Resource owners call flush during destruction. A failed record
+            // must not bypass completion of the previous pipelined frame.
+            // Discard this partial list rather than submitting failed work.
+            const auto error = std::current_exception();
+            wait_in_flight();
+            if (open) {
+                command_list->end();
+                open = false;
+            }
+            {
+                std::lock_guard lock(queue_mutex);
+                worker_error = nullptr;
+                worker_failed.store(false, std::memory_order_release);
+            }
+            std::rethrow_exception(error);
+        }
         if (open) {
             command_list->end();
             execute();

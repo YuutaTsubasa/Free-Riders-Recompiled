@@ -26,11 +26,13 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -612,6 +614,42 @@ void full_color_clears_reach_gpu_memory() {
 // Draws recorded on the render thread land in the list in the order they were
 // asked for, between the work the caller does itself (clear, readback).
 // SFR_RENDER_THREAD=1 forces the thread on whatever backend the test runs.
+void async_record_policy_and_queue_lifetime() {
+    sfr::NativeGraphics graphics;
+    graphics.initialize();
+    const auto caller = std::this_thread::get_id();
+    ScopedEnvironment render_thread("SFR_RENDER_THREAD", "1");
+    {
+        sfr::NativePresentation presentation(graphics, 19, 11);
+        std::thread::id recorder;
+        presentation.record_async([result = &recorder](plume::RenderCommandList&, uint64_t) {
+            *result = std::this_thread::get_id();
+        });
+        presentation.flush();
+        require(recorder != caller, "asynchronous coverage actually runs on the render worker");
+    }
+    std::vector<uint32_t> order;
+    order.reserve(6000);
+    {
+        sfr::NativePresentation presentation(graphics, 19, 11);
+        // More than queue capacity, followed by destruction without explicit
+        // flush: copied payloads and their owners must outlive pending work.
+        for (uint32_t i = 0; i < 6000; ++i)
+            presentation.record_async([result = &order, i](plume::RenderCommandList&, uint64_t) {
+                result->push_back(i);
+            });
+    }
+    require(order.size() == 6000, "destruction drains all pending records");
+    for (uint32_t i = 0; i < order.size(); ++i)
+        require(order[i] == i, "queue rollover preserves payloads and submission order");
+    sfr::NativePresentation presentation(graphics, 19, 11);
+    presentation.record_async([](plume::RenderCommandList&, uint64_t) {
+        throw std::runtime_error("record failure");
+    });
+    require(rejects_with<std::runtime_error>([&] { presentation.flush(); }),
+            "worker failures reach the caller without deadlocking teardown");
+}
+
 void async_records_keep_the_order_of_everything_asked_for() {
     ScopedEnvironment render_thread("SFR_RENDER_THREAD", "1");
     sfr::NativeGraphics graphics;
@@ -640,6 +678,59 @@ void async_records_keep_the_order_of_everything_asked_for() {
     }
     paint(1.0f, 1.0f, 0.0f);
     require_pixels(presentation.readback_color(), 19, {0, 255, 255, 255});
+}
+
+void failed_async_record_waits_for_prior_gpu_work() {
+    if (d3d12()) return; // Vulkan lets the test force a deterministic pending query.
+    ScopedEnvironment render_thread("SFR_RENDER_THREAD", "1");
+    sfr::NativeGraphics graphics;
+    graphics.initialize();
+    sfr::NativePresentation presentation(graphics, 19, 11);
+    sfr::NativeClear clear{};
+    clear.color = true;
+    presentation.clear(clear);
+    presentation.present();
+    struct Reset {
+        PFN_vkGetFenceStatus query = vkGetFenceStatus;
+        ~Reset() { vkGetFenceStatus = query; sfr::NativePresentation::set_gpu_wait({}); }
+    } reset;
+    unsigned waited = 0;
+    vkGetFenceStatus = report_pending_fence;
+    sfr::NativePresentation::set_gpu_wait([&](const auto& wait) { ++waited; wait(); });
+    presentation.record_async([](plume::RenderCommandList&, uint64_t) {
+        throw std::runtime_error("injected recording failure");
+    });
+    require(rejects_with<std::runtime_error>([&] { presentation.flush(); }), "recording failure is reported");
+    require(waited == 1, "failed flush waits for the prior frame before resource owners can die");
+    vkGetFenceStatus = reset.query;
+}
+
+void enqueue_reported_failure_still_discards_the_partial_list() {
+    ScopedEnvironment render_thread("SFR_RENDER_THREAD", "1");
+    sfr::NativeGraphics graphics;
+    graphics.initialize();
+    sfr::NativePresentation presentation(graphics, 19, 11);
+    std::promise<void> started;
+    auto ready = started.get_future();
+    presentation.record_async([started = &started](plume::RenderCommandList&, uint64_t) {
+        started->set_value();
+        throw std::runtime_error("enqueue-visible failure");
+    });
+    ready.wait();
+    bool observed = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!observed && std::chrono::steady_clock::now() < deadline) {
+        observed = rejects_with<std::runtime_error>([&] {
+            presentation.record_async([](plume::RenderCommandList&, uint64_t) {});
+        });
+        std::this_thread::yield();
+    }
+    require(observed, "enqueue surfaces worker failure");
+    unsigned submissions = 0;
+    presentation.before_submit([&] { ++submissions; });
+    const bool cleanup_failed = rejects_with<std::runtime_error>([&] { presentation.flush(); });
+    presentation.clear_before_submit();
+    require(cleanup_failed && submissions == 0, "observing the error must not permit the partial list to submit");
 }
 
 void rectangle_clear_preserves_outside_pixels() {
@@ -803,7 +894,10 @@ int main() {
         invalid_dimensions_are_rejected_before_a_window_exists();
         creates_hidden_fixed_size_window_and_native_resources();
         full_color_clears_reach_gpu_memory();
+        async_record_policy_and_queue_lifetime();
         async_records_keep_the_order_of_everything_asked_for();
+        failed_async_record_waits_for_prior_gpu_work();
+        enqueue_reported_failure_still_discards_the_partial_list();
         rectangle_clear_preserves_outside_pixels();
         scaled_clear_boundaries_and_loading_area();
         invalid_clear_arguments_do_not_mutate_color();

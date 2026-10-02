@@ -81,7 +81,7 @@ public:
     static constexpr size_t record_payload_bytes = 256;
     template <class Body>
     void record_async(const Body& body) {
-        static_assert(std::is_trivially_copyable_v<Body> && sizeof(Body) <= record_payload_bytes,
+        static_assert(std::is_trivially_copyable_v<Body> && sizeof(Body) <= record_payload_bytes && alignof(Body) <= 16,
                       "an asynchronous record body is copied into a fixed-size queue slot");
         record_async_raw([](const void* payload, plume::RenderCommandList& list, uint64_t generation) {
             (*static_cast<const Body*>(payload))(list, generation);
