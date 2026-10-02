@@ -1623,3 +1623,38 @@ Reproducible comparison, screenshot anchors, library/source hashes and raw
 logs are retained in ignored `out/continuation-20261002/matrix-game` and the
 three `thor-matrix-*` directories. The separate renderer lifetime correction
 is present in both A and B, so it is not the variable tested here.
+
+### Android performance-hint experiment (not adopted)
+
+A private Thor / API 33 platform probe could create a Performance Hint session
+with a preferred update period of 16,666,666 ns. GameManager returned UNSUPPORTED
+at probe startup both with and without the manifest game category. Neither
+observation establishes a performance benefit or permanent device capability.
+
+A separate same-APK off/on/off comparison reported measured main-thread work
+to Android, using a 16.67 ms target. The work interval excluded GPU presentation,
+frame pacing and screenshots. Only API 33 functions resolved dynamically were
+used; the API 29 library acquired no hard Performance Hint imports. The normal
+clock, audio, rendering quality, affinity and power-mode settings were retained.
+
+| Main-thread hints | FPS | Mean frame | p95 frame | Draws/frame |
+| --- | ---: | ---: | ---: | ---: |
+| Off A1 | 21.88 | 45.71 ms | 62.73 ms | 892.1 |
+| On B | 21.64 | 46.21 ms | 61.95 ms | 912.6 |
+| Off A2 | 21.44 | 46.65 ms | 61.42 ms | 922.7 |
+
+Screenshots align Dolphin Resort Standard at HUD 20–80 seconds, with clock
+anchor spread below 0.07 s in each run. Draw workloads differ, and the candidate
+falls inside baseline variation: no FPS improvement is established. All 14,999
+hint reports succeeded, the session closed, and frame-boundary CPU samples
+still rarely landed on CPU 7. API success alone is insufficient reason to
+adopt the integration.
+Battery temperatures were 34–35 C; no usable thermal-HAL readings were available.
+
+All three runs reached the 15000-present limit with independent saves unchanged;
+lap progression is verified, race completion is not. The exact normal v0.4.6 APK
+was restored and verified after each run, with no debug.env or game process left.
+No production hint or manifest change was adopted. Private provenance, logs,
+HUD anchors and comparison are under `out/continuation-20261002/hint-game` and
+`thor-hint-*`. The APK SHA256 is
+`3b205f498b90fd9c0cd0bbcc58d5b034c18ff33a42973a23e6c02f6be5486516`.
