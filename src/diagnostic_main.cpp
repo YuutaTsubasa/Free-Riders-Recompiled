@@ -1,4 +1,5 @@
 #include "diagnostic_hooks.h"
+#include "guest_checkpoint_interval.h"
 #include "ppc_recomp_shared.h"
 #include "xex_module.h"
 #include "virtual_memory.h"
@@ -518,7 +519,15 @@ static std::string guest_back_chain(uint32_t frame) {
 }
 
 void guest_checkpoint_permit() {
-    guest_thread_state.entry.checkpoint_countdown = 31;
+    // The ordinary quantum clock is sampled every 64 permit calls; cancellation
+    // and urgent waiters are checked on each call. Entry counts are not a fixed
+    // wall-clock latency bound. Reservations retain their existing semantics.
+    static const uint32_t interval = [] {
+        const auto value = guest_checkpoint_interval(std::getenv("SFR_CHECKPOINT_INTERVAL"));
+        std::cerr << "GUEST_CHECKPOINT interval=" << value << '\n';
+        return value;
+    }();
+    guest_thread_state.entry.checkpoint_countdown = interval - 1;
     if (!execution_permit) throw std::logic_error("guest instruction without execution permit");
     // Validates ownership and cancellation before shared memory access, and
     // hands off only outside a reservation.
