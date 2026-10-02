@@ -1905,3 +1905,37 @@ battery temperature was 35C, which is not a substitute for SoC temperature.
 `issue33/compare-checkpoint.py` reproduces the measurements and records log/image
 hashes in `checkpoint-comparison.json`. Default 32 remains on all platforms
 pending a current-version Windows throughput comparison and further device evidence.
+
+The current-version Windows comparison is now available on an i9-14900KF /
+RTX4090 (D3D12,720p,balanced power plan,driver596.49). One private executable
+preserved the known 60-FPS menu script through present13200, then removed the
+host cap for exactly120 wall seconds. Normal elapsed race/UI time and audio
+remained enabled; every required draw was retained. Source, ordinary object and
+executable hashes were unchanged by the private build. All three independent
+save/cache runs stopped at their expected bound and preserved the source fixture.
+
+Matched HUD seconds45–80, with frame instrumentation enabled throughout:
+
+| Checkpoint interval | FPS | P95 frame time | Draws/frame |
+| --- | ---: | ---: | ---: |
+| 32 before | 80.931 | 17.188 ms | 840.6 |
+| 256 | 81.305 | 16.215 ms | 902.4 |
+| 32 after | 75.165 | 17.559 ms | 917.1 |
+
+The candidate is only0.46% faster than the first baseline and8.17% faster than
+the last, while the baselines differ by7.67%. Different autonomous trajectories
+and draw workloads remain confounders. One sequence does not establish the
+report's6–8% benefit on this current build/host or justify changing the default.
+It does establish a usable uncapped measurement path without speeding up the
+game: HUD anchor offsets agree within0.025s, selected frames have zero pacing
+wait, no clock clamps and no frames over50ms. XAudio2 submission cadence stays
+187.46–187.52 blocks/s, consistent with256 samples at48kHz; this does not verify
+audible quality or playback underruns. These are partial races, not finishes.
+
+The private methodology, source diff, source/executable hashes, logs and six
+inspected screenshot anchors are under ignored
+`out/continuation-20261002/issue33/windows-throughput-*`.
+`compare-windows-throughput.py` reproduces `windows-throughput-comparison.json`.
+Further work needs more comparable scene workloads and additional paired runs
+or an available slower Windows machine; an affinity-limited host could be a
+stress comparison, but must not be represented as an actual i5/Ally result.

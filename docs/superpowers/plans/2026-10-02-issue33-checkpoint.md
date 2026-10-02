@@ -34,10 +34,10 @@ cancellation and urgent handoff; entry counts are not wall-clock guarantees.
 - [x] Decide whether the device evidence exceeds baseline variation; otherwise
       keep the experimental override and default 32. Do not infer an Android
       result from the Windows report or a gain from a 60-FPS-capped desktop run.
-- [ ] For Windows throughput, adapt/review elapsed-time menu pacing separately
+- [x] For Windows throughput, adapt/review elapsed-time menu pacing separately
       before an uncapped A/B run. Preserve audio, guest time and save isolation.
       Do not execute the fork harness's shared-cache cleanup unreviewed.
-- [ ] Update performance documentation and continuation handoff. Local commit
+- [x] Update performance documentation and continuation handoff. Local commit
       only for verified work, credit Issue #33 / knuckleslee's measurements.
 
 Evidence: ignored `out/continuation-20261002/issue33`,
@@ -49,5 +49,10 @@ APK after every run and verifies its hash. Ordinary settings are never rewritten
 Thor result: 20.249/23.681/23.345 FPS, but draw workloads1517/950/866 differ.
 Candidate versus later baseline+1.44%, baseline variation15.3%; no reproducible
 Android benefit established. All restoration checks pass. Default32 retained.
-Windows current-version uncapped measurement remains pending; no blanket gain
-or completed performance optimization claimed.
+Windows uncapped measurement is complete using a private cap60 menu path until
+13200p, then120seconds uncapped with normal guest time/audio. Three runs80.931/
+81.305/75.165FPS, draws841/902/917, baselinevariation7.67%; no repeatablegain
+established. HUD and audio-submission timing verified, allownedprocessesended,
+sourcefixture/normaloutputs/settingsunchanged. This scoped measurement pass is
+complete; productiondefault32 remains. Additional paired/comparable-workload or
+slower-host validation is follow-up, not a demonstrated performance fix.
