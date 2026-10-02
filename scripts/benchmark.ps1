@@ -26,6 +26,7 @@ param(
     [int]$TimeoutMinutes = 25,        # a run that takes longer is stopped
     [int]$ScreenshotEvery = 0,         # a screenshot every N presents in every run (a diagnostic: it slows the run)
     [switch]$NoWarmup,                # the first run fills the shader caches
+    [switch]$FixedOrder,              # the settings in the same order every round (the default turns the order each round)
     [switch]$SkipBuildCheck,          # a copied folder (no git): its files' times say nothing about the build
     [switch]$Capped,                  # 60 fps as when playing, not as fast as it goes
     [switch]$ColdPipelines,           # every run starts without pipeline-cache: a new player's first race
@@ -101,6 +102,8 @@ $settings = @{
     # and sfr_cpu_diagnostic_b.exe. SFR_EXE names the file and is not passed on to the game.
     'exe-a'        = @{ SFR_EXE = 'sfr_cpu_diagnostic_a.exe' }
     'exe-b'        = @{ SFR_EXE = 'sfr_cpu_diagnostic_b.exe' }
+    # the same file as exe-b under another name: a control that shows what comparing a program with itself gives
+    'exe-b-again'  = @{ SFR_EXE = 'sfr_cpu_diagnostic_b.exe' }
     # samples the main thread every millisecond during the race (from present
     # 12200); profile.md names the functions (scripts/profile_summary.py)
     'profile'      = @{ SFR_MAIN_PROFILE = '1'; SFR_PROFILE_AFTER = '12200' }
@@ -115,6 +118,19 @@ foreach ($name in $Configs) {
 foreach ($name in $Configs) {
     if ($settings[$name].ContainsKey('SFR_EXE') -and -not (Test-Path -LiteralPath (Join-Path $host_dir $settings[$name]['SFR_EXE']))) {
         throw "Setting '$name' needs $($settings[$name]['SFR_EXE']) in $host_dir (copy that build's sfr_cpu_diagnostic.exe to it)"
+    }
+}
+
+# Two different executables must differ: copying the same build under both names compares
+# a program with itself (a whole benchmark wasted before anyone notices).
+$exeFiles = @{}
+foreach ($name in $Configs) { if ($settings[$name].ContainsKey('SFR_EXE')) { $exeFiles[$settings[$name]['SFR_EXE']] = $true } }
+if ($exeFiles.Count -ge 2) {
+    $seen = @{}
+    foreach ($file in $exeFiles.Keys) {
+        $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $host_dir $file)).Hash
+        if ($seen.ContainsKey($hash)) { throw "$file and $($seen[$hash]) are the same program (same SHA-256): build the second one before copying it" }
+        $seen[$hash] = $file
     }
 }
 
@@ -189,19 +205,27 @@ Write-Output "PC: $power, power plan '$plan', $idle% busy before the start"
 @("commit=$commit", "generated=$generated", "model=$model", "cpu=$cpu", "gpu=$gpu", "driver=$driver", "power=$power plan=$plan idle_cpu_percent=$idle",
   "cold_pipelines=$([bool]$ColdPipelines)", "os=$([Environment]::OSVersion.VersionString)",
   "configs=$($Configs -join ',') repeats=$Repeats present_limit=$PresentLimit stretch=$([bool]$Stretch) capped=$([bool]$Capped)",
-  "say=$Say") | Set-Content -LiteralPath (Join-Path $Out 'info.txt') -Encoding UTF8
+  "say=$Say", "order=$(if ($FixedOrder) { 'fixed' } else { 'turning' })") | Set-Content -LiteralPath (Join-Path $Out 'info.txt') -Encoding UTF8
 # The executables an exe-a / exe-b comparison ran: which file, how big, when it was built.
 foreach ($name in $Configs) {
     if ($settings[$name].ContainsKey('SFR_EXE')) {
         $file = Get-Item -LiteralPath (Join-Path $host_dir $settings[$name]['SFR_EXE'])
-        Add-Content -LiteralPath (Join-Path $Out 'info.txt') -Encoding UTF8 -Value "$name=$($file.Name) bytes=$($file.Length) built=$($file.LastWriteTime.ToString('s'))"
+        Add-Content -LiteralPath (Join-Path $Out 'info.txt') -Encoding UTF8 -Value "$name=$($file.Name) bytes=$($file.Length) built=$($file.LastWriteTime.ToString('s')) sha256=$((Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash)"
     }
 }
 
 
 $runs = New-Object System.Collections.Generic.List[object]
 if (-not $NoWarmup) { $runs.Add(@('warmup', 1)) }
-for ($r = 1; $r -le $Repeats; ++$r) { foreach ($name in $Configs) { $runs.Add(@($name, $r)) } }
+# The order turns by one place each round (a b c, then b c a, then c a b), so no setting is
+# always the first or the last of its round: a run that comes later in a round was measured
+# slower than the same program earlier in it (2.4% on one PC, same executable twice), and
+# with a fixed order that would be charged to the setting that happens to come later.
+for ($r = 1; $r -le $Repeats; ++$r) {
+    $shift = if ($FixedOrder) { 0 } else { ($r - 1) % $Configs.Count }
+    $order = if ($shift) { @($Configs | Select-Object -Skip $shift) + @($Configs | Select-Object -First $shift) } else { @($Configs) }
+    foreach ($name in $order) { $runs.Add(@($name, $r)) }
+}
 
 function Start-Run([string]$name, [int]$repeat) {
     foreach ($key in $cleared) { Remove-Item "Env:$key" -ErrorAction SilentlyContinue }

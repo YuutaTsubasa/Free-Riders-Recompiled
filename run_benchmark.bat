@@ -3,6 +3,7 @@ rem Runs the benchmark on this PC and leaves a copy that is safe to send to othe
 rem   run_benchmark.bat speed        baseline against the polling it replaced for suspended guests, 6 rounds
 rem   run_benchmark.bat pipelines    a new player first race, with and without the prepared pipelines
 rem   run_benchmark.bat exe          two builds, sfr_cpu_diagnostic_a.exe against _b.exe, in the same rounds
+rem   run_benchmark.bat ctrl         a control: the same build twice, to see what the method says about no difference
 rem   run_benchmark.bat speed 8      the same with 8 rounds
 rem   run_benchmark.bat author       the original's own unconfirmed switches: constant upload reuse, priority, host timing
 rem   run_benchmark.bat speed 2 nostretch   the menu words by presents alone (cannot finish on a fast PC)
@@ -18,6 +19,7 @@ set EXTRA=
 if "%REPEATS%"=="" set REPEATS=6
 if /i "%MODE%"=="author" set CONFIGS=baseline,constant-reuse,priority,no-host-timing
 if /i "%MODE%"=="exe" set CONFIGS=exe-a,exe-b
+if /i "%MODE%"=="ctrl" set CONFIGS=exe-b,exe-b-again
 if /i "%MODE%"=="pipelines" (
     set CONFIGS=baseline,no-prewarm
     set EXTRA=-ColdPipelines

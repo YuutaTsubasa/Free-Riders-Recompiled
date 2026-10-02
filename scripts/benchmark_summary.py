@@ -205,8 +205,8 @@ def valid_runs(rows):
     return good, problems
 
 
-def compare(rows):
-    """Each setting against baseline: the median run, then round by round.
+def compare(rows, reference_name=None):
+    """Each setting against baseline (or --reference, or exe-a when there is no baseline): the median run, then round by round.
 
     The settings take turns (benchmark.ps1), so run n of each belongs to the same
     stretch of the PC's day. The paired ratios are what says whether a setting
@@ -224,22 +224,26 @@ def compare(rows):
         lines += ['**以下幾趟不納入比較：**'] + [f'- {p}' for p in problems] + ['']
     median = {config: {key: statistics.median(s[key] for s in runs.values()) for key in ('fps', 'median_ms', 'p95_ms', 'slow50')}
               for config, runs in by_config.items()}
-    reference = median.get('baseline')
-    lines += ['| 設定 | 趟數 | 平均 fps | 中位數 ms | P95 ms | >50 ms 格 | 相對 baseline |', '| --- | ---: | ---: | ---: | ---: | ---: | ---: |']
+    # The reference is baseline; an exe-a / exe-b comparison has none, so exe-a stands in.
+    ref = reference_name or ('baseline' if 'baseline' in by_config else 'exe-a' if 'exe-a' in by_config else sorted(by_config)[0])
+    if ref not in by_config:
+        return '\n'.join(lines + [f'沒有 {ref} 這個設定可當對照。'])
+    reference = median.get(ref)
+    lines += [f'| 設定 | 趟數 | 平均 fps | 中位數 ms | P95 ms | >50 ms 格 | 相對 {ref} |', '| --- | ---: | ---: | ---: | ---: | ---: | ---: |']
     for config, value in median.items():
         change = f"{(value['fps'] / reference['fps'] - 1) * 100:+.0f}%" if reference else '-'
         lines.append(f"| {config} | {len(by_config[config])} | {value['fps']:.1f} | {value['median_ms']:.1f} | "
                      f"{value['p95_ms']:.1f} | {value['slow50']:.0f} | {change} |")
-    baseline = by_config.get('baseline', {})
+    baseline = by_config.get(ref, {})
     if len(baseline) >= 2:
         fps = [s['fps'] for s in baseline.values()]
         spread = (max(fps) - min(fps)) / statistics.median(fps)
-        lines += ['', f'baseline 自己各趟之間的差距（最大減最小，除以中位數）：**{spread * 100:.0f}%**'
+        lines += ['', f'{ref} 自己各趟之間的差距（最大減最小，除以中位數）：**{spread * 100:.0f}%**'
                       f'（{min(fps):.1f}–{max(fps):.1f} fps）。其他設定的差距必須明顯大於這個數字才算數。']
-        lines += ['', '逐輪成對比較（同一輪的該設定 fps 除以 baseline 的 fps）：', '',
+        lines += ['', f'逐輪成對比較（同一輪的該設定 fps 除以 {ref} 的 fps）：', '',
                   '| 設定 | 每輪比值 | 中位數 | 較快的輪數 | 判定 |', '| --- | --- | ---: | ---: | --- |']
         for config, runs in by_config.items():
-            if config == 'baseline':
+            if config == ref:
                 continue
             rounds = sorted(set(runs) & set(baseline))
             if len(rounds) < 2:
@@ -257,7 +261,7 @@ def compare(rows):
                 verdict = '不能判定（在雜訊內）'
             lines.append(f"| {config} | {' '.join(f'{r:.2f}' for r in ratios)} | {middle:.2f} | {faster}/{len(ratios)} | {verdict} |")
     else:
-        lines += ['', 'baseline 不到兩趟，無法估計雜訊，也無法逐輪比較。']
+        lines += ['', f'{ref} 不到兩趟，無法估計雜訊，也無法逐輪比較。']
     return '\n'.join(lines)
 
 
