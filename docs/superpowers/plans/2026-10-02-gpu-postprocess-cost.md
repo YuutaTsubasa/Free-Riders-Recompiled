@@ -70,3 +70,26 @@ Detailed observation finished:11frames267passes;37.32ms overall,25.18ms in223 si
 - Verified oracle sensitivity by temporarily injecting depth loss and stencil loss separately into the test. All four backend/fault combinations fail the intended pixel assertion; restored source and both backends pass again. `validate-depth-oracle.py` records guarded restoration and hashes. This is not a red/green cycle for a new attachment mode; no mode exists yet.
 - Source audit: `setFramebuffer` ends a pass; `barriers` emits dependencies even for same-layout images. Switching modes without a resolve needs explicit color/depth dependencies. `record`, clear and custom VRM entry points must restore the proper framebuffer. Pipeline creation is shared by normal draw and preparation paths, so both must derive a compatible depth format. Existing keys include depth/stencil state; any mode selection must remain consistent for the renderer/cache lifetime.
 - Remaining Task2 work: actual attachment-mode assertion, custom/VRM/default-record/resolve/next-frame cases, validation-layer availability. Then compatible opt-in candidate and A/B/A. No candidate implemented yet. Do not report this plan as a fix or a demonstrated performance gain.
+
+## Final experiment decision (11:00 UTC)
+
+The historical checkpoint above is superseded. Tasks2/3 were implemented as an
+opt-in Vulkan experiment, including actual attachment assertion, compatible
+prewarm/runtime pipelines, same-layout dependencies, synthetic model rendering,
+resolve/default-record/clear and next-frame coverage. Both backend GPU tests
+passed. Khronos validation layers are unavailable; no claim of layer validation.
+
+Task4 same-APK off/on/off completed with normal time/audio and restored APK,
+settings and unchanged source fixture after every run. HUD45–80 samples gave
+23.306/23.257/21.994 FPS and 37.267/37.362/38.895ms GPU spans. Candidate results
+fall inside baseline variation; scene draw counts differ. No benefit established.
+All candidate production changes and its extra tests were restored to HEAD,
+keeping the baseline depth/stencil oracle. Candidate sources, provenance and
+negative evidence are saved under ignored `color-only-probe/candidate-final`,
+`comparison.json` and `retired-candidate.json`. No further candidate regressions
+or publication are warranted. The remaining checked boxes above describe the
+historical implementation sequence, not pending work to reapply the candidate.
+
+User's explicit Issue33 request now takes priority: investigate checkpoint
+intervals separately with audio and normal elapsed game time; do not combine
+that experiment with this rejected framebuffer change.

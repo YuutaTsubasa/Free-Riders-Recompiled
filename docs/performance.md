@@ -1825,3 +1825,83 @@ remain prerequisites for a future candidate. Evidence is in
 `out/continuation-20261002/gpu-pass-depth/eligibility.json` and
 `depth-oracle-validation.json`. Observer APK SHA-256:
 `5c8c00efd64fc21c1ed4c9cb8c0e7abcd656576831539e18e6bfa4fe13c2eda4`.
+
+### Unused-depth candidate: measured and not adopted
+
+The subsequent private Vulkan candidate omitted the depth attachment only when
+both depth and stencil testing were disabled, using compatible pipeline formats
+and explicit dependencies when switching framebuffers. The preservation oracle
+was extended to assert the actual attachment, exercise a synthetic model draw,
+resolve/default-record paths and the following frame. Both Vulkan and D3D12
+passed at 50/100/200% scale. The Khronos validation layer was unavailable on the
+test host; these are pixel/state checks, not a validation-layer clean bill.
+
+One APK was tested off/on/off on Thor at 720p, with audio and normal elapsed
+game time. Matching complete measurement intervals inside HUD seconds 45–80:
+
+| Run | Observed FPS | GPU list span/frame | Draws/frame |
+| --- | ---: | ---: | ---: |
+| Baseline before | 23.306 | 37.267 ms | 867.0 |
+| Candidate | 23.257 | 37.362 ms | 831.7 |
+| Baseline after | 21.994 | 38.895 ms | 952.6 |
+
+The candidate fell inside baseline variation and did not reduce GPU time versus
+the first baseline. Workloads differ despite matching HUD time, so these runs
+do not isolate every source of variation. They provide no reason to adopt this
+change. All candidate production changes and candidate-only tests were removed;
+the earlier baseline preservation oracle remains. The ordinary APK/settings and
+source fixture were verified after every run. Private source snapshots, logs,
+screenshots and reproducible analysis remain in
+`out/continuation-20261002/color-only-probe`, including `comparison.json` and
+`retired-candidate.json`. These runs cover partial races, not additional finishes.
+
+### Issue #33: checkpoint interval investigation
+
+[knuckleslee's paired report](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/33)
+compares six interleaved rounds on three Windows machines using a modified
+v0.4.5 fork. Recomputing the supplied rounded values gives median checkpoint
+256/32 throughput ratios of 1.0602 (i5-3470), 1.0701 (i7-6850K) and 1.0782
+(Ryzen AI Max+ 395), with all six pairs positive on each machine. This supports
+testing a longer checkpoint interval. It does not establish the same gain on
+the current version or on Android: the report used D3D12, disabled audio and
+combined several other fork changes. Its elapsed-game-time setting is unknown.
+
+`SFR_CHECKPOINT_INTERVAL` now permits a controlled comparison from 1 through
+4096. The default remains 32; missing, malformed and out-of-range values use
+that baseline. The effective interval is logged once. Configuration is read in
+the existing slow permit path, leaving generated function-entry/loop code
+unchanged. Cancellation and urgent handoff are checked on each permit call;
+the ordinary quantum clock is sampled every 64 calls. An interval counts guest
+entries/checkpoints, not a guaranteed number of milliseconds. A larger value
+must therefore be evaluated for responsiveness as well as throughput.
+
+Tests cover numeric parsing, actual mixed entry/loop cadence and cancellation
+through a real execution lease, alongside the existing scheduler tests. Both
+test targets pass. A bounded Windows D3D12 Frozen Forest run at 256, with audio
+and normal elapsed time, reached the Replay screen and stopped at 36000 presents
+in 602.578 seconds. Its 60 FPS cap makes this functional evidence only. Audio
+was enabled, but noise quality was not independently listened to. A clean
+Windows executable was rebuilt after the rejected GPU experiment was removed.
+
+The larger render-thread proposal remains separate: the report shows its main
+gain on the i5, and importing it needs current-version resource-lifetime and
+device validation. The already-upstream targeted suspend notifications receive
+additional supporting evidence from the report. No unchecked memory access,
+pipeline reuse or register-localization changes were imported. Exact issue and
+branch snapshots, source hashes and test logs are retained under ignored
+`out/continuation-20261002/issue33`.
+
+The clean same-APK Thor comparison completed in order 32/256/32, each at its
+15000-present bound. In matched HUD seconds 45–80, complete measurement windows
+gave 20.249/23.681/23.345 FPS, with 1517/950/866 draws per frame respectively.
+The candidate is 1.44% faster than the later baseline, while the two baselines
+differ by 15.3%. The first run's much larger draw workload prevents attributing
+its difference to the checkpoint interval. GPU spans were 38.744/38.313/36.980ms;
+P95 frame times were 69.787/54.715/56.351ms. This one sequence does not establish
+a repeatable Android benefit or justify a default change. All three runs passed
+restoration checks; screenshot HUD progress agrees with elapsed host time within
+0.033s between anchors. These are partial races. The thermal HAL was unavailable;
+battery temperature was 35C, which is not a substitute for SoC temperature.
+`issue33/compare-checkpoint.py` reproduces the measurements and records log/image
+hashes in `checkpoint-comparison.json`. Default 32 remains on all platforms
+pending a current-version Windows throughput comparison and further device evidence.
