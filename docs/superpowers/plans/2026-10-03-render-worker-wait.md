@@ -35,8 +35,8 @@ The baseline line uses `2000`. Assert exactly one matching line. Keep `wait_for_
 
 - [x] Candidate-linked `native_presentation_test` passed for D3D12 and Vulkan, including asynchronous order, 6,000 records across queue capacity, destruction drain, sticky recording failure and prior upload cleanup.
 - [x] Independent scope and concurrency reviews passed; subsequent measurement review recommends HOLD. Existing behavior tests plus measured performance were used rather than a test checking the constant.
-- [ ] Only on demonstrated benefit, apply the same one-line change plus an explanatory comment in `src/native_presentation.cpp` and document measured limits in `docs/performance.md`. Otherwise keep production source unchanged and record why the candidate was rejected.
-- [ ] End only owned test processes, unregister completed test tasks, release the temporary wake request, retain normal launch settings and original saves. Do not publish a release.
+- [x] Keep production waiting unchanged: reduced process CPU did not establish an FPS benefit, and frame delivery needs a stronger acceptance case. Record the candidate as HOLD; no production integration.
+- [x] End only owned test processes, unregister completed test tasks, release the temporary wake request, retain normal launch settings and original saves. No release published.
 
 ## Next investigation
 
@@ -44,4 +44,6 @@ After this isolated experiment, inspect main-thread `special_word` call sites an
 
 ## Current disposition
 
-HOLD: two candidate runs reduce process CPU/frame by about 13–18%, but do not improve main-thread CPU or establish an FPS gain. Both have a frame exceeding 100 ms in the middle race window; three baseline windows have none. Baseline A itself has substantial stalls, so this does not prove causation. Record/draw cost also increases slightly and repeatably. Production code remains unchanged. Capture matched scheduler traces before attributing or accepting the tails. Traced runs must be analyzed separately from the five untraced performance runs.
+HOLD: two candidate runs reduce process CPU/frame by about 13–18%, but do not improve main-thread CPU or establish an FPS gain. Both have a frame exceeding 100 ms in the middle race window; the first three baseline middle windows have none. Baseline A itself has substantial stalls, so this does not prove causation. Record/draw cost also increases slightly and repeatably. Production waiting remains unchanged.
+
+The requested scheduler captures have since completed with no lost events. They identify several smaller main-thread waits on diagnostic stderr locking, but do not explain every large stall. A later original-budget baseline also records a 576.8 ms frame, so large stalls are not exclusive to the candidate. Direct-file logging then removed an instrumentation confound for subsequent memory-path experiments; the production launcher already used file handles. The traces, untraced worker runs and later memory runs must not be pooled into one FPS claim. Evidence is retained in `out/cpu-scheduler-v047` and `out/cpu-profile-v047`; all owned tasks, games, recorder sessions and wake requests were cleaned up. Do not rerun this experiment without a new hypothesis.

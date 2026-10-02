@@ -1,6 +1,6 @@
 # CPU bottleneck follow-up after v0.4.7
 
-Status: user approved the proposed experiment on 2026-10-03; production behavior has not yet been changed.
+Status: user approved this design on 2026-10-03. The worker-wait experiment is complete and remains unaccepted; its production budget is unchanged. Subsequent common-path work accepted only the ordinary-page memory preflight, recorded in `../plans/2026-10-03-memory-preflight-experiment.md`. Read the latest continuation before starting more tests; the completed stationary comparisons must not be restarted automatically.
 
 ## Scope and evidence
 
