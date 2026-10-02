@@ -352,6 +352,32 @@ struct NativePresentation::Impl {
     uint32_t next_acquired = 0;
     plume::RenderCommandSemaphore* wait_semaphore = nullptr;
     plume::RenderCommandSemaphore* signal_semaphore = nullptr;
+    void wait_presentation_queue() {
+        if (graphics->backend() != GraphicsBackend::vulkan) return;
+        auto* queue = static_cast<plume::VulkanCommandQueue*>(&graphics->queue());
+        const std::scoped_lock lock(*queue->queue->mutex);
+        if (vkQueueWaitIdle(queue->queue->vk) != VK_SUCCESS)
+            throw std::runtime_error("failed to wait for the presentation queue before resizing");
+    }
+    void rebuild_swap_chain_sync() {
+        if (graphics->backend() != GraphicsBackend::vulkan) return;
+        // Image count can grow after resize (observed on Adreno). Never index
+        // the old image-indexed signals with the new swap chain's image index.
+        // Allocate first, so an allocation failure leaves the old set intact.
+        decltype(acquired) next_waits, next_signals;
+        for (uint32_t i = 0; i <= swap_chain->getTextureCount(); ++i) {
+            next_waits.push_back(graphics->device().createCommandSemaphore());
+            next_signals.push_back(graphics->device().createCommandSemaphore());
+            if (!next_waits.back() || !next_signals.back() ||
+                !static_cast<plume::VulkanCommandSemaphore*>(next_waits.back().get())->vk ||
+                !static_cast<plume::VulkanCommandSemaphore*>(next_signals.back().get())->vk)
+                unavailable("swap-chain semaphores");
+        }
+        acquired = std::move(next_waits);
+        rendered = std::move(next_signals);
+        next_acquired = 0;
+        wait_semaphore = signal_semaphore = nullptr;
+    }
     void run_list() {
         for (auto& callback : before_submit) callback();
         const plume::RenderCommandList* lists[] = {command_list.get()};
@@ -886,11 +912,7 @@ NativePresentation::NativePresentation(NativeGraphics& graphics, uint32_t width,
     if (!d3d12) {
         // Plume's Vulkan swap chain makes its images at the first resize.
         if (!implementation->swap_chain->resize()) unavailable("Vulkan swap chain images");
-        for (uint32_t i = 0; i <= implementation->swap_chain->getTextureCount(); ++i) {
-            implementation->acquired.push_back(graphics.device().createCommandSemaphore());
-            implementation->rendered.push_back(graphics.device().createCommandSemaphore());
-            if (!implementation->acquired.back() || !implementation->rendered.back()) unavailable("swap-chain semaphores");
-        }
+        implementation->rebuild_swap_chain_sync();
     }
     if (implementation->swap_chain->isEmpty() || implementation->swap_chain->getTextureCount() < 2)
         unavailable("swap chain");
@@ -1111,7 +1133,7 @@ std::vector<uint8_t> NativePresentation::readback_color() {
 #ifdef __ANDROID__
 bool NativePresentation::Impl::rebuild_surface() {
     flush();
-    graphics->wait_idle([] { return false; });
+    wait_presentation_queue();
     blit_targets.clear();
     swap_chain.reset();
     SDL_SysWMinfo system{};
@@ -1124,14 +1146,7 @@ bool NativePresentation::Impl::rebuild_surface() {
     }
     const char* vsync = std::getenv("SFR_VSYNC");
     swap_chain->setVsyncEnabled(vsync && *vsync == '1');
-    // A semaphore per image and one spare, as when the presentation was made.
-    acquired.clear();
-    rendered.clear();
-    next_acquired = 0;
-    for (uint32_t i = 0; i <= swap_chain->getTextureCount(); ++i) {
-        acquired.push_back(graphics->device().createCommandSemaphore());
-        rendered.push_back(graphics->device().createCommandSemaphore());
-    }
+    rebuild_swap_chain_sync();
     if (blit_pipeline) build_blit_targets();
     rebuild_swap_chain = false;
     std::cerr << "NATIVE_PRESENTATION surface rebuilt images=" << swap_chain->getTextureCount() << '\n';
@@ -1174,6 +1189,7 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height) {
     // once nothing in flight still uses its textures.
     if (impl_->swap_chain->needsResize()) {
         impl_->flush();
+        impl_->wait_presentation_queue();
         impl_->blit_targets.clear();
         if (!impl_->swap_chain->resize()) {
 #ifdef __ANDROID__
@@ -1184,7 +1200,10 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height) {
 #endif
             throw std::runtime_error("failed to resize the native swap chain");
         }
+        impl_->rebuild_swap_chain_sync();
         if (impl_->blit_pipeline) impl_->build_blit_targets();
+        std::cerr << "NATIVE_PRESENTATION resized images=" << impl_->swap_chain->getTextureCount()
+                  << " size=" << impl_->swap_chain->getWidth() << 'x' << impl_->swap_chain->getHeight() << '\n';
     }
     uint32_t texture_index = 0;
     plume::RenderCommandSemaphore* acquired = nullptr;
@@ -1200,6 +1219,9 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height) {
 #endif
         throw std::runtime_error("failed to acquire native presentation texture");
     }
+    if (texture_index >= impl_->swap_chain->getTextureCount() ||
+        (acquired && texture_index >= impl_->rendered.size()))
+        throw std::runtime_error("acquired native presentation image index is out of range");
     if (acquired) rendered = impl_->rendered[texture_index].get();
     auto* swap_texture = impl_->swap_chain->getTexture(texture_index);
     if (!swap_texture)

@@ -3,6 +3,7 @@
 #include "nui_race.h"
 #include <bit>
 #include <cmath>
+#include <cstdlib>
 #include <iostream>
 #include <stdexcept>
 
@@ -19,7 +20,7 @@ sfr::GamepadState pad(uint16_t buttons, int16_t lx = 0, int16_t ly = 0) {
     return state;
 }
 
-void run() {
+void run(float steering_scale) {
     require(sfr::race_axis(7000, 7849) == 0 && sfr::race_axis(32767, 7849) == 1.0f &&
             sfr::race_axis(-32768, 7849) == -1.0f, "dead zone and full deflection");
 
@@ -41,9 +42,19 @@ void run() {
     require(race.body().x_released == 1 && race.body().x_held_seconds == 0, "X release fires the kick");
 
     race.update(pad(0, 32767, 0), 1.0f / 60);
-    require(race.body().left_x == 1 && race.body().lean == -1 && race.body().lean_right == 2.0f && race.body().lean_left == 1.0f, "full right lean");
+    require(race.body().left_x == 1 && race.body().lean == -1 && race.body().lean_right == 1.f + steering_scale && race.body().lean_left == 1.0f, "full right lean reaches the configured steering range");
     race.update(pad(0, -32768, -32768), 1.0f / 60);
-    require(race.body().lean_left == 2.0f && race.body().lean_right == 1.0f && race.body().left_y == -1 && race.body().hands == 2, "left lean, pulled back");
+    require(race.body().lean_left == 1.f + steering_scale && race.body().lean_right == 1.0f && race.body().left_y == -1 && race.body().hands == 2, "full left lean, pulled back");
+    for (float seconds : {1.f / 60, 1.f / 30, 1.f / 20}) {
+        race.update(pad(0, 20308), seconds); // halfway beyond the dead zone
+        require(near(race.body().lean_right, 1.f + steering_scale * .5f) && race.body().lean_left == 1.f,
+            "partial steering is proportional and independent of frame duration");
+        require(near(race.body().left_x, .5f) && near(race.body().lean, -.5f),
+            "tricks and other gestures keep normalized axes");
+        race.update(pad(0), seconds);
+        require(race.body().lean_right == 1 && race.body().lean_left == 1,
+            "return to neutral does not accumulate steering");
+    }
 
     race.update(pad(button::y | button::left_shoulder | button::b), 1.0f / 60);
     require(race.body().y_pressed == 1 && race.body().lb_pressed == 1 && race.body().rb_pressed == 0 &&
@@ -71,9 +82,9 @@ void run() {
 }
 }
 
-int main() {
+int main(int argc, char** argv) {
     try {
-        run();
+        run(argc > 1 ? std::strtof(argv[1], nullptr) : 3.5f);
         std::cout << "nui race tests passed\n";
         return 0;
     } catch (const std::exception& error) {

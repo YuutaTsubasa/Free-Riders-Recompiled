@@ -6,12 +6,14 @@
 #include "avatar_state.h"
 #include "avatar_transform.h"
 #include "avatar_clip_pose.h"
+#include "job_lifetime.h"
 #include <algorithm>
 #include <bit>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <thread>
 #include <unordered_map>
@@ -127,21 +129,73 @@ SFR_HOOK(sub_82817B48) {
     }
 }
 
-// How many of the dispatcher's helper threads (823B60C0) may still be inside
-// a job's callback: set when a helper takes a job, cleared when it sets its
-// done event at 823B614C, which it does only once the queue is empty and its
-// last callback has returned. A helper that takes another job after that
-// (the loop after its self-suspend) counts again, which is exactly the case
-// the dispatcher must not reset jobs under.
+// The scene can advance from 2 to 3 after the main thread's 823B6D40 wait
+// check but before worker 823B5D40 checks it. That admits a first batch whose
+// actor contexts the next frame's deferred deletion would otherwise destroy
+// before its next wait. Keep batches and helper queue reads alive together;
+// exclusion applies only to deferred deletion, not between helpers.
 namespace {
-std::atomic<uint32_t> helpers_in_jobs{0};
-thread_local bool helper_in_job=false;
+sfr::JobLifetime job_lifetime;
+thread_local std::optional<sfr::JobLifetime::Lease> helper_lifetime;
 
 void helper_leaves_job() {
-    if(!helper_in_job) return;
-    helper_in_job=false;
-    helpers_in_jobs.fetch_sub(1,std::memory_order_acq_rel);
+    helper_lifetime.reset();
 }
+void lifetime_wait() {
+    sfr::traced_host_wait([](void*) { job_lifetime.wait_for_change(); },
+                         nullptr,"job_lifetime",1000000);
+}
+void acquire_lifetime(sfr::JobLifetime::Lease& lease) {
+    while(!lease.try_acquire()) lifetime_wait();
+}
+}
+
+PPC_FUNC_IMPL(__imp__sub_823B5D40);
+SFR_CONCURRENT_HOOK(sub_823B5D40) {
+    sfr::enter_function(ctx,"sub_823B5D40",0x823B5D40);
+    sfr::JobLifetime::Lease batch(job_lifetime,sfr::JobLifetime::Kind::batch);
+    acquire_lifetime(batch);
+    __imp__sub_823B5D40(ctx,base);
+}
+
+PPC_FUNC_IMPL(__imp__sub_823B60C0);
+SFR_CONCURRENT_HOOK(sub_823B60C0) {
+    sfr::enter_function(ctx,"sub_823B60C0",0x823B60C0);
+    struct Cleanup {
+        ~Cleanup() { helper_leaves_job(); }
+    } cleanup;
+    __imp__sub_823B60C0(ctx,base);
+}
+
+PPC_FUNC_IMPL(__imp__sub_82750B30);
+SFR_CONCURRENT_HOOK(sub_82750B30) {
+    sfr::enter_function(ctx,"sub_82750B30",0x82750B30);
+    const bool helper=ctx.lr==0x823B60F8;
+    if(helper && !helper_lifetime) {
+        helper_lifetime.emplace(job_lifetime,sfr::JobLifetime::Kind::helper);
+        acquire_lifetime(*helper_lifetime);
+    }
+    __imp__sub_82750B30(ctx,base);
+    // Include the interval before a successful queue take, failed takes,
+    // and null callbacks. An empty poll means the last callback returned.
+    if(helper && ctx.r3.u32!=0) helper_leaves_job();
+}
+
+PPC_FUNC_IMPL(__imp__sub_8249FD50);
+SFR_CONCURRENT_HOOK(sub_8249FD50) {
+    sfr::enter_function(ctx,"sub_8249FD50",0x8249FD50);
+    if(!sfr::has_deferred_job_contexts(ctx.r3.u32,[](uint32_t address) {
+        return sfr::active_memory->load<uint32_t>(address);
+    })) {
+        __imp__sub_8249FD50(ctx,base);
+        return;
+    }
+    sfr::JobLifetime::Lease deletion(job_lifetime,sfr::JobLifetime::Kind::deletion);
+    acquire_lifetime(deletion);
+    // Keep admission closed through derived destructors and the original
+    // job removal flags. A queued next batch then removes those jobs before
+    // publishing work, rather than acquiring a reference to a freed actor.
+    __imp__sub_8249FD50(ctx,base);
 }
 
 PPC_FUNC_IMPL(__imp__sub_824D0B18);
@@ -197,26 +251,16 @@ SFR_CONCURRENT_HOOK(sub_824D0B10) {
         static std::atomic<uint32_t> timeouts{0};
         if(timeouts++<16) std::cerr << "GAME_PATCH work_share_wait_timeout count=" << timeouts << '\n';
     }
-    // The three done events say the helpers found the queue empty, but not
-    // that they are out of the job they took last: the caller resets and
-    // reuses every job as soon as this returns, and a helper still inside one
-    // then reads a job whose 176..496 have been zeroed (a null dereference in
-    // the callback) or, next time round, a function word that is the base
-    // class's pure slot. Hold the reset back until they are out.
-    if(work_share && helpers_in_jobs.load(std::memory_order_acquire)) {
-        static const uint32_t wait_ms=[]{
-            const char* text=std::getenv("SFR_JOB_DRAIN_WAIT_MS");
-            const long value=text?std::strtol(text,nullptr,10):20;
-            return uint32_t(value>=0?value:20);
-        }();
-        const auto deadline=std::chrono::steady_clock::now()+std::chrono::milliseconds(wait_ms);
-        while(helpers_in_jobs.load(std::memory_order_acquire) && std::chrono::steady_clock::now()<deadline)
-            sfr::traced_host_wait([](void*){ std::this_thread::sleep_for(std::chrono::microseconds(50)); },nullptr,"poll_50us",50000);
-        static std::atomic<uint32_t> waits{0}, left{0};
+    // A timed-out helper wait cannot authorize reset of live jobs. Admission
+    // is recorded before the helper inspects the queue, so even a helper
+    // between its empty check and its callback is covered. Waits release the
+    // execution permits needed by callbacks entering host hooks.
+    if(work_share && !job_lifetime.helpers_idle()) {
+        while(!job_lifetime.helpers_idle()) lifetime_wait();
+        static std::atomic<uint32_t> waits{0};
         const uint32_t count=++waits;
-        if(helpers_in_jobs.load(std::memory_order_acquire)) ++left;
         if(count<=8 || count%256==0)
-            std::cerr << "GAME_PATCH job_drain_wait count=" << count << " still_running=" << left << '\n';
+            std::cerr << "GAME_PATCH job_drain_wait count=" << count << " still_running=0\n";
     }
 }
 
@@ -288,12 +332,6 @@ SFR_CONCURRENT_HOOK(sub_82750C40) {
     if(!sfr::active_memory || !slot || (caller!=0x823B5E58 && caller!=0x823B6114)) return;
     uint32_t job=0;
     try { job=sfr::active_memory->load<uint32_t>(slot); } catch(...) { return; }
-    if(caller==0x823B6114 && job!=0 && !helper_in_job) {
-        helper_in_job=true;
-        helpers_in_jobs.fetch_add(1,std::memory_order_acq_rel);
-    } else if(caller==0x823B6114 && job==0) {
-        helper_leaves_job();
-    }
     if(!trace || !job) return;
     static std::atomic<uint32_t> traced{0};
     if(traced>=64) return;

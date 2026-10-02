@@ -381,7 +381,7 @@ saves and local reference checkouts.
   (launcher), [DirectX Shader Compiler](https://github.com/microsoft/DirectXShaderCompiler)
   (through [dxc-bin](https://github.com/renderbag/dxc-bin)).
 - [Xenia](https://github.com/xenia-project/xenia): reference for the Xbox 360
-  kernel's behaviour.
+  kernel's behaviour and GPU texture formats/layouts.
 - [ONNX Runtime](https://github.com/microsoft/onnxruntime) (camera pose inference),
   [OpenCV Zoo](https://github.com/opencv/opencv_zoo) and
   [MediaPipe](https://github.com/google-ai-edge/mediapipe) (person detection and

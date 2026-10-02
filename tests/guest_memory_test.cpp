@@ -479,6 +479,41 @@ static void loads_beside_special_words() {
     require(memory.load<uint16_t>(0x10202) == 0xF00D, "part of a computed word too");
 }
 
+static void provider_guard_survives_unrelated_import_registration() {
+    sfr::GuestMemory memory;
+    memory.map(0x10000, 0x2000000);
+    // The KeDebugMonitorData import contains an ordinal marker underneath its
+    // provider. Publishing another thread's guarded field must never expose it.
+    memory.store<uint32_t>(0x107d4, 0x59000100);
+    memory.add_read_only_word(0x107d4, [] { return 0x72400000u; },
+                             sfr::GuestMemory::ProviderAccess::concurrent);
+    std::atomic<bool> done{false}, wrong{false};
+    std::atomic<uint64_t> reads{0};
+    std::thread reader([&] {
+        sfr::GuestMemory::concurrent_reader = true;
+        while (!done.load(std::memory_order_relaxed)) {
+            if (memory.load<uint32_t>(0x107d4) != 0x72400000u)
+                wrong.store(true, std::memory_order_relaxed);
+            reads.fetch_add(1, std::memory_order_relaxed);
+        }
+    });
+    std::thread pointer_reader([&] {
+        sfr::GuestMemory::concurrent_reader = true;
+        while (!done.load(std::memory_order_relaxed)) {
+            if (memory.fast_read(0x107d4,4)) wrong.store(true,std::memory_order_relaxed);
+        }
+    });
+    while (reads.load(std::memory_order_relaxed) < 100) std::this_thread::yield();
+    for (unsigned i=0;i<128;++i) {
+        memory.add_import_variable(0x200084+i*4096, "new thread process information");
+        memory.add_import_variable(0x10800+i*4, "neighbor of existing provider");
+    }
+    done.store(true, std::memory_order_relaxed);
+    reader.join();
+    pointer_reader.join();
+    require(!wrong.load(), "concurrent provider read exposed raw import ordinal during registration");
+}
+
 static void doubleword_reservation_increment_and_consumption() {
     sfr::GuestMemory memory;
     memory.map(0x10000, 16);
@@ -1517,6 +1552,7 @@ int main() {
                           reservation_independent_instances_and_top_address, reservations_belong_to_threads,
                           concurrent_reader_checks_while_layout_changes,
                           loads_beside_special_words,
+                          provider_guard_survives_unrelated_import_registration,
                           memory_accounting_basics,
                           doubleword_reservation_increment_and_consumption,
                           doubleword_reservation_changed_backing, doubleword_reservation_validation,

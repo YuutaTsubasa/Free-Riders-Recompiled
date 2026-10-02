@@ -275,10 +275,18 @@ std::unordered_map<uint32_t, uint32_t> source_records;
 // saved source after that call: Loading can free it without changing the
 // manager or body record.
 thread_local uint32_t live_race_source = 0;
+thread_local bool live_controller_lean = false;
+thread_local uint32_t live_steering_filter = 0;
+struct SteeringFilterScope {
+    uint32_t previous = live_steering_filter;
+    explicit SteeringFilterScope(uint32_t filter) { live_steering_filter = filter; }
+    ~SteeringFilterScope() { live_steering_filter = previous; }
+};
 struct RaceSourceScope {
     uint32_t previous = live_race_source;
-    explicit RaceSourceScope(uint32_t source) { live_race_source = source; }
-    ~RaceSourceScope() { live_race_source = previous; }
+    bool previous_controller_lean = live_controller_lean;
+    explicit RaceSourceScope(uint32_t source) { live_race_source = source; live_controller_lean = false; }
+    ~RaceSourceScope() { live_race_source = previous; live_controller_lean = previous_controller_lean; }
 };
 
 uint32_t input_player(uint32_t slot, bool multiple) {
@@ -468,7 +476,8 @@ PPC_FUNC_IMPL(__imp__sub_82918418);
 
 // This original race consumer updates source->object through vtable[2],
 // then reads its body through vtable[1] before calculating lean. Keep that
-// order and the title's calculations; patch only the live reader result.
+// order and the title's lean calculation. Controller lean bypasses only the
+// depth-input smoothing below, after the live reader identifies its player.
 SFR_HOOK(sub_822C6200) {
     sfr::enter_function(ctx, "sub_822C6200", 0x822C6200);
     RaceSourceScope scope(pad_racing() || sensor_steering ? ctx.r3.u32 : 0);
@@ -494,7 +503,36 @@ SFR_HOOK(sub_82918418) {
         memory().load<uint32_t>(live_race_source) == object) {
         const uint32_t player=player_of_record(record);
         if(camera_player(player))write_camera_lean(record);
-        else race[player].write(memory(), record);
+        else {
+            race[player].write(memory(), record);
+            live_controller_lean = true;
+        }
+    }
+}
+
+PPC_FUNC_IMPL(__imp__sub_822C63E8);
+SFR_HOOK(sub_822C63E8) {
+    sfr::enter_function(ctx, "sub_822C63E8", 0x822C63E8);
+    const uint32_t filter = ctx.r3.u32;
+    const float input = float(ctx.f1.f64);
+    const bool direct = (live_controller_lean && live_race_source && filter == live_race_source + 4) ||
+                        (live_steering_filter && filter == live_steering_filter);
+    // The original keeps ten samples for noisy depth input. At low FPS that
+    // delays controller reversal/release by much longer than on the console.
+    // Keep its history (including across input handoff), but use this update's
+    // already-clamped analog lean for pads. The adjacent body-angle filter,
+    // unrelated callers, Camera and physical Kinect retain original results.
+    __imp__sub_822C63E8(ctx, base);
+    if (direct) {
+        static const bool trace = [] { const char* p = std::getenv("SFR_RACE_LEAN_TRACE"); return p && *p == '1'; }();
+        static thread_local unsigned samples = 0;
+        if (trace && samples < 120 && std::fabs(input - float(ctx.f1.f64)) > .0001f) {
+            ++samples;
+            std::cerr << "NUI_RACE_LEAN filter=0x" << std::hex << filter << std::dec
+                      << " input=" << input << " smoothed=" << ctx.f1.f64 << " applied=" << input << '\n';
+        }
+        store_float(filter + 40, input);
+        ctx.f1.f64 = input;
     }
 }
 
@@ -659,6 +697,23 @@ RACE_DETECTOR(822C8650, {
         result = 1;
     } else result = 2;
 })
+
+// CatchLR / Catch: the legacy pad fields overlap left wrist X and elbow Z.
+// Use the intended right-stick reach directly rather than feeding those
+// button values into the original skeleton-angle tests. Stance is handled
+// by the title's consumers of these left/right flags, not by the detector.
+#define RACE_REACH(address)                                                   \
+    RACE_DETECTOR(address, {                                                 \
+        result = 2;                                                         \
+        if (b.right_y <= 0 && std::fabs(b.right_x) > .3f) {                 \
+            const bool left = b.right_x < 0;                                \
+            set_bits(entry(results) + 4, left ? 0x20000000u : 0x40000000u); \
+            set_bits(entry(results) + 20, left ? 0x20000u : 0x40000u);       \
+            result = 1;                                                     \
+        }                                                                   \
+    })
+RACE_REACH(822C9E90)
+RACE_REACH(822CB340)
 
 // Flying skill: A held.
 RACE_DETECTOR(822C9180, {
@@ -829,6 +884,16 @@ RACE_DETECTOR(822CE118, {
 
 // The detector at 821A2484 (original 822CB9B8) uses the one at 821A2344
 // (822C8958) while the pad drives the race.
+PPC_FUNC_IMPL(__imp__sub_822C8958);
+SFR_HOOK(sub_822C8958) {
+    sfr::enter_function(ctx, "sub_822C8958", 0x822C8958);
+    const bool controller = pad_racing() && !camera_player(player_of_source(ctx, base, ctx.r4.u32));
+    // After reading source+44, the title maps lean to steering strength and
+    // filters it again at detector+72 before writing result bytes +76/+78.
+    // Retain that gear/stance mapping, bypass only its controller smoothing.
+    SteeringFilterScope scope(controller ? ctx.r3.u32 + 72 : 0);
+    __imp__sub_822C8958(ctx, base);
+}
 PPC_FUNC_IMPL(__imp__sub_822CB9B8);
 SFR_HOOK(sub_822CB9B8) {
     sfr::enter_function(ctx, "sub_822CB9B8", 0x822CB9B8);

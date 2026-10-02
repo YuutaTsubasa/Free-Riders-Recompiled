@@ -23,7 +23,7 @@ FetchWords merge_texture_fetch(const FetchWords& texture, const FetchWords& slot
     word4 = (word4 & ~0x3C0u) | ((highest & 0xF) << 6);
     out[4] = word4;
     // Mip address keeps w5[9:28] from the texture translated like the base;
-    // w5[0:8] (packed mips, dimension low bits' neighbours) stay with the slot.
+    // w5[0:8] (border color and sampler controls) stay with the slot.
     const uint32_t mip = (texture[5] & 0x1FFFFE00) + ((((texture[5] >> 20) & 0xFFF) + 0x200) & 0x1000);
     out[5] = (mip & ~0x1FFu) | (slot[5] & 0x1FFu);
     return out;
@@ -44,7 +44,7 @@ TextureFetch decode_texture_fetch(const FetchWords& w) {
     f.exp_adjust = exp >= 32 ? exp - 64 : exp;
     f.min_mip = (w[4] >> 2) & 0xF;
     f.max_mip = (w[4] >> 6) & 0xF;
-    f.packed_mips = w[5] & 1;
+    f.packed_mips = (w[5] >> 11) & 1;
     f.dimension = static_cast<TextureDimension>((w[5] >> 9) & 3);
     f.mip_address = w[5] & 0xFFFFF000;
     switch (f.dimension) {

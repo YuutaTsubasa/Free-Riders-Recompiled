@@ -3892,7 +3892,7 @@ int main(int argc, char** argv) {
             module.header_field(sfr::XexModule::header_address, 0x20200),
             [](uint32_t address) { return sfr::functions.contains(address); },
             [&memory, &execution, &tls_storage](const sfr::GuestThreads::State& state) -> sfr::NativeThread::Entry {
-                tls_storage.register_thread(state.tls_dynamic);
+                if (!state.reused_storage) tls_storage.register_thread(state.tls_dynamic);
                 auto context = std::make_shared<PPCContext>();
                 context->r1.u64 = state.stack_base - 0x100;
                 context->r13.u64 = state.pcr;

@@ -963,7 +963,9 @@ uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
     std::memcpy(bytes.data(), memory.base() + source, guest_size);
     const uint64_t hash = content_hash(bytes.data(), bytes.size());
     swap_texture_bytes(bytes, fetch.endian);
-    if (layout->tiled) bytes = untile_texture(bytes, *layout);
+    if (layout->tiled || layout->base_x_blocks || layout->base_y_blocks)
+        bytes = untile_texture(bytes, *layout);
+    if (fetch.format == 15) decode_rgba4(bytes, *layout);
     if (!block_compression_supported(impl_->graphics)) decode_block_compression(bytes, *layout);
     static const bool stats = std::getenv("SFR_TEXTURE_STATS") != nullptr;
     if (stats && fetch.format == 2) {

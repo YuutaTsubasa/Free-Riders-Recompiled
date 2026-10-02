@@ -1,0 +1,43 @@
+--- a/plume_vulkan.h
++++ b/plume_vulkan.h
+@@ -231,6 +231,7 @@
+         std::unique_ptr<CocoaWindow> windowWrapper;
+ #endif
+         uint32_t textureCount = 0;
++        uint32_t requestedTextureCount = 0;
+         uint64_t presentCount = 0;
+         RenderFormat format = RenderFormat::UNKNOWN;
+         uint32_t width = 0;
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -2171,6 +2171,7 @@
+         // Make sure maxImageCount is never below minImageCount, as it's allowed to be zero.
+         surfaceCapabilities.maxImageCount = std::max(surfaceCapabilities.minImageCount, surfaceCapabilities.maxImageCount);
+ 
++        requestedTextureCount = textureCount;
+         // Clamp the requested buffer count between the bounds of the surface capabilities.
+         this->textureCount = std::clamp(textureCount, surfaceCapabilities.minImageCount, surfaceCapabilities.maxImageCount);
+ 
+@@ -2319,7 +2320,12 @@
+ 
+         createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+         createInfo.surface = surface;
+-        createInfo.minImageCount = textureCount;
++        // A driver may return more images than requested. Preserve the caller's
++        // request across resizes instead of feeding those extras back into it.
++        createInfo.minImageCount = std::max(requestedTextureCount, surfaceCapabilities.minImageCount);
++        if (surfaceCapabilities.maxImageCount != 0) {
++            createInfo.minImageCount = std::min(createInfo.minImageCount, surfaceCapabilities.maxImageCount);
++        }
+         createInfo.imageFormat = pickedSurfaceFormat.format;
+         createInfo.imageColorSpace = pickedSurfaceFormat.colorSpace;
+         createInfo.imageExtent.width = width;
+@@ -2356,7 +2362,7 @@
+ 
+         uint32_t retrievedImageCount = 0;
+         vkGetSwapchainImagesKHR(commandQueue->device->vk, vk, &retrievedImageCount, nullptr);
+-        if (retrievedImageCount < textureCount) {
++        if (retrievedImageCount < createInfo.minImageCount) {
+             releaseSwapChain();
+             fprintf(stderr, "Image count differs from the texture count.\n");
+             return false;

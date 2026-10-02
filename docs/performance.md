@@ -1307,3 +1307,278 @@ The installed normal APK is `0.4.5-perf-thor-batch-test`, SHA-256
 After the last control capture, debug.env was removed and the app restarted
 to its launcher; normal operation uses the batching default. User save and
 settings remain intact. This is a local test package, not a published release.
+
+
+## 2026-10-02: Thor surface resize and controller steering
+
+The batched-upload test was playable, but the user reported a crash after rotating to portrait and back, and weak controller steering. These were investigated separately from throughput.
+
+### Surface resize
+
+- The user's crash and a fresh AYN Thor size-change reproduction both faulted in Adreno `vkQueueSubmit` (`resize-before.log`, `resize-before-logcat.txt`).
+- A temporary validation-layer APK reported `VUID-VkSubmitInfo-pSignalSemaphores-parameter`: the signal semaphore was null. The renderer resized its swap-chain images without resizing its image-indexed synchronization arrays.
+- Plume also reused the last *returned* image count as the next `minImageCount`. The driver can provide more than requested; during six size changes the intermediate fix reached 18 images. The pinned patch now preserves the original request, applies current surface min/max limits on each resize, and accepts a smaller actual count when it still satisfies the new request.
+- The application flushes rendering, waits on the presentation queue under its queue mutex, allocates fresh synchronization for the actual image count, checks native semaphore handles, and rebuilds blit targets. An explicit acquired-index check prevents out-of-range access.
+- The final validation run (`resize-final-validation2`, PID 18376) survived six commanded size changes (16 logged swap-chain rebuilds) with image count fixed at **4**. Its logcat confirms the validation layer loaded and contains no validation errors for that process. The test uses reversible `wm size` changes because Thor ignored shell orientation requests; it reproduces the same original crash but is not a physical sensor-rotation test.
+
+Regression coverage includes repeated real-window landscape/portrait resizes, a real Vulkan swap chain whose requested image count is deliberately increased within surface limits, and subsequent shrinking. The image-count allocation and feedback tests both failed before their corresponding fixes and passed afterward. Vulkan and D3D12 GPU tests pass. The complete Plume patch chain was applied to a clean temporary Git index and matched the checked-out source; the all-dependency bootstrap verifier cannot operate on this worktree's pre-existing shared tool directories.
+
+This fixes the observed null semaphore and unbounded image-count feedback. It does not claim to redesign every presentation-lifetime path: Plume still lacks maintenance1 presentation fences, and queue idle alone is not a formal presentation-engine completion guarantee. See the [Khronos semaphore guide](https://docs.vulkan.org/guide/latest/swapchain_semaphore_reuse.html) and [swap-chain recreation sample](https://docs.vulkan.org/samples/latest/samples/api/swapchain_recreation/README.html).
+
+### Steering range versus response time
+
+Controller input previously mapped full stick to lean +/-1, while the original consumer at `822C6200` accepts +/-3.5. The default `SFR_RACE_LEAN_SCALE` is now **3.5**; explicitly setting 1 restores the prior range. Other axes remain normalized for tricks and gesture detectors. Six CPU tests cover full and partial steering, neutral reset, 20/30/60 Hz step durations, independent 1P/2P live readers, and the existing scale override/clamp.
+
+There is no separate slower polling timer in this controller path: the manager samples input every game update and SDL events are pumped every guest present, including skipped renders. However, the original `822C63E8` filter combines the current sample with nine previous samples. Low FPS can stretch its response time. That filter and the simulation clock remain unchanged; physical event-to-steering latency and the user's preferred steering feel still require a device play test.
+
+Normal test APK: `out/thor-race-perf/thor-rotation-steering-test.apk`, version `0.4.5-perf-thor-rotation-steering-test`, Android 10+ ARM64. SHA-256: `94d1bb2580c1a20b58eb4d5dea5b258367136fcb538956eb6eb16db8c7dd5446`. Packaging validates the release certificate, shader pack, native library contents, archive integrity and 16 KiB ZIP alignment. The final normal APK also survived six commanded size changes (all recorded rebuilds kept four images). Temporary test saves are separate from user saves; the validation APK and GPU-layer settings were removed before delivery.
+
+### Follow-up: controller latency and Issue #31
+
+The range change improved maximum steering but the user still reported delayed response. Investigation found two uses of the ten-sample filter in the controller path: source+4 in `822C6200`, and detector+72 in `822C8958` before writing steering result bytes +76/+78. Controllers now use the current sample at both boundaries. Original filter history is still maintained, gear/stance conversion is unchanged, and Camera/Kinect, body-angle filtering and unrelated consumers retain their original behavior. No simulation-clock or presentation-rate change is involved. Opt-in `SFR_RACE_LEAN_TRACE=1` records up to 120 differing original/applied values per guest thread; scripted input verifies these boundaries, not physical input-to-display latency.
+
+The new tests failed before the corresponding overrides, then passed. They cover reversal/release/partial input, both player routes, the downstream steering result bytes, Camera/controller coexistence and sensor fallback. Windows and Android builds pass; existing compiler warnings remain.
+
+Issue #31 also reports Windows Frozen Forest and intermittent World Grand Prix crashes, bright corners and failed left-side ring reach. The reach path had a concrete asymmetric bug: `RaceInput::write` overwrites left wrist X (+96) and other left-arm coordinates, but the native CatchLR/Catch detectors still interpreted them as geometry. Controller-specific adapters now emit the original left/right flags from the right stick, preserving Camera/Kinect geometry detection. Regression tests cover both detectors, both players, neutral/deadzone/arms-up and preservation of unrelated result flags. Actual successful ring collection still needs a gameplay check.
+
+The crash and brightness reports have no attached log or screenshot. The existing offline-presence fix was already included in v0.4.5. A possible repeated-course resource issue is the renderer's retained `resolved_targets` map (full-resolution textures per physical resolve address); this is a code lead, not an established cause of #31. Confirm with a failing `game.log`, settings, GPU/API and the exact course/mode/mission. On Windows the next launch replaces `game.log`, so preserve it immediately after the crash. The offscreen target aliasing and depth-resolve limitations likewise need a screenshot/API comparison before attributing the bright corners to a particular pass.
+
+Thor verification (`out/thor-race-perf/input-response-check*`) completed 14,400 presents and stopped at its configured limit, with Dolphin Resort visible at race time 01:06.61. The real guest trace confirms both filter overrides: full-left input -3.5 originally smoothed to -1.225, and mapped steering -100 originally smoothed to -35, are applied immediately at their respective boundaries. On release the original result still contained -29 while the applied result was zero. This is not a physical controller latency measurement or a Frozen Forest crash reproduction. Six `nui_race*` tests pass and independent review found no remaining actionable issues in the input changes.
+
+Installed APK: `out/thor-race-perf/thor-input-response-test.apk`, version `0.4.5-perf-thor-input-response-test`; SHA-256 `7a23f6148a706bfbc05a1e9c556089701284c6aa444ffaaa1bea575c84d748f9`. Signature, native payload, shader pack and ZIP alignment checks passed. After the run, `debug.env` was absent, the game process had exited, and the device was returned to its normal launcher. The run used the separate benchmark save directory.
+
+### Issue #31: Frozen Forest reproduction on the desktop
+
+Tested the published **v0.4.5 Windows archive**, not the modified input build, on NVIDIA GeForce RTX 4090 at 1280x720 internal/output resolution. Executable SHA-256: `271bc31fc7ad2bfdc035ba5a3c186f025a21c9b82a30e91bc1ba496c9186a896`. Each backend started a fresh process with its own copy of the same save and its own native pipeline cache. The menu screenshots confirm **Free Race / Frozen Forest Standard**, using Sonic and the default gear. User saves were not modified.
+
+- Vulkan: 18,000 presents, HUD **01:36.61**, **lap 2/3**; completed the first lap without crashing.
+- D3D12: 18,000 presents, HUD **01:36.68**, **lap 2/3**; completed the first lap without crashing.
+- Both processes ended with the expected diagnostic exit code 3 and `STOP present-limit`, not a crash. No `untranslatable=1` or searched device-loss/removal error was reported.
+
+The reported Frozen Forest crash was **not reproduced in these two runs**. This does not cover World Grand Prix missions, other course variants, other GPUs/drivers or repeated races in one process. Reporter logs and exact settings are still needed. Evidence and repeatable script: `out/issue-31/run.py`, `frozen-vulkan/` and `frozen-d3d12/` (environment, full game log, process result, course-selection screenshot at frame 8400 and final race screenshot at frame 18000).
+
+### Frozen Forest: Android ice-channel and audio investigation
+
+The same course on Thor with `thor-input-response-test.apk` reproduces a
+different failure from the reported Windows crash. The scripted neutral-input
+run `out/thor-race-perf/frozen-water-check*` reaches the ice channel normally
+(frame 13800, HUD 01:00.43), then places the camera inside the ice wall by
+frame 14100 (01:12.16). At frame 16800 (02:46.39) it is still in that area on
+lap 1. Rendering and the race clock continue. The run reaches its intentional
+18,000-present limit, so this is not a whole-process freeze. The desktop
+reference had reached lap 2 at 01:36.61 without player input.
+
+The user also reports the music becoming noise in this area. Submitted/requested
+audio-frame counts continue advancing, but those counters do not establish
+valid sample data or correct device playback. The cause of the noise and its
+relationship to the stuck rider are not yet established.
+
+The first comparison disabling only `SFR_REALTIME_UI` ended during race loading
+with `worker-memory-access`: guest 36, recorded function `82918418`, LR
+`822A4C38`, r3 `0x71730000`, and reported fault address zero. With detailed entry
+observation disabled, the recorded function is not sufficient to identify the
+faulting instruction. This incomplete run is not evidence for or against the UI-timeline
+hypothesis. Its log and system log are retained as `frozen-water-ui-off.log`
+and `out/issue-31/ui-off-logcat.txt`; a fresh-process retry is required.
+
+The retry `frozen-water-ui-off-retry*` completed the configured 18,000 presents.
+It still remained in the ice channel at 02:23.39 on lap 1 (frame 16200), and
+the user again reported broken music during that run. Disabling UI catch-up
+alone therefore did not resolve either symptom.
+
+The next control, `frozen-water-clock-off*`, disables `SFR_REALTIME_RACE` on
+the same APK and records raw guest audio using `SFR_AUDIO_DUMP`. It reaches
+18,000 presents normally: HUD 01:23.78/frame 17400 is moving through the
+channel at speed 360; HUD 01:33.78/frame 18000 is visibly outside the channel.
+Its 440.704 seconds of complete captured audio frames contain no nonfinite
+samples. This control is slower in game time; it is diagnostic evidence, not
+a shipped performance fix. The additional audio recording means frame-time
+differences must not be treated as a clean performance benchmark.
+
+Restoring the default realtime clock while keeping audio capture enabled
+(`frozen-water-clock-on-audio*`) reproduces the stuck rider by frame 14400,
+HUD 01:21.76, speed 74. The raw six-channel audio first contains a negative
+quiet NaN (`0xffc00000`) at audio frame 63,446, sample 0, **338.378667 seconds**
+into the dump. Each of the six channels contains 1,182,336 nonfinite samples
+over the 365.306667 seconds of complete captured frames. This establishes
+that invalid audio data exists **before SDL/device playback**; continuing
+submission counters alone had hidden the corruption. The specific upstream
+calculation that first produces NaN is still unknown. A shared origin with
+the movement failure is supported by the clock comparison but not yet proven.
+
+A Windows Vulkan v0.4.5 reference (`out/issue-31/frozen-desktop-audio/`) also
+completed 18,000 presents with expected exit code 3. Its 300.53-second raw
+audio capture has no nonfinite samples. Host speaker output was disabled
+for that capture; the guest mixer and dump remained active. Normal finite
+samples do not by themselves establish subjective audio quality.
+
+Raw captures, 10-second statistics, finite PCM excerpts, the exact first bad
+sample and the layout-checked analysis utility are under `out/issue-31/`.
+PCM excerpts replace invalid samples with silence and therefore must not be
+used as evidence of what the original NaNs sounded like. Partial trailing
+audio frames on process exit are excluded from statistics. All test processes
+have exited, temporary `debug.env` was removed, and Thor is back at its normal
+launcher. No production clock or audio behavior was changed for this investigation.
+
+
+Follow-up read-only actor probes (`frozen-rider-probe`, `frozen-math-probe`,
+`frozen-stage-all-probe`) also reproduce nonfinite actor data. In the first
+capture, slot 10's velocity-like vector at rider +240/+244/+248 becomes NaN
+between presents 15180 and 15190. Other riders subsequently develop invalid
+vectors. The sample blocks at rider +192 were initially treated as potential
+pointers; this field is actually part of a transform and those incidental
+blocks must not be interpreted as referenced objects. The useful records are
+the rider itself and verified references such as +3208/+3220.
+
+The guest double-pow probe (`82A55390`) records no nonfinite returns during a
+complete 16500-present reproduction. A negative-base fractional-power theory
+is therefore unsupported by this run. Actor corruption is not Android-only:
+a private Windows diagnostic forces two 60-Hz frames per active race update,
+with rendering unpaced, and reproduces the ice-channel failure and NaNs.
+`frozen-desktop-step2` completes 18000 presents in 87.656 s, and the refined
+`frozen-desktop-stage2` in 92.547 s; these are deliberately accelerated
+reproductions, not realtime performance measurements. Their first detected
+render-transform corruption is inside `822AAD60 -> 8228E378` on guest 7,
+where gear rendering consumes the actor's already-invalid simulation data.
+This is a propagation boundary, not yet the first invalid calculation.
+
+A main-thread-only stage probe was deliberately stopped in menus and replaced
+with one covering all workers. The full Android stage probe observes the same
+boundary on guests 8/9. All probes live under ignored `out/issue-31`; none is
+part of a production clock/audio behavior change. The next diagnostic tracks
+entry history around the first invalid simulation-vector write on Windows.
+
+
+## October 2 three-device stability follow-up
+
+The earlier ice-channel and audio investigation now has a confirmed source:
+boarding pursuit moved once per update while its target used elapsed time.
+At low FPS, the rider could not catch the target, traversed the path in the
+wrong state, and eventually used a zero heading. Targeted boarding scaling
+and a zero-direction orientation guard address those two failures. A separate
+Loading crash was traced to actor deletion racing a late worker batch.
+
+See [Issue 31 investigation](issue-31-investigation.md) for the exact producer
+chain, regression tests and per-device coverage. The corrected forced-step
+desktop run finished Frozen Forest and captured 206.624 seconds of finite raw
+audio. This is a stability result, not an FPS comparison. Remaining device,
+locked-layout and Grand Prix coverage is recorded explicitly in that document.
+
+### Android local function binding trial (not adopted)
+
+A link-only Android experiment added `-Wl,-Bsymbolic-functions` to `libmain.so`,
+using the same current source objects, shader pack, settings and independent
+save fixture as the baseline. The candidate retains exported `SDL_main` and
+the sampled strong guest hooks in both direct calls and `PPCFuncMappings`.
+All `JUMP_SLOT` relocations fall from 19,811 to 316; native TLS descriptors
+remain unchanged. This demonstrates less dynamic call indirection, not a
+measured gameplay speedup.
+
+Three unprofiled Thor runs used Dolphin Resort Standard, 720p, normal elapsed
+race time and audio enabled. Whole 120-present summaries were selected within
+HUD seconds 10–45 using visually read screenshot anchors, rather than comparing
+identical present numbers after variable Loading durations:
+
+| Run | Average FPS | Average frame | Maximum frame | Draws/frame |
+|---|---:|---:|---:|---:|
+| Baseline A | 21.95 | 45.57 ms | 83.99 ms | 779.8 |
+| Local function binding B | 21.91 | 45.65 ms | 94.86 ms | 850.7 |
+| Baseline A repeat | 21.36 | 46.82 ms | 82.81 ms | 798.1 |
+
+The candidate lies inside baseline variation. Character encounters and course
+position differ, and the selected complete intervals cover slightly different
+parts of that window; no percentage improvement is supported. Pipeline compile
+time is zero in these samples. GPU waits average 0.31–0.50 ms, while CPU work and
+queueing remain substantial. Battery readings were 33–34 C, but the thermal HAL
+reports unavailable, so these are not measurements of SoC temperature.
+
+The flag is **not added to production CMake**. It also changes external function
+interposition, a tradeoff that is not justified by the current runtime result.
+The ignored `out/thor-race-perf/render-binding-comparison.json` records exact APK
+hashes, anchors and intervals; `compare-render-binding.py` reproduces the table.
+
+### Current renderer/stability CPU profile
+
+`render-stability-profile` samples the current normal source objects using a
+profileable manifest (APK SHA-256
+`4cfd8700a8db83a0e227a24baa71391a139e8b3d8949b0317ad46378b590e17c`).
+The 30-second `cpu-clock:u` recording contains 20,052 samples with zero loss;
+symbols match native build ID `0efd8be56c7e1d2b949012ef7ee5dba0e7908dd2`.
+The screenshot at present 13200 confirms Dolphin Resort Standard, lap 1,
+HUD 00:40.93. Timing is elapsed-time, 720p, audio enabled. The bounded runner
+reached its 16200-present limit normally. Sampling overhead means this is
+attribution evidence, not a benchmark against the unprofiled A/B/A runs.
+
+The main SDL thread accounts for 19.328 of 50.130 sampled CPU seconds across
+all threads (38.55%). Its inclusive `native_draw` share is 24.63%, matrix
+constant marshaling `82534038` is 5.08%, and leaf dynamic TLS resolution is
+4.29%. Another guest worker accounts for 10.078 CPU seconds (20.10%), largely
+inside the `827C9508 -> 827D7250` subsystem. Inclusive percentages overlap;
+they must not be added or treated as a predicted frame-rate improvement.
+
+Source inspection identifies `82534038` and `82533B90` as matrix/vector shader
+constant packing, conversion and upload-callback dispatch. A private read-only
+shape histogram is being used to establish the common descriptor and aliasing
+cases before considering a targeted native replacement. No such replacement
+or new TLS policy follows from this profile alone. Matching data, symbols,
+thread attribution and caller summaries are retained under ignored
+`out/thor-race-perf/render-stability-profile*`.
+
+### Constant layout experiment (no production replacement)
+
+The normal-clock Android shape probe recorded 9,885,809 calls over five
+intervals without unreadable metadata, overflow, or probe errors: 4,289,977
+matrix calls and 5,595,832 vector calls. Matrix calls were float column-major
+4x4 (3,406,686) or 3x3 (883,291), with source and scratch pointers unequal.
+This does not prove absence of partial overlap. The vector path includes
+267,088 structure-forwarding calls, which cannot be treated as plain vectors.
+Raw and aggregate evidence is in `out/thor-race-perf/constant-shape*`.
+
+An isolated native matrix-packing helper passes bounds, overlap, padding,
+signed-zero, infinity and NaN tests. A Windows read-only oracle then compared
+its predicted bytes against the original function's scratch result. By present
+15000 it had checked 3,855,430 calls containing 6,729,304 matrices; the run
+continued through the 15500 observation cutoff and stopped at 16200 without
+mismatch. Unsupported/overlapping/cross-page cases use the original path.
+The executable SHA-256 is
+`4bbd3f8d1f07255758f3aface0c9a65eb032811ce0ca4947bcba4b65a746fc6b`.
+The original remained the only guest-memory writer and upload-callback caller.
+This validates candidate packing for observed inputs, not a replacement's
+callback ABI, all floating-point side effects, or performance. No fast path
+has been adopted.
+
+
+### Android prime-core placement trial (not applied)
+
+A private same-APK control requested CPU 7 for the main race thread after
+present 13000, only if that CPU was already in its allowed affinity mask.
+Thor exposes CPU 7 as its highest-capacity core, but the actual game thread's
+query succeeded with CPU 7 absent at the request point. The candidate therefore
+made no affinity change. The first baseline and candidate both reached their
+16200-present limits; the planned third run was omitted because there was no
+treatment to compare. The reported errno after the successful query is stale,
+not evidence of a failed system call or a permission denial.
+
+No affinity policy or performance gain is adopted. APK SHA-256:
+`5d8ab28757762fa99ec414556a4e0af0f7cfe9dcd51100aedfd50938bc3d4558`.
+Logs and the explicitly inconclusive comparison are under ignored
+`out/thor-race-perf/core-*`. This experiment preserves the device's existing
+allowed CPU range and does not override its power or scheduling policy.
+
+A subsequent read-only `/proc/<game-pid>/task/*/status` check during a different
+Expert run reports 0–7 for all threads, both in menus and in the race. Thus the
+single skipped request does not establish a permanent device restriction or
+its cause. The probe did not log the denied mask or TID; a repeat should include
+those fields before drawing a scheduling conclusion.
+
+### Retiring completed guest thread storage
+
+A 128-worker regression exposed the fixed 96-slot session quota: closed, completed
+threads never released their guest-address slots. Equal-size storage can now be
+reused after completion/join with no open guest handle or explicit reference.
+TLS address registration is retained while its contents are reset. Old native
+exit handles stay valid for existing waiters. Windows and Android regressions
+pass; this is a long-session stability fix, not a measured frame-rate gain.
+The GP mission-2 retry stress stayed below the old quota (highest guest ID 41),
+so it does not attribute the reporter's GP crash to this defect. See
+[the investigation](issue-31-investigation.md) for reproduction and limits.

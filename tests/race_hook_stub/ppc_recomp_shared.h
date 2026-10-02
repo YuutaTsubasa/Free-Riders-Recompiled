@@ -5,6 +5,7 @@
 // regression needs no generated game code or game files.
 struct PPCContext {
     union Register { uint64_t u64 = 0; uint32_t u32; } r3, r4, r5;
+    struct FloatRegister { double f64 = 0; } f1;
     uint64_t lr = 0;
 };
 #define PPC_FUNC(name) void name(PPCContext& ctx, uint8_t* base)
