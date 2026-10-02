@@ -10,13 +10,21 @@ public class DiagnosticsArchiveTest {
     static void check(boolean condition, String message) {
         if (!condition) throw new AssertionError(message);
     }
+    static void writeString(Path path, String text) throws IOException {
+        Files.write(path, text.getBytes(StandardCharsets.UTF_8));
+    }
     static Map<String, String> archive(File root) throws IOException {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         DiagnosticsArchive.write(root, bytes, "model=test\nversion=test\n");
         Map<String, String> files = new HashMap<>();
         try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(bytes.toByteArray()))) {
-            for (ZipEntry e; (e = zip.getNextEntry()) != null;)
-                files.put(e.getName(), new String(zip.readAllBytes(), StandardCharsets.UTF_8));
+            for (ZipEntry e; (e = zip.getNextEntry()) != null;) {
+                ByteArrayOutputStream entry = new ByteArrayOutputStream();
+                byte[] buffer = new byte[8192];
+                for (int count; (count = zip.read(buffer)) != -1;)
+                    entry.write(buffer, 0, count);
+                files.put(e.getName(), new String(entry.toByteArray(), StandardCharsets.UTF_8));
+            }
         }
         return files;
     }
@@ -26,11 +34,11 @@ public class DiagnosticsArchiveTest {
         Map<String, String> empty = archive(root);
         check(empty.get("report.txt").contains("game.log: missing"), "missing log explanation");
         check(empty.get("device.txt").contains("model=test"), "device metadata");
-        Files.writeString(new File(root, "game.log").toPath(), "GPU header\nframe timing\n");
-        Files.writeString(new File(root, "settings.env").toPath(),
+        writeString(new File(root, "game.log").toPath(), "GPU header\nframe timing\n");
+        writeString(new File(root, "settings.env").toPath(),
                 "SFR_RENDER_SCALE=0.5\nSFR_GRAPHICS=vulkan\nSFR_CAMERA_DEVICE=private-device\nSFR_AVATAR_MODEL=/private/model\n");
-        Files.writeString(new File(root, "debug.env").toPath(), "SFR_FRAME_METRICS=1\nSECRET=private\n");
-        Files.writeString(new File(root, "save.bin").toPath(), "private-save");
+        writeString(new File(root, "debug.env").toPath(), "SFR_FRAME_METRICS=1\nSECRET=private\n");
+        writeString(new File(root, "save.bin").toPath(), "private-save");
         Map<String, String> small = archive(root);
         check(small.get("game.log").equals("GPU header\nframe timing\n"), "small log preserved");
         check(small.get("settings.env").equals("SFR_RENDER_SCALE=0.5\nSFR_GRAPHICS=vulkan\n"), "settings allowlist");
