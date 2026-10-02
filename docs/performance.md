@@ -1744,3 +1744,62 @@ under ignored `out/continuation-20261002/gpu-time-probe`, `thor-gpu-time-observe
 and `thor-gpu-time-half`; `compare-gpu-time-resolution.py` reproduces the table.
 Observer APK SHA-256:
 `96e9b2480951aa3cdad888ef6e98673fcf846f14945f1630eb1c70eaad4b3663`.
+
+
+### GPU pass attribution and oversized offscreen compatibility path
+
+Two private observers timed only existing Vulkan render-pass boundaries and
+retained all original drawing. Pass timestamps were sampled every120 presents
+from12000 onward, using the existing list/fence retirement; results introduced
+no extra host wait. The coarse run completed15000 presents in350.938 seconds.
+In11 sampled race frames it measured36.94ms/list,35.91ms inside passes and1.03ms
+outside. The initial scene pass averaged8.38ms; repeated one-quad stages dominated
+the remainder. This directed the next observation toward postprocessing rather
+than a blanket shader-constant rewrite.
+
+The detailed run added first-draw viewport/scissor state and guest resolve
+sizes, then completed15000 presents in355.407 seconds. Presents13200–14400
+showed Dolphin Resort progression from HUD00:40.77/lap1 to01:31.90/lap2.
+Across11 sampled frames and267 passes:
+
+| Observed work | GPU timestamp span per sampled frame |
+| --- | ---: |
+| All presentation lists | 37.32 ms |
+| Inside existing render passes | 36.32 ms |
+| Outside render passes | 1.00 ms |
+| Initial scene pass | 9.16 ms |
+| Single-draw, four-vertex, non-indexed passes combined | 25.18 ms (67.47% of list span) |
+
+All223 single-quad passes used a1280x720 viewport and scissor, with no changes
+within those passes. The same frames resolved231 small guest targets sized
+55x45,110x90 or112x92. Resolve order and pass order matched after excluding the
+final host blit in every sampled frame; individual target/pass associations
+remain sequential inference because GPU rows do not carry unique target tags.
+A full viewport does not by itself prove every pixel was shaded: quad positions
+were not captured. It does establish that the host viewport was not reduced to
+those guest target dimensions.
+
+The source explains this compatibility path: `GuestGraphics::set_viewport`
+clamps origin-zero offscreen passes to the native framebuffer, while
+`NativeRenderer::adopt_resolved_target` allocates/copies the full presentation
+size. Merely clamping viewports to guest target sizes can break saved viewport
+state, screen-space coordinates, resolved sampling, exposure and split views.
+A correct smaller-target implementation would need these contracts together.
+
+A narrower candidate is avoiding depth/stencil attachment traffic when neither
+is used by a draw. Current native framebuffers attach D32_FLOAT_S8_UINT with
+LOAD/STORE operations even through postprocessing. Eligibility and savings
+are not yet measured; do not treat this as an implemented fix. Preservation
+oracles, compatible pipelines, clear/custom-draw transitions and A/B/A are laid
+out in `docs/superpowers/plans/2026-10-02-gpu-postprocess-cost.md`.
+
+Both observer runs had zero query errors/overflow and reached their normal
+present bound. Independent source saves remained unchanged; the exact ordinary
+APK and launch settings were restored and subsequently checked again. Timestamp
+and callback overhead, GPU stalls and periodic sample bias remain limitations.
+No observer or performance candidate was added to production. These were partial
+races, not two additional verified finishes. Results and reproducible scripts
+are under ignored `out/continuation-20261002/gpu-pass-probe`, `gpu-pass-detail`
+and their matching `thor-*` cases.
+Detailed observer APK SHA-256:
+`efcbae9429fbd91d90c7ce85d15b536ba82a4080ed8510eb8d78c963d0362037`.
