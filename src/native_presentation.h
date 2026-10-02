@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -68,6 +69,24 @@ public:
     // Records commands against the color/depth framebuffer with the current
     // viewport and scissor into the frame's open command list.
     void record(const std::function<void(plume::RenderCommandList&)>& body);
+    // Like record(), but the commands are made by a render thread while the
+    // caller goes on. body is copied into a queue slot, so it must be
+    // trivially copyable and capture values, never references to the caller's
+    // locals; it is called as body(list, generation) with the list_generation
+    // the caller saw. Everything else that touches the command list (record,
+    // clear, present, flush, ...) first waits for the queue to empty, so the
+    // commands still land in the order they were asked for. SFR_RENDER_THREAD=0
+    // runs them on the calling thread, straight away; unset, that is also what
+    // every backend but D3D12 does (SFR_RENDER_THREAD=1 forces the thread).
+    static constexpr size_t record_payload_bytes = 256;
+    template <class Body>
+    void record_async(const Body& body) {
+        static_assert(std::is_trivially_copyable_v<Body> && sizeof(Body) <= record_payload_bytes,
+                      "an asynchronous record body is copied into a fixed-size queue slot");
+        record_async_raw([](const void* payload, plume::RenderCommandList& list, uint64_t generation) {
+            (*static_cast<const Body*>(payload))(list, generation);
+        }, &body, sizeof(Body));
+    }
     // Changes when a list begins or a custom pass invalidates guest bindings.
     uint64_t list_generation() const;
     // Submits the recorded draws and clears and waits for them (and for a
@@ -98,6 +117,8 @@ public:
     [[nodiscard]] void* window_handle() const noexcept;
 
 private:
+    using RecordFunction = void (*)(const void* payload, plume::RenderCommandList&, uint64_t generation);
+    void record_async_raw(RecordFunction function, const void* payload, size_t bytes);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

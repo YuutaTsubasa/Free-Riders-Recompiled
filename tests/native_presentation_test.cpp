@@ -609,6 +609,39 @@ void full_color_clears_reach_gpu_memory() {
     require_pixels(presentation.readback_color(), 19, {255, 255, 0, 255});
 }
 
+// Draws recorded on the render thread land in the list in the order they were
+// asked for, between the work the caller does itself (clear, readback).
+// SFR_RENDER_THREAD=1 forces the thread on whatever backend the test runs.
+void async_records_keep_the_order_of_everything_asked_for() {
+    ScopedEnvironment render_thread("SFR_RENDER_THREAD", "1");
+    sfr::NativeGraphics graphics;
+    graphics.initialize();
+    sfr::NativePresentation presentation(graphics, 19, 11);
+    const auto paint = [&](float red, float green, float blue) {
+        presentation.record_async([red, green, blue](plume::RenderCommandList& list, uint64_t) {
+            list.clearColor(0, plume::RenderColor(red, green, blue, 1.0f));
+        });
+    };
+    sfr::NativeClear clear{};
+    clear.color = true;
+    for (uint32_t round = 0; round < 300; ++round) {
+        // red, then blue asked for by the thread, then (every other round) the
+        // caller's own green: the last one asked for must be what the GPU holds.
+        clear.color_value = {1.0f, 0.0f, 0.0f, 1.0f};
+        presentation.clear(clear);
+        paint(0.0f, 0.0f, 1.0f);
+        if (round % 2) {
+            clear.color_value = {0.0f, 1.0f, 0.0f, 1.0f};
+            presentation.clear(clear);
+        }
+        if (round % 25 == 0)
+            require_pixels(presentation.readback_color(), 19,
+                           round % 2 ? std::array<uint8_t, 4>{0, 255, 0, 255} : std::array<uint8_t, 4>{255, 0, 0, 255});
+    }
+    paint(1.0f, 1.0f, 0.0f);
+    require_pixels(presentation.readback_color(), 19, {0, 255, 255, 255});
+}
+
 void rectangle_clear_preserves_outside_pixels() {
     sfr::NativeGraphics graphics;
     graphics.initialize();
@@ -770,6 +803,7 @@ int main() {
         invalid_dimensions_are_rejected_before_a_window_exists();
         creates_hidden_fixed_size_window_and_native_resources();
         full_color_clears_reach_gpu_memory();
+        async_records_keep_the_order_of_everything_asked_for();
         rectangle_clear_preserves_outside_pixels();
         scaled_clear_boundaries_and_loading_area();
         invalid_clear_arguments_do_not_mutate_color();

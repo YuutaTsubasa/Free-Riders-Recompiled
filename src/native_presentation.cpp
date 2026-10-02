@@ -35,8 +35,13 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <condition_variable>
+#include <exception>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
+#include <thread>
+#include <utility>
 #include <string>
 #include <iostream>
 
@@ -155,13 +160,20 @@ struct NativePresentation::Impl {
         return {coordinate(rect.left, render_width, width), coordinate(rect.top, render_height, height),
                 coordinate(rect.right, render_width, width), coordinate(rect.bottom, render_height, height)};
     }
-    void apply_raster() {
-        auto viewport = raster_state->viewport();
+    // The title's viewport and scissor at the render resolution.
+    void scaled_raster(plume::RenderViewport& viewport, plume::RenderRect& scissor) const {
+        viewport = raster_state->viewport();
         const float x = float(render_width) / width, y = float(render_height) / height;
         viewport.x *= x; viewport.width *= x;
         viewport.y *= y; viewport.height *= y;
+        scissor = render_rectangle(raster_state->scissor());
+    }
+    void apply_raster() {
+        plume::RenderViewport viewport;
+        plume::RenderRect scissor;
+        scaled_raster(viewport, scissor);
         command_list->setViewports(viewport);
-        command_list->setScissors(render_rectangle(raster_state->scissor()));
+        command_list->setScissors(scissor);
     }
 #ifdef _WIN32
     HWND window = nullptr;
@@ -261,6 +273,8 @@ struct NativePresentation::Impl {
     void build_blit_targets();
 
     ~Impl() {
+        try { drain(); } catch (...) {}
+        stop_render_thread();
         if (ready && open) {
             // Unsubmitted commands may reference resources of owners already
             // destroyed; discard them instead of executing.
@@ -379,6 +393,7 @@ struct NativePresentation::Impl {
         wait_semaphore = signal_semaphore = nullptr;
     }
     void run_list() {
+        drain();
         for (auto& callback : before_submit) callback();
         const plume::RenderCommandList* lists[] = {command_list.get()};
         uint32_t waits = wait_semaphore ? 1 : 0, signals = signal_semaphore ? 1 : 0;
@@ -408,6 +423,138 @@ struct NativePresentation::Impl {
         if (in_gpu_wait.load(std::memory_order_acquire))
             throw std::logic_error("native presentation used while it waits for the GPU");
     }
+    // The render thread: draws are recorded into the open command list by a
+    // thread of its own (NativePresentation::record_async), so the guest's
+    // thread only queues them. One producer, one consumer; the producer
+    // empties the queue (drain) before it touches the list itself.
+    // SFR_RENDER_THREAD=1 forces it on, =0 off. Unset, it is on for D3D12, where
+    // it was measured, and off elsewhere until another backend has been.
+    bool render_thread_enabled() const {
+        static const int choice = [] {
+            const char* const text = std::getenv("SFR_RENDER_THREAD");
+            return text && *text ? (*text != '0' ? 1 : 0) : -1;
+        }();
+        return choice < 0 ? graphics->backend() == sfr::GraphicsBackend::d3d12 : choice == 1;
+    }
+    static constexpr uint64_t queue_capacity = 4096;
+    struct RecordSlot {
+        NativePresentation::RecordFunction function = nullptr;
+        plume::RenderViewport viewport;  // as the title had them when the draw was asked for
+        plume::RenderRect scissor;
+        uint64_t generation = 0;
+        alignas(16) unsigned char payload[NativePresentation::record_payload_bytes];
+    };
+    std::unique_ptr<RecordSlot[]> slots;
+    std::atomic<uint64_t> queue_head{0}, queue_tail{0};  // consumed, produced
+    std::atomic<bool> worker_sleeping{false}, producer_waiting{false}, worker_stop{false}, worker_failed{false};
+    std::mutex queue_mutex;
+    std::condition_variable work_ready, work_done;
+    std::exception_ptr worker_error;
+    std::thread render_thread;
+
+    void start_render_thread() {
+        slots = std::make_unique<RecordSlot[]>(queue_capacity);
+        render_thread = std::thread([this] { run_render_thread(); });
+    }
+    void run_render_thread() {
+        for (;;) {
+            const uint64_t head = queue_head.load(std::memory_order_relaxed);
+            if (head != queue_tail.load(std::memory_order_seq_cst)) {
+                auto& slot = slots[head % queue_capacity];
+                if (!worker_failed.load(std::memory_order_relaxed)) {
+                    try {
+                        command_list->setViewports(slot.viewport);
+                        command_list->setScissors(slot.scissor);
+                        slot.function(slot.payload, *command_list, slot.generation);
+                    } catch (...) {
+                        std::lock_guard lock(queue_mutex);
+                        worker_error = std::current_exception();
+                        worker_failed.store(true, std::memory_order_release);
+                    }
+                }
+                queue_head.store(head + 1, std::memory_order_seq_cst);
+                if (producer_waiting.load(std::memory_order_seq_cst)) {
+                    std::lock_guard lock(queue_mutex);
+                    work_done.notify_one();
+                }
+                continue;
+            }
+            // Empty: spin a little (the next draw is usually microseconds
+            // away), then sleep until the producer wakes the thread.
+            bool found = false;
+            for (int i = 0; i < 2000 && !found; ++i) {
+                found = head != queue_tail.load(std::memory_order_acquire);
+                if (!found) std::this_thread::yield();
+            }
+            if (found) continue;
+            std::unique_lock lock(queue_mutex);
+            worker_sleeping.store(true, std::memory_order_seq_cst);
+            work_ready.wait(lock, [&] {
+                return worker_stop.load(std::memory_order_seq_cst) ||
+                       head != queue_tail.load(std::memory_order_seq_cst);
+            });
+            worker_sleeping.store(false, std::memory_order_seq_cst);
+            if (worker_stop.load(std::memory_order_seq_cst) && head == queue_tail.load(std::memory_order_seq_cst)) return;
+        }
+    }
+    // Waits until the render thread has consumed entry target - 1.
+    void wait_for_head(uint64_t target) {
+        for (int i = 0; i < 4000 && queue_head.load(std::memory_order_acquire) < target; ++i)
+            std::this_thread::yield();
+        if (queue_head.load(std::memory_order_seq_cst) >= target) return;
+        std::unique_lock lock(queue_mutex);
+        producer_waiting.store(true, std::memory_order_seq_cst);
+        work_done.wait(lock, [&] { return queue_head.load(std::memory_order_seq_cst) >= target; });
+        producer_waiting.store(false, std::memory_order_seq_cst);
+    }
+    void rethrow_worker_error() {
+        if (!worker_failed.load(std::memory_order_acquire)) return;
+        std::exception_ptr error;
+        {
+            std::lock_guard lock(queue_mutex);
+            error = std::exchange(worker_error, nullptr);
+            worker_failed.store(false, std::memory_order_release);
+        }
+        if (error) std::rethrow_exception(error);
+    }
+    // Every command asked for so far is in the list.
+    void drain() {
+        if (!render_thread.joinable()) return;
+        wait_for_head(queue_tail.load(std::memory_order_relaxed));
+        rethrow_worker_error();
+    }
+    void stop_render_thread() {
+        if (!render_thread.joinable()) return;
+        {
+            std::lock_guard lock(queue_mutex);
+            worker_stop.store(true, std::memory_order_seq_cst);
+        }
+        work_ready.notify_one();
+        render_thread.join();
+    }
+    void enqueue(NativePresentation::RecordFunction function, const void* payload, size_t bytes) {
+        if (!render_thread_enabled()) {
+            ensure_open();
+            apply_raster();
+            function(payload, *command_list, list_generation);
+            return;
+        }
+        ensure_open();
+        rethrow_worker_error();
+        if (!render_thread.joinable()) start_render_thread();
+        const uint64_t tail = queue_tail.load(std::memory_order_relaxed);
+        if (tail - queue_head.load(std::memory_order_acquire) >= queue_capacity) wait_for_head(tail - queue_capacity + 1);
+        auto& slot = slots[tail % queue_capacity];
+        slot.function = function;
+        scaled_raster(slot.viewport, slot.scissor);
+        slot.generation = list_generation;
+        std::memcpy(slot.payload, payload, bytes);
+        queue_tail.store(tail + 1, std::memory_order_seq_cst);
+        if (worker_sleeping.load(std::memory_order_seq_cst)) {
+            std::lock_guard lock(queue_mutex);
+            work_ready.notify_one();
+        }
+    }
     // Draws and clears accumulate in one open list per frame; present,
     // readback and explicit flushes submit it.
     bool open = false;
@@ -417,6 +564,7 @@ struct NativePresentation::Impl {
     // layout/pipeline/descriptors cached by NativeRenderer.
     uint64_t list_generation = 0;
     void begin_list() {
+        drain();
         command_list->begin();
         ++list_generation;
     }
@@ -431,6 +579,7 @@ struct NativePresentation::Impl {
         open = true;
     }
     void flush() {
+        drain();
         if (open) {
             command_list->end();
             execute();
@@ -989,6 +1138,7 @@ void NativePresentation::clear(const NativeClear& clear, std::span<const plume::
             throw std::invalid_argument("clear rectangle is empty or outside the presentation bounds");
     if (!clear.color && !clear.depth && !clear.stencil) return;
 
+    impl_->drain();
     std::vector<plume::RenderRect> scaled;
     if (!rectangles.empty()) {
         scaled.reserve(rectangles.size());
@@ -1013,8 +1163,14 @@ void NativePresentation::clear(const NativeClear& clear, std::span<const plume::
                                                 rectangles.data(), static_cast<uint32_t>(rectangles.size()));
 }
 
+void NativePresentation::record_async_raw(RecordFunction function, const void* payload, size_t bytes) {
+    impl_->refuse_during_gpu_wait();
+    impl_->enqueue(function, payload, bytes);
+}
+
 void NativePresentation::record(const std::function<void(plume::RenderCommandList&)>& body) {
     impl_->refuse_during_gpu_wait();
+    impl_->drain();
     impl_->ensure_open();
     impl_->apply_raster();
     body(*impl_->command_list);
@@ -1170,6 +1326,7 @@ void NativePresentation::draw_player_model(const AvatarFrameTransform& frame) {
     impl_->refuse_during_gpu_wait();
     impl_->build_model();
     if (!impl_->model_pipeline) return;
+    impl_->drain();
     impl_->ensure_open();
     impl_->apply_raster();
     impl_->draw_model(frame);
@@ -1180,6 +1337,7 @@ void NativePresentation::draw_player_model(const AvatarFrameTransform& frame) {
 
 void NativePresentation::present(uint32_t area_width, uint32_t area_height) {
     impl_->refuse_during_gpu_wait();
+    impl_->drain();
 
 #ifdef __ANDROID__
     // Back from the background: draw into the new surface, or skip the frame.
