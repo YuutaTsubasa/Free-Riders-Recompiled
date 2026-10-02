@@ -845,3 +845,33 @@ mission 2 completion and saving, not the next mission's load or a complete GP.
 `out/continuation-20261002/gp-reach-directed-rows` contains the run, and
 `gp-mission2-completed.json` records the inspected screenshots and new test-save
 hashes. Future GP coverage can clone this save instead of repeating mission 2.
+
+### GP mission 3 entry and input boundary investigation
+
+Cloning that saved progress loads Mission 03, **Grind Challenge**, with Sonic
+and a three-grind objective. A normal-time Vulkan run reaches the normal Retry
+screen without grinding; a second run with three ordinary crouch/release inputs
+also records zero grinds. Both stop at 18000 presents in approximately 302.06
+seconds, without a watchdog timeout or changes to the source save. This covers
+mission entry and failure handling, not mission completion or a full GP.
+
+Private read-only traces narrow the failed jump attempts to the original input
+processing stage. At present 11997, the controller jump detector emits `0x200`
+and that bit survives the original detector-group function `822C5BB0`. After
+the original `822A8AB0` update, the output entry contains zero. Crouch input
+reaches the rider normally. The recorded mask `0x75f8f73f` **includes** `0x200`;
+it does not explain the missing jump. Original state filters `82299EB0` and
+`822A31F0` contain explicit jump suppression keyed by rider state, including
+the halfword at owner+1388. Which filter and condition apply here still needs
+direct observation. The screenshots also leave rail-entry alignment and input
+timing unresolved; this is not evidence that these original gates are wrong.
+
+The corrected boundary probe ends at 12060 presents in 203.110 seconds; the
+earlier producer/consumer probe ends at 13200 in 221.922 seconds. Both use
+normal race/UI time, audio, all draws, independent saves and native/host time
+bounds. Ordinary source, object and executable hashes remain unchanged.
+One intermediate diagnostic run was intentionally stopped before its observation
+window to correct a trace-only pointer; it is excluded from gameplay evidence.
+No production input or mission-state change was made. Artifacts are under
+`out/continuation-20261002/gp-m3-*`, with private builder diffs and provenance in
+`grind-observer-build` and `grind-boundary-v2-build`.
