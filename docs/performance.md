@@ -1788,8 +1788,8 @@ A correct smaller-target implementation would need these contracts together.
 
 A narrower candidate is avoiding depth/stencil attachment traffic when neither
 is used by a draw. Current native framebuffers attach D32_FLOAT_S8_UINT with
-LOAD/STORE operations even through postprocessing. Eligibility and savings
-are not yet measured; do not treat this as an implemented fix. Preservation
+LOAD/STORE operations even through postprocessing. Eligibility is now measured;
+savings are not. Do not treat this as an implemented fix. Preservation
 oracles, compatible pipelines, clear/custom-draw transitions and A/B/A are laid
 out in `docs/superpowers/plans/2026-10-02-gpu-postprocess-cost.md`.
 
@@ -1803,3 +1803,25 @@ are under ignored `out/continuation-20261002/gpu-pass-probe`, `gpu-pass-detail`
 and their matching `thor-*` cases.
 Detailed observer APK SHA-256:
 `efcbae9429fbd91d90c7ce85d15b536ba82a4080ed8510eb8d78c963d0362037`.
+
+A subsequent private observer also captured each guest draw's actual depth and
+stencil flags. In 11 sampled race frames, all227 single-quad passes disabled
+depth testing, stencil testing and depth writes. These stages spanned25.32ms
+per sampled frame,69.94% of the36.20ms overall GPU list spans. They qualify for
+an unused-depth experiment; this does not mean depth traffic accounts for that
+entire cost. The11 final host blits were the only draws without guest state.
+No query errors or overflow occurred. The15000-present run ended in350.563s,
+with source save and ordinary APK/settings restoration verified. Frame14400
+shows lap2 at89.05s; this partial race is not additional finish coverage.
+
+The native resolution test now includes a depth/stencil preservation oracle:
+depth-tested geometry, blended color-only work, stencil-only masks, selective
+depth clears and repeated transitions at50/100/200% render scale. Vulkan and
+D3D12 pass. Temporary test-only depth loss and stencil loss each fail the
+expected pixel assertion on both backends; restoring the test source restores
+both passing results. This verifies the oracle's sensitivity, not an optimized
+attachment path. Custom/VRM and an explicit assertion that such a path is used
+remain prerequisites for a future candidate. Evidence is in
+`out/continuation-20261002/gpu-pass-depth/eligibility.json` and
+`depth-oracle-validation.json`. Observer APK SHA-256:
+`5c8c00efd64fc21c1ed4c9cb8c0e7abcd656576831539e18e6bfa4fe13c2eda4`.
