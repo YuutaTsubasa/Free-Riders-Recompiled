@@ -517,8 +517,24 @@ static std::string guest_back_chain(uint32_t frame) {
     return text.str();
 }
 
+// Guest entries and loop labels between two calls into the permit. The permit
+// itself reads the clock only on every 64th call, so a handoff or a
+// cancellation is noticed within about 64 * this many entries: roughly 1.6 ms
+// at 256 on a PC that runs ten million entries a second (an estimate), against
+// the 2 ms scheduling quantum. SFR_CHECKPOINT_INTERVAL=N sets it (default 256;
+// 32 was the earlier value) for comparison runs and for devices where another
+// value measures better.
+static uint32_t checkpoint_interval() {
+    static const uint32_t interval = [] {
+        const char* const text = std::getenv("SFR_CHECKPOINT_INTERVAL");
+        const long value = text ? std::strtol(text, nullptr, 10) : 256;
+        return uint32_t(value > 0 && value <= 1'000'000 ? value : 256);
+    }();
+    return interval;
+}
+
 void guest_checkpoint_permit() {
-    guest_thread_state.entry.checkpoint_countdown = 31;
+    guest_thread_state.entry.checkpoint_countdown = checkpoint_interval() - 1;
     if (!execution_permit) throw std::logic_error("guest instruction without execution permit");
     // Validates ownership and cancellation before shared memory access, and
     // hands off only outside a reservation.

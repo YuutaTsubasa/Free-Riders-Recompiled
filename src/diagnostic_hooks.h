@@ -42,7 +42,7 @@ inline bool is_hook(uint32_t address) {
 // because they read what it records.
 extern const bool diagnostic_entries;
 // Generated code checkpoints at every function entry and loop, millions of
-// times a second; the permit needs one of every few dozen to hand off on
+// times a second; the permit needs one of every few hundred to hand off on
 // time and to notice cancellation, so the rest return here, inline.
 void guest_checkpoint_permit();
 
