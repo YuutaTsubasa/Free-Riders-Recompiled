@@ -1658,3 +1658,27 @@ No production hint or manifest change was adopted. Private provenance, logs,
 HUD anchors and comparison are under `out/continuation-20261002/hint-game` and
 `thor-hint-*`. The APK SHA256 is
 `3b205f498b90fd9c0cd0bbcc58d5b034c18ff33a42973a23e6c02f6be5486516`.
+
+### Repeated raster state: frequent, but a small measured cost
+
+A private observer retained every viewport/scissor submission and sampled every
+64th `apply_raster` call on Thor. In Dolphin Resort Standard, presents 13200–14400
+(HUD 00:41.39–01:33.84), it observed 1,034,692 calls; 99.65% matched the preceding
+state and command-list generation. The 16,167 sampled calls averaged 174 ns,
+estimating 0.150 ms per frame, with estimates of 0.116–0.211 ms across 120-frame
+intervals. The instrumented frame mean was 43.715 ms.
+
+Repeated state is therefore not evidence of a large performance opportunity.
+These wall-clock samples include timer overhead and OS scheduling, and periodic
+sampling can be biased. Equality also does not establish safe reuse around all
+external custom/blit operations. No raster cache was implemented, and no FPS
+improvement is claimed. A future cache would need restoration regressions for
+new lists, clears, resolution scaling, avatars and presentation.
+
+The normal-time, 720p, audio-enabled run reached its 15000-present limit after
+355.922 seconds, with lap 2 visible; this was not a complete-race test. The source
+save was unchanged, and the exact normal APK and launch settings were restored.
+Private observer source/diff, hashes, screenshots and reproducible summary are
+under `out/continuation-20261002/raster-probe` and `thor-raster-observed`.
+APK SHA-256:
+`1286f9b4e3be703920f8fe8e99529dec30162b1c9a5f629567ee72beecdb18dc`.
