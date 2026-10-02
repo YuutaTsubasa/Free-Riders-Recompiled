@@ -1682,3 +1682,65 @@ Private observer source/diff, hashes, screenshots and reproducible summary are
 under `out/continuation-20261002/raster-probe` and `thor-raster-observed`.
 APK SHA-256:
 `1286f9b4e3be703920f8fe8e99529dec30162b1c9a5f629567ee72beecdb18dc`.
+
+
+### D3D12 distinct-course regression at normal elapsed time
+
+The renderer allocation-lifetime correction was exercised on RTX 4090 / D3D12
+at a 60 Hz cap, 720p and normal elapsed race time with audio enabled. One process
+completed Frozen Forest Standard (Replay at present 34800), returned to course
+selection, selected Dolphin Resort Standard (40800), and reached its Replay
+screen (67800). The 80000-present test ended through the expected present-limit
+stop after 1335.422 seconds, without its host timeout. The independent source
+save was unchanged. Executable SHA-256:
+`c116aa9662e44e8d802420535c2f1a2d0bbd997f4378dd5cb2b05c0b25092844`.
+
+This adds distinct-course D3D12 coverage to the earlier Vulkan transition and
+Thor course completions. The previous D3D12 run had selected Frozen twice;
+that result remains a same-course reload test. This is functional coverage,
+not an FPS benchmark, exhaustive image/audio validation, or reproduction of
+the reporter's Issue #31 crash. Provenance, raw log, visual evidence and source
+hash checks are in ignored `out/continuation-20261002/resolve-two-courses-d3d12-route2`.
+
+
+### GPU timeline spans: low CPU fence waits do not rule out GPU cost
+
+A private Thor observer adds two Vulkan timestamps around each existing
+presentation command list. Its two query pools follow the existing list/fence
+slots. Query reset happens before a render pass, results are read without WAIT
+only after the corresponding existing fence wait, and no draw or synchronization
+wait is removed. Queue timestamps report 48 valid bits and a 52.0833 ns period;
+there were zero query errors in either run.
+
+Two runs used the same observer APK, normal elapsed time, audio and independent
+Dolphin Resort Standard save copies. Physical internal resolutions were verified
+in the log. Complete 120-present intervals were selected inside HUD seconds
+45–80 using screenshot anchors; anchor offset spreads were 0.056 s and 0.004 s.
+
+| Internal resolution | GPU list span/present | Frame time | CPU fence wait | Draws/frame |
+| --- | ---: | ---: | ---: | ---: |
+| 1280x720 | 39.63 ms | 48.45 ms | 0.309 ms | 1119.5 |
+| 640x360 | 26.19 ms | 42.62 ms | 0.037 ms | 838.2 |
+
+Substantial GPU timeline spans coexist with small CPU waits because work can
+execute while the CPU records the next frame. The earlier low `gpu_wait_ms`
+observations therefore do not establish a CPU-only bottleneck. The lower
+resolution sample has shorter GPU spans, but also a different position/opponent
+and draw workload. These two observations do not establish a reproducible FPS
+improvement or quantify the benefit of lowering resolution alone.
+
+Bottom-of-pipe timestamp spans can include stalls and instrumentation effects;
+they exclude independent upload/other queue lists and are not exact GPU
+utilization. CPU stage timers overlap these spans and must not be added. Further
+work should attribute GPU passes/shaders and compare matched workloads before
+adopting an optimization. No runtime optimization, timestamp observer, or default
+resolution change was added to production.
+
+Both runs reached their 15000-present bound and showed lap progression, not race
+completion. The exact ordinary APK was restored and hash-verified after each,
+with original fixture saves unchanged and no debug override left. Private source,
+diff, build/APK validation, raw logs, screenshots, and reproducible summaries are
+under ignored `out/continuation-20261002/gpu-time-probe`, `thor-gpu-time-observed`
+and `thor-gpu-time-half`; `compare-gpu-time-resolution.py` reproduces the table.
+Observer APK SHA-256:
+`96e9b2480951aa3cdad888ef6e98673fcf846f14945f1630eb1c70eaad4b3663`.
