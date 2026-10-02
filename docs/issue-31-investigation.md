@@ -875,3 +875,27 @@ window to correct a trace-only pointer; it is excluded from gameplay evidence.
 No production input or mission-state change was made. Artifacts are under
 `out/continuation-20261002/gp-m3-*`, with private builder diffs and provenance in
 `grind-observer-build` and `grind-boundary-v2-build`.
+
+The subsequent state probe identifies the actual virtual filter as `82299EB0`.
+All three observed jump releases enter it with `0x200` and leave with zero;
+owner+1388 is zero in all 64 sampled rows. The original zero-state branch
+explicitly removes jump and two crouch bits. The normalized source used by the
+build contains the counted conditional branches needed to select that branch.
+This establishes where the suppression happens, not that the game's condition
+is incorrect.
+
+Three ordinary steering trials then hold full right for 0.25, 0.8 and 0.45
+seconds before the first rail, with identical A-release timings. Screenshots
+show the short input still passing left of the entrance, the longest hitting
+the right barrier, and the middle duration passing to the right. The last
+trial remains at 0/3 at present 12420. These have not established a valid
+rail-entry attempt, so changing the original jump gate would be unjustified.
+The script currently supports full stick directions only; further unattended
+route work needs more precise input or measured entrance geometry rather than
+repeating coarse steering guesses.
+
+The state probe and three route trials all stop at 12420 presents, taking
+209.015, 209.156, 209.047 and 209.172 seconds respectively, with no watchdog
+timeouts and unchanged source saves. The private observer's source, object and
+executable hashes are preserved alongside each run. Ordinary game output
+hashes are checked again after all runs. No production behavior was changed.
