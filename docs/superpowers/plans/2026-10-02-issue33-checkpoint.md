@@ -126,3 +126,28 @@ Fresh verification confirms case binaries/settings/fixtures, unchanged ordinary
 source/object/executable hashes, and no game process. Default32 retained.
 Next: D3D12 active input/audio and slower Windows host when available. Do not
 repeat completed stationary sequences or infer Android gains. No publication.
+
+## D3D12 functional follow-up, completed 15:32 UTC
+
+- [x] Run existing private observer with D3D12 at32 and256, sequentially, using
+      new independent save/cache directories and the unchanged observer binary.
+- [x] Inspect stationary/moving screenshots; analyze all18 transitions against
+      both original consumers and audio health counters. Preserve all four
+      backend/interval analyses and actual wall-time/present-count distributions.
+- [x] Verify hashes, isolation, backend selection, bounded exits and no remaining
+      game process; record evidence and remaining limitations locally.
+
+Runs finish342.187/342.062s without timeout; all18 edges reach both consumers.
+Actor nominal-to-consumer stationary median/max32=7.947/14.119ms,
+256=10.017/11.787ms; moving32=7.749/12.021ms,256=7.766/12.278ms.
+Firstbaselineedge crosses2presents in14.034ms; otherbaseline/candidateedges<=1.
+Do not impose Vulkan's observed1present bound on a different backend; retain
+allraw data. No clear responsiveness improvement claim from this small sample.
+Each121audio reports: zero engine glitches/empty/fullqueue/submissionfailures/
+nonfinite. Sampledqueue1–3 both; overunity562/1207 not itself corruption.
+All7newcases verified by verify-vulkan-observer.py --include-d3d12, sourcesave
+andordinaryhashesunchanged; noactivegame. Sourceconsumers/signs/scalespreserved.
+Currenthost performance/functional evidence now covers both graphicsbackends.
+Keepdefault32fornow; next decide Windows default using collectedevidence and
+slowerhostifavailable. Do notrepeat these completed observer/stationary cases.
+Issue31/GP3/Android remain separate; no externalcomment,pushorRelease.

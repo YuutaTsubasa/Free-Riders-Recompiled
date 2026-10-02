@@ -2063,6 +2063,39 @@ Evidence and reproducible analysis are in `issue33/input-audio-vulkan-*`,
 accepts scientific-notation timestamps, including the initial `1e-07` sample;
 no raw samples were removed to pass its common-clock check.
 
-Next validation should cover D3D12 active input/audio and a reachable slower
-Windows host before deciding whether to change a platform default. Android
-evidence remains inconclusive; Issue #31 and GP mission 3 remain separate work.
+The same private observer subsequently completed the D3D12 pair with the same
+script, isolated saves and normal-time settings. Both consumers again receive
+all 18 left/right/release edges:
+
+| Interval | Stationary nominal-to-actor median / maximum | Moving nominal-to-actor median / maximum | First-poll-to-actor maximum |
+| --- | ---: | ---: | ---: |
+| 32 | 7.947 / 14.119 ms | 7.749 / 12.021 ms | 14.034 ms |
+| 256 | 10.017 / 11.787 ms | 7.766 / 12.278 ms | 10.950 ms |
+
+One baseline stationary edge crosses two presents (14.034 ms); the other
+baseline edges and all candidate edges cross at most one. Present counts are
+retained alongside wall-clock times, not treated as a backend-independent
+latency bound. These small samples show no missed edges or obvious delay
+regression; they do not prove improved responsiveness. The stationary median
+is higher in the candidate, while the maxima and moving medians differ in
+other directions. Source-consumer results are recorded separately.
+
+Each D3D12 case has 121 audio reports across 120.126/120.077 seconds, with zero
+engine-glitch increments, empty-queue observations, full-queue drops, failed
+submissions and nonfinite samples. Both sample 1–3 queued buffers. Above-unity
+samples total 562/1207, with peaks 1.642/1.559; different autonomous race paths
+preclude treating these counts as an audio-quality comparison. Screenshots
+confirm stationary speed zero at present 13200 and moving races at 18000.
+Both runs exit at the intended bound (342.187/342.062 seconds).
+
+`verify-vulkan-observer.py --include-d3d12` checks all seven new Vulkan/D3D12
+cases: matching binaries and normalized settings within each group, log hashes,
+actual backend selection, unchanged source fixtures and ordinary build hashes,
+all observed input edges, and no remaining game process. Its report is
+`all-backend-observer-verification.json`; all four observer analyses are kept
+in `input-audio-comparison.json`. Ordinary launch settings remain untouched.
+
+The current-host checks now cover both graphics backends. The production default
+remains 32 pending the Windows default decision; a reachable slower Windows
+host would strengthen coverage. Android evidence remains inconclusive;
+Issue #31 and GP mission 3 remain separate work.
