@@ -742,3 +742,160 @@ This demonstrates a resource-lifetime defect, not the cause of the reporter's
 Grand Prix crashes or bright corners. Reporter logs/screenshots are still needed
 to connect those symptoms to a specific fault. No new release is implied by this
 investigation entry.
+
+The corrected private Windows build subsequently completed Frozen Forest
+Standard and Dolphin Resort Standard in one Vulkan process, with post-race
+Replay screens at presents 34800 and 67800. It ended at its 80000-present bound
+after 820.641 seconds with the source save unchanged. This used fixed-one-frame
+functional timing, so it is neither a performance measurement nor Grand Prix
+progression coverage.
+
+The matching private Android build completed Dolphin Resort Standard under
+normal elapsed-time simulation on AYN Thor, with Replay at present 21600 and a
+bounded exit after 633.609 seconds. The source fixture remained unchanged. Its
+instrumented 13200–17400 window averaged 46.274 ms per present, with a 91.106 ms
+maximum. Course positions and draw counts differ from the earlier baseline;
+this does not establish an improvement or regression. The exact ordinary
+v0.4.6 Android 10+ APK was restored and checked by SHA-256, and `debug.env` was
+removed. Visual verification, provenance, logs and cleanup records are in
+`out/continuation-20261002/resolve-two-courses-vulkan` and
+`out/continuation-20261002/thor-resolve-dolphin`.
+
+The same renderer correction also completes Frozen Forest Standard on Thor
+with normal elapsed-time simulation, 720p and audio enabled. Screenshots show
+lap 3 at present 18000 and Replay at 21600. The run stops normally at its
+24000-present limit after 663.688 seconds; the independent source fixture is
+unchanged. The runner restores the exact ordinary v0.4.6 APK by SHA-256 and
+removes its debug override, with no game process left. Evidence is retained in
+`out/continuation-20261002/thor-resolve-frozen`. This quiet-log functional run
+does not establish an FPS improvement or audio waveform quality.
+
+RTX 4090 D3D12 also completes Frozen Forest Standard twice in one process,
+using normal elapsed-time simulation and a 60 Hz cap. Replay is visible at
+presents 34800 and 67800; the process reaches its 80000-present bound after
+1338.375 seconds without a watchdog timeout, with the source save unchanged.
+The intended second-course command arrived after an early confirmation, so
+both races are Frozen Forest: this verifies reloading the same course, **not**
+D3D12 cross-course coverage. The initial staging attempt omitted the adjacent
+Agility runtime and fell back to Vulkan; it was stopped and excluded. The
+validated run includes the byte-verified runtime and explicitly logs D3D12.
+`out/continuation-20261002/resolve-two-courses-d3d12-runtime` retains exact
+source/binary hashes, screenshots, backend selection and bounded-exit records.
+
+Two further Windows Vulkan mission-2 attempts used the current private renderer,
+normal elapsed time and separate copies of the completed-mission-1 fixture.
+The initial input origin started late and yielded 56/100 rings. Starting the
+script before the observed race start yielded 85/100, with Retry visible at
+present 18000. In the latter run, the countdown decreases from 76.73 to 1.73
+seconds over 4500 presents at the 60 Hz cap. Both runs exit normally at their
+bounds with source saves unchanged. These verify mission entry and failure
+handling, not mission completion, mission 3, or the reporter's crash cause.
+The earlier 87-ring result used fixed-frame timing and is not an A/B comparison.
+Evidence is in `out/continuation-20261002/gp-reach-return-early-run` and
+`gp-reach-aligned`; no mission progress or score was patched.
+
+### Current controller left-reach verification
+
+A private read-only observer on runtime c5e2b00 follows the existing v0.4.6
+controller correction through the original scene-interaction consumer
+`822ACF10`. It records detector output, the consumed history entry, and selected
+scene objects for the live local rider. It forwards the original consumer
+unchanged. Ordinary source/object/executable hashes remain unchanged; the
+instrumented executable is
+`bba93bbe7cf015cfd5883d177a85f476c1246cb51e9613ac81009cd71f3c4a2d`.
+These are functional observations, not performance measurements.
+
+The first normal-time, audio-enabled Vulkan GP mission-2 run reaches 89/100,
+then the normal failure screen. Both primary flags reach the consumer. A
+second independent run holds **only left reach** from present 15080 onward:
+82 sampled consumer rows from 15082 through 15600 all have right-stick X=-1,
+Y=0, with no right-reach flag. The consumer selects a type-1 scene object
+from 15116 through 15379. Screenshots show the left arm extended, pickup effects,
+and the HUD increasing from 65/100 at 15060 to 66 at 15150, 72 at 15240, 82 at 15330,
+and 84 at 15420; the latter also shows an 18-Ring pickup chain. Thus left-side
+pickup works in this tested Tails/Dolphin Resort mission with the existing
+correction. This is not coverage of every stance/course/controller combination
+or proof that the reporter's v0.4.5 crash has been reproduced or resolved.
+
+Both cases use cloned saves, normal race/UI time, audio, a 60 FPS cap and every
+draw. They end at their 20000/15600-present bounds in 335.438/262.156 seconds
+without watchdog timeouts; source saves are unchanged. Evidence, private
+source diff, hashes and settings are under
+`out/continuation-20261002/gp-reach-observed`, `gp-reach-left-confirm`, and
+`reach-observer-build`. The scene-object IDs are interaction paths, not
+individual collectible Ring IDs. No new control patch was made for this probe.
+
+### GP mission 2 completed through ordinary controls
+
+The trace identifies right-side Ring paths in the first section and left-side
+paths later. A third independent run holds right reach from input time 27 to
+42 seconds and left reach from 68 to 80 seconds, keeping the earlier steering
+route. It reaches **110 Rings, mission rank B**, shown at present 17100, then
+saves at 17400 and offers **Next** at 18000. The HUD changes its next target
+from 100 to 150 after passing the first threshold; this is normal score-tier
+progression, not a modified objective.
+
+The test save changes through the game's own save routine, while the source
+fixture remains unchanged. The 20000-present bounded run takes 335.328 seconds
+without a watchdog timeout. Normal source/object/executable hashes are verified
+unchanged again and all three owned test processes have exited. No code, score,
+save-content or game-clock patch was needed to pass this mission. This verifies
+mission 2 completion and saving, not the next mission's load or a complete GP.
+
+`out/continuation-20261002/gp-reach-directed-rows` contains the run, and
+`gp-mission2-completed.json` records the inspected screenshots and new test-save
+hashes. Future GP coverage can clone this save instead of repeating mission 2.
+
+### GP mission 3 entry and input boundary investigation
+
+Cloning that saved progress loads Mission 03, **Grind Challenge**, with Sonic
+and a three-grind objective. A normal-time Vulkan run reaches the normal Retry
+screen without grinding; a second run with three ordinary crouch/release inputs
+also records zero grinds. Both stop at 18000 presents in approximately 302.06
+seconds, without a watchdog timeout or changes to the source save. This covers
+mission entry and failure handling, not mission completion or a full GP.
+
+Private read-only traces narrow the failed jump attempts to the original input
+processing stage. At present 11997, the controller jump detector emits `0x200`
+and that bit survives the original detector-group function `822C5BB0`. After
+the original `822A8AB0` update, the output entry contains zero. Crouch input
+reaches the rider normally. The recorded mask `0x75f8f73f` **includes** `0x200`;
+it does not explain the missing jump. Original state filters `82299EB0` and
+`822A31F0` contain explicit jump suppression keyed by rider state, including
+the halfword at owner+1388. Which filter and condition apply here still needs
+direct observation. The screenshots also leave rail-entry alignment and input
+timing unresolved; this is not evidence that these original gates are wrong.
+
+The corrected boundary probe ends at 12060 presents in 203.110 seconds; the
+earlier producer/consumer probe ends at 13200 in 221.922 seconds. Both use
+normal race/UI time, audio, all draws, independent saves and native/host time
+bounds. Ordinary source, object and executable hashes remain unchanged.
+One intermediate diagnostic run was intentionally stopped before its observation
+window to correct a trace-only pointer; it is excluded from gameplay evidence.
+No production input or mission-state change was made. Artifacts are under
+`out/continuation-20261002/gp-m3-*`, with private builder diffs and provenance in
+`grind-observer-build` and `grind-boundary-v2-build`.
+
+The subsequent state probe identifies the actual virtual filter as `82299EB0`.
+All three observed jump releases enter it with `0x200` and leave with zero;
+owner+1388 is zero in all 64 sampled rows. The original zero-state branch
+explicitly removes jump and two crouch bits. The normalized source used by the
+build contains the counted conditional branches needed to select that branch.
+This establishes where the suppression happens, not that the game's condition
+is incorrect.
+
+Three ordinary steering trials then hold full right for 0.25, 0.8 and 0.45
+seconds before the first rail, with identical A-release timings. Screenshots
+show the short input still passing left of the entrance, the longest hitting
+the right barrier, and the middle duration passing to the right. The last
+trial remains at 0/3 at present 12420. These have not established a valid
+rail-entry attempt, so changing the original jump gate would be unjustified.
+The script currently supports full stick directions only; further unattended
+route work needs more precise input or measured entrance geometry rather than
+repeating coarse steering guesses.
+
+The state probe and three route trials all stop at 12420 presents, taking
+209.015, 209.156, 209.047 and 209.172 seconds respectively, with no watchdog
+timeouts and unchanged source saves. The private observer's source, object and
+executable hashes are preserved alongside each run. Ordinary game output
+hashes are checked again after all runs. No production behavior was changed.

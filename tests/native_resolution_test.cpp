@@ -323,6 +323,102 @@ float4 shaderMain(float4 position : SV_Position, float red : TEXCOORD0) : SV_Tar
     }
     environment("SFR_CONSTANT_UPLOAD_REUSE", "0");
 }
+// Preserve depth/stencil across color-only work before attempting to remove
+// unused attachments from those draws. This is also an oracle for alternating
+// target modes: a color-only draw may still carry an enabled depth-write bit.
+void depth_stencil_preservation_readback(sfr::NativeGraphics& graphics, const fs::path& directory,
+                                       const std::string& header) {
+    const auto vertex = compile(graphics, directory, header, R"(
+#ifndef __spirv__
+cbuffer VSConstants : register(b0, space4) { float4 vsConstants[256]; };
+#endif
+float4 shaderMain(uint id : SV_VertexID) : SV_Position {
+ float2 p[3] = {float2(-1,-1), float2(-1,3), float2(3,-1)};
+#ifdef __spirv__
+ float z = asfloat(vk::RawBufferLoad<uint>(g_PushConstants.VertexShaderConstants + 0));
+#else
+ float z = vsConstants[0].x;
+#endif
+ return float4(p[id],z,1);
+})", true);
+    const auto pixel = compile(graphics, directory, header, R"(
+#ifndef __spirv__
+cbuffer PSConstants : register(b1, space4) { float4 psConstants[256]; };
+#endif
+float4 shaderMain() : SV_Target {
+#ifdef __spirv__
+ return asfloat(vk::RawBufferLoad<uint4>(g_PushConstants.PixelShaderConstants + 0));
+#else
+ return psConstants[0];
+#endif
+})", false);
+    for (uint32_t percent : {50u, 100u, 200u}) {
+        environment("SFR_RENDER_SCALE", std::to_string(percent));
+        sfr::NativePresentation presentation(graphics, 16, 16);
+        sfr::NativeRenderer renderer(graphics, presentation);
+        sfr::NativeDraw draw;
+        draw.vertex_count = 3; draw.stride = 4;
+        const std::array<uint8_t, 12> vertices{};
+        draw.vertices = vertices; draw.vertex_shader = vertex.get(); draw.pixel_shader = pixel.get();
+        const auto paint = [&](float z, std::array<float, 4> color) {
+            draw.vertex_constants[0] = std::bit_cast<uint32_t>(z);
+            for (size_t i=0; i<color.size(); ++i)
+                draw.pixel_constants[i] = std::bit_cast<uint32_t>(color[i]);
+            renderer.draw(draw);
+        };
+        const auto check = [&](std::array<uint8_t, 4> left, std::array<uint8_t, 4> right) {
+            const auto pixels = presentation.readback_color();
+            const auto extent = presentation.render_width();
+            for (uint32_t y=0; y<extent; ++y) for (uint32_t x=0; x<extent; ++x) {
+                const auto& expected = x < extent/2 ? left : right;
+                for (size_t channel=0; channel<4; ++channel)
+                    require(std::abs(int(pixels[(y*extent+x)*4+channel])-int(expected[channel]))<=1,
+                            "depth/stencil contents survive color-only draws and attachment transitions");
+            }
+        };
+        for (unsigned cycle=0; cycle<3; ++cycle) {
+            sfr::NativeClear clear{};
+            clear.color = clear.depth = clear.stencil = true;
+            clear.color_value = {0,0,0,1};
+            presentation.clear(clear);
+            presentation.set_raster_state({0,0,16,16}, {0,0,8,16});
+            draw.depth_enabled = draw.depth_write = draw.stencil_enabled = true;
+            draw.stencil_reference = 1;
+            draw.stencil_front.compareFunction = draw.stencil_back.compareFunction = plume::RenderComparisonFunction::ALWAYS;
+            draw.stencil_front.passOp = draw.stencil_back.passOp = plume::RenderStencilOp::REPLACE;
+            paint(0.25f, {1,0,0,1});
+            presentation.set_raster_state({0,0,16,16}, {0,0,16,16});
+            draw.depth_enabled = draw.stencil_enabled = false;
+            // Deliberately keep depth_write true: without a depth test this
+            // color-only draw must not replace the stored depth with zero.
+            draw.blend.blendEnabled = true;
+            draw.blend.srcBlend = plume::RenderBlend::SRC_ALPHA;
+            draw.blend.dstBlend = plume::RenderBlend::INV_SRC_ALPHA;
+            paint(0.0f, {0,0,1,0.5f});
+            draw.blend.blendEnabled = false;
+            draw.depth_enabled = true; draw.depth_write = false;
+            paint(0.75f, {0,1,0,1});
+            check({128,0,128,128}, {0,255,0,255});
+            draw.depth_enabled = false; draw.stencil_enabled = true;
+            draw.stencil_front.compareFunction = draw.stencil_back.compareFunction = plume::RenderComparisonFunction::EQUAL;
+            draw.stencil_front.passOp = draw.stencil_back.passOp = plume::RenderStencilOp::KEEP;
+            paint(0.0f, {1,1,0,1});
+            check({0,255,255,255}, {0,255,0,255});
+            draw.stencil_enabled = false;
+            paint(0.0f, {0,0,1,1});
+            clear.color = clear.stencil = false; clear.depth = true;
+            presentation.clear(clear);
+            draw.depth_enabled = true;
+            paint(0.75f, {1,1,1,1});
+            check({255,255,255,255}, {255,255,255,255});
+            draw.depth_enabled = false; draw.stencil_enabled = true;
+            paint(0.0f, {1,0,0,1});
+            check({0,0,255,255}, {255,255,255,255});
+            draw.stencil_enabled = false;
+        }
+        std::cerr << "DEPTH_STENCIL_PRESERVATION scale=" << percent << " cycles=3 passed\n";
+    }
+}
 void run() {
     environment("SFR_GPU_PIPELINE", "1");
     const fs::path directory = fs::temp_directory_path() / ("sfr-resolution-" +
@@ -355,6 +451,7 @@ uint g_SpecConstants() { return 0; }
 )";
     sfr::NativeGraphics graphics;
     graphics.initialize();
+    depth_stencil_preservation_readback(graphics, directory, header);
     resolved_allocation_reuse_readback(graphics, directory, header);
     batched_texture_readback(graphics, directory, header);
     const auto vertex = compile(graphics, directory, header, R"(
