@@ -1079,6 +1079,17 @@ uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
 
 void NativeRenderer::invalidate(uint32_t physical, uint32_t size) {
     const uint64_t begin = physical, end = uint64_t(physical) + size;
+    // Whole-allocation frees also retire resolves whose destination begins
+    // inside that allocation. Keep their objects/descriptors alive for draws
+    // already recorded or submitted, just like ordinary texture versions.
+    // Only the destination base is known here, not its guest byte extent.
+    for (auto it = impl_->resolved_targets.lower_bound(physical);
+         it != impl_->resolved_targets.end() && uint64_t(it->first) < end;) {
+        impl_->resolved_texture_indices.reset(it->second);
+        impl_->released_texture_indices.push_back(it->second);
+        ++impl_->texture_generation;
+        it = impl_->resolved_targets.erase(it);
+    }
     for (auto it = impl_->texture_ranges.begin(); it != impl_->texture_ranges.end();) {
         if (it->second.begin < end && begin < it->second.end) {
             impl_->dynamic_ranges.insert(it->second.begin);
