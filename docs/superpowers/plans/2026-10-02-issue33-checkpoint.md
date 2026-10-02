@@ -97,3 +97,32 @@ noownedgamesremain. Private delayed-urgentmutant failsnewassertion; production
 guest_entry_state+guest_execution2/2pass3.27s. Onlytest/documentationchanges.
 Next: Vulkan throughput and activeinput/audio beforeWindowsdefaultdecision;
 no broaderlatency/Android/Issue31fixclaim. Default32retained, nopublication.
+
+## Vulkan comparison and private functional observer
+
+- [x] Repeat the same stationary 32/256/32 protocol using Vulkan and the same
+      bounded executable. Inspect fresh HUD anchors and all preselected windows.
+- [x] Prepare a private observer for wall-clock scripted controls, original lean
+      consumer transitions, XAudio2 health and nonfinite audio samples. Build
+      only after throughput runs finish; preserve ordinary sources/objects.
+- [x] Record current evidence and remaining limitations. Private observer builds
+      are preparation, not proof of input/audio behavior until their runs pass.
+
+Observer design and API references are in ignored
+`out/continuation-20261002/issue33/input-audio-probe-design.md`. No production
+default or audio/input behavior change is part of this measurement step.
+
+Completed 15:15 UTC: Vulkan stationary32/256/32 gives78.474/80.585/77.257FPS
+(HUD45–80), candidate+2.69/+4.31percent with approximately matched draws.
+Both other predefined windows are positive. Separate same-binary private Vulkan
+input/audio32/256 runs end342.329/342.141s; all18 scripted transitions reach both
+original consumers with correct signs/scales/releases, within one present of
+first logged polling. Nominal-to-actor maxima15.393/14.003ms. Audio121reports
+percase/~120.26s: zero engine-glitch increments, empty/full queue observations,
+submission failures and nonfinite samples. Not physical HID/display latency or
+audible-quality proof. Scientific-notation parser corrected after the initial
+1e-07 sample exposed a parsing error; raw evidence retained, clock check passes.
+Fresh verification confirms case binaries/settings/fixtures, unchanged ordinary
+source/object/executable hashes, and no game process. Default32 retained.
+Next: D3D12 active input/audio and slower Windows host when available. Do not
+repeat completed stationary sequences or infer Android gains. No publication.

@@ -2000,7 +2000,69 @@ assertion; the unchanged production scheduler passes `guest_entry_state` and
 entry-count ordering, not a wall-clock input/audio latency bound, reservation
 duration bound or audible playback quality.
 
-Default 32 still applies. Before adopting a Windows default, measure the current
-Vulkan path and active input/audio behavior; D3D12 stationary throughput alone
-does not establish that broader result. These experiments do not change the
+Default 32 still applies. Vulkan and active input/audio follow-ups are documented
+below; D3D12 stationary throughput alone does not establish that broader result.
+These experiments do not change the
 inconclusive Android evidence or resolve the reporter's separate Issue #31 crash.
+
+The same stationary protocol was then run on Windows Vulkan (32/256/32), using
+the same executable as the D3D12 experiments. HUD seconds 45–80 gave:
+
+| Checkpoint interval | Vulkan FPS | P95 frame time | Draws/frame |
+| --- | ---: | ---: | ---: |
+| 32 before | 78.474 | 14.167 ms | 670.9 |
+| 256 | 80.585 | 13.821 ms | 667.8 |
+| 32 after | 77.257 | 14.268 ms | 670.8 |
+
+The candidate is 2.69% and 4.31% faster than the baselines; the baselines differ
+by 1.58%. Both other predefined windows are positive (2.04–4.38%). Candidate
+draw count is about 0.46% lower, so this is still approximate workload matching.
+All three bounded runs finish in 342.468/342.266/342.422 seconds. Nine screenshots
+confirm the stationary scene and speed zero; HUD/host offsets agree within
+0.017s. Selected frames have zero pacing waits, no clock clamps and no frames
+over 50ms; audio submission cadence is 187.48–187.52 blocks/s. Logs, anchors and
+reproducible analysis are under `issue33/windows-stationary-vulkan-*` and
+`stationary-vulkan-comparison.json` in the continuation evidence directory.
+
+This supports investigating a Windows checkpoint change on both backends, but
+is one Vulkan sequence on this host. It does not establish lower-end Windows,
+Android or physical controller latency. The default remains 32.
+
+A separate private observer then compared intervals 32 and 256 on Vulkan with
+normal time, audio and all draws. Ordinary scripted controls use wall-clock
+timing: nine left/right/release transitions while braking at the start line,
+then nine after releasing the brake. Both original lean consumers received all
+18 transitions with the expected signs, scales and neutral releases. Each
+transition reached each consumer within one present after the first logged poll.
+
+| Interval | Stationary nominal-to-consumer median / maximum | Moving nominal-to-consumer median / maximum | First-poll-to-consumer maximum |
+| --- | ---: | ---: | ---: |
+| 32 | 7.057 / 15.039 ms | 12.063 / 15.393 ms | 13.889 ms |
+| 256 | 7.628 / 14.003 ms | 10.705 / 13.329 ms | 7.145 ms |
+
+Values use the actor consumer; the separate source consumer follows the same
+transitions about 0.014–0.024 ms earlier. This small sample checks synthetic
+script-to-consumer behavior, not physical controller or display latency, and
+does not establish that the candidate improves responsiveness. Screenshots
+confirm the stationary start and subsequent moving race. Instrumented runs
+are not used for throughput comparisons.
+
+Each case contains 121 audio-health reports across about 120.26 seconds. Both
+have zero XAudio2 engine-glitch increments, empty-queue observations, full-queue
+drops, failed submissions and nonfinite samples. Sampled queued buffers range
+from 3–5 at interval 32 and 1–3 at 256; these observations do not prove a latency
+improvement. Above-unity samples occur in both runs (498/610; peaks 1.577/1.582),
+which alone does not establish corruption in floating-point mixed audio.
+These counters do not establish audible correctness of the game's samples.
+
+Both runs finish at the expected bound (342.329/342.141 seconds). Binary and
+normalized settings match within the pair; source saves, ordinary sources,
+objects and executable hashes are unchanged. No test game process remains.
+Evidence and reproducible analysis are in `issue33/input-audio-vulkan-*`,
+`analyze-input-audio.py` and `vulkan-observer-verification.json`. The analyzer
+accepts scientific-notation timestamps, including the initial `1e-07` sample;
+no raw samples were removed to pass its common-clock check.
+
+Next validation should cover D3D12 active input/audio and a reachable slower
+Windows host before deciding whether to change a platform default. Android
+evidence remains inconclusive; Issue #31 and GP mission 3 remain separate work.
