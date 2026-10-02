@@ -2211,5 +2211,11 @@ Independent scope, correctness and measurement reviews support the narrow
 preflight change. The promoted source was freshly compiled against the four
 standalone memory oracles and exactly matches the original baseline results.
 This evidence covers one stationary Dolphin Resort scene on Ally X, not every
-course or Android. The D3D12 worker budget remains unchanged. A separate
-ordered special-word lookup is still a private experiment.
+course or Android. The D3D12 worker budget remains unchanged.
+
+A separate ordered special-word lookup passed correctness tests but is **not
+accepted**: its main CPU/frame is 9.4565 ms between original controls at 9.4412
+and 9.5359 ms, so no benefit beyond drift is established. Its 74.36 FPS also
+falls too close to the 74.19/73.49 FPS controls to support integration. The
+original lookup remains in production; simpler asymptotic complexity alone
+does not demonstrate a gameplay gain.
