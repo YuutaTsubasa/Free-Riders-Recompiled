@@ -760,3 +760,24 @@ v0.4.6 Android 10+ APK was restored and checked by SHA-256, and `debug.env` was
 removed. Visual verification, provenance, logs and cleanup records are in
 `out/continuation-20261002/resolve-two-courses-vulkan` and
 `out/continuation-20261002/thor-resolve-dolphin`.
+
+The same renderer correction also completes Frozen Forest Standard on Thor
+with normal elapsed-time simulation, 720p and audio enabled. Screenshots show
+lap 3 at present 18000 and Replay at 21600. The run stops normally at its
+24000-present limit after 663.688 seconds; the independent source fixture is
+unchanged. The runner restores the exact ordinary v0.4.6 APK by SHA-256 and
+removes its debug override, with no game process left. Evidence is retained in
+`out/continuation-20261002/thor-resolve-frozen`. This quiet-log functional run
+does not establish an FPS improvement or audio waveform quality.
+
+RTX 4090 D3D12 also completes Frozen Forest Standard twice in one process,
+using normal elapsed-time simulation and a 60 Hz cap. Replay is visible at
+presents 34800 and 67800; the process reaches its 80000-present bound after
+1338.375 seconds without a watchdog timeout, with the source save unchanged.
+The intended second-course command arrived after an early confirmation, so
+both races are Frozen Forest: this verifies reloading the same course, **not**
+D3D12 cross-course coverage. The initial staging attempt omitted the adjacent
+Agility runtime and fell back to Vulkan; it was stopped and excluded. The
+validated run includes the byte-verified runtime and explicitly logs D3D12.
+`out/continuation-20261002/resolve-two-courses-d3d12-runtime` retains exact
+source/binary hashes, screenshots, backend selection and bounded-exit records.
