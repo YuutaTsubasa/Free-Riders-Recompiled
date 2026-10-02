@@ -117,6 +117,8 @@ with [docs/progress.md](docs/progress.md).
   Reduced ARM64 movie-decoding overhead with faster vector memory operations. On the tested AYN Thor, maximum sampled Intro video delay fell from several seconds to under one second, while race timing remained correct. Some playback delay may remain on other devices.
 - [v0.4.6 — Course stability and handheld improvements](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.4.6)
   Fixed low-frame-rate traversal failures in Frozen Forest, Final Factory, Metropolis Speedway and Forgotten Tomb, plus loading and long-session stability issues. Improved controller steering and side reach, Android rotation recovery, race UI timing and texture handling. Added Android diagnostic ZIP export and further CPU/rendering optimizations; performance still varies by device.
+- [v0.4.7 — Windows CPU optimizations and rendering stability](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.4.7)
+  Reduced Windows guest checkpoint overhead and added D3D12 draw recording on a render thread. Fixed stale resolved textures when guest memory is reused and improved cleanup after rendering errors. Added isolated benchmark tooling and expanded rendering regression coverage. Vulkan retains synchronous recording by default; Android performance gains are not established by this release.
 
 ## System Requirements
 

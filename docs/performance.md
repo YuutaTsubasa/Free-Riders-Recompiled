@@ -1339,7 +1339,7 @@ The range change improved maximum steering but the user still reported delayed r
 
 The new tests failed before the corresponding overrides, then passed. They cover reversal/release/partial input, both player routes, the downstream steering result bytes, Camera/controller coexistence and sensor fallback. Windows and Android builds pass; existing compiler warnings remain.
 
-Issue #31 also reports Windows Frozen Forest and intermittent World Grand Prix crashes, bright corners and failed left-side ring reach. The reach path had a concrete asymmetric bug: `RaceInput::write` overwrites left wrist X (+96) and other left-arm coordinates, but the native CatchLR/Catch detectors still interpreted them as geometry. Controller-specific adapters now emit the original left/right flags from the right stick, preserving Camera/Kinect geometry detection. Regression tests cover both detectors, both players, neutral/deadzone/arms-up and preservation of unrelated result flags. Actual successful ring collection still needs a gameplay check.
+Issue #31 also reports Windows Frozen Forest and intermittent World Grand Prix crashes, bright corners and failed left-side ring reach. The reach path had a concrete asymmetric bug: `RaceInput::write` overwrites left wrist X (+96) and other left-arm coordinates, but the native CatchLR/Catch detectors still interpreted them as geometry. Controller-specific adapters now emit the original left/right flags from the right stick, preserving Camera/Kinect geometry detection. Regression tests cover both detectors, both players, neutral/deadzone/arms-up and preservation of unrelated result flags. A later normal-time Windows gameplay trace confirms left-side pickups, including an 18-Ring chain, and a directed-input run completes GP mission 2 with 110 Rings / B rank. See the current controller reach and GP completion evidence in `docs/issue-31-investigation.md`; other courses, stances and the reporter's crash remain separate coverage gaps.
 
 The crash and brightness reports have no attached log or screenshot. The existing offline-presence fix was already included in v0.4.5. A possible repeated-course resource issue is the renderer's retained `resolved_targets` map (full-resolution textures per physical resolve address); this is a code lead, not an established cause of #31. Confirm with a failing `game.log`, settings, GPU/API and the exact course/mode/mission. On Windows the next launch replaces `game.log`, so preserve it immediately after the crash. The offscreen target aliasing and depth-resolve limitations likewise need a screenshot/API comparison before attributing the bright corners to a particular pass.
 
@@ -1582,3 +1582,528 @@ pass; this is a long-session stability fix, not a measured frame-rate gain.
 The GP mission-2 retry stress stayed below the old quota (highest guest ID 41),
 so it does not attribute the reporter's GP crash to this defect. See
 [the investigation](issue-31-investigation.md) for reproduction and limits.
+
+### Guarded matrix reads: no demonstrated race improvement
+
+A private replacement of `82534038` preserved its scalar load/store order,
+floating-point operations, checkpoints and callback. Only aligned 4x4 source
+reads on a complete ordinary page, under non-detached guest execution, used
+a shared range check. All other accesses retained their original checks.
+The experiment passes the 140 independent contract cases plus 768 boundary,
+448 special-memory and eight real slow-save prologue-fault comparisons on
+Windows and Thor. These fixtures do not replace testing the actual game.
+
+The strict guard reduced standalone ARM64 call time by 4.81%, 11.90% and
+23.70% for one, four and 64 matrices. The unchanged 3x3 control varied by
+under 0.70%. This is not a frame-rate result: the original routine accounted
+for only 5.08% inclusive main-thread CPU in the earlier game profile.
+
+An original/candidate/original comparison then used the same private APK,
+Dolphin Resort Standard, 720p, normal elapsed race time, audio enabled and
+independent copies of the same save fixture. Screenshots aligned each sample
+to HUD seconds 20–80; measured HUD/wall-time anchor offsets differed by less
+than 0.08 seconds within each run. No drawing was skipped.
+
+| Run | Average FPS | Average frame | p95 frame | Draws/frame |
+|---|---:|---:|---:|---:|
+| Original A | 21.41 | 46.71 ms | 63.70 ms | 901.6 |
+| Guarded reads B | 21.81 | 45.85 ms | 61.10 ms | 869.6 |
+| Original A repeat | 22.02 | 45.41 ms | 61.19 ms | 863.9 |
+
+The candidate is within baseline variation. Opponent, item and course-position
+differences also change the draw workload. No whole-game speedup or stall
+reduction is established, so this replacement is **not adopted**. All three
+runs reached the 16200-present bound normally; these are sampled races, not
+three verified race completions. Each source save was unchanged and the exact
+ordinary v0.4.6 APK and normal launch settings were restored after each run.
+
+Private APK SHA-256:
+`8bc47978cab7668ab139705e803ed97959939d455e897b582717ea4e23d4b09f`.
+Reproducible comparison, screenshot anchors, library/source hashes and raw
+logs are retained in ignored `out/continuation-20261002/matrix-game` and the
+three `thor-matrix-*` directories. The separate renderer lifetime correction
+is present in both A and B, so it is not the variable tested here.
+
+### Android performance-hint experiment (not adopted)
+
+A private Thor / API 33 platform probe could create a Performance Hint session
+with a preferred update period of 16,666,666 ns. GameManager returned UNSUPPORTED
+at probe startup both with and without the manifest game category. Neither
+observation establishes a performance benefit or permanent device capability.
+
+A separate same-APK off/on/off comparison reported measured main-thread work
+to Android, using a 16.67 ms target. The work interval excluded GPU presentation,
+frame pacing and screenshots. Only API 33 functions resolved dynamically were
+used; the API 29 library acquired no hard Performance Hint imports. The normal
+clock, audio, rendering quality, affinity and power-mode settings were retained.
+
+| Main-thread hints | FPS | Mean frame | p95 frame | Draws/frame |
+| --- | ---: | ---: | ---: | ---: |
+| Off A1 | 21.88 | 45.71 ms | 62.73 ms | 892.1 |
+| On B | 21.64 | 46.21 ms | 61.95 ms | 912.6 |
+| Off A2 | 21.44 | 46.65 ms | 61.42 ms | 922.7 |
+
+Screenshots align Dolphin Resort Standard at HUD 20–80 seconds, with clock
+anchor spread below 0.07 s in each run. Draw workloads differ, and the candidate
+falls inside baseline variation: no FPS improvement is established. All 14,999
+hint reports succeeded, the session closed, and frame-boundary CPU samples
+still rarely landed on CPU 7. API success alone is insufficient reason to
+adopt the integration.
+Battery temperatures were 34–35 C; no usable thermal-HAL readings were available.
+
+All three runs reached the 15000-present limit with independent saves unchanged;
+lap progression is verified, race completion is not. The exact normal v0.4.6 APK
+was restored and verified after each run, with no debug.env or game process left.
+No production hint or manifest change was adopted. Private provenance, logs,
+HUD anchors and comparison are under `out/continuation-20261002/hint-game` and
+`thor-hint-*`. The APK SHA256 is
+`3b205f498b90fd9c0cd0bbcc58d5b034c18ff33a42973a23e6c02f6be5486516`.
+
+### Repeated raster state: frequent, but a small measured cost
+
+A private observer retained every viewport/scissor submission and sampled every
+64th `apply_raster` call on Thor. In Dolphin Resort Standard, presents 13200–14400
+(HUD 00:41.39–01:33.84), it observed 1,034,692 calls; 99.65% matched the preceding
+state and command-list generation. The 16,167 sampled calls averaged 174 ns,
+estimating 0.150 ms per frame, with estimates of 0.116–0.211 ms across 120-frame
+intervals. The instrumented frame mean was 43.715 ms.
+
+Repeated state is therefore not evidence of a large performance opportunity.
+These wall-clock samples include timer overhead and OS scheduling, and periodic
+sampling can be biased. Equality also does not establish safe reuse around all
+external custom/blit operations. No raster cache was implemented, and no FPS
+improvement is claimed. A future cache would need restoration regressions for
+new lists, clears, resolution scaling, avatars and presentation.
+
+The normal-time, 720p, audio-enabled run reached its 15000-present limit after
+355.922 seconds, with lap 2 visible; this was not a complete-race test. The source
+save was unchanged, and the exact normal APK and launch settings were restored.
+Private observer source/diff, hashes, screenshots and reproducible summary are
+under `out/continuation-20261002/raster-probe` and `thor-raster-observed`.
+APK SHA-256:
+`1286f9b4e3be703920f8fe8e99529dec30162b1c9a5f629567ee72beecdb18dc`.
+
+
+### D3D12 distinct-course regression at normal elapsed time
+
+The renderer allocation-lifetime correction was exercised on RTX 4090 / D3D12
+at a 60 Hz cap, 720p and normal elapsed race time with audio enabled. One process
+completed Frozen Forest Standard (Replay at present 34800), returned to course
+selection, selected Dolphin Resort Standard (40800), and reached its Replay
+screen (67800). The 80000-present test ended through the expected present-limit
+stop after 1335.422 seconds, without its host timeout. The independent source
+save was unchanged. Executable SHA-256:
+`c116aa9662e44e8d802420535c2f1a2d0bbd997f4378dd5cb2b05c0b25092844`.
+
+This adds distinct-course D3D12 coverage to the earlier Vulkan transition and
+Thor course completions. The previous D3D12 run had selected Frozen twice;
+that result remains a same-course reload test. This is functional coverage,
+not an FPS benchmark, exhaustive image/audio validation, or reproduction of
+the reporter's Issue #31 crash. Provenance, raw log, visual evidence and source
+hash checks are in ignored `out/continuation-20261002/resolve-two-courses-d3d12-route2`.
+
+
+### GPU timeline spans: low CPU fence waits do not rule out GPU cost
+
+A private Thor observer adds two Vulkan timestamps around each existing
+presentation command list. Its two query pools follow the existing list/fence
+slots. Query reset happens before a render pass, results are read without WAIT
+only after the corresponding existing fence wait, and no draw or synchronization
+wait is removed. Queue timestamps report 48 valid bits and a 52.0833 ns period;
+there were zero query errors in either run.
+
+Two runs used the same observer APK, normal elapsed time, audio and independent
+Dolphin Resort Standard save copies. Physical internal resolutions were verified
+in the log. Complete 120-present intervals were selected inside HUD seconds
+45–80 using screenshot anchors; anchor offset spreads were 0.056 s and 0.004 s.
+
+| Internal resolution | GPU list span/present | Frame time | CPU fence wait | Draws/frame |
+| --- | ---: | ---: | ---: | ---: |
+| 1280x720 | 39.63 ms | 48.45 ms | 0.309 ms | 1119.5 |
+| 640x360 | 26.19 ms | 42.62 ms | 0.037 ms | 838.2 |
+
+Substantial GPU timeline spans coexist with small CPU waits because work can
+execute while the CPU records the next frame. The earlier low `gpu_wait_ms`
+observations therefore do not establish a CPU-only bottleneck. The lower
+resolution sample has shorter GPU spans, but also a different position/opponent
+and draw workload. These two observations do not establish a reproducible FPS
+improvement or quantify the benefit of lowering resolution alone.
+
+Bottom-of-pipe timestamp spans can include stalls and instrumentation effects;
+they exclude independent upload/other queue lists and are not exact GPU
+utilization. CPU stage timers overlap these spans and must not be added. Further
+work should attribute GPU passes/shaders and compare matched workloads before
+adopting an optimization. No runtime optimization, timestamp observer, or default
+resolution change was added to production.
+
+Both runs reached their 15000-present bound and showed lap progression, not race
+completion. The exact ordinary APK was restored and hash-verified after each,
+with original fixture saves unchanged and no debug override left. Private source,
+diff, build/APK validation, raw logs, screenshots, and reproducible summaries are
+under ignored `out/continuation-20261002/gpu-time-probe`, `thor-gpu-time-observed`
+and `thor-gpu-time-half`; `compare-gpu-time-resolution.py` reproduces the table.
+Observer APK SHA-256:
+`96e9b2480951aa3cdad888ef6e98673fcf846f14945f1630eb1c70eaad4b3663`.
+
+
+### GPU pass attribution and oversized offscreen compatibility path
+
+Two private observers timed only existing Vulkan render-pass boundaries and
+retained all original drawing. Pass timestamps were sampled every120 presents
+from12000 onward, using the existing list/fence retirement; results introduced
+no extra host wait. The coarse run completed15000 presents in350.938 seconds.
+In11 sampled race frames it measured36.94ms/list,35.91ms inside passes and1.03ms
+outside. The initial scene pass averaged8.38ms; repeated one-quad stages dominated
+the remainder. This directed the next observation toward postprocessing rather
+than a blanket shader-constant rewrite.
+
+The detailed run added first-draw viewport/scissor state and guest resolve
+sizes, then completed15000 presents in355.407 seconds. Presents13200–14400
+showed Dolphin Resort progression from HUD00:40.77/lap1 to01:31.90/lap2.
+Across11 sampled frames and267 passes:
+
+| Observed work | GPU timestamp span per sampled frame |
+| --- | ---: |
+| All presentation lists | 37.32 ms |
+| Inside existing render passes | 36.32 ms |
+| Outside render passes | 1.00 ms |
+| Initial scene pass | 9.16 ms |
+| Single-draw, four-vertex, non-indexed passes combined | 25.18 ms (67.47% of list span) |
+
+All223 single-quad passes used a1280x720 viewport and scissor, with no changes
+within those passes. The same frames resolved231 small guest targets sized
+55x45,110x90 or112x92. Resolve order and pass order matched after excluding the
+final host blit in every sampled frame; individual target/pass associations
+remain sequential inference because GPU rows do not carry unique target tags.
+A full viewport does not by itself prove every pixel was shaded: quad positions
+were not captured. It does establish that the host viewport was not reduced to
+those guest target dimensions.
+
+The source explains this compatibility path: `GuestGraphics::set_viewport`
+clamps origin-zero offscreen passes to the native framebuffer, while
+`NativeRenderer::adopt_resolved_target` allocates/copies the full presentation
+size. Merely clamping viewports to guest target sizes can break saved viewport
+state, screen-space coordinates, resolved sampling, exposure and split views.
+A correct smaller-target implementation would need these contracts together.
+
+A narrower candidate is avoiding depth/stencil attachment traffic when neither
+is used by a draw. Current native framebuffers attach D32_FLOAT_S8_UINT with
+LOAD/STORE operations even through postprocessing. Eligibility is now measured;
+savings are not. Do not treat this as an implemented fix. Preservation
+oracles, compatible pipelines, clear/custom-draw transitions and A/B/A are laid
+out in `docs/superpowers/plans/2026-10-02-gpu-postprocess-cost.md`.
+
+Both observer runs had zero query errors/overflow and reached their normal
+present bound. Independent source saves remained unchanged; the exact ordinary
+APK and launch settings were restored and subsequently checked again. Timestamp
+and callback overhead, GPU stalls and periodic sample bias remain limitations.
+No observer or performance candidate was added to production. These were partial
+races, not two additional verified finishes. Results and reproducible scripts
+are under ignored `out/continuation-20261002/gpu-pass-probe`, `gpu-pass-detail`
+and their matching `thor-*` cases.
+Detailed observer APK SHA-256:
+`efcbae9429fbd91d90c7ce85d15b536ba82a4080ed8510eb8d78c963d0362037`.
+
+A subsequent private observer also captured each guest draw's actual depth and
+stencil flags. In 11 sampled race frames, all227 single-quad passes disabled
+depth testing, stencil testing and depth writes. These stages spanned25.32ms
+per sampled frame,69.94% of the36.20ms overall GPU list spans. They qualify for
+an unused-depth experiment; this does not mean depth traffic accounts for that
+entire cost. The11 final host blits were the only draws without guest state.
+No query errors or overflow occurred. The15000-present run ended in350.563s,
+with source save and ordinary APK/settings restoration verified. Frame14400
+shows lap2 at89.05s; this partial race is not additional finish coverage.
+
+The native resolution test now includes a depth/stencil preservation oracle:
+depth-tested geometry, blended color-only work, stencil-only masks, selective
+depth clears and repeated transitions at50/100/200% render scale. Vulkan and
+D3D12 pass. Temporary test-only depth loss and stencil loss each fail the
+expected pixel assertion on both backends; restoring the test source restores
+both passing results. This verifies the oracle's sensitivity, not an optimized
+attachment path. Custom/VRM and an explicit assertion that such a path is used
+remain prerequisites for a future candidate. Evidence is in
+`out/continuation-20261002/gpu-pass-depth/eligibility.json` and
+`depth-oracle-validation.json`. Observer APK SHA-256:
+`5c8c00efd64fc21c1ed4c9cb8c0e7abcd656576831539e18e6bfa4fe13c2eda4`.
+
+### Unused-depth candidate: measured and not adopted
+
+The subsequent private Vulkan candidate omitted the depth attachment only when
+both depth and stencil testing were disabled, using compatible pipeline formats
+and explicit dependencies when switching framebuffers. The preservation oracle
+was extended to assert the actual attachment, exercise a synthetic model draw,
+resolve/default-record paths and the following frame. Both Vulkan and D3D12
+passed at 50/100/200% scale. The Khronos validation layer was unavailable on the
+test host; these are pixel/state checks, not a validation-layer clean bill.
+
+One APK was tested off/on/off on Thor at 720p, with audio and normal elapsed
+game time. Matching complete measurement intervals inside HUD seconds 45–80:
+
+| Run | Observed FPS | GPU list span/frame | Draws/frame |
+| --- | ---: | ---: | ---: |
+| Baseline before | 23.306 | 37.267 ms | 867.0 |
+| Candidate | 23.257 | 37.362 ms | 831.7 |
+| Baseline after | 21.994 | 38.895 ms | 952.6 |
+
+The candidate fell inside baseline variation and did not reduce GPU time versus
+the first baseline. Workloads differ despite matching HUD time, so these runs
+do not isolate every source of variation. They provide no reason to adopt this
+change. All candidate production changes and candidate-only tests were removed;
+the earlier baseline preservation oracle remains. The ordinary APK/settings and
+source fixture were verified after every run. Private source snapshots, logs,
+screenshots and reproducible analysis remain in
+`out/continuation-20261002/color-only-probe`, including `comparison.json` and
+`retired-candidate.json`. These runs cover partial races, not additional finishes.
+
+### Issue #33: checkpoint interval investigation
+
+The measurements below record the investigation **before PRs #35 and #36**.
+Their references to a default of 32 or a pending render-thread decision describe
+that historical test build. For v0.4.7, Windows adopts checkpoint interval 256;
+other platforms retain 32. D3D12 enables the render worker by default, while
+Vulkan retains synchronous recording. See [the adopted checkpoint policy](checkpoint-interval.md)
+and [render-thread behavior and limitations](render-thread.md). The private
+experiments below are evidence, not additional enabled release features.
+
+[knuckleslee's paired report](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/33)
+compares six interleaved rounds on three Windows machines using a modified
+v0.4.5 fork. Recomputing the supplied rounded values gives median checkpoint
+256/32 throughput ratios of 1.0602 (i5-3470), 1.0701 (i7-6850K) and 1.0782
+(Ryzen AI Max+ 395), with all six pairs positive on each machine. This supports
+testing a longer checkpoint interval. It does not establish the same gain on
+the current version or on Android: the report used D3D12, disabled audio and
+combined several other fork changes. Its elapsed-game-time setting is unknown.
+
+`SFR_CHECKPOINT_INTERVAL` now permits a controlled comparison from 1 through
+4096. The default remains 32; missing, malformed and out-of-range values use
+that baseline. The effective interval is logged once. Configuration is read in
+the existing slow permit path, leaving generated function-entry/loop code
+unchanged. Cancellation and urgent handoff are checked on each permit call;
+the ordinary quantum clock is sampled every 64 calls. An interval counts guest
+entries/checkpoints, not a guaranteed number of milliseconds. A larger value
+must therefore be evaluated for responsiveness as well as throughput.
+
+Tests cover numeric parsing, actual mixed entry/loop cadence and cancellation
+through a real execution lease, alongside the existing scheduler tests. Both
+test targets pass. A bounded Windows D3D12 Frozen Forest run at 256, with audio
+and normal elapsed time, reached the Replay screen and stopped at 36000 presents
+in 602.578 seconds. Its 60 FPS cap makes this functional evidence only. Audio
+was enabled, but noise quality was not independently listened to. A clean
+Windows executable was rebuilt after the rejected GPU experiment was removed.
+
+The larger render-thread proposal remains separate: the report shows its main
+gain on the i5, and importing it needs current-version resource-lifetime and
+device validation. The already-upstream targeted suspend notifications receive
+additional supporting evidence from the report. No unchecked memory access,
+pipeline reuse or register-localization changes were imported. Exact issue and
+branch snapshots, source hashes and test logs are retained under ignored
+`out/continuation-20261002/issue33`.
+
+The clean same-APK Thor comparison completed in order 32/256/32, each at its
+15000-present bound. In matched HUD seconds 45–80, complete measurement windows
+gave 20.249/23.681/23.345 FPS, with 1517/950/866 draws per frame respectively.
+The candidate is 1.44% faster than the later baseline, while the two baselines
+differ by 15.3%. The first run's much larger draw workload prevents attributing
+its difference to the checkpoint interval. GPU spans were 38.744/38.313/36.980ms;
+P95 frame times were 69.787/54.715/56.351ms. This one sequence does not establish
+a repeatable Android benefit or justify a default change. All three runs passed
+restoration checks; screenshot HUD progress agrees with elapsed host time within
+0.033s between anchors. These are partial races. The thermal HAL was unavailable;
+battery temperature was 35C, which is not a substitute for SoC temperature.
+`issue33/compare-checkpoint.py` reproduces the measurements and records log/image
+hashes in `checkpoint-comparison.json`. Default 32 remains on all platforms
+pending a current-version Windows throughput comparison and further device evidence.
+
+The current-version Windows comparison is now available on an i9-14900KF /
+RTX4090 (D3D12,720p,balanced power plan,driver596.49). One private executable
+preserved the known 60-FPS menu script through present13200, then removed the
+host cap for exactly120 wall seconds. Normal elapsed race/UI time and audio
+remained enabled; every required draw was retained. Source, ordinary object and
+executable hashes were unchanged by the private build. All three independent
+save/cache runs stopped at their expected bound and preserved the source fixture.
+
+Matched HUD seconds45–80, with frame instrumentation enabled throughout:
+
+| Checkpoint interval | FPS | P95 frame time | Draws/frame |
+| --- | ---: | ---: | ---: |
+| 32 before | 80.931 | 17.188 ms | 840.6 |
+| 256 | 81.305 | 16.215 ms | 902.4 |
+| 32 after | 75.165 | 17.559 ms | 917.1 |
+
+The candidate is only0.46% faster than the first baseline and8.17% faster than
+the last, while the baselines differ by7.67%. Different autonomous trajectories
+and draw workloads remain confounders. One sequence does not establish the
+report's6–8% benefit on this current build/host or justify changing the default.
+It does establish a usable uncapped measurement path without speeding up the
+game: HUD anchor offsets agree within0.025s, selected frames have zero pacing
+wait, no clock clamps and no frames over50ms. XAudio2 submission cadence stays
+187.46–187.52 blocks/s, consistent with256 samples at48kHz; this does not verify
+audible quality or playback underruns. These are partial races, not finishes.
+
+The private methodology, source diff, source/executable hashes, logs and six
+inspected screenshot anchors are under ignored
+`out/continuation-20261002/issue33/windows-throughput-*`.
+`compare-windows-throughput.py` reproduces `windows-throughput-comparison.json`.
+Further work needs more comparable scene workloads and additional paired runs
+or an available slower Windows machine; an affinity-limited host could be a
+stress comparison, but must not be represented as an actual i5/Ally result.
+
+A follow-up held the ordinary brake input from present 12000, keeping the rider
+at the Dolphin Resort starting line. Nine inspected screenshots across the same
+32/256/32 executable sequence show speed 000 and a stable camera while normal
+HUD time advances. AI racers continue moving; this reduces route variation but
+does not make the whole workload deterministic. No game-state or speed patch
+was used. The same 120-second uncapped bound, audio, all draws and independent
+save/cache setup remained in place.
+
+| Checkpoint interval | Stationary FPS, HUD 45–80s | P95 frame time | Draws/frame |
+| --- | ---: | ---: | ---: |
+| 32 before | 86.923 | 12.555 ms | 670.0 |
+| 256 | 90.162 | 12.187 ms | 678.8 |
+| 32 after | 87.380 | 12.499 ms | 669.7 |
+
+The candidate is 3.73% and 3.18% faster than the two baselines, whose difference
+is 0.53%. Two other preselected HUD windows (35–55s and 55–75s) also favor 256
+over both baselines, by 2.80–4.24%. The candidate renders slightly more draws,
+not fewer. This is positive evidence for this stationary desktop workload,
+but one sequence is not a replicated active-race, low-end Windows or Android
+result. Keep default 32 pending further paired runs and responsiveness coverage.
+
+All runs stop at the expected bound in about 342 seconds and preserve the source
+fixture. HUD/host anchor offset spread is at most 0.017s; selected frames have
+zero pacing waits, no clock clamps and no frames over 50ms. Audio submission
+cadence remains 187.48–187.52 blocks/s. Ordinary source/object/executable hashes
+were freshly verified unchanged, and no game process remains. Reproduction
+scripts, settings, image/log hashes and restoration checks are in ignored
+`out/continuation-20261002/issue33`: `stationary-method.md`,
+`run-windows-stationary.py`, `compare-stationary.py`,
+`stationary-comparison.json` and `stationary-restoration.json`.
+
+The reverse-order replication (256/32/256) used three new independent cases
+with the same binary and settings. Fresh HUD anchors and screenshots confirm
+the same stationary scene and correct elapsed time:
+
+| Checkpoint interval | Stationary FPS, HUD 45–80s | P95 frame time | Draws/frame |
+| --- | ---: | ---: | ---: |
+| 256 before | 92.877 | 11.887 ms | 667.6 |
+| 32 | 87.278 | 12.524 ms | 667.2 |
+| 256 after | 91.517 | 11.955 ms | 670.0 |
+
+Both candidate runs outperform the intervening baseline, by 6.42% and 4.86%.
+The other two predefined windows are also positive (3.30–6.12%). Across both
+sequences, the fixed-scene Windows D3D12 result is consistently positive;
+variation in the size of the gain remains. Each reverse run ended normally at
+about 342.141s. Selected windows contain no clock clamps or frames over 50ms,
+and audio submission cadence stays 187.48–187.54 blocks/s. All six binaries,
+normalized settings and source fixture hashes match. Normal outputs are unchanged.
+Analysis is reproduced by `compare-stationary-reverse.py`, with cleanup and
+cross-sequence checks in `stationary-sequences-verification.json`.
+
+The entry-state regression now also exercises real urgent leases through mixed
+inline function-entry/loop checkpoints at intervals 1, 32, 256 and 4096. Even
+with a one-hour ordinary scheduling quantum, an urgent waiter must run at the
+next permit boundary. A private mutation that delays that handoff fails the new
+assertion; the unchanged production scheduler passes `guest_entry_state` and
+`guest_execution` (2/2, 3.27s). No additional CI target is needed. This establishes
+entry-count ordering, not a wall-clock input/audio latency bound, reservation
+duration bound or audible playback quality.
+
+Default 32 still applies. Vulkan and active input/audio follow-ups are documented
+below; D3D12 stationary throughput alone does not establish that broader result.
+These experiments do not change the
+inconclusive Android evidence or resolve the reporter's separate Issue #31 crash.
+
+The same stationary protocol was then run on Windows Vulkan (32/256/32), using
+the same executable as the D3D12 experiments. HUD seconds 45–80 gave:
+
+| Checkpoint interval | Vulkan FPS | P95 frame time | Draws/frame |
+| --- | ---: | ---: | ---: |
+| 32 before | 78.474 | 14.167 ms | 670.9 |
+| 256 | 80.585 | 13.821 ms | 667.8 |
+| 32 after | 77.257 | 14.268 ms | 670.8 |
+
+The candidate is 2.69% and 4.31% faster than the baselines; the baselines differ
+by 1.58%. Both other predefined windows are positive (2.04–4.38%). Candidate
+draw count is about 0.46% lower, so this is still approximate workload matching.
+All three bounded runs finish in 342.468/342.266/342.422 seconds. Nine screenshots
+confirm the stationary scene and speed zero; HUD/host offsets agree within
+0.017s. Selected frames have zero pacing waits, no clock clamps and no frames
+over 50ms; audio submission cadence is 187.48–187.52 blocks/s. Logs, anchors and
+reproducible analysis are under `issue33/windows-stationary-vulkan-*` and
+`stationary-vulkan-comparison.json` in the continuation evidence directory.
+
+This supports investigating a Windows checkpoint change on both backends, but
+is one Vulkan sequence on this host. It does not establish lower-end Windows,
+Android or physical controller latency. The default remains 32.
+
+A separate private observer then compared intervals 32 and 256 on Vulkan with
+normal time, audio and all draws. Ordinary scripted controls use wall-clock
+timing: nine left/right/release transitions while braking at the start line,
+then nine after releasing the brake. Both original lean consumers received all
+18 transitions with the expected signs, scales and neutral releases. Each
+transition reached each consumer within one present after the first logged poll.
+
+| Interval | Stationary nominal-to-consumer median / maximum | Moving nominal-to-consumer median / maximum | First-poll-to-consumer maximum |
+| --- | ---: | ---: | ---: |
+| 32 | 7.057 / 15.039 ms | 12.063 / 15.393 ms | 13.889 ms |
+| 256 | 7.628 / 14.003 ms | 10.705 / 13.329 ms | 7.145 ms |
+
+Values use the actor consumer; the separate source consumer follows the same
+transitions about 0.014–0.024 ms earlier. This small sample checks synthetic
+script-to-consumer behavior, not physical controller or display latency, and
+does not establish that the candidate improves responsiveness. Screenshots
+confirm the stationary start and subsequent moving race. Instrumented runs
+are not used for throughput comparisons.
+
+Each case contains 121 audio-health reports across about 120.26 seconds. Both
+have zero XAudio2 engine-glitch increments, empty-queue observations, full-queue
+drops, failed submissions and nonfinite samples. Sampled queued buffers range
+from 3–5 at interval 32 and 1–3 at 256; these observations do not prove a latency
+improvement. Above-unity samples occur in both runs (498/610; peaks 1.577/1.582),
+which alone does not establish corruption in floating-point mixed audio.
+These counters do not establish audible correctness of the game's samples.
+
+Both runs finish at the expected bound (342.329/342.141 seconds). Binary and
+normalized settings match within the pair; source saves, ordinary sources,
+objects and executable hashes are unchanged. No test game process remains.
+Evidence and reproducible analysis are in `issue33/input-audio-vulkan-*`,
+`analyze-input-audio.py` and `vulkan-observer-verification.json`. The analyzer
+accepts scientific-notation timestamps, including the initial `1e-07` sample;
+no raw samples were removed to pass its common-clock check.
+
+The same private observer subsequently completed the D3D12 pair with the same
+script, isolated saves and normal-time settings. Both consumers again receive
+all 18 left/right/release edges:
+
+| Interval | Stationary nominal-to-actor median / maximum | Moving nominal-to-actor median / maximum | First-poll-to-actor maximum |
+| --- | ---: | ---: | ---: |
+| 32 | 7.947 / 14.119 ms | 7.749 / 12.021 ms | 14.034 ms |
+| 256 | 10.017 / 11.787 ms | 7.766 / 12.278 ms | 10.950 ms |
+
+One baseline stationary edge crosses two presents (14.034 ms); the other
+baseline edges and all candidate edges cross at most one. Present counts are
+retained alongside wall-clock times, not treated as a backend-independent
+latency bound. These small samples show no missed edges or obvious delay
+regression; they do not prove improved responsiveness. The stationary median
+is higher in the candidate, while the maxima and moving medians differ in
+other directions. Source-consumer results are recorded separately.
+
+Each D3D12 case has 121 audio reports across 120.126/120.077 seconds, with zero
+engine-glitch increments, empty-queue observations, full-queue drops, failed
+submissions and nonfinite samples. Both sample 1–3 queued buffers. Above-unity
+samples total 562/1207, with peaks 1.642/1.559; different autonomous race paths
+preclude treating these counts as an audio-quality comparison. Screenshots
+confirm stationary speed zero at present 13200 and moving races at 18000.
+Both runs exit at the intended bound (342.187/342.062 seconds).
+
+`verify-vulkan-observer.py --include-d3d12` checks all seven new Vulkan/D3D12
+cases: matching binaries and normalized settings within each group, log hashes,
+actual backend selection, unchanged source fixtures and ordinary build hashes,
+all observed input edges, and no remaining game process. Its report is
+`all-backend-observer-verification.json`; all four observer analyses are kept
+in `input-audio-comparison.json`. Ordinary launch settings remain untouched.
+
+The pre-integration current-host checks covered both graphics backends. That
+test build retained default 32 pending the later Windows decision; a slower Windows
+host would strengthen coverage. Android evidence remains inconclusive;
+Issue #31 and GP mission 3 remain separate work.
