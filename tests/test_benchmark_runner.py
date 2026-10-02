@@ -1,6 +1,6 @@
 """Exercise the Windows runner with a tiny fake game; no game assets needed."""
 from pathlib import Path
-import json, os, shutil, subprocess, tempfile, unittest
+import hashlib, json, os, shutil, subprocess, tempfile, unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 PS = shutil.which('powershell') if os.name == 'nt' else None
@@ -62,6 +62,12 @@ Environment.Exit(3); } }''')
         self.assertEqual((self.root / 'pipeline-cache/keep').read_text(), 'keep-cache')
         self.assertEqual((self.root / 'out/build/host/save/progress').read_text(), 'keep-save')
         self.assertTrue((self.root / 'result/save-baseline-1/progress').exists())
+        metadata = json.loads((self.root / 'result/baseline-1.json').read_text(encoding='utf-8-sig'))
+        self.assertEqual(metadata['sha256'].lower(), hashlib.sha256(self.exe.read_bytes()).hexdigest())
+        fixture = json.loads((self.root / 'result/fixture-hashes.json').read_text(encoding='utf-8-sig'))
+        if isinstance(fixture, dict):
+            fixture = [fixture]
+        self.assertEqual(fixture[0]['sha256'].lower(), hashlib.sha256(b'keep-save').hexdigest())
 
     def test_existing_output_is_rejected_without_modification(self):
         (self.root / 'result').mkdir()

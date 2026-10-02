@@ -40,6 +40,14 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
+function Get-BenchmarkSha256([string]$Path) {
+    # Windows PowerShell hosts can expose Utility without its Get-FileHash
+    # helper. Use the same streaming SHA-256 implementation directly.
+    $stream = [System.IO.File]::OpenRead($Path)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { return [System.BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '') }
+    finally { $sha.Dispose(); $stream.Dispose() }
+}
 $originalEnvironment = @{}
 Get-ChildItem Env:SFR_* | ForEach-Object { $originalEnvironment[$_.Name] = $_.Value }
 $process = $null
@@ -141,7 +149,7 @@ foreach ($name in $Configs) { if ($settings[$name].ContainsKey('SFR_EXE')) { $ex
 if ($exeFiles.Count -ge 2) {
     $seen = @{}
     foreach ($file in $exeFiles.Keys) {
-        $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $host_dir $file)).Hash
+        $hash = Get-BenchmarkSha256 (Join-Path $host_dir $file)
         if ($seen.ContainsKey($hash)) { throw "$file and $($seen[$hash]) are the same program (same SHA-256): build the second one before copying it" }
         $seen[$hash] = $file
     }
@@ -187,7 +195,7 @@ $fixture = Join-Path $Out 'fixture'
 if (Test-Path -LiteralPath $save_source) { Copy-Item -Recurse -LiteralPath $save_source -Destination $fixture }
 else { New-Item -ItemType Directory -Path $fixture | Out-Null }
 Get-ChildItem -LiteralPath $fixture -Recurse -File | ForEach-Object {
-    [ordered]@{ path = $_.FullName.Substring($fixture.Length); sha256 = (Get-FileHash -LiteralPath $_.FullName).Hash }
+    [ordered]@{ path = $_.FullName.Substring($fixture.Length); sha256 = (Get-BenchmarkSha256 $_.FullName) }
 } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Out 'fixture-hashes.json') -Encoding UTF8
 
 # What the numbers belong to.
@@ -227,7 +235,7 @@ Write-Output "PC: $power, power plan '$plan', $idle% busy before the start"
 foreach ($name in $Configs) {
     if ($settings[$name].ContainsKey('SFR_EXE')) {
         $file = Get-Item -LiteralPath (Join-Path $host_dir $settings[$name]['SFR_EXE'])
-        Add-Content -LiteralPath (Join-Path $Out 'info.txt') -Encoding UTF8 -Value "$name=$($file.Name) bytes=$($file.Length) built=$($file.LastWriteTime.ToString('s')) sha256=$((Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash)"
+        Add-Content -LiteralPath (Join-Path $Out 'info.txt') -Encoding UTF8 -Value "$name=$($file.Name) bytes=$($file.Length) built=$($file.LastWriteTime.ToString('s')) sha256=$(Get-BenchmarkSha256 $file.FullName)"
     }
 }
 
@@ -291,7 +299,7 @@ function Start-Run([string]$name, [int]$repeat) {
     $log = Join-Path $Out "$label.log"
     $effective = [ordered]@{}
     Get-ChildItem Env:SFR_* | Sort-Object Name | ForEach-Object { $effective[$_.Name] = $_.Value }
-    [ordered]@{ executable = $program; sha256 = (Get-FileHash -LiteralPath $program).Hash; settings = $effective } |
+    [ordered]@{ executable = $program; sha256 = (Get-BenchmarkSha256 $program); settings = $effective } |
         ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $Out "$label.json") -Encoding UTF8
     $arguments = @("`"$image`"", "`"$assets`"", '--game-region=ntsc-us')
     return Start-Process -FilePath $program -ArgumentList $arguments -WorkingDirectory $root -WindowStyle Hidden -PassThru `
