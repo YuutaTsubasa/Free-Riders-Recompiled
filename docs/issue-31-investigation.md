@@ -781,3 +781,15 @@ Agility runtime and fell back to Vulkan; it was stopped and excluded. The
 validated run includes the byte-verified runtime and explicitly logs D3D12.
 `out/continuation-20261002/resolve-two-courses-d3d12-runtime` retains exact
 source/binary hashes, screenshots, backend selection and bounded-exit records.
+
+Two further Windows Vulkan mission-2 attempts used the current private renderer,
+normal elapsed time and separate copies of the completed-mission-1 fixture.
+The initial input origin started late and yielded 56/100 rings. Starting the
+script before the observed race start yielded 85/100, with Retry visible at
+present 18000. In the latter run, the countdown decreases from 76.73 to 1.73
+seconds over 4500 presents at the 60 Hz cap. Both runs exit normally at their
+bounds with source saves unchanged. These verify mission entry and failure
+handling, not mission completion, mission 3, or the reporter's crash cause.
+The earlier 87-ring result used fixed-frame timing and is not an A/B comparison.
+Evidence is in `out/continuation-20261002/gp-reach-return-early-run` and
+`gp-reach-aligned`; no mission progress or score was patched.
