@@ -702,9 +702,27 @@ SFR_HOOK(sub_82494658) {
         }
         return said;
     }();
+    // SFR_SAY_MIN_SECONDS=n: a word is also not said sooner than n seconds
+    // after the one before (the first, after the program started). The menus
+    // answer after loading and animations that take time on the wall clock,
+    // not in presents; on a PC that presents them quickly a script by presents
+    // alone speaks too early, and some runs never reach the race.
+    static const double min_seconds=[]{ const char* t=std::getenv("SFR_SAY_MIN_SECONDS"); return t?std::strtod(t,nullptr):0.0; }();
+    // SFR_SAY_REFERENCE_FPS=n: a word written "@P" is also not said before P/n
+    // seconds since the start, so the script lasts as long on a PC that runs
+    // at 60 fps as on one that runs at n (a PC slower than n is paced by the
+    // presents as before).
+    static const double reference_fps=[]{ const char* t=std::getenv("SFR_SAY_REFERENCE_FPS"); return t?std::strtod(t,nullptr):0.0; }();
+    static const auto started=std::chrono::steady_clock::now();
+    static auto last_said=started;
     static size_t said_index=0;
-    if(said_index<script.size() && sfr::present_count>=script[said_index].first) {
+    const double now_seconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
+    if(said_index<script.size() && sfr::present_count>=script[said_index].first &&
+       std::chrono::duration<double>(std::chrono::steady_clock::now()-last_said).count()>=min_seconds &&
+       (reference_fps<=0.0 || now_seconds>=script[said_index].first/reference_fps)) {
+        last_said=std::chrono::steady_clock::now();
         const auto& entry=script[said_index++];
+        if(said_index==script.size()) sfr::say_done_present=sfr::present_count.load();
         memory.check_write(uint64_t(input)+5440,12);
         memory.store<uint32_t>(uint64_t(input)+5440,sfr::NuiSpeechEmulation::say(memory,entry.second));
         memory.store<uint32_t>(uint64_t(input)+5444,0x3F800000u);
@@ -878,7 +896,8 @@ SFR_HOOK(sub_824578F0) {
     }
     // SFR_MENU_DUMP=1 reports each menu page: its buttons as type/flags/kind/state
     // and the player's current page, whenever they change (a debugging aid).
-    if(std::getenv("SFR_MENU_DUMP")) {
+    static const bool menu_dump=std::getenv("SFR_MENU_DUMP")!=nullptr;
+    if(menu_dump) {
         static std::string last;
         std::string line;
         for_each_menu_button(memory,manager,[&](uint32_t b) {
