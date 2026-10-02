@@ -17,7 +17,8 @@ the independent review required by the requesting-code-review skill.
       Make diagnostic exclusions explicit and record effective settings/hashes.
 - [x] Verify Python tests, PowerShell execution with a fake executable, native
       changed-source compilation and a bounded real Windows smoke run.
-- [ ] Independent review; fix blockers; create/attach PR and merge after checks.
+- [x] Independent review; fix blockers; create/attach PR and merge after checks.
+      PR #34 merged as e9fbb95 after all four platforms passed.
 
 Validation: 296 Python tests passed (11 environment skips), followed by all 52
 benchmark tests after the final archive/metadata regressions. Changed native
@@ -36,7 +37,8 @@ Independent review found no remaining concrete blockers after fixes.
       validated in camera-debug; consider measured Windows256/other32 default.
 - [x] Validate current code, cancellation, urgent handoff, platform defaults;
       use prior recorded throughput/input/audio evidence without repeating it.
-- [ ] Review, create/attach separate PR and merge after checks.
+- [x] Review, create/attach separate PR and merge after checks.
+      PR #35 merged as 721364f after all four platforms passed.
 
 Checkpoint integration: Windows default 256, other platforms 32; accepted
 overrides 1..4096. Platform-default regression failed before the change and
@@ -49,9 +51,9 @@ with their limitations in docs/checkpoint-interval.md.
 
 ## 3. Render thread
 
-- [ ] Review 751aacc against updated main and verified resolved-texture lifetime
+- [x] Review 751aacc against updated main and verified resolved-texture lifetime
       correction; inspect queue ordering, resource ownership and failure/exit.
-- [ ] Add reproductions for concrete defects and minimal fixes if needed.
+- [x] Add reproductions for concrete defects and minimal fixes if needed.
 - [ ] Verify D3D12 device transitions/teardown and Vulkan disabled-default path;
       perform bounded isolated-save functional and performance checks.
 - [ ] Review, create/attach separate PR; merge only if required checks pass.
@@ -59,3 +61,13 @@ with their limitations in docs/checkpoint-interval.md.
 
 Keep provenance and private smoke assets under ignored out. No game assets in
 commits. Fresh checks and exact source refs in each PR description.
+
+Render integration includes resolved-target lifetime prerequisite 726dc62 and
+preserves knuckleslee's 751aacc author. Review found failure paths that could
+skip waiting for the prior GPU frame or consume an error before cleanup.
+Both reproduced and now pass: failures stay sticky through drain, prior-frame
+wait and partial-list discard. Worker identity, 6,000-entry queue rollover,
+pending-work destruction and exceptions are covered. Presentation and resolution
+tests pass on local Vulkan/D3D12; final native units compile and link. Final
+same-binary off/on/off comparison is pending; the earlier 48-second aborted
+attempt is retained and excluded. No release or device installation performed.

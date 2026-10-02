@@ -861,15 +861,15 @@ uint32_t NativeRenderer::adopt_resolved_target(uint32_t physical) {
     // before the ones that sample it: submitting and waiting here instead
     // would cost a GPU round trip for each of a frame's resolves.
     auto* target = impl_->texture_objects[index - first_texture].get();
-    presentation.record([&](plume::RenderCommandList& list) {
+    presentation.record_async([color = &presentation.color(), target](plume::RenderCommandList& list, uint64_t) {
         const std::array<plume::RenderTextureBarrier, 2> before{
-            plume::RenderTextureBarrier(&presentation.color(), plume::RenderTextureLayout::COPY_SOURCE),
+            plume::RenderTextureBarrier(color, plume::RenderTextureLayout::COPY_SOURCE),
             plume::RenderTextureBarrier(target, plume::RenderTextureLayout::COPY_DEST)};
         list.barriers(plume::RenderBarrierStage::COPY, before.data(), uint32_t(before.size()));
-        list.copyTexture(target, &presentation.color());
+        list.copyTexture(target, color);
         const std::array<plume::RenderTextureBarrier, 2> after{
             plume::RenderTextureBarrier(target, plume::RenderTextureLayout::SHADER_READ),
-            plume::RenderTextureBarrier(&presentation.color(), plume::RenderTextureLayout::COLOR_WRITE)};
+            plume::RenderTextureBarrier(color, plume::RenderTextureLayout::COLOR_WRITE)};
         list.barriers(plume::RenderBarrierStage::GRAPHICS, after.data(), uint32_t(after.size()));
     });
     return index;
@@ -1079,6 +1079,17 @@ uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
 
 void NativeRenderer::invalidate(uint32_t physical, uint32_t size) {
     const uint64_t begin = physical, end = uint64_t(physical) + size;
+    // Whole-allocation frees also retire resolves whose destination begins
+    // inside that allocation. Keep their objects/descriptors alive for draws
+    // already recorded or submitted, just like ordinary texture versions.
+    // Only the destination base is known here, not its guest byte extent.
+    for (auto it = impl_->resolved_targets.lower_bound(physical);
+         it != impl_->resolved_targets.end() && uint64_t(it->first) < end;) {
+        impl_->resolved_texture_indices.reset(it->second);
+        impl_->released_texture_indices.push_back(it->second);
+        ++impl_->texture_generation;
+        it = impl_->resolved_targets.erase(it);
+    }
     for (auto it = impl_->texture_ranges.begin(); it != impl_->texture_ranges.end();) {
         if (it->second.begin < end && begin < it->second.end) {
             impl_->dynamic_ranges.insert(it->second.begin);
@@ -1245,21 +1256,41 @@ void NativeRenderer::draw(const NativeDraw& draw) {
     if (index_bytes) std::memcpy(mapped + index_rel, draw.indices.data(), index_bytes);
     const uint64_t shared_offset = base_offset + shared_rel;
 
-    impl_->presentation.record([&](plume::RenderCommandList& list) {
-        const bool fresh = impl_->bound_generation != impl_->presentation.list_generation();
+    // Recorded by the render thread (NativePresentation::record_async), so
+    // everything it reads is copied here, none of it drawn from `draw` or the
+    // frame's locals once this call returns. impl's bound_* fields are the
+    // render thread's alone.
+    const bool palette_bound = !draw.palette.empty();
+    const bool stencil_enabled = draw.stencil_enabled;
+    const uint8_t stencil_reference = draw.stencil_reference;
+    const uint32_t stride = draw.stride, vertex_count = draw.vertex_count;
+    const uint32_t vertex_view_bytes = uint32_t(draw.vertex_buffer ? uint64_t(draw.vertex_count) * draw.stride
+                                                                   : draw.vertices.size());
+    const plume::RenderBuffer* const vertex_buffer = draw.vertex_buffer;
+    const uint32_t index_count = uint32_t(draw.indices.size());
+    const int32_t base_vertex_location = draw.base_vertex_location;
+    impl_->presentation.record_async([impl = impl_.get(), pipeline = pipeline.get(), palette_bound, stencil_enabled,
+                                      stencil_reference, stride, vertex_count, vertex_view_bytes, vertex_buffer,
+                                      index_count, base_vertex_location, index_bytes, vulkan, upload_address,
+                                      ring_address, upload, base_offset, vs_offset, ps_offset, shared_rel,
+                                      palette_rel, loop_rel, index_rel, shared_offset](plume::RenderCommandList& list,
+                                                                                   uint64_t generation) {
+        const std::array<plume::RenderInputSlot, 2> slots{plume::RenderInputSlot(0, stride),
+                                                           plume::RenderInputSlot(zero_slot, 0)};
+        const bool fresh = impl->bound_generation != generation;
         if (fresh) {
-            impl_->bound_generation = impl_->presentation.list_generation();
-            list.setGraphicsPipelineLayout(impl_->layout.get());
-            for (uint32_t space = 0; space < 3; ++space) list.setGraphicsDescriptorSet(impl_->textures.get(), space);
-            list.setGraphicsDescriptorSet(impl_->samplers.get(), 3);
-            list.setGraphicsDescriptorSet(impl_->survey.get(), 4);
-            const plume::RenderVertexBufferView zeros(plume::RenderBufferReference(impl_->zero_buffer.get(), 0), 256);
+            impl->bound_generation = generation;
+            list.setGraphicsPipelineLayout(impl->layout.get());
+            for (uint32_t space = 0; space < 3; ++space) list.setGraphicsDescriptorSet(impl->textures.get(), space);
+            list.setGraphicsDescriptorSet(impl->samplers.get(), 3);
+            list.setGraphicsDescriptorSet(impl->survey.get(), 4);
+            const plume::RenderVertexBufferView zeros(plume::RenderBufferReference(impl->zero_buffer.get(), 0), 256);
             list.setVertexBuffers(zero_slot, &zeros, 1, &slots[1]);
-            impl_->bound_pipeline = nullptr;
+            impl->bound_pipeline = nullptr;
         }
-        if (impl_->bound_pipeline != pipeline.get()) {
-            list.setPipeline(pipeline.get());
-            impl_->bound_pipeline = pipeline.get();
+        if (impl->bound_pipeline != pipeline) {
+            list.setPipeline(pipeline);
+            impl->bound_pipeline = pipeline;
         }
 #ifdef _WIN32
         // Plume's D3D12 backend sets the pipeline's stencil reference at each
@@ -1267,26 +1298,26 @@ void NativeRenderer::draw(const NativeDraw& draw) {
         // so it is always 0: a HUD gauge's mask wrote 0 and its fill (drawn
         // where the stencil equals 1) covered the whole gauge. Set it here.
         // (Vulkan keeps it in the pipeline.)
-        if (draw.stencil_enabled && !vulkan)
-            static_cast<plume::D3D12CommandList&>(list).d3d->OMSetStencilRef(draw.stencil_reference);
+        if (stencil_enabled && !vulkan)
+            static_cast<plume::D3D12CommandList&>(list).d3d->OMSetStencilRef(stencil_reference);
 #endif
         if (vulkan) {
             const uint64_t addresses[5] = {upload_address + vs_offset, upload_address + ps_offset, ring_address + shared_rel,
-                                           draw.palette.empty() ? 0 : ring_address + palette_rel,
+                                           palette_bound ? ring_address + palette_rel : 0,
                                            ring_address + loop_rel};
             list.setGraphicsPushConstants(0, addresses, 0, sizeof(addresses));
         } else {
             list.setGraphicsRootDescriptor(plume::RenderBufferReference(upload, vs_offset), 0);
             list.setGraphicsRootDescriptor(plume::RenderBufferReference(upload, ps_offset), 1);
             list.setGraphicsRootDescriptor(plume::RenderBufferReference(upload, shared_offset), 2);
-            if (!draw.palette.empty())
+            if (palette_bound)
                 list.setGraphicsRootDescriptor(plume::RenderBufferReference(upload, base_offset + palette_rel), 3);
             list.setGraphicsRootDescriptor(plume::RenderBufferReference(upload, base_offset + loop_rel), 4);
         }
         const plume::RenderVertexBufferView vertices(
-            draw.vertex_buffer ? plume::RenderBufferReference(const_cast<plume::RenderBuffer*>(draw.vertex_buffer), 0)
-                               : plume::RenderBufferReference(upload, base_offset),
-            uint32_t(draw.vertex_buffer ? uint64_t(draw.vertex_count) * draw.stride : draw.vertices.size()));
+            vertex_buffer ? plume::RenderBufferReference(const_cast<plume::RenderBuffer*>(vertex_buffer), 0)
+                          : plume::RenderBufferReference(upload, base_offset),
+            vertex_view_bytes);
         list.setVertexBuffers(0, &vertices, 1, &slots[0]);
         // An indexed draw selects its vertices from the uploaded block; the
         // base location puts that block back where the stream holds it.
@@ -1294,9 +1325,9 @@ void NativeRenderer::draw(const NativeDraw& draw) {
             const plume::RenderIndexBufferView view(plume::RenderBufferReference(upload, base_offset + index_rel),
                                                     uint32_t(index_bytes), plume::RenderFormat::R32_UINT);
             list.setIndexBuffer(&view);
-            list.drawIndexedInstanced(uint32_t(draw.indices.size()), 1, 0, draw.base_vertex_location, 0);
+            list.drawIndexedInstanced(index_count, 1, 0, base_vertex_location, 0);
         } else {
-            list.drawInstanced(draw.vertex_count, 1, 0, 0);
+            list.drawInstanced(vertex_count, 1, 0, 0);
         }
     });
     ++impl_->draws;

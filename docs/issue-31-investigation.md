@@ -713,3 +713,32 @@ game process. The ordinary Windows executable is
 The local delivery is main-checkout `out/course-stability-20261002`, including
 validation metadata and limitations. A fresh Ally SSH attempt still timed out;
 this does not establish coverage on Ally or resolution of all Issue 31 symptoms.
+
+## Post-v0.4.6 resolved-texture allocation lifetime
+
+A separate renderer regression reproduces stale pixels after a guest physical
+allocation is freed and reused. The existing physical-memory free hook calls
+`NativeRenderer::invalidate`, but that method previously removed only ordinary
+texture-cache entries. A resolved framebuffer at the freed address remained in
+`resolved_targets`, and its lookup took precedence over new guest texture bytes.
+
+Invalidation now removes resolved mappings whose destination base is inside the
+invalidated allocation, clears their dimension tag, and advances the binding
+generation. It queues their descriptors through the existing deferred recycling
+mechanism; recorded and submitted draws retain their texture objects until GPU
+completion permits reuse. This fixes whole-allocation lifetime handling. The
+resolve's guest byte extent is still unknown, so partial writes excluding its
+base and writes bypassing invalidation are not covered.
+
+The real GPU regression in `native_resolution_test.cpp` failed before the fix on
+RTX 4090 Vulkan and D3D12, then passed on both. It checks distinct old/new pixels,
+recorded and asynchronously submitted consumers, a resolve inside a larger freed
+allocation, repeated invalidation, an unrelated resolve, descriptor reuse, and
+dimension tags at 50% and 200% rendering scale. The Android ARM64 renderer library
+also builds. Raw red/green output and independent lifetime review are retained
+under `out/continuation-20261002/`.
+
+This demonstrates a resource-lifetime defect, not the cause of the reporter's
+Grand Prix crashes or bright corners. Reporter logs/screenshots are still needed
+to connect those symptoms to a specific fault. No new release is implied by this
+investigation entry.
