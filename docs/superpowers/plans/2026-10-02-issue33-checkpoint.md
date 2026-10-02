@@ -74,3 +74,26 @@ Next checkpoint work should replicate this controlled workload with the order
 reversed and cover responsiveness before a Windows-specific default decision.
 Do not repeat uncontrolled autonomous-route comparisons or infer Android gains.
 No runtime code change, external comment, push or release in this follow-up.
+
+## Reverse-order replication and urgent handoff follow-up
+
+- [x] Run 256/32/256 with new isolated case names and the same stationary
+      workload/executable; preserve the first sequence and compare all three
+      predefined HUD windows. Inspect fresh screenshot/time anchors.
+- [x] Extend the existing entry-state test to exercise real urgent handoff at
+      the next inline entry interval (1/32/256/4096), with an unexpired quantum.
+      Verify a private delayed-handoff mutant fails this assertion, then verify
+      the unchanged production scheduler passes both existing test targets.
+      Compile only after performance runs end to avoid workload interference.
+- [x] Record results, limitations, source hashes and ordinary-launch cleanup.
+      Entry-count tests do not establish a wall-clock input/audio latency bound.
+      Keep the production default unchanged during this validation.
+
+Completed 14:27 UTC: reverse256/32/256 gives92.877/87.278/91.517FPS inHUD45–80,
+draws667.6/667.2/670.0, candidate+6.42/+4.86percent. Allpredefinedwindowspositive.
+Allthree342.141s bounded exits, correctHUDclock, sourcefixturespreserved; sixcase
+cross-checks validate identicalbinary/settings/fixtures. Ordinaryoutputsunchanged,
+noownedgamesremain. Private delayed-urgentmutant failsnewassertion; production
+guest_entry_state+guest_execution2/2pass3.27s. Onlytest/documentationchanges.
+Next: Vulkan throughput and activeinput/audio beforeWindowsdefaultdecision;
+no broaderlatency/Android/Issue31fixclaim. Default32retained, nopublication.

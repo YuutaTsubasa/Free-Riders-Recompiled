@@ -1970,3 +1970,37 @@ scripts, settings, image/log hashes and restoration checks are in ignored
 `out/continuation-20261002/issue33`: `stationary-method.md`,
 `run-windows-stationary.py`, `compare-stationary.py`,
 `stationary-comparison.json` and `stationary-restoration.json`.
+
+The reverse-order replication (256/32/256) used three new independent cases
+with the same binary and settings. Fresh HUD anchors and screenshots confirm
+the same stationary scene and correct elapsed time:
+
+| Checkpoint interval | Stationary FPS, HUD 45–80s | P95 frame time | Draws/frame |
+| --- | ---: | ---: | ---: |
+| 256 before | 92.877 | 11.887 ms | 667.6 |
+| 32 | 87.278 | 12.524 ms | 667.2 |
+| 256 after | 91.517 | 11.955 ms | 670.0 |
+
+Both candidate runs outperform the intervening baseline, by 6.42% and 4.86%.
+The other two predefined windows are also positive (3.30–6.12%). Across both
+sequences, the fixed-scene Windows D3D12 result is consistently positive;
+variation in the size of the gain remains. Each reverse run ended normally at
+about 342.141s. Selected windows contain no clock clamps or frames over 50ms,
+and audio submission cadence stays 187.48–187.54 blocks/s. All six binaries,
+normalized settings and source fixture hashes match. Normal outputs are unchanged.
+Analysis is reproduced by `compare-stationary-reverse.py`, with cleanup and
+cross-sequence checks in `stationary-sequences-verification.json`.
+
+The entry-state regression now also exercises real urgent leases through mixed
+inline function-entry/loop checkpoints at intervals 1, 32, 256 and 4096. Even
+with a one-hour ordinary scheduling quantum, an urgent waiter must run at the
+next permit boundary. A private mutation that delays that handoff fails the new
+assertion; the unchanged production scheduler passes `guest_entry_state` and
+`guest_execution` (2/2, 3.27s). No additional CI target is needed. This establishes
+entry-count ordering, not a wall-clock input/audio latency bound, reservation
+duration bound or audible playback quality.
+
+Default 32 still applies. Before adopting a Windows default, measure the current
+Vulkan path and active input/audio behavior; D3D12 stationary throughput alone
+does not establish that broader result. These experiments do not change the
+inconclusive Android evidence or resolve the reporter's separate Issue #31 crash.
