@@ -2108,7 +2108,7 @@ test build retained default 32 pending the later Windows decision; a slower Wind
 host would strengthen coverage. Android evidence remains inconclusive;
 Issue #31 and GP mission 3 remain separate work.
 
-## Post-v0.4.7 CPU experiments (not integrated)
+## Post-v0.4.7 CPU investigation
 
 A 35-second Windows CPU sample, resolved against its exact executable map,
 recorded 68,680 samples with no lost ETW events. Of the process samples, about
@@ -2147,9 +2147,9 @@ windows include a frame above 100 ms, versus none in the baseline windows;
 baseline A and E still have substantial shorter stalls. This does not prove
 that the wait budget causes the long frames. Their extra wall time appears
 mostly under main-thread execution ownership, which can include host
-descheduling. Matched scheduler traces are needed to distinguish running,
-runnable and blocked time before accepting this change. Production retains
-the original budget.
+descheduling. Subsequent scheduler traces distinguish running, runnable and
+blocked time but did not reproduce the large candidate stalls. Production
+retains the original budget.
 
 Screenshots in D show the race clock advancing about 66.08 seconds while
 logged elapsed time advances 66.0768 seconds between presents 14400 and 19200.
@@ -2165,10 +2165,51 @@ table A is the corrected `baseline-profile-a`. `SFR_PROFILE=1` enables the
 local player profile and is not a performance-logging switch. Raw system
 traces remain private and are not release assets.
 
-A separate four-line ordinary-page memory-preflight experiment has passed
+A separate four-line ordinary-page memory-preflight optimization has passed
 1,208 baseline/candidate state comparisons and the existing guest-memory,
 pending-write and vector-memory suites. It retains all slow paths, write
 watches, reservations and pending-output semantics. The linked diagnostic
 keeps the original worker budget so its effect can be measured independently.
-It has not yet demonstrated gameplay performance improvement and is not
-integrated. See the dated CPU plans for its acceptance gate.
+An initial baseline/candidate/baseline sequence measured 9.463 / 9.144 / 9.454
+main-thread CPU ms/frame. This roughly 3.3% reduction is promising, but is not
+on its own sufficient for acceptance. The last baseline also had a
+576.8 ms frame, showing that large stalls are not exclusive to either
+candidate. Cleaner repeated measurements below support accepting only this
+preflight change into the current branch; it is not yet released.
+
+Three separate 90-second scheduler captures confirmed lower D3D12 worker CPU
+occupancy with the shorter wait, but are excluded from throughput comparisons.
+Two accurately aligned captures show some 25–40 ms frames waiting on the
+diagnostic stderr stream lock. Exact call-site disassembly identifies the
+stream, and the readying thread is the diagnostic periodic `fflush` worker.
+Neither capture reproduced a frame above 50 ms. PowerShell redirected-pipe
+backpressure is a hypothesis, not a proven cause of all stalls. A private
+launcher using inherited disk handles isolates that measurement variable
+without changing the game executables. Its results must be compared within
+the same launcher configuration; a harness improvement is not a shipped game
+optimization. The production Windows launcher already uses file handles.
+
+Two direct-file baseline/candidate pairs retain the exact executables, isolated
+saves, settings and normal-time race procedure described above:
+
+| Run | Main CPU ms/frame | Process CPU ms/frame | FPS | P99 / maximum frame ms |
+| --- | ---: | ---: | ---: | ---: |
+| L baseline | 9.613 | 28.603 | 73.19 | 16.50 / 22.94 |
+| M preflight | 9.218 | 27.613 | 76.19 | 15.89 / 29.31 |
+| N baseline | 9.441 | 28.652 | 74.19 | 16.36 / 24.50 |
+| O preflight | 9.187 | 28.054 | 74.92 | 15.97 / 24.25 |
+
+Adjacent main-thread reductions are **4.10% and 2.70%**, exceeding the 1.78%
+drift between these controls. Mean vertex/index counts differ by about
+0.21%/0.23%, while draw count differs by 2.22%; the workloads are not identical.
+All four middle windows have no frames above 33.33 ms. Candidate P99 improves,
+but M has a worse maximum than both controls. Adjacent FPS gains vary from
+0.99% to 4.10%; there is no claim of uniformly better worst-case latency or a
+fixed FPS gain.
+
+Independent scope, correctness and measurement reviews support the narrow
+preflight change. The promoted source was freshly compiled against the four
+standalone memory oracles and exactly matches the original baseline results.
+This evidence covers one stationary Dolphin Resort scene on Ally X, not every
+course or Android. The D3D12 worker budget remains unchanged. A separate
+ordered special-word lookup is still a private experiment.

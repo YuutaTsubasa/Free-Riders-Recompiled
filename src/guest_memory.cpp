@@ -993,6 +993,10 @@ void GuestMemory::mark_written(uint64_t address, uint64_t size) const {
 }
 
 void GuestMemory::check_store_access(uint64_t address, uint64_t size, const PendingWrite* owner) const {
+    if (!owner && (fast_page(address, size) & fast_access) && !page_pinned(address)) {
+        mark_written(address, size);
+        return;
+    }
     check(address, size);
     mark_written(address, size);
     check_pending_writes(address,size,owner);
