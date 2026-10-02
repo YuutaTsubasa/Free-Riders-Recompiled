@@ -1,6 +1,6 @@
 # Ordinary-page write preflight experiment
 
-Status: four-line preflight accepted into this branch after isolated Ally X measurements and independent review. The worker waiting and sorted-lookup experiments remain separate. Not released; Android and other-course performance remain unverified.
+Status: four-line preflight accepted into this branch after isolated Ally X measurements and independent review. Android regression completed without a material FPS gain. Worker waiting, sorted lookup and constant-copy experiments remain separate and unaccepted. Not released; other-course performance remains unverified.
 
 ## Evidence and hypothesis
 
@@ -42,6 +42,26 @@ Promotion was held after this first sequence: the candidate had one frame above 
 | N baseline | 9.4412 | 74.19 | 16.36 | 24.50 |
 | O preflight | 9.1866 | 74.92 | 15.97 | 24.25 |
 
-Adjacent pairs reduce main CPU/frame by 4.10% and 2.70%, versus 1.78% baseline drift. Both candidates beat both controls. Mean vertex and index counts vary approximately 0.21% and 0.23%; draw count varies 2.22%, so workloads are comparable but not identical. All four complete normally with no frames above 33.33 ms in the middle 100-second windows. M's maximum exceeds both baseline maxima, despite better P99s. Adjacent FPS changes are +4.10% and +0.99%; do not promise a fixed FPS gain.
+Adjacent pairs reduce main CPU/frame by 4.10% and 2.70%, versus 1.78% baseline drift. Both candidates beat both controls. Mean vertex bytes and index counts vary approximately 0.21% and 0.23%; draw count varies 2.22%, so workloads are comparable but not identical. All four complete normally with no frames above 33.33 ms in the middle 100-second windows. M's maximum exceeds both baseline maxima, despite better P99s. Adjacent FPS changes are +4.10% and +0.99%; do not promise a fixed FPS gain.
 
 Independent measurement review accepts this narrow main-CPU result for the branch. The source is byte-identical to the reviewed candidate (SHA256 `d1a1c6c0970567f2f1782df91d688b67b50e67f0bed2b0dccb8465e0676600a8`). Fresh verification is saved under `out/build/cpu-memory-production-v047/verification.json`. Raw logs, executable identities, clock anchors, settings, power metadata and screenshots remain private in the four case folders under `out/cpu-profile-v047`. This is one stationary Dolphin Resort scene on one Ally X; neither statistical certainty nor other-device/course coverage is claimed.
+
+## Android follow-up
+
+AYN Thor completed an official v0.4.7 / memory-only candidate / official v0.4.7 sequence using independent saves and caches, full rendering, normal game time and the same fixed frame window 15000–20500. Only `libmain.so` differs in the candidate APK; the other 11 entries are identical. Signature, versionCode 17, API29 minimum and 16 KB alignment were verified. No uninstall or app-data clear was used.
+
+| Run | Main CPU estimate ms/frame | FPS | P99 frame ms | Maximum frame ms |
+| --- | ---: | ---: | ---: | ---: |
+| A official | 27.2426 | 25.1395 | 49.6516 | 87.4253 |
+| B3 memory preflight | 27.0140 | 25.1535 | 50.3039 | 86.6709 |
+| C official | 27.2159 | 25.0800 | 50.4246 | 87.3310 |
+
+The candidate's CPU point estimates are about 0.74–0.84% lower, but observed frame-bracket ranges overlap. Those ranges are not strict error or confidence bounds: buffered logs and sequential process/thread reads introduce uncertainty. CPU comes from actual `/proc` ticks with CLK_TCK=100, owned process identities and log/frame anchors, not wall waiting. Workload counters are close but not identical. FPS differences are below 0.3%, so no material Android FPS improvement is established. Each window has zero frames at or above 100 ms; P99 is between the controls. Battery readings do not measure SoC temperature; unavailable thermal HAL data cannot exclude throttling. These are diagnostic, stationary-scene runs, not ordinary-play or all-course performance guarantees.
+
+Two failed launches B/B2 are excluded: an initial private runner restored settings by renaming shell-owned files over app-owned files. The launcher could not write its settings and never started the game. The reviewed V2 runner restored settings in place and performed one byte/metadata-constrained recovery through the launcher's own file creation. B3 and C then completed normally. Final read-only verification confirms official v0.4.7 is installed, both settings retain original bytes and app ownership/RW permissions, the original user-save file list and hashes are unchanged, and no package processes, debug overrides or benchmark lock remain. This was a test harness failure, not a candidate native crash.
+
+Raw cases and the final comparison are under `out/cpu-memory-v047/android-bench`, with `analysis/completed-aba` and `final-device-verification/result.json`. Candidate screenshot clock progression is 191.30 seconds over 191.2997 logged seconds. The failed-launch evidence and frozen V1 runner are retained separately.
+
+## Private normal Windows package
+
+`out/build/cpu-memory-normal-v047/FreeRidersRecompiled-0.4.7-memory-test-windows-x64.zip` is built with normal timing, original worker behavior and only the accepted preflight source change. SHA256: `b090e7433dd7b9dcd7add649391a68ace399071d97b3d65a2efd05388bf5865d`. CRC and payload comparison passed: only the runtime executable differs from the official release ZIP. This complete package has not itself been launched; gameplay measurements above use the separately identified diagnostic build. It is private, not a published release.
