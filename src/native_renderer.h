@@ -115,7 +115,9 @@ public:
     // SFR_ALLOW_RENDER_TARGETS is set.
     uint32_t placeholder_texture();
     // Forgets cached textures whose guest physical data overlaps the range;
-    // the next draw that uses one uploads it again.
+    // the next draw that uses one uploads it again. Resolved targets are
+    // retired when their destination base lies in the range (their guest
+    // extent is not tracked), including on whole-allocation frees.
     void invalidate(uint32_t physical, uint32_t size);
     void draw(const NativeDraw& draw);
     // Called once at initial device setup, before the title's first frame.

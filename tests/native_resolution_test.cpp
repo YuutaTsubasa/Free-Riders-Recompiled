@@ -143,6 +143,87 @@ float4 shaderMain() : SV_Target { return tfetch2D(textures0,samplers0,float2(0.5
     environment("SFR_TEXTURE_UPLOAD_BATCH", "1");
 }
 
+void resolved_allocation_reuse_readback(sfr::NativeGraphics& graphics, const fs::path& directory, const std::string& header) {
+    const auto vertex = compile(graphics, directory, header, R"(
+float4 shaderMain(uint id : SV_VertexID) : SV_Position {
+ float2 p[3] = {float2(-1,-1), float2(-1,3), float2(3,-1)};
+ return float4(p[id],0.5,1);
+})", true);
+    const auto pixel = compile(graphics, directory, header, R"(
+float4 shaderMain() : SV_Target {
+ float4 color = tfetch2D(textures0,samplers0,float2(0.5,0.5),float2(0,0));
+ return float4(color.rg, getPixelCoord(textures0,float2(0.5,0.5)).x / 16.0, 1);
+})", false);
+    for (uint32_t percent : {50u, 200u}) for (bool submitted : {false, true}) {
+        environment("SFR_RENDER_SCALE", std::to_string(percent));
+        sfr::GuestMemory memory;
+        constexpr uint32_t physical = 0x101000, other = 0x104000;
+        memory.map(0xA0100000, 0x10000);
+        const auto fetch = [](uint32_t base) {
+            return sfr::FetchWords{2u | (1u << 22), base | 6u | (2u << 6), 0u, 0x688u << 1, 0u, 1u << 9};
+        };
+        unsigned asynchronous_flushes = 0;
+        sfr::NativePresentation presentation(graphics, 16, 16);
+        sfr::NativeRenderer renderer(graphics, presentation);
+        sfr::NativeClear clear{};
+        clear.color = true; clear.color_value = {1,0,0,1};
+        presentation.clear(clear);
+        const uint32_t old = renderer.adopt_resolved_target(physical);
+        const uint32_t unrelated = renderer.adopt_resolved_target(other);
+        clear.color_value = {0,0,0,0}; presentation.clear(clear);
+        sfr::NativeDraw draw;
+        draw.vertex_count = 3; draw.vertex_shader = vertex.get(); draw.pixel_shader = pixel.get();
+        draw.shared.texture_2d[0] = old;
+        draw.shared.sampler[0] = renderer.sampler({});
+        presentation.set_raster_state({0,0,16,16}, {0,0,8,16});
+        renderer.draw(draw);
+        // Exercise both a recorded consumer and a previously submitted one.
+        presentation.after_flush([&](bool complete) { if (!complete) ++asynchronous_flushes; });
+        if (submitted) presentation.present();
+        const uint64_t generation = renderer.texture_generation();
+        // The resolve base is inside, rather than at the start of, this freed
+        // allocation. Its replacement has the same address and new CPU bytes.
+        renderer.invalidate(physical - 0x1000, 0x2000);
+        const uint64_t invalidated_generation = renderer.texture_generation();
+        renderer.invalidate(physical - 0x1000, 0x2000);
+        require(renderer.texture_generation() == invalidated_generation, "repeated retirement does not publish another change");
+        memory.store<uint32_t>(0xA0000000u | physical, 0xFF00FF00);
+        const uint32_t replacement = renderer.texture(memory, fetch(physical));
+        draw.shared.texture_2d[0] = replacement;
+        presentation.set_raster_state({0,0,16,16}, {8,0,16,16});
+        renderer.draw(draw);
+        const auto pixels = presentation.readback_color();
+        const uint32_t extent = 16 * percent / 100;
+        for (uint32_t y=0; y<extent; ++y) for (uint32_t x=0; x<extent; ++x) {
+            const size_t at = (y*extent+x)*4;
+            const bool original = x < extent/2;
+            require(pixels[at+2] == (original ? 255 : 0) && pixels[at+1] == (original ? 0 : 255),
+                    "freed resolve yields new guest pixels while recorded consumers retain old pixels");
+            require(std::abs(int(pixels[at]) - (original ? 128 : 8)) <= 1 && pixels[at+3] == 255,
+                    "replacement texture uses its own dimensions at non-default render scale");
+        }
+        require(invalidated_generation != generation, "resolve retirement invalidates memoized guest bindings");
+        require(replacement != old, "resolve descriptor stays unavailable until consuming GPU work completes");
+        require(!submitted || asynchronous_flushes != 0, "submitted case exercises an asynchronous frame");
+        require(renderer.texture(memory, fetch(other)) == unrelated, "invalidation preserves an unrelated resolve");
+        // Completion can now recycle the old descriptor as an ordinary texture.
+        // The dimension channel detects a resolved-index bit left on that slot.
+        memory.store<uint32_t>(0xA0106000, 0xFF00FF00);
+        const uint32_t recycled = renderer.texture(memory, fetch(0x106000));
+        require(recycled == old, "completed resolve descriptor is reclaimed");
+        memory.store<uint32_t>(0xA0107000, 0xFF0000FF);
+        require(renderer.texture(memory, fetch(0x107000)) != recycled, "repeated invalidation never recycles one slot twice");
+        draw.shared.texture_2d[0] = recycled;
+        presentation.set_raster_state({0,0,16,16}, {0,0,16,16});
+        renderer.draw(draw);
+        const auto reused = presentation.readback_color();
+        for (size_t at=0; at<reused.size(); at+=4)
+            require(reused[at+2] == 0 && reused[at+1] == 255 && std::abs(int(reused[at])-8)<=1,
+                    "recycled descriptor has fresh pixels and no resolved dimension tag");
+        std::cerr << "RESOLVE_LIFETIME scale=" << percent << " submitted=" << submitted << " passed\n";
+    }
+}
+
 void constant_upload_readback(sfr::NativeGraphics& graphics, const fs::path& directory, const std::string& header) {
     const auto vertex = compile(graphics, directory, header, R"(
 #ifndef __spirv__
@@ -274,6 +355,7 @@ uint g_SpecConstants() { return 0; }
 )";
     sfr::NativeGraphics graphics;
     graphics.initialize();
+    resolved_allocation_reuse_readback(graphics, directory, header);
     batched_texture_readback(graphics, directory, header);
     const auto vertex = compile(graphics, directory, header, R"(
 float4 shaderMain(uint id : SV_VertexID) : SV_Position {
