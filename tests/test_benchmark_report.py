@@ -10,6 +10,41 @@ from test_benchmark_summary import write_log
 
 
 class BenchmarkReportTest(unittest.TestCase):
+    def test_existing_archive_with_dotted_run_name_is_preserved(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / 'run.v1'
+            source.mkdir()
+            archive = Path(root) / 'run.v1-report.zip'
+            archive.write_bytes(b'existing report')
+            with self.assertRaises(SystemExit):
+                report.main(['report', str(source)])
+            self.assertEqual(archive.read_bytes(), b'existing report')
+
+    def test_existing_report_and_missing_source_preserve_output(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / 'missing'
+            destination = Path(root) / 'missing-report'; destination.mkdir()
+            (destination / 'keep').write_text('keep')
+            with self.assertRaises(SystemExit):
+                report.main(['report', str(source)])
+            source.mkdir()
+            with self.assertRaises(SystemExit):
+                report.main(['report', str(source)])
+            self.assertEqual((destination / 'keep').read_text(), 'keep')
+
+    def test_method_uses_recorded_settings(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root) / 'run'; source.mkdir()
+            (source / 'info.txt').write_text('audio=1\nrealtime_race=1\nrealtime_ui=1\norder=turning\nconfigs=exe-a,exe-b capped=True\n')
+            write_log(source, 'exe-a-1.log', 40)
+            destination = Path(root) / 'report'
+            report.build(source, destination, '', None, 0)
+            text = (destination / 'report.md').read_text(encoding='utf-8')
+            self.assertIn('exe-a,exe-b capped=True', text)
+            self.assertIn('音訊：1', text)
+            self.assertNotIn('15600', text)
+            self.assertNotIn('沒有聲音', text)
+
     def test_only_runs_that_count_get_a_frame_file_and_the_rest_are_named(self):
         with tempfile.TemporaryDirectory() as root:
             folder = Path(root) / 'run'

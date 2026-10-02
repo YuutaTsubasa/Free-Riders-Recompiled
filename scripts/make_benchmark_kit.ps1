@@ -31,11 +31,10 @@ if ($UpdateOnly) {
     if (-not (Test-Path -LiteralPath $Destination)) { throw "$Destination does not exist: make a whole kit first (without -UpdateOnly)." }
     $NoZip = $true
 } elseif (Test-Path -LiteralPath $Destination) {
-    # A kit that has been run holds its results: never delete those along with it.
-    if (Test-Path -LiteralPath (Join-Path $Destination 'out/bench')) {
-        throw "$Destination holds benchmark results (out\bench). Move them away, or choose another -Destination."
-    }
-    Remove-Item -Recurse -Force -LiteralPath $Destination
+    throw "$Destination already exists. Choose a new destination or explicitly use -UpdateOnly."
+}
+if (-not $NoZip -and (Test-Path -LiteralPath "$Destination.zip")) {
+    throw "$Destination.zip already exists. Choose a new destination."
 }
 New-Item -ItemType Directory -Force -Path $Destination | Out-Null
 $updated = [System.Collections.Generic.List[string]]::new()
@@ -150,7 +149,7 @@ if ($UpdateOnly) {
 if ($null -ne $size) { Write-Output "Kit folder: $Destination ($size MB)" }
 if (-not $NoZip -and (Get-Command tar -ErrorAction SilentlyContinue)) {
     $zip = "$Destination.zip"
-    if (Test-Path -LiteralPath $zip) { Remove-Item -Force -LiteralPath $zip }
+    if (Test-Path -LiteralPath $zip) { throw "$zip already exists." }
     & tar -a -c -f $zip -C $Destination .
     if (Test-Path -LiteralPath $zip) { Write-Output "Kit zip:    $zip" }
 }

@@ -43,7 +43,7 @@ TEXT = {'.log', '.txt', '.md', '.json', '.out', '.csv', '.map'}
 def patterns(also):
     rules = [
         # A Windows user name may contain spaces: it ends at the next slash.
-        (rb'(?i)([A-Z]:[\\/]Users[\\/])[^\\/"\'\r\n]+', rb'\1USER'),
+        (rb'(?i)([A-Z]:[\\/]+Users[\\/]+)[^\\/"\'\r\n]+', rb'\1USER'),
         (rb'(/home/|/Users/)[^/\s"\']+', rb'\1USER'),
         (rb'(?m)^generated=.*$', rb'generated=<removed>'),
         (rb'windows_langid=0x[0-9A-Fa-f]+ xbox_language=\d+', rb'windows_langid=0x0 xbox_language=0'),
@@ -72,7 +72,10 @@ def anonymize(source, destination, also=(), keep_screenshots=False):
             continue
         target = Path(destination) / path.relative_to(source)
         suffix = path.suffix.lower()
-        if suffix == '.bmp' and not keep_screenshots:
+        relative = path.relative_to(source)
+        # Export only evidence at the run root, never save fixtures, caches,
+        # binaries or files reached through symlinks.
+        if path.is_symlink() or len(relative.parts) != 1 or not (suffix in TEXT or (suffix == '.bmp' and keep_screenshots)):
             left_out += 1
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -116,8 +119,8 @@ def make_archives(folder, limit_bytes):
     returns the archives' paths. Every archive is under limit_bytes."""
     folder = Path(folder)
     base = str(folder)
-    for old in folder.parent.glob(folder.name + '*.zip'):
-        old.unlink()
+    if (folder.parent / (folder.name + '.zip')).exists() or any(folder.parent.glob(folder.name + '-part*of*.zip')):
+        raise SystemExit('Archive output already exists; choose a new output folder.')
     # A file over the limit even alone is cut into raw pieces first, which are then ordinary files.
     for path in sorted(folder.rglob('*')):
         if path.is_file() and compressed_size(path) + ENTRY_OVERHEAD > limit_bytes:
@@ -156,7 +159,7 @@ def main(argv):
         raise SystemExit(f'{source}: not a folder')
     destination = source.with_name(source.name + '-shareable')
     if destination.exists():
-        shutil.rmtree(destination)
+        raise SystemExit(f'{destination}: already exists; choose a new source/output folder')
     copied, replaced, left_out = anonymize(source, destination, args.also, args.keep_screenshots)
     archives = make_archives(destination, int(args.limit_mb * 1_000_000))
     print(f'{copied} files copied, {replaced} replacements, {left_out} screenshots left out')

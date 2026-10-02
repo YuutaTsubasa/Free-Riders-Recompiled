@@ -188,7 +188,8 @@ EXPECTED_FRAMES_TOLERANCE = 0.02  # a run with fewer race frames than the others
 
 def valid_runs(rows):
     """(config, repeat, stats) of the runs that can be compared, and why the others cannot."""
-    counts = [stats['frames'] for _, _, stats, _ in rows if stats]
+    counts = [stats['frames'] for config, _, stats, ended in rows
+              if config != 'warmup' and stats and 'present-limit' in ended]
     expected = statistics.median(counts) if counts else 0
     good, problems = [], []
     for config, repeat, stats, ended in rows:

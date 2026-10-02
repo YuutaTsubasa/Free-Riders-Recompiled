@@ -75,11 +75,12 @@ def build(folder, destination, machine, notes, skip, list_left_out=True):
     if machine:
         lines.insert(lines.index('| --- | --- |') + 1, f'| 機型 | {machine} |')
     lines += ['', '## 方法', '',
-              '- 遊戲自己從開機走到 Free Race，沒人操作，比賽中由 AI 對手陪跑，跑到第 15600 次 present 自動停止；'
-              '不封頂（量的是每格成本，不是封頂 60 fps 下的體驗）。',
-              '- 同一個執行檔、同一份存檔，設定之間只差一個環境變數；各設定輪流跑，所以同一輪的幾趟處於相近的機器狀態。',
+              f'- 執行設定：{info.get("configs", "未記錄；不能推定幀數上限、封頂或測試模式。")}',
+              f'- 順序：{info.get("order", "未記錄")}；音訊：{info.get("audio", "未記錄")}；'
+              f'實際經過時間（比賽／UI）：{info.get("realtime_race", "未記錄")}/{info.get("realtime_ui", "未記錄")}。',
+              '- 每輪依設定比較；執行檔與有效環境變數以各趟 JSON／info.txt 為準，不能假設所有設定使用同一執行檔。',
               f'- 只算比賽中的格，並去掉開頭的 {skip} 格（倒數與第一次使用的著色器）。一格的時間是它與前一次 present 的間隔。',
-              '- 沒有 Kinect、沒有聲音、沒有影片、單人；一個賽道一組選單。', '',
+              '- racing=1 僅代表遊戲的比賽指標存在；仍須檢查場景、畫面及工作量是否可比較。', '',
               '## 納入比較的各趟', '',
               '| 設定 | 輪 | 平均 fps | 中位數 ms | P95 ms | P99 ms | 主執行緒持有 ms | 繪製 ms | >50 ms 格 | 編譯卡頓格 | 現場建 pipeline |',
               '| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |']
@@ -112,9 +113,11 @@ def main(argv):
     parser.add_argument('--hide-left-out', action='store_true', help='do not list the runs that were left out')
     args = parser.parse_args(argv[1:])
     source = Path(args.folder)
+    if not source.is_dir():
+        raise SystemExit(f'{source}: not a folder')
     destination = source.with_name(source.name + '-report')
-    if destination.exists():
-        shutil.rmtree(destination)
+    if destination.exists() or Path(str(destination) + '.zip').exists():
+        raise SystemExit(f'{destination}: output already exists; choose a new folder')
     kept, left_out = build(source, destination, args.machine, args.notes or None, args.skip, not args.hide_left_out)
     archive = shutil.make_archive(str(destination), 'zip', destination)
     print(f'{kept} runs in the report, {left_out} left out')

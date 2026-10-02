@@ -577,7 +577,7 @@ SFR_HOOK(sub_824E65A0) {
     // at a present that depends on the PC's speed, so a fixed limit can't be set.
     static const uint32_t after_say=[]{ const char* t=std::getenv("SFR_PRESENT_LIMIT_AFTER_SAY"); return t?uint32_t(std::strtoul(t,nullptr,10)):0u; }();
     const uint32_t said_at=sfr::say_done_present.load();
-    if(after_say && said_at && sfr::present_count>=said_at+after_say)
+    if(after_say && said_at && uint32_t(sfr::present_count.load()-said_at)>=after_say)
         throw sfr::RuntimeStop("present-limit",after_say,"SFR_PRESENT_LIMIT_AFTER_SAY reached");
 }
 

@@ -8,11 +8,11 @@
 #   scripts\benchmark.ps1 -Configs baseline -Repeats 1
 #
 # Build first: scripts\build_tools.ps1 -Diagnostic. The game runs with the
-# launcher's defaults and nothing of yours is touched: no Kinect, no sound,
+# explicit elapsed-time defaults: no Kinect, normal sound,
 # and a copy of your save in the run's own directory.
 param(
-    [string[]]$Configs = @('baseline', 'sequential', 'serial', 'skip-draws'),
-    [int]$Repeats = 2,
+    [string[]]$Configs = @('baseline', 'no-suspend-notify'),
+    [ValidateRange(1, 100)][int]$Repeats = 6,
     # The menu words and the presents they are said at: title, main menu,
     # one turn of the ring (the ring wraps: Free Race is left of World Grand Prix;
     # if `left` does nothing, five `right` do it), then rules, course, character and
@@ -20,10 +20,13 @@ param(
     [string]$Say = 'ok@580,ok@930,ok@1280,start@1630,ok@1830,left@2030,ok@2230,ok@2530,ok@2830,ok@3130,right@3430,ok@3730',
     [int]$PresentLimit = 15600,
     [switch]$NoStretch,               # the words by presents alone and the run ends at -PresentLimit (it cannot finish on a PC that presents fast)
-    [double]$ReferenceFps = 100,
-    [int]$AfterSay = 4200,
-    [int]$Skip = 600,                 # race frames left out at the start
-    [int]$TimeoutMinutes = 25,        # a run that takes longer is stopped
+    [ValidateRange(1.0, 10000.0)][double]$ReferenceFps = 100,
+    [ValidateRange(1, 10000000)][int]$AfterSay = 4200,
+    [ValidateRange(0, 10000000)][int]$Skip = 600,
+    [ValidateRange(1, 120)][int]$TimeoutMinutes = 25,
+    [ValidateSet('d3d12', 'vulkan')][string]$Backend = 'd3d12',
+    [switch]$NoAudio,                 # explicit diagnostic, recorded in metadata
+    [switch]$AllowDiagnosticRendering, # required for omitted-draw comparisons
     [int]$ScreenshotEvery = 0,         # a screenshot every N presents in every run (a diagnostic: it slows the run)
     [switch]$NoWarmup,                # the first run fills the shader caches
     [switch]$FixedOrder,              # the settings in the same order every round (the default turns the order each round)
@@ -32,9 +35,15 @@ param(
     [switch]$ColdPipelines,           # every run starts without pipeline-cache: a new player's first race
     [string]$ImageDirectory = '',     # the game folders, when they are not where this checkout keeps them
     [string]$AssetDirectory = '',
+    [string]$SaveDirectory = '',
     [string]$Out = ''
 )
 $ErrorActionPreference = 'Stop'
+Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
+$originalEnvironment = @{}
+Get-ChildItem Env:SFR_* | ForEach-Object { $originalEnvironment[$_.Name] = $_.Value }
+$process = $null
+try {
 $Stretch = -not $NoStretch
 $root = Split-Path -Parent $PSScriptRoot
 # A kit keeps its own DXC next to the scripts (run_benchmark.bat sets this too); without it nothing is drawn
@@ -110,6 +119,10 @@ $settings = @{
 }
 # "a,b" arrives as one string through powershell -File.
 $Configs = @($Configs | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
+if (-not $Configs.Count -or @($Configs | Select-Object -Unique).Count -ne $Configs.Count) { throw 'Provide distinct configurations.' }
+if (-not $AllowDiagnosticRendering -and @($Configs | Where-Object { $_ -in 'skip-draws','render-every-2' }).Count) {
+    throw 'Omitted drawing is a diagnostic ceiling, not gameplay performance; use -AllowDiagnosticRendering explicitly.'
+}
 foreach ($name in $Configs) {
     if (-not $settings.ContainsKey($name)) { throw "Unknown setting '$name'; known: $($settings.Keys -join ', ')" }
 }
@@ -141,7 +154,9 @@ $base = [ordered]@{
     SFR_ALLOW_RENDER_TARGETS = '1'; SFR_TRACE_GRAPHICS = '0'; SFR_DIAGNOSTIC_ENTRIES = '0'; SFR_TRACE_IMPORTS = '0'
     SFR_FRAME_LIMIT = $(if ($Capped) { '60' } else { '0' })
     SFR_RENDER_EVERY = '1'; SFR_PARALLEL_WORKER = 'cores'; SFR_VERTEX_CACHE = '1'; SFR_GPU_PIPELINE = '1'
-    SFR_AUDIO = '0'; SFR_PROFILE = '1'; SFR_SKIP_MOVIES = '1'
+    SFR_AUDIO = $(if ($NoAudio) { '0' } else { '1' }); SFR_PROFILE = '1'; SFR_SKIP_MOVIES = '1'
+    SFR_REALTIME_RACE = '1'; SFR_REALTIME_UI = '1'; SFR_GRAPHICS = $Backend
+    SFR_GAME_LANGUAGE = 'en'; SFR_PLAYER1_INPUT = 'none'; SFR_PLAYER2_INPUT = 'none'
     # Since v0.4.3 the per-frame NATIVE_PRESENT line is only written when asked for (tracing is off here)
     SFR_FRAME_METRICS = '1'
     SFR_WINDOW_WIDTH = '1280'; SFR_WINDOW_HEIGHT = '720'; SFR_FULLSCREEN = '0'; SFR_VSYNC = '0'
@@ -159,20 +174,21 @@ if ($Stretch) {
     $base['SFR_PRESENT_LIMIT_AFTER_SAY'] = "$AfterSay"
     if (-not $PSBoundParameters.ContainsKey('PresentLimit')) { $base['SFR_PRESENT_LIMIT'] = '60000' }
 }
-# Left unset, whatever this console has: the Kinect, the voice, a second
-# player, the per-setting switches and the investigation aids.
-$cleared = @('SFR_CAMERA', 'SFR_VOICE', 'SFR_INPUT_SCRIPT', 'SFR_INPUT_SCRIPT_2', 'SFR_GRAPHICS', 'SFR_HOST_PROCESSORS',
-             'SFR_SKIP_DRAWS', 'SFR_SCREENSHOT', 'SFR_SCREENSHOT_EVERY', 'SFR_SAMPLE_PROFILE', 'SFR_HOST_PROFILE',
-             'SFR_MAIN_PROFILE', 'SFR_AVATAR_MODEL', 'SFR_TWO_PLAYERS', 'SFR_PLAYER2_INPUT', 'SFR_PIPELINE_MANIFEST')
-# Every setting's switch too, so one run's never carries into the next.
-$cleared = @($cleared + @($settings.Values | ForEach-Object { $_.Keys }) | Sort-Object -Unique)
-$touched = @($base.Keys) + $cleared
-$saved = @{}
-foreach ($name in ($touched | Sort-Object -Unique)) { $saved[$name] = [Environment]::GetEnvironmentVariable($name) }
-
-if (-not $Out) { $Out = Join-Path $root ('out/bench/' + (Get-Date -Format 'yyyyMMdd-HHmmss')) }
-New-Item -ItemType Directory -Force -Path $Out | Out-Null
-$save_source = Join-Path $host_dir 'save'
+if (-not $Out) { $Out = Join-Path $root ('out/bench/' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff')) }
+$Out = [IO.Path]::GetFullPath($Out)
+if (Test-Path -LiteralPath $Out) { throw "Output already exists: $Out. Choose a new directory." }
+$save_source = if ($SaveDirectory) { [IO.Path]::GetFullPath($SaveDirectory) } else { Join-Path $host_dir 'save' }
+if ($SaveDirectory -and -not (Test-Path -LiteralPath $save_source -PathType Container)) { throw 'SaveDirectory does not exist.' }
+if ($Out.Equals($save_source, [StringComparison]::OrdinalIgnoreCase) -or $Out.StartsWith($save_source.TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Output must not be inside the source save directory.'
+}
+New-Item -ItemType Directory -Path $Out | Out-Null
+$fixture = Join-Path $Out 'fixture'
+if (Test-Path -LiteralPath $save_source) { Copy-Item -Recurse -LiteralPath $save_source -Destination $fixture }
+else { New-Item -ItemType Directory -Path $fixture | Out-Null }
+Get-ChildItem -LiteralPath $fixture -Recurse -File | ForEach-Object {
+    [ordered]@{ path = $_.FullName.Substring($fixture.Length); sha256 = (Get-FileHash -LiteralPath $_.FullName).Hash }
+} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Out 'fixture-hashes.json') -Encoding UTF8
 
 # What the numbers belong to.
 $cpu = try { (Get-CimInstance Win32_Processor | Select-Object -First 1).Name } catch { 'unknown' }
@@ -204,8 +220,9 @@ if ($power -eq 'ON BATTERY') { Write-Warning 'On battery: plug in, or the CPU an
 Write-Output "PC: $power, power plan '$plan', $idle% busy before the start"
 @("commit=$commit", "generated=$generated", "model=$model", "cpu=$cpu", "gpu=$gpu", "driver=$driver", "power=$power plan=$plan idle_cpu_percent=$idle",
   "cold_pipelines=$([bool]$ColdPipelines)", "os=$([Environment]::OSVersion.VersionString)",
-  "configs=$($Configs -join ',') repeats=$Repeats present_limit=$PresentLimit stretch=$([bool]$Stretch) capped=$([bool]$Capped)",
-  "say=$Say", "order=$(if ($FixedOrder) { 'fixed' } else { 'turning' })") | Set-Content -LiteralPath (Join-Path $Out 'info.txt') -Encoding UTF8
+  "configs=$($Configs -join ',') repeats=$Repeats present_limit=$($base.SFR_PRESENT_LIMIT) after_say=$($base.SFR_PRESENT_LIMIT_AFTER_SAY) reference_fps=$($base.SFR_SAY_REFERENCE_FPS) stretch=$([bool]$Stretch) capped=$([bool]$Capped)",
+  "say=$Say", "order=$(if ($FixedOrder) { 'fixed' } else { 'turning' })", "realtime_race=1", "realtime_ui=1",
+  "audio=$($base.SFR_AUDIO)", "backend=$Backend", "diagnostic_rendering=$([bool]$AllowDiagnosticRendering)") | Set-Content -LiteralPath (Join-Path $Out 'info.txt') -Encoding UTF8
 # The executables an exe-a / exe-b comparison ran: which file, how big, when it was built.
 foreach ($name in $Configs) {
     if ($settings[$name].ContainsKey('SFR_EXE')) {
@@ -228,8 +245,12 @@ for ($r = 1; $r -le $Repeats; ++$r) {
 }
 
 function Start-Run([string]$name, [int]$repeat) {
-    foreach ($key in $cleared) { Remove-Item "Env:$key" -ErrorAction SilentlyContinue }
+    Get-ChildItem Env:SFR_* | ForEach-Object { [Environment]::SetEnvironmentVariable($_.Name, $null) }
     foreach ($key in $base.Keys) { Set-Item "Env:$key" $base[$key] }
+    foreach ($key in 'SFR_DXC_LIBRARY','SFR_SHADER_PACK') {
+        if ($originalEnvironment.ContainsKey($key)) { Set-Item "Env:$key" $originalEnvironment[$key] }
+    }
+    if (-not $env:SFR_DXC_LIBRARY -and (Test-Path -LiteralPath (Join-Path $root 'dxc/dxcompiler.dll'))) { $env:SFR_DXC_LIBRARY = Join-Path $root 'dxc' }
     $changes = if ($name -eq 'warmup') { @{} } else { $settings[$name] }
     $program = $exe
     foreach ($key in $changes.Keys) {
@@ -246,13 +267,17 @@ function Start-Run([string]$name, [int]$repeat) {
     if ((Test-Path -LiteralPath $shipped) -and -not (Test-Path -LiteralPath (Join-Path $root "out/shaders/pipelines-$backend.manifest"))) {
         $env:SFR_PIPELINE_MANIFEST = $shipped
     }
-    if ($ColdPipelines) { Remove-Item -Recurse -Force -LiteralPath (Join-Path $root 'pipeline-cache') -ErrorAction SilentlyContinue }
     $label = "$name-$repeat"
+    $cacheLabel = if ($ColdPipelines) { $label } else { "warm-$backend" }
+    $cacheRoot = Join-Path $Out "cache/$cacheLabel"
+    New-Item -ItemType Directory -Force -Path $cacheRoot | Out-Null
+    $env:SFR_PIPELINE_CACHE_PATH = Join-Path $cacheRoot 'pipelines'
+    $env:SFR_PIPELINE_MANIFEST_LOCAL = Join-Path $cacheRoot 'learned.manifest'
+    $env:SFR_RUNTIME_SHADER_CACHE = Join-Path $cacheRoot 'shaders'
     # A fresh copy of the save each run: the same menus every time, and the
     # player's own save is never written.
     $save = Join-Path $Out "save-$label"
-    if (Test-Path -LiteralPath $save_source) { Copy-Item -Recurse -LiteralPath $save_source -Destination $save }
-    else { New-Item -ItemType Directory -Force -Path $save | Out-Null }
+    Copy-Item -Recurse -LiteralPath $fixture -Destination $save
     $env:SFR_SAVE_DIRECTORY = $save
     # The warm-up shows where the menus went, should a run not reach the race.
     if ($name -eq 'warmup') {
@@ -264,12 +289,15 @@ function Start-Run([string]$name, [int]$repeat) {
         $env:SFR_SCREENSHOT_EVERY = "$ScreenshotEvery"
     }
     $log = Join-Path $Out "$label.log"
+    $effective = [ordered]@{}
+    Get-ChildItem Env:SFR_* | Sort-Object Name | ForEach-Object { $effective[$_.Name] = $_.Value }
+    [ordered]@{ executable = $program; sha256 = (Get-FileHash -LiteralPath $program).Hash; settings = $effective } |
+        ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $Out "$label.json") -Encoding UTF8
     $arguments = @("`"$image`"", "`"$assets`"", '--game-region=ntsc-us')
-    return Start-Process -FilePath $program -ArgumentList $arguments -WorkingDirectory $root -NoNewWindow -PassThru `
+    return Start-Process -FilePath $program -ArgumentList $arguments -WorkingDirectory $root -WindowStyle Hidden -PassThru `
         -RedirectStandardError $log -RedirectStandardOutput (Join-Path $Out "$label.out")
 }
 
-try {
     $started = Get-Date
     $index = 0
     foreach ($run in $runs) {
@@ -283,12 +311,9 @@ try {
             Write-Output "  took over $TimeoutMinutes minutes: stopped"
             Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
             $process.WaitForExit()
+            Add-Content -LiteralPath (Join-Path $Out "$name-$repeat.log") -Value 'STOP benchmark-timeout: host deadline reached'
         }
-        Remove-Item -Recurse -Force -LiteralPath (Join-Path $Out "save-$name-$repeat") -ErrorAction SilentlyContinue
     }
-} finally {
-    foreach ($name in $saved.Keys) { [Environment]::SetEnvironmentVariable($name, $saved[$name]) }
-}
 
 # The profile's addresses are named by the linker's map of this build.
 $map = Join-Path $host_dir 'sfr_cpu_diagnostic.map'
@@ -315,3 +340,8 @@ foreach ($python in @(@('py', '-3'), @('python'))) {
 }
 if (Test-Path -LiteralPath (Join-Path $Out 'summary.md')) { Write-Output "Logs and summary.md are in $Out" }
 else { Write-Output "No Python ran the summary; the logs are in $Out (python scripts\benchmark_summary.py `"$Out`")" }
+} finally {
+    if ($process -and -not $process.HasExited) { $process.Kill(); $process.WaitForExit() }
+    Get-ChildItem Env:SFR_* | ForEach-Object { [Environment]::SetEnvironmentVariable($_.Name, $null) }
+    foreach ($key in $originalEnvironment.Keys) { [Environment]::SetEnvironmentVariable($key, $originalEnvironment[$key]) }
+}

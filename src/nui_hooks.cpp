@@ -716,10 +716,10 @@ SFR_HOOK(sub_82494658) {
     static const auto started=std::chrono::steady_clock::now();
     static auto last_said=started;
     static size_t said_index=0;
-    const double now_seconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
+    // Ordinary play has no pending script: do not query the host clock there.
     if(said_index<script.size() && sfr::present_count>=script[said_index].first &&
        std::chrono::duration<double>(std::chrono::steady_clock::now()-last_said).count()>=min_seconds &&
-       (reference_fps<=0.0 || now_seconds>=script[said_index].first/reference_fps)) {
+       (reference_fps<=0.0 || std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count()>=script[said_index].first/reference_fps)) {
         last_said=std::chrono::steady_clock::now();
         const auto& entry=script[said_index++];
         if(said_index==script.size()) sfr::say_done_present=sfr::present_count.load();

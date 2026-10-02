@@ -12,8 +12,15 @@ scripts\build_tools.ps1 -Diagnostic
 scripts\benchmark.ps1 -Configs baseline,no-suspend-notify -Repeats 6
 ```
 
-The game runs with the launcher's defaults, uncapped (no frame limit, no vsync,
-720p, no audio), no Kinect, and a copy of the save in the run's own folder.
+The default is D3D12, uncapped (no frame limit or vsync), 720p, audio enabled,
+normal elapsed race/UI time, complete rendering, and no physical player input.
+Use `-Backend vulkan`, `-Capped`, or the explicit diagnostic `-NoAudio` as needed.
+Every run copies a snapshot of the source save; `-SaveDirectory` selects it.
+All SFR environment variables are isolated and restored afterward; only explicit
+shader-pack/DXC paths are inherited. Each run records executable SHA-256 and its
+effective settings in JSON. Existing output folders are rejected.
+Save copies and caches stay under the new output directory; cold runs each get
+a new cache, with no deletion or reuse of the player's ordinary cache.
 The first run of a benchmark is a warm-up that is not counted.
 
 ## What is measured
@@ -28,7 +35,7 @@ The first run of a benchmark is a warm-up that is not counted.
 The summary does the comparison the way it should be done:
 
 - **Per round.** Machine state drifts between rounds (heat, background work), so a setting is compared with the baseline of its own round: the table lists each round's ratio, the median, and how many rounds the setting was faster.
-- **Against the baseline's own spread.** The baseline runs several times, so its spread (max - min over the median) is known. A difference smaller than that is reported as inside the noise, and a setting that is not clearly outside it is not called better or worse.
+- **Against measured variation.** The baseline spread is reported. The automatic heuristic requires at least four pairs, 80% directional agreement, and an effect above the greater of 5% or half the baseline spread. This is not a significance test; inspect workload and scene differences before accepting it.
 - Outliers show up: a baseline run with a long P99 or a large present time lifts the ratios of its round. Look at that round before believing a ratio.
 
 On three PCs the baseline's spread was 4-8%. Treat 3% or less as a suggestion.
@@ -41,11 +48,15 @@ one environment variable of the baseline. Among them: `no-suspend-notify`,
 drawing, the ceiling), `serial`, `vulkan`, `constant-reuse`, `priority`,
 `no-host-timing`, and `profile` (samples the main thread each millisecond
 during the race; `scripts/profile_summary.py` names the functions).
+Omitted-draw configurations require `-AllowDiagnosticRendering` and are never
+the default comparison; their results are diagnostic ceilings, not gameplay gains.
 
 **Two builds.** Copy each build's `out\build\host\sfr_cpu_diagnostic.exe` to
 `sfr_cpu_diagnostic_a.exe` and `sfr_cpu_diagnostic_b.exe` in the same folder and
 run `-Configs exe-a,exe-b`: the two alternate in the same rounds, and `info.txt`
-records each file's size and build time.
+records each file's size, build time and SHA-256. Identical executables under two
+different names are rejected; `exe-b,exe-b-again` explicitly measures a control.
+Settings rotate their order each round; `-FixedOrder` is available for comparison.
 
 ## On a PC that has no checkout
 
@@ -69,7 +80,16 @@ timing are kept. No file it makes is over 29 MB: a bigger result is split into
 files and guest addresses, so share the summary tables rather than the logs;
 `scripts/benchmark_report.py` makes a report of the tables and notes that is
 safe to hand over.
+The export includes only top-level evidence text (and explicitly requested BMP
+screenshots); save fixtures, caches and binaries are excluded. Existing report,
+shareable folder or archive outputs are preserved by refusing replacement.
+Inspect exported content before sharing; anonymization cannot promise that all
+potentially identifying information has been removed.
 
 ## Limits
 
 One scenario (a Free Race, one course and character) with nobody at the controls, uncapped, on the graphics backend the PC runs. A fixed per-frame cost is a larger share of a 10 ms frame than of a 30 ms one, and a result on a desktop says nothing about a handheld.
+
+`racing=1` means the race pointer exists, not that active driving is guaranteed.
+Validate screenshots, scene boundaries and draw workload. Normal elapsed time
+also means equal rendered frame counts can cover different race durations.

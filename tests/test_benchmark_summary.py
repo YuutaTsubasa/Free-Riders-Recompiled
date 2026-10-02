@@ -25,6 +25,14 @@ def write_log(directory, name, frame_ms, menu=3, race=6, stop='STOP present-limi
 
 
 class BenchmarkSummaryTest(unittest.TestCase):
+    def test_failed_runs_and_warmup_do_not_define_expected_length(self):
+        rows = [('baseline', 1, {'frames': 100}, 'present-limit'),
+                ('warmup', 1, {'frames': 60}, 'present-limit'),
+                ('crashed', 1, {'frames': 60}, 'native-draw'),
+                ('crashed', 2, {'frames': 60}, 'native-draw')]
+        good, _ = bench.valid_runs(rows)
+        self.assertEqual([row[0] for row in good], ['baseline'])
+
     def test_counts_only_race_frames_after_the_skipped_ones(self):
         with tempfile.TemporaryDirectory() as directory:
             write_log(directory, 'baseline-1.log', 40)

@@ -4,6 +4,7 @@ import tempfile
 import os
 import unittest
 import zipfile
+import json
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import anonymize_benchmark as anon
@@ -21,6 +22,30 @@ INFO = ('commit=3872cb4\ngenerated=C:/Users/Alice/Documents/game/out/recomp/diag
 
 
 class AnonymizeTest(unittest.TestCase):
+    def test_json_escaped_username_is_removed(self):
+        data = json.dumps({'save': r'C:\Users\Alice\save'}).encode()
+        self.assertNotIn(b'Alice', anon.scrub(data, anon.patterns([]))[0])
+
+    def test_existing_destination_is_not_deleted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'run'; source.mkdir()
+            output = Path(directory) / 'run-shareable'; output.mkdir()
+            (output / 'keep').write_text('keep')
+            with self.assertRaises(SystemExit):
+                anon.main(['anon', str(source)])
+            self.assertEqual((output / 'keep').read_text(), 'keep')
+
+    def test_save_and_cache_are_excluded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'run'; source.mkdir()
+            for folder in ('save-baseline-1', 'fixture', 'cache'):
+                (source / folder).mkdir()
+                (source / folder / 'private.json').write_text('private')
+            (source / 'baseline-1.log').write_text(LOG)
+            output = Path(directory) / 'clean'
+            anon.anonymize(source, output)
+            self.assertEqual([p.name for p in output.iterdir()], ['baseline-1.log'])
+
     def run_it(self, **options):
         root = Path(tempfile.mkdtemp())
         source = root / 'run'
@@ -47,19 +72,19 @@ class AnonymizeTest(unittest.TestCase):
         self.assertIn('i7-6850K', info)
         self.assertIn('RTX 3080 Ti', info)
         self.assertIn('commit=3872cb4', info)
-        self.assertEqual((copied, left_out), (3, 1))
+        self.assertEqual((copied, left_out), (2, 2))
         self.assertGreater(replaced, 6)
 
     def test_screenshots_stay_only_when_asked_for(self):
         destination, (_, _, left_out) = self.run_it(keep_screenshots=True)
         self.assertTrue((destination / 'shot.bmp').exists())
-        self.assertEqual(left_out, 0)
+        self.assertEqual(left_out, 1)
         destination, _ = self.run_it()
         self.assertFalse((destination / 'shot.bmp').exists())
 
-    def test_other_files_are_copied_untouched(self):
+    def test_unknown_binary_files_are_excluded(self):
         destination, _ = self.run_it()
-        self.assertEqual((destination / 'tool.exe').read_bytes(), b'Alice stays in a binary')
+        self.assertFalse((destination / 'tool.exe').exists())
 
 
 class ArchiveLimitTest(unittest.TestCase):
@@ -109,12 +134,20 @@ class ArchiveLimitTest(unittest.TestCase):
         self.assertEqual(pieces['small.log'], b'z' * 100)
         self.assertNotIn('big.log', pieces)
 
-    def test_an_older_zip_of_the_same_run_is_replaced(self):
+    def test_an_older_zip_of_the_same_run_is_preserved(self):
         folder = self.folder({'a.log': b'x'})
         stale = folder.parent / 'run-shareable-part9of9.zip'
         stale.write_bytes(b'old')
+        with self.assertRaises(SystemExit):
+            anon.make_archives(folder, 1_000_000)
+        self.assertEqual(stale.read_bytes(), b'old')
+
+    def test_unrelated_prefix_archive_is_preserved(self):
+        folder = self.folder({'a.log': b'x'})
+        report = folder.parent / 'run-shareable-report.zip'
+        report.write_bytes(b'report')
         anon.make_archives(folder, 1_000_000)
-        self.assertFalse(stale.exists())
+        self.assertEqual(report.read_bytes(), b'report')
 
 
 if __name__ == '__main__':
