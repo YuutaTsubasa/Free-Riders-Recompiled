@@ -115,6 +115,8 @@ with [docs/progress.md](docs/progress.md).
   Improved Android CPU scheduling and guest execution overhead, corrected race simulation timing at lower frame rates, and fixed Vulkan shader compatibility on GPUs without 64-bit integer support. Racing was verified at approximately 23–24 FPS with time matching real seconds on AYN Thor; Intro movies remain slower than expected.
 - [v0.4.5 — Android Intro playback improvements](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.4.5)
   Reduced ARM64 movie-decoding overhead with faster vector memory operations. On the tested AYN Thor, maximum sampled Intro video delay fell from several seconds to under one second, while race timing remained correct. Some playback delay may remain on other devices.
+- [v0.4.6 — Course stability and handheld improvements](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.4.6)
+  Fixed low-frame-rate traversal failures in Frozen Forest, Final Factory, Metropolis Speedway and Forgotten Tomb, plus loading and long-session stability issues. Improved controller steering and side reach, Android rotation recovery, race UI timing and texture handling. Added Android diagnostic ZIP export and further CPU/rendering optimizations; performance still varies by device.
 
 ## System Requirements
 
