@@ -1939,3 +1939,34 @@ inspected screenshot anchors are under ignored
 Further work needs more comparable scene workloads and additional paired runs
 or an available slower Windows machine; an affinity-limited host could be a
 stress comparison, but must not be represented as an actual i5/Ally result.
+
+A follow-up held the ordinary brake input from present 12000, keeping the rider
+at the Dolphin Resort starting line. Nine inspected screenshots across the same
+32/256/32 executable sequence show speed 000 and a stable camera while normal
+HUD time advances. AI racers continue moving; this reduces route variation but
+does not make the whole workload deterministic. No game-state or speed patch
+was used. The same 120-second uncapped bound, audio, all draws and independent
+save/cache setup remained in place.
+
+| Checkpoint interval | Stationary FPS, HUD 45–80s | P95 frame time | Draws/frame |
+| --- | ---: | ---: | ---: |
+| 32 before | 86.923 | 12.555 ms | 670.0 |
+| 256 | 90.162 | 12.187 ms | 678.8 |
+| 32 after | 87.380 | 12.499 ms | 669.7 |
+
+The candidate is 3.73% and 3.18% faster than the two baselines, whose difference
+is 0.53%. Two other preselected HUD windows (35–55s and 55–75s) also favor 256
+over both baselines, by 2.80–4.24%. The candidate renders slightly more draws,
+not fewer. This is positive evidence for this stationary desktop workload,
+but one sequence is not a replicated active-race, low-end Windows or Android
+result. Keep default 32 pending further paired runs and responsiveness coverage.
+
+All runs stop at the expected bound in about 342 seconds and preserve the source
+fixture. HUD/host anchor offset spread is at most 0.017s; selected frames have
+zero pacing waits, no clock clamps and no frames over 50ms. Audio submission
+cadence remains 187.48–187.52 blocks/s. Ordinary source/object/executable hashes
+were freshly verified unchanged, and no game process remains. Reproduction
+scripts, settings, image/log hashes and restoration checks are in ignored
+`out/continuation-20261002/issue33`: `stationary-method.md`,
+`run-windows-stationary.py`, `compare-stationary.py`,
+`stationary-comparison.json` and `stationary-restoration.json`.

@@ -56,3 +56,21 @@ established. HUD and audio-submission timing verified, allownedprocessesended,
 sourcefixture/normaloutputs/settingsunchanged. This scoped measurement pass is
 complete; productiondefault32 remains. Additional paired/comparable-workload or
 slower-host validation is follow-up, not a demonstrated performance fix.
+
+## Follow-up: stationary workload, completed 2026-10-02 13:57 UTC
+
+Ordinary continuous brake from12000p holds the start-line position without a
+game-state patch. Same private executable32/256/32, audio/elapsed time/all draws,
+120s uncapped window, independent fixtures/caches; nine screenshots inspected.
+HUD45–80 throughput86.923/90.162/87.380FPS, draws670.0/678.8/669.7; candidate
++3.73/+3.18percent versus baselines, baseline variation0.53percent. Other
+preselected35–55/55–75 windows also positive2.80–4.24percent. Positive stationary
+desktop evidence, not replicated active-race/low-end/Android proof. Default32
+retained. HUDoffset spread<=0.017s, no selectedclockclamps/>50msframes, audio
+cadence187.48–187.52blocks/s. All bounded exits and source-save checks pass;
+ordinary source/object/executable hashes unchanged and no gameprocess remains.
+
+Next checkpoint work should replicate this controlled workload with the order
+reversed and cover responsiveness before a Windows-specific default decision.
+Do not repeat uncontrolled autonomous-route comparisons or infer Android gains.
+No runtime code change, external comment, push or release in this follow-up.
