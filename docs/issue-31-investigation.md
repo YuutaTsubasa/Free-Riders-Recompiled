@@ -793,3 +793,55 @@ handling, not mission completion, mission 3, or the reporter's crash cause.
 The earlier 87-ring result used fixed-frame timing and is not an A/B comparison.
 Evidence is in `out/continuation-20261002/gp-reach-return-early-run` and
 `gp-reach-aligned`; no mission progress or score was patched.
+
+### Current controller left-reach verification
+
+A private read-only observer on runtime c5e2b00 follows the existing v0.4.6
+controller correction through the original scene-interaction consumer
+`822ACF10`. It records detector output, the consumed history entry, and selected
+scene objects for the live local rider. It forwards the original consumer
+unchanged. Ordinary source/object/executable hashes remain unchanged; the
+instrumented executable is
+`bba93bbe7cf015cfd5883d177a85f476c1246cb51e9613ac81009cd71f3c4a2d`.
+These are functional observations, not performance measurements.
+
+The first normal-time, audio-enabled Vulkan GP mission-2 run reaches 89/100,
+then the normal failure screen. Both primary flags reach the consumer. A
+second independent run holds **only left reach** from present 15080 onward:
+82 sampled consumer rows from 15082 through 15600 all have right-stick X=-1,
+Y=0, with no right-reach flag. The consumer selects a type-1 scene object
+from 15116 through 15379. Screenshots show the left arm extended, pickup effects,
+and the HUD increasing from 65/100 at 15060 to 66 at 15150, 72 at 15240, 82 at 15330,
+and 84 at 15420; the latter also shows an 18-Ring pickup chain. Thus left-side
+pickup works in this tested Tails/Dolphin Resort mission with the existing
+correction. This is not coverage of every stance/course/controller combination
+or proof that the reporter's v0.4.5 crash has been reproduced or resolved.
+
+Both cases use cloned saves, normal race/UI time, audio, a 60 FPS cap and every
+draw. They end at their 20000/15600-present bounds in 335.438/262.156 seconds
+without watchdog timeouts; source saves are unchanged. Evidence, private
+source diff, hashes and settings are under
+`out/continuation-20261002/gp-reach-observed`, `gp-reach-left-confirm`, and
+`reach-observer-build`. The scene-object IDs are interaction paths, not
+individual collectible Ring IDs. No new control patch was made for this probe.
+
+### GP mission 2 completed through ordinary controls
+
+The trace identifies right-side Ring paths in the first section and left-side
+paths later. A third independent run holds right reach from input time 27 to
+42 seconds and left reach from 68 to 80 seconds, keeping the earlier steering
+route. It reaches **110 Rings, mission rank B**, shown at present 17100, then
+saves at 17400 and offers **Next** at 18000. The HUD changes its next target
+from 100 to 150 after passing the first threshold; this is normal score-tier
+progression, not a modified objective.
+
+The test save changes through the game's own save routine, while the source
+fixture remains unchanged. The 20000-present bounded run takes 335.328 seconds
+without a watchdog timeout. Normal source/object/executable hashes are verified
+unchanged again and all three owned test processes have exited. No code, score,
+save-content or game-clock patch was needed to pass this mission. This verifies
+mission 2 completion and saving, not the next mission's load or a complete GP.
+
+`out/continuation-20261002/gp-reach-directed-rows` contains the run, and
+`gp-mission2-completed.json` records the inspected screenshots and new test-save
+hashes. Future GP coverage can clone this save instead of repeating mission 2.
