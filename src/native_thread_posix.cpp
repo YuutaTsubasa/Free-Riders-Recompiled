@@ -164,6 +164,7 @@ NativeThread::~NativeThread() noexcept {
 
 uint32_t NativeThread::native_id() const { return impl_->id; }
 bool NativeThread::entry_started() const { return impl_->started.load(std::memory_order_acquire); }
+bool NativeThread::completed() const { return impl_->completed.load(std::memory_order_acquire); }
 bool NativeThread::suspended() const {
     std::lock_guard lock(impl_->gate_mutex);
     return impl_->suspend_count != 0;

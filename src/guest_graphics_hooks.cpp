@@ -11,6 +11,7 @@
 #include "render_state_entries.h"
 #include "native_renderer.h"
 #include "native_formats.h"
+#include "native_vertex_layout.h"
 #include "guest_execution.h"
 #include "wait_trace.h"
 #include <plume_render_interface.h>
@@ -416,6 +417,46 @@ SFR_HOOK(sub_824E65A0) {
     const auto queued_ns=sfr::GuestExecution::main_thread_ready_wait_ns.exchange(0,std::memory_order_relaxed);
     const auto blocked_ns=sfr::GuestExecution::main_thread_blocked_ns.exchange(0,std::memory_order_relaxed);
     const auto gpu_ns=sfr::main_gpu_wait_ns.exchange(0,std::memory_order_relaxed);
+#ifdef __ANDROID__
+    // Quiet Android runs still provide useful phone-export evidence. Reuse
+    // measurements already collected above; never enable per-draw profiling.
+    // These are guest frame intervals and CPU wall times, not GPU timestamps.
+    if(!frame_metrics && frame_ms>0.0) {
+        struct Summary {
+            unsigned frames=0, rendered=0;
+            double elapsed=0, maximum=0, present=0, pacing=0, queued=0, blocked=0, gpu_wait=0;
+            double pipelines=0, textures=0, draws=0;
+        };
+        static Summary summary;
+        ++summary.frames;
+        summary.rendered+=rendering_this_frame()?1:0;
+        summary.elapsed+=frame_ms;
+        summary.maximum=std::max(summary.maximum,frame_ms);
+        summary.present+=present_ms;
+        summary.pacing+=pacing_ms;
+        summary.queued+=double(queued_ns)/1e6;
+        summary.blocked+=double(blocked_ns)/1e6;
+        summary.gpu_wait+=double(gpu_ns)/1e6;
+        summary.pipelines+=pipeline_work.milliseconds;
+        summary.textures+=pipeline_work.texture_milliseconds;
+        summary.draws+=frame_draws;
+        if(summary.frames>=120) {
+            const double count=summary.frames;
+            std::ostringstream log;
+            log << "NATIVE_FRAME_SUMMARY frame=" << sfr::present_count.load()
+                << " seconds=" << std::chrono::duration<double>(frame_end-process_start).count()
+                << " frames=" << summary.frames << " rendered=" << summary.rendered
+                << " interval_ms=" << summary.elapsed << " guest_fps=" << count*1000.0/summary.elapsed
+                << " avg_ms=" << summary.elapsed/count << " max_ms=" << summary.maximum
+                << " present_avg_ms=" << summary.present/count << " pacing_avg_ms=" << summary.pacing/count
+                << " main_queued_avg_ms=" << summary.queued/count << " main_blocked_avg_ms=" << summary.blocked/count
+                << " gpu_wait_avg_ms=" << summary.gpu_wait/count << " pipeline_total_ms=" << summary.pipelines
+                << " texture_total_ms=" << summary.textures << " draws_avg=" << summary.draws/count << '\n';
+            std::cerr << log.str();
+            summary={};
+        }
+    }
+#endif
     if(frame_metrics) {
     uint64_t main_ready_ns=execution_work[0].main_ready_unowned_ns;
     for(const auto ns:execution_work[0].main_ready_by_owner_ns) main_ready_ns+=ns;
@@ -437,6 +478,10 @@ SFR_HOOK(sub_824E65A0) {
               << " constant_upload_bytes=" << pipeline_work.constant_upload_bytes
               << " constant_reusable_bytes=" << pipeline_work.constant_reusable_bytes
               << " constant_saved_bytes=" << pipeline_work.constant_saved_bytes
+              << " upload_submissions=" << pipeline_work.upload_submissions
+              << " upload_wait_ms=" << pipeline_work.upload_wait_ms
+              << " upload_peak_bytes=" << pipeline_work.upload_peak_bytes
+              << " upload_budget_drains=" << pipeline_work.upload_budget_drains
               << " textures=" << pipeline_work.textures << " texture_ms=" << pipeline_work.texture_milliseconds
               << " frame_ms=" << frame_ms << " pacing_ms=" << pacing_ms
               << " present_ms=" << present_ms << " main_queued_ms="
@@ -614,6 +659,29 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     // instead of allocating/freeing it for each skinned draw.
     static thread_local std::vector<uint32_t> dec3n_offsets;
     dec3n_offsets.clear();
+    static thread_local sfr::NativeVertexLayoutCache layout_cache;
+    static const bool cache_layout=[] { const char* t=std::getenv("SFR_VERTEX_LAYOUT_CACHE"); return !t || *t!='0'; }();
+    static const bool verify_layout=[] { const char* t=std::getenv("SFR_VERTEX_LAYOUT_VERIFY"); return t && *t=='1'; }();
+    const sfr::NativeVertexLayout* layout=nullptr;
+    if(cache_layout) {
+        // A cached pointer alone is insufficient: the title may rewrite or
+        // reuse the same declaration. Compare fresh ordinary-memory bytes.
+        // Special words, short mappings and page crossings keep the original
+        // scalar decoder below, including its exact read/exception order.
+        const auto* bytes=elements?memory.fast_read(uint64_t(declaration)+52,12*elements):nullptr;
+        if(bytes || !elements) {
+            try { layout=&layout_cache.get(declaration,stride,{bytes,size_t(12*elements)}); }
+            catch(const sfr::NativeVertexLayoutError& error) {
+                throw sfr::RuntimeStop("native-draw",error.value,error.what());
+            }
+        }
+    }
+    if(layout && !verify_layout) {
+        draw.elements=layout->elements;
+        dec3n_offsets=layout->dec3n_offsets;
+        for(uint32_t usage=0;usage<8;++usage)
+            if(swapped[usage]) *swapped[usage]=layout->swapped[usage];
+    } else
     for(uint32_t i=0;i<elements;++i) {
         const uint64_t e=uint64_t(declaration)+52+12*i;
         const uint32_t stream=memory.load<uint16_t>(e), offset=memory.load<uint16_t>(e+2);
@@ -729,12 +797,28 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
         }
     }
     }
+    if(!layout || verify_layout)
     for(uint32_t l=0;l<std::size(locations);++l) {
         if(std::any_of(draw.elements.begin(),draw.elements.end(),[&](const auto& e){ return e.location==l; })) continue;
         const uint32_t usage=locations[l].usage;
         const bool vector3=usage==3 || usage==6 || usage==7 || usage==2;
         draw.elements.emplace_back(sfr::declaration_semantic(usage),locations[l].index,l,
             vector3?plume::RenderFormat::R32G32B32_FLOAT:plume::RenderFormat::R32_FLOAT,15,0);
+    }
+
+    if(layout && verify_layout) {
+        bool same=draw.elements.size()==layout->elements.size() && dec3n_offsets==layout->dec3n_offsets;
+        for(size_t i=0;same && i<draw.elements.size();++i) {
+            const auto& a=draw.elements[i]; const auto& b=layout->elements[i];
+            same=std::strcmp(a.semanticName,b.semanticName)==0 && a.semanticIndex==b.semanticIndex &&
+                 a.location==b.location && a.format==b.format && a.slotIndex==b.slotIndex && a.alignedByteOffset==b.alignedByteOffset;
+        }
+        for(uint32_t usage=0;usage<8;++usage)
+            if(swapped[usage] && *swapped[usage]!=layout->swapped[usage]) same=false;
+        if(!same) throw sfr::RuntimeStop("native-draw",declaration,"cached vertex layout differs from original decoder");
+        static thread_local uint64_t verified=0;
+        if(++verified==1 || verified%100000==0)
+            std::cerr<<"NATIVE_VERTEX_LAYOUT verified="<<verified<<" hits="<<layout_cache.hits()<<" misses="<<layout_cache.misses()<<'\n';
     }
 
     // Shaders: objects at +12872 (VS) and +12868 (PS) map to native shaders.

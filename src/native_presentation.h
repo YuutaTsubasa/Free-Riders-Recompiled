@@ -82,6 +82,10 @@ public:
     // (docs/performance.md). While a wait is in flight, recording from any
     // thread is refused rather than corrupting the submitted list.
     static void set_gpu_wait(std::function<void(const std::function<void()>&)> wait);
+    // Submit independent uploads on the same queue before recorded draws.
+    // Also called by an empty flush, so pending copies cannot outlive teardown.
+    void before_submit(std::function<void()> callback);
+    void clear_before_submit();
     // Runs after each submission. complete: every submitted command has
     // finished. Otherwise a present submitted the frame without waiting for
     // it (the GPU runs a frame behind); the frame before it has finished.

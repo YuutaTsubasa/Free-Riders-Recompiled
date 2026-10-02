@@ -181,6 +181,7 @@ NativeThread::~NativeThread() noexcept {
 
 uint32_t NativeThread::native_id() const { return impl_->id; }
 bool NativeThread::entry_started() const { return impl_->started.load(std::memory_order_acquire); }
+bool NativeThread::completed() const { return impl_->completed.load(std::memory_order_acquire); }
 bool NativeThread::suspended() const { return impl_->is_suspended; }
 void* NativeThread::native_handle() const { return impl_->handle; }
 

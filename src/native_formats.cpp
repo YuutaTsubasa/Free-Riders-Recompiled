@@ -1,5 +1,6 @@
 #include "native_formats.h"
 #include <algorithm>
+#include <bit>
 #include <cstring>
 #include <utility>
 #if defined(_M_X64) || defined(__x86_64__)
@@ -220,20 +221,47 @@ IndexScan decode_indices(const uint8_t* bytes, uint32_t count, bool wide, uint32
     return scan;
 }
 
+#if (defined(__clang__) || defined(__GNUC__)) && (defined(_M_X64) || defined(__x86_64__))
+__attribute__((target("ssse3")))
+#endif
 void swap_texture_bytes(std::span<uint8_t> bytes, uint32_t endian) {
+    size_t i = 0;
     switch (endian) {
-    case 1:
-        for (size_t i = 0; i + 2 <= bytes.size(); i += 2) std::swap(bytes[i], bytes[i + 1]);
+    case 1: {
+#if defined(_M_X64) || defined(__x86_64__)
+        const __m128i order = _mm_setr_epi8(1,0,3,2,5,4,7,6,9,8,11,10,13,12,15,14);
+        for (; i + 16 <= bytes.size(); i += 16) {
+            auto* at = reinterpret_cast<__m128i*>(bytes.data() + i);
+            _mm_storeu_si128(at, _mm_shuffle_epi8(_mm_loadu_si128(at), order));
+        }
+#elif defined(__ARM_NEON)
+        for (; i + 16 <= bytes.size(); i += 16)
+            vst1q_u8(bytes.data() + i, vrev16q_u8(vld1q_u8(bytes.data() + i)));
+#endif
+        for (; i + 2 <= bytes.size(); i += 2) std::swap(bytes[i], bytes[i + 1]);
         break;
+    }
     case 2:
         swap_words(bytes);
         break;
-    case 3:
-        for (size_t i = 0; i + 4 <= bytes.size(); i += 4) {
+    case 3: {
+#if defined(_M_X64) || defined(__x86_64__)
+        const __m128i order = _mm_setr_epi8(2,3,0,1,6,7,4,5,10,11,8,9,14,15,12,13);
+        for (; i + 16 <= bytes.size(); i += 16) {
+            auto* at = reinterpret_cast<__m128i*>(bytes.data() + i);
+            _mm_storeu_si128(at, _mm_shuffle_epi8(_mm_loadu_si128(at), order));
+        }
+#elif defined(__ARM_NEON)
+        for (; i + 16 <= bytes.size(); i += 16)
+            vst1q_u8(bytes.data() + i, vreinterpretq_u8_u16(vrev32q_u16(
+                vreinterpretq_u16_u8(vld1q_u8(bytes.data() + i)))));
+#endif
+        for (; i + 4 <= bytes.size(); i += 4) {
             std::swap(bytes[i], bytes[i + 2]);
             std::swap(bytes[i + 1], bytes[i + 3]);
         }
         break;
+    }
     default:
         break;
     }
@@ -249,9 +277,47 @@ uint32_t tiled_block_index(uint32_t x, uint32_t y, uint32_t pitch_blocks, uint32
             (((((y & 8) >> 2) + (x >> 3)) & 3) << 6)) >> log_bpp;
 }
 
+namespace {
+template<uint32_t BlockBytes>
+void untile_blocks(std::span<const uint8_t> tiled, const TextureLayout& layout,
+                   std::span<uint8_t> linear) {
+    const uint32_t pitch = layout.row_bytes / BlockBytes;
+    for (uint32_t y = 0; y < layout.rows; ++y)
+        for (uint32_t x = 0; x < pitch; ++x) {
+            const size_t from = size_t(tiled_block_index(x, y, pitch, BlockBytes)) * BlockBytes;
+            if (from + BlockBytes > tiled.size()) continue;
+            // Constant-sized copies become unaligned loads/stores, instead
+            // of one out-of-line memcpy call per texel/compressed block.
+            std::memcpy(linear.data() + size_t(y) * layout.row_bytes + size_t(x) * BlockBytes,
+                        tiled.data() + from, BlockBytes);
+        }
+}
+}
+
 std::vector<uint8_t> untile_texture(std::span<const uint8_t> tiled, const TextureLayout& layout) {
     const uint32_t pitch_blocks = layout.row_bytes / layout.block_bytes;
     std::vector<uint8_t> linear(size_t(layout.row_bytes) * layout.rows);
+    if (layout.base_x_blocks || layout.base_y_blocks) {
+        const uint32_t width_blocks = (layout.width + layout.block_width - 1) / layout.block_width;
+        for (uint32_t y = 0; y < layout.rows; ++y)
+            for (uint32_t x = 0; x < width_blocks; ++x) {
+                const uint32_t guest_x = x + layout.base_x_blocks, guest_y = y + layout.base_y_blocks;
+                const size_t block = layout.tiled
+                    ? tiled_block_index(guest_x, guest_y, pitch_blocks, layout.block_bytes)
+                    : size_t(guest_y) * pitch_blocks + guest_x;
+                const size_t from = block * layout.block_bytes;
+                if (from + layout.block_bytes > tiled.size()) continue;
+                std::memcpy(linear.data() + size_t(y) * layout.row_bytes + size_t(x) * layout.block_bytes,
+                            tiled.data() + from, layout.block_bytes);
+            }
+        return linear;
+    }
+    switch (layout.block_bytes) {
+    case 4: untile_blocks<4>(tiled, layout, linear); return linear;
+    case 8: untile_blocks<8>(tiled, layout, linear); return linear;
+    case 16: untile_blocks<16>(tiled, layout, linear); return linear;
+    default: break;
+    }
     for (uint32_t y = 0; y < layout.rows; ++y)
         for (uint32_t x = 0; x < pitch_blocks; ++x) {
             const size_t from = size_t(tiled_block_index(x, y, pitch_blocks, layout.block_bytes)) * layout.block_bytes;
@@ -272,6 +338,15 @@ std::optional<TextureLayout> linear_texture_layout(const TextureFetch& fetch) {
     case 19: layout = {RenderFormat::BC2_UNORM, 4, 16}; break;  // k_DXT2_3
     case 20: layout = {RenderFormat::BC3_UNORM, 4, 16}; break;  // k_DXT4_5
     case 2: layout = {RenderFormat::R8_UNORM, 1, 1}; break;     // k_8
+    case 15:                                                     // k_4_4_4_4
+        // Linear unsigned normalized textures only. The two-byte guest
+        // layout is expanded before upload, retaining the selected view.
+        if (fetch.tiled || fetch.endian > 1 || fetch.signs || fetch.numeric_integer || fetch.exp_adjust)
+            return std::nullopt;
+        if (fetch.swizzle == 0x688) layout = {RenderFormat::R8G8B8A8_UNORM, 1, 2};
+        else if (fetch.swizzle == 0x60A) layout = {RenderFormat::B8G8R8A8_UNORM, 1, 2};
+        else return std::nullopt;
+        break;
     case 6:                                                       // k_8_8_8_8
         // After the 8-in-32 swap component X is the lowest byte. Identity
         // (XYZW) and D3DFMT_A8R8G8B8's ZYXW swizzles map to byte orders.
@@ -292,21 +367,56 @@ std::optional<TextureLayout> linear_texture_layout(const TextureFetch& fetch) {
     }
     layout.width = fetch.width;
     layout.height = fetch.height;
+    // Xenia texture_util::GetPackedMipOffset at mip zero: if the shorter
+    // dimension is at most 16, the base is inside the packed tail. Compare
+    // rounded-up log2 sizes, not raw dimensions, and convert texels to blocks.
+    // Larger bases still start at (0,0); loading lower mip levels is separate.
+    if (fetch.packed_mips && fetch.width && fetch.height && (std::min)(fetch.width, fetch.height) <= 16) {
+        if (std::bit_width(fetch.width - 1) > std::bit_width(fetch.height - 1))
+            layout.base_y_blocks = 16 / layout.block_width;
+        else
+            layout.base_x_blocks = 16 / layout.block_width;
+    }
     // The fetch pitch counts 32-texel units; rows are rows of blocks.
-    const uint32_t pitch_texels = (std::max)(fetch.pitch * 32, fetch.width);  // parenthesized: windows.h max
+    const uint32_t pitch_texels = (std::max)(fetch.pitch * 32,
+        fetch.width + layout.base_x_blocks * layout.block_width);  // parenthesized: windows.h max
     layout.row_bytes = pitch_texels / layout.block_width * layout.block_bytes;
     layout.rows = (fetch.height + layout.block_width - 1) / layout.block_width;
     layout.tiled = fetch.tiled;
-    layout.guest_rows = layout.rows;
+    layout.guest_rows = layout.rows + layout.base_y_blocks;
     if (fetch.tiled) {
         // Tiled surfaces are stored in whole 32x32-block tiles. The tiling
         // below holds for blocks of 4 bytes or more (8888 and DXT); one-byte
         // texels tile differently and are not supported yet.
         if (layout.block_bytes < 4) return std::nullopt;
         layout.row_bytes = ((pitch_texels / layout.block_width + 31) & ~31u) * layout.block_bytes;
-        layout.guest_rows = (layout.rows + 31) & ~31u;
+        layout.guest_rows = (layout.guest_rows + 31) & ~31u;
     }
     return layout;
+}
+
+void decode_rgba4(std::vector<uint8_t>& bytes, TextureLayout& layout) {
+    // Xenos X/Y/Z/W occupy successive low-to-high nibbles after the endian
+    // swap (Xenia pixel_formats.xesli, XeR4G4B4A4ToB4G4R4A4). Expanding each
+    // nibble retains alpha; replacing this format with white exposes the
+    // otherwise transparent ribbon geometry drawn during the race.
+    std::vector<uint8_t> texels(size_t(layout.width) * layout.height * 4);
+    for (uint32_t y = 0; y < layout.height; ++y)
+        for (uint32_t x = 0; x < layout.width; ++x) {
+            const size_t from = size_t(y) * layout.row_bytes + size_t(x) * 2;
+            if (from + 2 > bytes.size()) continue;
+            const uint16_t packed = uint16_t(bytes[from] | uint16_t(bytes[from + 1]) << 8);
+            const size_t to = (size_t(y) * layout.width + x) * 4;
+            for (uint32_t channel = 0; channel < 4; ++channel)
+                texels[to + channel] = uint8_t(((packed >> (channel * 4)) & 15) * 17);
+        }
+    bytes = std::move(texels);
+    layout.block_width = 1;
+    layout.block_bytes = 4;
+    layout.row_bytes = layout.width * 4;
+    layout.rows = layout.guest_rows = layout.height;
+    layout.tiled = false;
+    layout.base_x_blocks = layout.base_y_blocks = 0;
 }
 
 namespace {
@@ -394,6 +504,7 @@ void decode_block_compression(std::vector<uint8_t>& bytes, TextureLayout& layout
     layout.rows = height;
     layout.guest_rows = height;
     layout.tiled = false;
+    layout.base_x_blocks = layout.base_y_blocks = 0;
 }
 
 namespace {

@@ -615,6 +615,51 @@ void stop_cancels_detached_checkpoint() {
     cancelled([&] { worker->attach(); });
     worker.reset();
 }
+
+void many_waiters_keep_fifo_order() {
+    sfr::GuestExecution gate;
+    auto owner = gate.enter(1);
+    std::vector<unsigned> turns;
+    std::vector<std::future<void>> workers;
+    StopOnExit cleanup{gate};
+    for (unsigned id = 2; id != 10; ++id) {
+        workers.push_back(std::async(std::launch::async, [&, id] {
+            auto lease = gate.enter(id);
+            for (unsigned round = 0; round != 16; ++round) {
+                turns.push_back(id); // Protected by the guest execution permit.
+                lease->checkpoint();
+            }
+        }));
+        gate.wait_until_ready(id);
+    }
+    owner.reset();
+    for (auto& worker : workers) ready(worker, "all queued guests finish yielding");
+    require(turns.size() == 8 * 16, "every queued guest ran every round");
+    for (size_t i = 0; i < turns.size(); ++i)
+        require(turns[i] == 2 + i % 8, "handoffs keep FIFO order through repeated rotations");
+}
+
+void cancellation_wakes_every_queued_guest() {
+    for (unsigned mode = 0; mode != 3; ++mode) {
+        sfr::GuestExecution leader, gate;
+        leader.add_follower(gate);
+        auto owner = gate.enter(1);
+        std::vector<std::future<void>> workers;
+        StopOnExit cleanup{gate};
+        for (unsigned id = 2; id != 10; ++id) {
+            workers.push_back(std::async(std::launch::async, [&, id] {
+                cancelled([&] { auto lease = gate.enter(id); });
+            }));
+            gate.wait_until_ready(id);
+        }
+        if (mode == 0) gate.stop();
+        else if (mode == 1) gate.fail(std::make_exception_ptr(std::runtime_error("test stop")));
+        else leader.stop();
+        // All waiters must wake even while the original owner retains its lease.
+        for (auto& worker : workers) ready(worker, "cancellation wakes every queued guest");
+        require(gate.standing().ready.empty(), "cancelled waiters leave no queue entries");
+    }
+}
 }
 
 int main() {
@@ -644,6 +689,8 @@ int main() {
                       {"detached owner", detached_owner_runs_beside_next_owner},
                       {"attach waits", attach_waits_for_current_owner},
                       {"detached cancellation", stop_cancels_detached_checkpoint},
+                      {"many-waiter FIFO", many_waiters_keep_fifo_order},
+                      {"many-waiter cancellation", cancellation_wakes_every_queued_guest},
                       {"companion permit", companion_is_released_while_waiting},
                       {"stop followers", followers_stop_with_their_leader}}) {
         try { test.run(); }

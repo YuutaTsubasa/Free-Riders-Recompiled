@@ -27,6 +27,60 @@ import org.libsdl.app.SDLActivity;
 // settings while its library loads.
 public class LauncherActivity extends SDLActivity {
     private static final int PICK_DOCUMENT = 1;
+    private static final int EXPORT_DIAGNOSTICS = 2;
+    private boolean exportingDiagnostics;
+
+    // Called by SDL; picker state is owned by the Android UI thread.
+    public void exportDiagnostics() {
+        runOnUiThread(() -> {
+            if (exportingDiagnostics) return;
+            exportingDiagnostics = true;
+            Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("application/zip");
+            String stamp = new java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.ROOT)
+                    .format(new java.util.Date());
+            intent.putExtra(Intent.EXTRA_TITLE, "FreeRiders-diagnostics-" + stamp + ".zip");
+            try {
+                startActivityForResult(intent, EXPORT_DIAGNOSTICS);
+            } catch (Exception error) {
+                exportingDiagnostics = false;
+                diagnosticStatus(false);
+                Log.w("FreeRiders", "cannot open export picker", error);
+            }
+        });
+    }
+
+    private void diagnosticStatus(boolean success) {
+        boolean chinese = getResources().getConfiguration().getLocales().get(0).getLanguage().equals("zh");
+        String message = success ? (chinese ? "診斷 ZIP 已儲存" : "Diagnostic ZIP saved")
+                                 : (chinese ? "無法儲存診斷 ZIP，請重試" : "Could not save diagnostic ZIP. Please retry.");
+        android.widget.Toast.makeText(this, message, android.widget.Toast.LENGTH_LONG).show();
+    }
+
+    private void saveDiagnostics(Uri uri) {
+        new Thread(() -> {
+            boolean success = false;
+            try (OutputStream output = getContentResolver().openOutputStream(uri, "wt")) {
+                if (output == null) throw new java.io.IOException("No output stream");
+                android.content.pm.PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
+                String device = "version=" + info.versionName + "\nversion_code=" + info.getLongVersionCode()
+                        + "\nmanufacturer=" + android.os.Build.MANUFACTURER + "\nmodel=" + android.os.Build.MODEL
+                        + "\nandroid=" + android.os.Build.VERSION.RELEASE + "\nsdk=" + android.os.Build.VERSION.SDK_INT
+                        + "\nabis=" + String.join(",", android.os.Build.SUPPORTED_ABIS) + "\n";
+                DiagnosticsArchive.write(getExternalFilesDir(null), output, device);
+                success = true;
+            } catch (Exception error) {
+                success = false;
+                Log.w("FreeRiders", "cannot export diagnostics", error);
+            }
+            final boolean saved = success;
+            runOnUiThread(() -> {
+                exportingDiagnostics = false;
+                diagnosticStatus(saved);
+            });
+        }, "diagnostic-export").start();
+    }
 
     @Override
     protected void onCreate(Bundle state) {
@@ -200,6 +254,12 @@ public class LauncherActivity extends SDLActivity {
 
     @Override
     protected void onActivityResult(int request, int result, Intent data) {
+        if (request == EXPORT_DIAGNOSTICS) {
+            Uri destination = data != null ? data.getData() : null;
+            if (result == RESULT_OK && destination != null) saveDiagnostics(destination);
+            else exportingDiagnostics = false;
+            return;
+        }
         if (request != PICK_DOCUMENT) {
             super.onActivityResult(request, result, data);
             return;

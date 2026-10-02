@@ -47,6 +47,9 @@ bool quit_with_game();
 
 bool can_open_log();
 void open_log(const std::filesystem::path& log);
+#ifdef __ANDROID__
+void export_diagnostics();
+#endif
 // A web page in the host's browser (the Kinect SDK's download page).
 void open_url(const char* url);
 

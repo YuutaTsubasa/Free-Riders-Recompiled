@@ -25,10 +25,12 @@ void RaceInput::update(const GamepadState& pad, float seconds) {
     // 0 - x rather than -x: negating a neutral stick gives negative zero,
     // whose sign bit reads as a lean to one side.
     b.lean = 0.0f - b.left_x;
-    // A full stick is a lean of lean_scale (SFR_RACE_LEAN_SCALE, default 1).
+    // The title accepts a ratio-minus-one lean up to 3.5. A default of 1
+    // reached only part of that steering range even with the stick fully held.
+    // Keep the other axes normalized for tricks and gesture detectors.
     static const float lean_scale = [] {
         const char* text = std::getenv("SFR_RACE_LEAN_SCALE");
-        const float value = text ? std::strtof(text, nullptr) : 1.0f;
+        const float value = text && *text ? std::strtof(text, nullptr) : 3.5f;
         return std::clamp(value, 0.1f, 3.5f);
     }();
     b.lean_right = 1.0f + lean_scale * std::max(b.left_x, 0.0f);

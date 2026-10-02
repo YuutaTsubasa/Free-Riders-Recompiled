@@ -3,6 +3,7 @@
 #include <atomic>
 #include <array>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -476,6 +477,41 @@ static void loads_beside_special_words() {
     require_stop([&] { memory.load<uint32_t>(0x100FE); }, "import-variable", "a load overlapping a variable stops");
     require(memory.load<uint32_t>(0x10200) == 0xCAFEF00Du, "a computed word still comes from its provider");
     require(memory.load<uint16_t>(0x10202) == 0xF00D, "part of a computed word too");
+}
+
+static void provider_guard_survives_unrelated_import_registration() {
+    sfr::GuestMemory memory;
+    memory.map(0x10000, 0x2000000);
+    // The KeDebugMonitorData import contains an ordinal marker underneath its
+    // provider. Publishing another thread's guarded field must never expose it.
+    memory.store<uint32_t>(0x107d4, 0x59000100);
+    memory.add_read_only_word(0x107d4, [] { return 0x72400000u; },
+                             sfr::GuestMemory::ProviderAccess::concurrent);
+    std::atomic<bool> done{false}, wrong{false};
+    std::atomic<uint64_t> reads{0};
+    std::thread reader([&] {
+        sfr::GuestMemory::concurrent_reader = true;
+        while (!done.load(std::memory_order_relaxed)) {
+            if (memory.load<uint32_t>(0x107d4) != 0x72400000u)
+                wrong.store(true, std::memory_order_relaxed);
+            reads.fetch_add(1, std::memory_order_relaxed);
+        }
+    });
+    std::thread pointer_reader([&] {
+        sfr::GuestMemory::concurrent_reader = true;
+        while (!done.load(std::memory_order_relaxed)) {
+            if (memory.fast_read(0x107d4,4)) wrong.store(true,std::memory_order_relaxed);
+        }
+    });
+    while (reads.load(std::memory_order_relaxed) < 100) std::this_thread::yield();
+    for (unsigned i=0;i<128;++i) {
+        memory.add_import_variable(0x200084+i*4096, "new thread process information");
+        memory.add_import_variable(0x10800+i*4, "neighbor of existing provider");
+    }
+    done.store(true, std::memory_order_relaxed);
+    reader.join();
+    pointer_reader.join();
+    require(!wrong.load(), "concurrent provider read exposed raw import ordinal during registration");
 }
 
 static void doubleword_reservation_increment_and_consumption() {
@@ -1412,8 +1448,49 @@ static void teardown_after_release_still_frees_guest_envelope() {
 #endif
 }
 
+static void top_down_search_matches_page_oracle() {
+    sfr::GuestMemory memory;
+    constexpr uint64_t page=4096, start=0x200000, pages=96;
+    // Scattered reservations, including exact logical tails shorter than a page.
+    for (uint64_t i=0;i<pages;i+=3) memory.reserve(start+i*page,(i%2) ? page : 37);
+    const auto oracle=[&](uint64_t begin,uint64_t end,uint64_t size)->std::optional<uint64_t> {
+        if (!size || begin>=end || end>sfr::GuestMemory::address_space_size || size>end-begin)
+            return std::nullopt;
+        const uint64_t rounded=(size+page-1)/page*page;
+        if(rounded>end-begin)return std::nullopt;
+        for(uint64_t at=(end-rounded)/page*page;at>=begin;) {
+            if(memory.available(at,size))return at;
+            if(at<page)break;
+            at-=page;
+        }
+        return std::nullopt;
+    };
+    const auto compare=[&] {
+        for(uint64_t lo=0;lo<pages;lo+=7)
+            for(uint64_t hi=lo+1;hi<=pages;hi+=5)
+                for(uint64_t size : {1ull,4096ull,4097ull,8192ull,12288ull})
+                    for(uint64_t offset : {0ull,13ull}) {
+                        const uint64_t begin=start+lo*page+offset,end=start+hi*page-17;
+                        require(memory.find_available_top_down(begin,end,size)==oracle(begin,end,size),
+                                "top-down range query matches exhaustive page search");
+                    }
+    };
+    compare();
+    memory.release(start+3*page,page);compare();
+    require(memory.find_available_top_down(0,page,page)==0,"address zero is a valid result");
+    require(memory.find_available_top_down(0xffff0000ull,0x100000000ull,1)==0xfffff000ull,
+            "top-down search handles the exclusive 4GB bound");
+    memory.reserve(0xfffff000ull,1);
+    require(memory.find_available_top_down(0xffff0000ull,0x100000000ull,1)==0xffffe000ull,
+            "partial final-page reservation blocks its entire host page");
+    for(const auto range : std::array<std::array<uint64_t,3>,6>{{
+        {0,0,1},{page,0,1},{0,page,0},{0,page,page+1},{0,0x100000001ull,1},{0,page,UINT64_MAX}}})
+        require(!memory.find_available_top_down(range[0],range[1],range[2]),"invalid search has no result");
+}
+
 int main() {
     try {
+        top_down_search_matches_page_oracle();
         partial_page_fast_access();
         sfr::GuestMemory memory;
         memory.map(0x10000, 0x1000);
@@ -1475,6 +1552,7 @@ int main() {
                           reservation_independent_instances_and_top_address, reservations_belong_to_threads,
                           concurrent_reader_checks_while_layout_changes,
                           loads_beside_special_words,
+                          provider_guard_survives_unrelated_import_registration,
                           memory_accounting_basics,
                           doubleword_reservation_increment_and_consumption,
                           doubleword_reservation_changed_backing, doubleword_reservation_validation,

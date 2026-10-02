@@ -108,7 +108,7 @@ enum Text {
     GameLanguageLabel, GameLanguageHint, TabAvatar,
     SectionLanguage, SectionPlayback, SectionReset, SectionWindow, SectionRendering, SectionPerformance,
     SectionGameAudio, SectionLauncherAudio, SectionPlayer1, SectionPlayer2, SectionBindings, SectionTouch, SectionVoice,
-    SectionResolution, WindowResolutionHint,
+    SectionResolution, WindowResolutionHint, SectionDiagnostics, ExportDiagnostics, ExportDiagnosticsHint,
     TextCount
 };
 
@@ -344,6 +344,10 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Resolution", "解析度"},
     {"Output size in windowed mode. Fullscreen uses the display size; Rendering resolution controls image detail.",
      "視窗模式下的輸出大小；全螢幕使用螢幕尺寸。畫面精細度由下方的遊戲渲染解析度決定。"},
+    {"Diagnostics", "診斷紀錄"},
+    {"Export diagnostic ZIP", "匯出診斷 ZIP"},
+    {"After playing, save the latest game log, performance settings and device information. Export before starting another game. Logs may contain local file paths.",
+     "遊玩後儲存最近一次的遊戲紀錄、效能設定與裝置資訊。請在下次啟動遊戲前匯出；紀錄可能包含本機檔案路徑。"},
 }};
 
 int language = 0;
@@ -2057,6 +2061,12 @@ struct Launcher {
     }
 
     void file_settings() {
+#ifdef __ANDROID__
+        settings_section(SectionDiagnostics);
+        ImGui::TextWrapped("%s", wrapped(tr(ExportDiagnosticsHint), room()).c_str());
+        if (small_button(tr(ExportDiagnostics), scale)) sfr::launcher::export_diagnostics();
+        ImGui::Dummy(ImVec2(0, 12 * scale));
+#endif
         directory_row(tr(ImageDirectory), tr(ImageDirectoryHint), settings.image_directory,
                       sfr::is_image_directory(settings.image_directory));
         directory_row(tr(AssetDirectory), tr(AssetDirectoryHint), settings.asset_directory,

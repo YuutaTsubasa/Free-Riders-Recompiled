@@ -34,6 +34,8 @@ public:
 
     [[nodiscard]] uint32_t native_id() const;
     [[nodiscard]] bool entry_started() const;
+    // Entry returned and published its result; join before reusing its storage.
+    [[nodiscard]] bool completed() const;
     [[nodiscard]] bool suspended() const;
     // Host thread handle (signaled when the thread exits); owned by this object.
     [[nodiscard]] void* native_handle() const;

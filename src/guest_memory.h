@@ -4,6 +4,7 @@
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <shared_mutex>
 #include <span>
 #include <stdexcept>
@@ -81,6 +82,10 @@ public:
     void decommit(uint64_t address, uint64_t size);
     void release(uint64_t address, uint64_t size);
     bool available(uint64_t address, uint64_t size) const;
+    // Highest host-page-aligned free range inside [begin,end). Reservation
+    // tails occupy whole host pages. Read-only; allocation still requires
+    // exclusive guest execution between this query and reserve/commit.
+    std::optional<uint64_t> find_available_top_down(uint64_t begin, uint64_t end, uint64_t size) const;
     // Lowest start of a reservation overlapping the range (the range's end when none).
     uint64_t lowest_conflict(uint64_t address, uint64_t size) const;
     void check(uint64_t address, uint64_t size) const;
@@ -200,13 +205,11 @@ private:
     static constexpr uint8_t fast_partial = 8;
     static constexpr uint8_t fast_partial_special = 16;
     std::unique_ptr<uint16_t[]> partial_page_ends_;
-    // Addresses of the import variables and computed words (set at startup).
+    // Addresses of import variables and computed words, including guarded
+    // fields registered when a guest thread is created.
     std::vector<uint32_t> special_words_;
-    bool special_word(uint64_t address, uint64_t size) const {
-        for (const uint32_t word : special_words_)
-            if (address < uint64_t(word) + 4 && word < address + size) return true;
-        return false;
-    }
+    // Keep the lock/scan out of every generated PPC load's instruction body.
+    bool special_word(uint64_t address, uint64_t size) const;
     uint8_t fast_page(uint64_t address, uint64_t size) const {
         if (!size || address >= address_space_size || size > fast_page_size - address % fast_page_size)
             return 0;
@@ -214,7 +217,7 @@ private:
         // Duplicating their bounds check at every recompiled instruction
         // bloats hot guest functions. read_scalar/store_checked handle them
         // without taking a layout lock; whole-page instructions stay small.
-        return fast_pages_[address / fast_page_size];
+        return std::atomic_ref<uint8_t>(fast_pages_[address / fast_page_size]).load(std::memory_order_relaxed);
     }
     uint8_t partial_fast_page(uint64_t address, uint64_t size, uint8_t page) const;
     // Under a pending I/O output range (PendingState::pinned).

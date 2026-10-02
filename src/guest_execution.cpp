@@ -27,9 +27,15 @@ struct GuestExecution::State {
         bool urgent = false;  // queued ahead of ordinary waiters
     };
 
+    struct QueuedWaiter : Waiter {
+        QueuedWaiter(uint64_t identity, std::thread::id thread)
+            : Waiter{identity, thread} {}
+        std::condition_variable wake;
+    };
+
     mutable std::mutex mutex;
     std::condition_variable changed;
-    std::deque<std::shared_ptr<Waiter>> ready;
+    std::deque<std::shared_ptr<QueuedWaiter>> ready;
     std::vector<Waiter> blocked;
     uint64_t owner_id = 0;
     uint64_t next_completion_id = uint64_t{1} << 32;
@@ -60,7 +66,19 @@ struct GuestExecution::State {
         }
     }
 
-    void enqueue(const std::shared_ptr<Waiter>& waiter, bool woken) {
+    // Called under mutex. Only the queue head can acquire a free permit;
+    // waking other guests would just make them contend for the same mutex.
+    // Observers use changed, and cancellation must wake every queued guest.
+    void notify_changed() {
+        if (stopping) {
+            for (const auto& waiter : ready) waiter->wake.notify_one();
+        } else if (!owner_id && !ready.empty()) {
+            ready.front()->wake.notify_one();
+        }
+        changed.notify_all();
+    }
+
+    void enqueue(const std::shared_ptr<QueuedWaiter>& waiter, bool woken) {
         account();
         if (woken && urgent_ids.contains(waiter->guest_id)) {
             waiter->urgent = true;
@@ -73,7 +91,7 @@ struct GuestExecution::State {
         }
         if (waiter->guest_id == 1) main_ready = true;
     }
-    void remove(std::deque<std::shared_ptr<Waiter>>::iterator position) {
+    void remove(std::deque<std::shared_ptr<QueuedWaiter>>::iterator position) {
         account();
         if ((*position)->guest_id == 1) main_ready = false;
         if ((*position)->urgent) urgent_waiting.fetch_sub(1, std::memory_order_relaxed);
@@ -116,7 +134,7 @@ void GuestExecution::State::stop_followers() noexcept {
             follower->stopping = true;
             follower->stopping_flag.store(true, std::memory_order_relaxed);
             source = follower->stop_source;
-            follower->changed.notify_all();
+            follower->notify_changed();
         }
         source.request_stop();
         follower->stop_followers();
@@ -159,7 +177,7 @@ GuestExecution::Lease::~Lease() noexcept {
             return entry.guest_id == guest_id_ && entry.host_thread == std::this_thread::get_id();
         });
         if (blocked != state_->blocked.end()) state_->blocked.erase(blocked);
-        state_->changed.notify_all();
+        state_->notify_changed();
         return;
     }
     if (!state_ || !owns_) return;
@@ -168,7 +186,7 @@ GuestExecution::Lease::~Lease() noexcept {
         released();
         state_->owner_id = 0;
         state_->owner_thread = {};
-        state_->changed.notify_all();
+        state_->notify_changed();
     }
 }
 
@@ -220,13 +238,13 @@ void GuestExecution::Lease::checkpoint(bool allow_handoff) {
         return;
     }
 
-    auto self = std::make_shared<State::Waiter>(State::Waiter{guest_id_, std::this_thread::get_id()});
+    auto self = std::make_shared<State::QueuedWaiter>(guest_id_, std::this_thread::get_id());
     state_->enqueue(self, false);
     released();
     owns_ = false;
     state_->owner_id = 0;
     state_->owner_thread = {};
-    state_->changed.notify_all();
+    state_->notify_changed();
     // The companion is never held while waiting for this permit.
     const bool companion = companion_ && !companion_->detached();
     if (companion) {
@@ -235,7 +253,7 @@ void GuestExecution::Lease::checkpoint(bool allow_handoff) {
         lock.lock();
     }
     const auto queued_at = std::chrono::steady_clock::now();
-    state_->changed.wait(lock, [&] {
+    self->wake.wait(lock, [&] {
         return state_->stopping ||
             (state_->owner_id == 0 && !state_->ready.empty() && state_->ready.front() == self);
     });
@@ -245,7 +263,7 @@ void GuestExecution::Lease::checkpoint(bool allow_handoff) {
     if (state_->stopping) {
         const auto position = std::find(state_->ready.begin(), state_->ready.end(), self);
         if (position != state_->ready.end()) state_->remove(position);
-        state_->changed.notify_all();
+        state_->notify_changed();
         throw GuestExecutionCancelled();
     }
     state_->pop_front();
@@ -253,7 +271,7 @@ void GuestExecution::Lease::checkpoint(bool allow_handoff) {
     state_->owner_thread = std::this_thread::get_id();
     owns_ = true;
     acquired();
-    state_->changed.notify_all();
+    state_->notify_changed();
     if (companion) {
         lock.unlock();
         companion_->attach();
@@ -305,7 +323,7 @@ void GuestExecution::Lease::run_wait(std::function<void(std::stop_token)> operat
 void GuestExecution::Lease::run_blocking(std::function<void(std::stop_token)> operation,
                                         std::function<void()> before_release) {
     if (!operation) throw std::logic_error("blocking guest operation is required");
-    auto self = std::make_shared<State::Waiter>(State::Waiter{guest_id_, std::this_thread::get_id()});
+    auto self = std::make_shared<State::QueuedWaiter>(guest_id_, std::this_thread::get_id());
     std::stop_token stop_token;
     {
         std::lock_guard lock(state_->mutex);
@@ -326,7 +344,7 @@ void GuestExecution::Lease::run_blocking(std::function<void(std::stop_token)> op
         owns_ = false;
         state_->owner_id = 0;
         state_->owner_thread = {};
-        state_->changed.notify_all();
+        state_->notify_changed();
     }
     if (guest_id_ && guest_id_ <= 0xFFFFFFFFu) count_block(uint32_t(guest_id_));
 
@@ -348,7 +366,7 @@ void GuestExecution::Lease::run_blocking(std::function<void(std::stop_token)> op
     if (blocked != state_->blocked.end()) state_->blocked.erase(blocked);
     if (operation_failure && !state_->failure) state_->failure = operation_failure;
     if (state_->stopping) {
-        state_->changed.notify_all();
+        state_->notify_changed();
         lock.unlock();
         if (operation_failure) std::rethrow_exception(operation_failure);
         throw GuestExecutionCancelled();
@@ -356,12 +374,12 @@ void GuestExecution::Lease::run_blocking(std::function<void(std::stop_token)> op
 
     try { state_->enqueue(self, true); }
     catch (...) {
-        state_->changed.notify_all();
+        state_->notify_changed();
         throw;
     }
-    state_->changed.notify_all();
+    state_->notify_changed();
     const auto queued_at = std::chrono::steady_clock::now();
-    state_->changed.wait(lock, [&] {
+    self->wake.wait(lock, [&] {
         return state_->stopping ||
             (state_->owner_id == 0 && !state_->ready.empty() && state_->ready.front() == self);
     });
@@ -371,7 +389,7 @@ void GuestExecution::Lease::run_blocking(std::function<void(std::stop_token)> op
     if (state_->stopping) {
         const auto position = std::find(state_->ready.begin(), state_->ready.end(), self);
         if (position != state_->ready.end()) state_->remove(position);
-        state_->changed.notify_all();
+        state_->notify_changed();
         lock.unlock();
         if (operation_failure) std::rethrow_exception(operation_failure);
         throw GuestExecutionCancelled();
@@ -381,7 +399,7 @@ void GuestExecution::Lease::run_blocking(std::function<void(std::stop_token)> op
     state_->owner_thread = std::this_thread::get_id();
     owns_ = true;
     acquired();
-    state_->changed.notify_all();
+    state_->notify_changed();
     lock.unlock();
     if (companion_ && companion_->detached()) companion_->attach();
     if (operation_failure) std::rethrow_exception(operation_failure);
@@ -400,7 +418,7 @@ void GuestExecution::Lease::detach() {
     detached_ = true;
     state_->owner_id = 0;
     state_->owner_thread = {};
-    state_->changed.notify_all();
+    state_->notify_changed();
 }
 
 void GuestExecution::Lease::attach() {
@@ -419,20 +437,20 @@ void GuestExecution::Lease::attach_self() {
     if (blocked != state_->blocked.end()) state_->blocked.erase(blocked);
     detached_ = false;
     if (state_->stopping) {
-        state_->changed.notify_all();
+        state_->notify_changed();
         throw GuestExecutionCancelled();
     }
-    auto self = std::make_shared<State::Waiter>(State::Waiter{guest_id_, std::this_thread::get_id()});
+    auto self = std::make_shared<State::QueuedWaiter>(guest_id_, std::this_thread::get_id());
     state_->enqueue(self, true);
-    state_->changed.notify_all();
-    state_->changed.wait(lock, [&] {
+    state_->notify_changed();
+    self->wake.wait(lock, [&] {
         return state_->stopping ||
             (state_->owner_id == 0 && !state_->ready.empty() && state_->ready.front() == self);
     });
     if (state_->stopping) {
         const auto position = std::find(state_->ready.begin(), state_->ready.end(), self);
         if (position != state_->ready.end()) state_->remove(position);
-        state_->changed.notify_all();
+        state_->notify_changed();
         throw GuestExecutionCancelled();
     }
     state_->pop_front();
@@ -440,7 +458,7 @@ void GuestExecution::Lease::attach_self() {
     state_->owner_thread = std::this_thread::get_id();
     owns_ = true;
     acquired();
-    state_->changed.notify_all();
+    state_->notify_changed();
 }
 
 void GuestExecution::set_urgent(uint32_t guest_id, bool urgent) {
@@ -472,17 +490,17 @@ std::unique_ptr<GuestExecution::Lease> GuestExecution::enter_identity(uint64_t g
         throw std::logic_error("owning host thread cannot enter another guest execution");
 
     auto lease = std::unique_ptr<Lease>(new Lease(state_, guest_id));
-    auto self = std::make_shared<State::Waiter>(State::Waiter{guest_id, std::this_thread::get_id()});
+    auto self = std::make_shared<State::QueuedWaiter>(guest_id, std::this_thread::get_id());
     state_->enqueue(self, true);
-    state_->changed.notify_all();
-    state_->changed.wait(lock, [&] {
+    state_->notify_changed();
+    self->wake.wait(lock, [&] {
         return state_->stopping ||
             (state_->owner_id == 0 && !state_->ready.empty() && state_->ready.front() == self);
     });
     if (state_->stopping) {
         const auto position = std::find(state_->ready.begin(), state_->ready.end(), self);
         if (position != state_->ready.end()) state_->remove(position);
-        state_->changed.notify_all();
+        state_->notify_changed();
         throw GuestExecutionCancelled();
     }
     state_->pop_front();
@@ -490,7 +508,7 @@ std::unique_ptr<GuestExecution::Lease> GuestExecution::enter_identity(uint64_t g
     state_->owner_thread = std::this_thread::get_id();
     lease->owns_ = true;
     lease->acquired();
-    state_->changed.notify_all();
+    state_->notify_changed();
     return lease;
 }
 
@@ -526,7 +544,7 @@ void GuestExecution::fail(std::exception_ptr failure) noexcept {
         state_->stopping = true;
         state_->stopping_flag.store(true, std::memory_order_relaxed);
         stop_source = state_->stop_source;
-        state_->changed.notify_all();
+        state_->notify_changed();
     }
     stop_source.request_stop();
     state_->stop_followers();
@@ -539,7 +557,7 @@ void GuestExecution::stop() noexcept {
         state_->stopping = true;
         state_->stopping_flag.store(true, std::memory_order_relaxed);
         stop_source = state_->stop_source;
-        state_->changed.notify_all();
+        state_->notify_changed();
     }
     stop_source.request_stop();
     state_->stop_followers();
@@ -553,7 +571,7 @@ void GuestExecution::stop_and_drain() noexcept {
     state_->stopping_flag.store(true, std::memory_order_relaxed);
     std::stop_source stop_source(std::nostopstate);
     stop_source = state_->stop_source;
-    state_->changed.notify_all();
+    state_->notify_changed();
     lock.unlock();
     stop_source.request_stop();
     state_->stop_followers();

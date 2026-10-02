@@ -31,7 +31,7 @@ void run() {
 
     // Decode a 64x32 tiled 2D texture.
     const sfr::FetchWords words{0x80000002u | (5u << 22), 0x0006F086, 63u | (31u << 13),
-                                (0x2Au << 13) | (0x123u << 1) | 1u, (2u << 2) | (6u << 6), (1u << 9) | 1u | 0x00ABC000};
+                                (0x2Au << 13) | (0x123u << 1) | 1u, (2u << 2) | (6u << 6), (1u << 9) | (1u << 11) | 0x00ABC000};
     const auto f = sfr::decode_texture_fetch(words);
     require(f.type == 2 && f.tiled && f.pitch == 5, "w0 type, tiling and pitch");
     require(f.format == 6 && f.endian == 2 && f.base_address == 0x0006F000, "w1 format, endian and base");
@@ -40,6 +40,12 @@ void run() {
     require(f.numeric_integer && f.swizzle == 0x123 && f.exp_adjust == -22, "w3 number format, swizzle, exp adjust");
     require(f.min_mip == 2 && f.max_mip == 6, "w4 mip range");
     require(f.packed_mips && f.mip_address == 0x00ABC000, "w5 packed mips and mip address");
+    require(!sfr::decode_texture_fetch({2, 0, 0, 0, 0, (1u << 9) | 1u}).packed_mips,
+            "w5 border-color bit zero must not enable packed mips");
+    const auto road = sfr::decode_texture_fetch({0x80400002, 0x10f13086, 0x1e00f,
+                                                0xa00c14, 0x3b0042, 0xa00});
+    require(road.packed_mips && road.width == 16 && road.height == 16,
+            "captured road-shadow base texture sets packed mips in w5 bit 11");
 
     const auto volume = sfr::decode_texture_fetch({2, 0, 7u | (3u << 11) | (1u << 22), 0, 0, 2u << 9});
     require(volume.dimension == sfr::TextureDimension::three && volume.width == 8 && volume.height == 4 &&

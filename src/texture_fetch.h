@@ -35,7 +35,7 @@ struct TextureFetch {
     uint32_t swizzle;        // w3[1:12], three bits per component
     int32_t exp_adjust;      // w3[13:18], signed
     uint32_t min_mip, max_mip;      // w4[2:5], w4[6:9]
-    bool packed_mips;        // w5[0]
+    bool packed_mips;        // w5[11] (w5[0:1] is border color)
     TextureDimension dimension;     // w5[9:10]
     uint32_t mip_address;    // w5[12:31] << 12
 };

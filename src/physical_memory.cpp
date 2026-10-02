@@ -151,33 +151,17 @@ uint32_t PhysicalMemory::allocate(uint32_t flags, uint32_t size, uint32_t protec
     const auto total = memory_.usage();
     if (adjusted_size > memory_.backing_budget() - total.committed_bytes) return 0;
 
-    uint64_t candidate = (bounded_end - adjusted_size) & ~(page_size - 1);
-    if (candidate < bounded_begin) return 0;
-    for (;;) {
-        const uint64_t virtual_address = arena_base + candidate - physical_offset;
-        if (memory_.available(virtual_address, adjusted_size)) {
-            auto next = allocations_;
-            next.push_back({static_cast<uint32_t>(virtual_address),
-                            static_cast<uint32_t>(adjusted_size), protect});
-            if (protect == 0x404)
-                memory_.map_write_combined(virtual_address, adjusted_size);
-            else
-                memory_.map(virtual_address, adjusted_size);
-            allocations_.swap(next);
-            return static_cast<uint32_t>(virtual_address);
-        }
-        // Skip below the lowest reservation in the way instead of page by page.
-        const uint64_t conflict = memory_.lowest_conflict(virtual_address, adjusted_size);
-        const uint64_t below = conflict - arena_base + physical_offset;
-        if (conflict < arena_base || below < adjusted_size + bounded_begin) break;
-        const uint64_t next_candidate = (below - adjusted_size) & ~(page_size - 1);
-        if (next_candidate >= candidate) {
-            if (candidate < bounded_begin + page_size) break;
-            candidate -= page_size;
-        } else {
-            candidate = next_candidate;
-        }
-    }
-    return 0;
+    const auto address = memory_.find_available_top_down(
+        arena_base + bounded_begin - physical_offset,
+        arena_base + bounded_end - physical_offset, adjusted_size);
+    if (!address) return 0;
+    auto next = allocations_;
+    next.push_back({static_cast<uint32_t>(*address), static_cast<uint32_t>(adjusted_size), protect});
+    if (protect == 0x404)
+        memory_.map_write_combined(*address, adjusted_size);
+    else
+        memory_.map(*address, adjusted_size);
+    allocations_.swap(next);
+    return static_cast<uint32_t>(*address);
 }
 }

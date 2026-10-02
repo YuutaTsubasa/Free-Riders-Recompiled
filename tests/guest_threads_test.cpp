@@ -1,5 +1,6 @@
 #include "guest_threads.h"
 #include "guest_memory.h"
+#include "thread_local_storage.h"
 #include <atomic>
 #include <chrono>
 #include <thread>
@@ -7,6 +8,13 @@
 #include <stdexcept>
 #include <future>
 #include <cstdlib>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <Windows.h>
+#else
+#include "portable_waitables.h"
+#endif
 
 namespace {
 void require(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
@@ -30,6 +38,160 @@ sfr::GuestThreads::Request request() {
 void prepare(sfr::GuestMemory& memory) {
     memory.map(0x10000000, 0x100);
     memory.store<uint32_t>(0x10000040, 0x12345678);
+}
+void wait_for_native_exit(void* handle) {
+#ifdef _WIN32
+    require(WaitForSingleObject(handle, 5000) == WAIT_OBJECT_0, "native entry must finish");
+#else
+    auto* object = static_cast<sfr::portable::Waitable*>(handle);
+    require(sfr::portable::wait_any({&object, 1}, 5000) == 0, "native entry must finish");
+#endif
+}
+void completed_closed_workers_do_not_exhaust_session_slots() {
+    sfr::GuestMemory memory;
+    prepare(memory);
+    sfr::ThreadLocalStorage tls(memory, 4, 0x10000040, 8, 4);
+    const auto tls_index = tls.allocate();
+    sfr::GuestThreads threads(memory, {4, 0x10000040, 8, 4}, 0x40000, target,
+        [&](const auto& state) {
+            if (!state.reused_storage) tls.register_thread(state.tls_dynamic);
+            require(tls.get_for(state.tls_dynamic, tls_index) == 0,
+                    "reused TLS bank retains registration with freshly reset values");
+            tls.set_for(state.tls_dynamic, tls_index, state.id);
+            return [](std::stop_token) { return 0u; };
+        });
+    uint32_t first_slot = 0, first_handle = 0;
+    bool reused = false;
+    void* retained_exit = nullptr;
+    for (unsigned iteration = 0; iteration < 128; ++iteration) {
+        require(threads.create(request()) == 0, "completed workers must not exhaust thread slots");
+        const auto handle = memory.load<uint32_t>(0x10000000);
+        const auto state = threads.snapshot(handle).state;
+        rejects([&] { (void)memory.load<uint32_t>(state.thread_object + 0x84); });
+        rejects([&] { memory.check(state.stack_limit - 1, 1); });
+        rejects([&] { memory.check(state.stack_base, 1); });
+        if (!iteration) {
+            first_slot = state.pcr; first_handle = handle;
+            require(!state.reused_storage, "initial storage must register its TLS bank");
+        }
+        else {
+            reused |= state.pcr == first_slot;
+            if (state.pcr == first_slot)
+                require(state.reused_storage, "factory is informed that the bank already exists");
+            require(handle != first_handle && threads.host_handle(first_handle) == nullptr,
+                    "retirement never reopens an old guest handle");
+        }
+        require(memory.load<uint32_t>(state.pcr + 0x40) == 0 &&
+                memory.load<uint32_t>(state.thread_object + 0x90) == 0 &&
+                memory.load<uint32_t>(state.stack_limit + 4) == 0 &&
+                memory.load<uint32_t>(state.tls_static) == 0x12345678,
+                "reused storage must not retain the old worker's bytes");
+        memory.store<uint32_t>(state.pcr + 0x40, 0xabcdef01);
+        memory.store<uint32_t>(state.thread_object + 0x90, 0xabcdef02);
+        memory.store<uint32_t>(state.stack_limit + 4, 0xabcdef03);
+        memory.store<uint32_t>(state.tls_static, 0xabcdef04);
+        void* exit = threads.host_handle(handle);
+        if (!iteration) retained_exit = exit;
+        threads.resume(handle, 0);
+        wait_for_native_exit(exit);
+        require(threads.references(state.thread_object) == 0 && threads.close(handle) == 0,
+                "finished worker has no guest references before retirement");
+        wait_for_native_exit(retained_exit);
+    }
+    require(reused, "completed workers reuse guest storage across a long session");
+}
+void retirement_preserves_open_handles_references_and_stack_bounds() {
+    sfr::GuestMemory memory;
+    prepare(memory);
+    sfr::GuestThreads threads(memory, {4, 0x10000040, 8, 4}, 0x40000, target,
+        [](const auto&) { return [](std::stop_token) { return 0u; }; });
+    const auto create = [&](uint32_t stack = 0x1000) {
+        auto r = request(); r.stack_size = stack;
+        threads.create(r);
+        return threads.snapshot(memory.load<uint32_t>(r.handle_output)).state;
+    };
+    const auto first = create();
+    void* retained_exit = threads.host_handle(first.handle);
+    threads.resume(first.handle, 0);
+    wait_for_native_exit(retained_exit);
+    require(create().pcr != first.pcr, "completed thread with an open handle retains its slot");
+    require(threads.reference(first.handle, 0, 0) == 0 && threads.close(first.handle) == 0,
+            "retain an explicit reference after closing the handle");
+    require(create().pcr != first.pcr, "referenced object retains completed thread storage");
+    threads.dereference(first.thread_object);
+    require(create(0x8000).pcr != first.pcr, "different stack extent cannot inherit old slot mappings");
+    const auto replacement = create();
+    require(replacement.pcr == first.pcr && replacement.id != first.id,
+            "eligible slot reused with a new thread identity");
+    require(threads.handle_for_object(first.thread_object) == replacement.handle &&
+            threads.owns_object(first.thread_object) &&
+            threads.reference(replacement.handle, 0, 0) == 0 &&
+            threads.references(first.thread_object) == 1,
+            "object lookups refer to the replacement, not its historical record");
+    threads.dereference(replacement.thread_object);
+    require(threads.close(first.handle) == 0xC0000008 && threads.host_handle(first.handle) == nullptr,
+            "retired guest handle remains invalid");
+    wait_for_native_exit(retained_exit);
+}
+void retirement_never_reuses_a_closed_running_thread() {
+    sfr::GuestMemory memory;
+    prepare(memory);
+    std::atomic<bool> started = false, release = false;
+    sfr::GuestThreads threads(memory, {4, 0x10000040, 8, 4}, 0x40000, target,
+        [&](const auto&) { return [&](std::stop_token stop) {
+            started = true;
+            while (!release && !stop.stop_requested()) std::this_thread::yield();
+            return 0u;
+        }; });
+    const auto create = [&] {
+        threads.create(request());
+        return threads.snapshot(memory.load<uint32_t>(0x10000000)).state;
+    };
+    const auto first = create();
+    void* exit = threads.host_handle(first.handle);
+    threads.resume(first.handle, 0);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!started && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+    require(started && threads.close(first.handle) == 0, "running thread closes its handle");
+    require(create().pcr != first.pcr, "closed running thread still owns its guest stack");
+    release = true;
+    wait_for_native_exit(exit);
+    require(create().pcr == first.pcr, "storage becomes eligible only after native completion");
+    wait_for_native_exit(exit);
+}
+void failed_reused_creation_retires_storage_without_invalidating_waiters() {
+    sfr::GuestMemory memory;
+    prepare(memory);
+    unsigned factories = 0;
+    sfr::GuestThreads threads(memory, {4, 0x10000040, 8, 4}, 0x40000, target,
+        [&](const auto& state) {
+            if (++factories == 2) {
+                require(state.reused_storage, "failure exercises a reused slot");
+                throw sfr::RuntimeStop("test-factory", state.pcr, "factory rejects reused storage");
+            }
+            return [](std::stop_token) { return 0u; };
+        });
+    threads.create(request());
+    const auto first = threads.snapshot(memory.load<uint32_t>(0x10000000)).state;
+    void* exit = threads.host_handle(first.handle);
+    threads.resume(first.handle, 0);
+    wait_for_native_exit(exit);
+    threads.close(first.handle);
+    memory.store<uint32_t>(0x10000000, 0x11223344);
+    memory.store<uint32_t>(0x10000004, 0x55667788);
+    rejects([&] { threads.create(request()); });
+    require(memory.load<uint32_t>(0x10000000) == 0x11223344 &&
+            memory.load<uint32_t>(0x10000004) == 0x55667788,
+            "failed reused creation publishes neither output");
+    require(!threads.owns_object(first.thread_object) &&
+            threads.handle_for_object(first.thread_object) == 0,
+            "retired historical record cannot claim partially initialized storage");
+    rejects([&] { (void)threads.references(first.thread_object); });
+    wait_for_native_exit(exit);
+    threads.create(request());
+    const auto next = threads.snapshot(memory.load<uint32_t>(0x10000000)).state;
+    require(next.pcr != first.pcr && !next.reused_storage && next.handle == first.handle + 4,
+            "creation resumes elsewhere without consuming a failed public identity");
 }
 void independent_state_and_owned_suspension() {
     sfr::GuestMemory memory;
@@ -484,7 +646,10 @@ void shutdown_cancels_a_native_worker_in_its_suspension_wait() {
     require(threads.guest_suspends(handle) == 1, "pre-cancelled wait preserves suspension count");
 }
 }
-int main() { try { independent_state_and_owned_suspension();
+int main() { try { completed_closed_workers_do_not_exhaust_session_slots(); independent_state_and_owned_suspension();
+    retirement_preserves_open_handles_references_and_stack_bounds();
+    retirement_never_reuses_a_closed_running_thread();
+    failed_reused_creation_retires_storage_without_invalidating_waiters();
     creation_affinity_selects_guest_and_native_processor_while_parked();
     preflight_rejects_without_publishing_or_allocating();
     creation_failures_retire_slots_without_publishing(); invalid_templates_reject_before_allocation();

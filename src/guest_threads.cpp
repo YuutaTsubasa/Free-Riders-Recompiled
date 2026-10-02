@@ -51,6 +51,7 @@ struct GuestThreads::Impl {
         bool prepared_self_suspend = false;
         uint32_t prepared_previous = 0;
         bool handle_open = true;
+        bool owns_storage = true;
     };
     GuestMemory& memory;
     TlsTemplate tls;
@@ -81,14 +82,25 @@ struct GuestThreads::Impl {
     }
     Record& find_object(uint32_t object) const {
         for (const auto& record : records)
-            if (record->state.thread_object == object) return *record;
+            if (record->owns_storage && record->state.thread_object == object) return *record;
         throw RuntimeStop("thread-object", object, "unknown thread object");
     }
-    void initialize(const State& s, const Request& r, uint32_t cpu) {
+    void initialize(const State& s, const Request& r, uint32_t cpu, bool reused) {
         memory.commit(s.pcr, 0x2D8);
         memory.commit(s.thread_object, 0xAB0);
         memory.commit(s.tls_static, tls.data_size + tls.slots * 4);
         memory.commit(s.stack_limit, s.stack_base - s.stack_limit);
+        if (reused) {
+            const std::vector<uint8_t> zeros(std::max<uint32_t>(0xAB0, s.stack_base - s.stack_limit));
+            const auto clear = [&](uint32_t address, uint32_t size) {
+                memory.write_bytes(address, std::span(zeros).first(size));
+            };
+            clear(s.pcr, 0x2D8);
+            // This guarded import word remains registered for the slot's lifetime.
+            clear(s.thread_object, 0x84);
+            clear(s.thread_object + 0x88, 0xAB0 - 0x88);
+            clear(s.stack_limit, s.stack_base - s.stack_limit);
+        }
         for (uint32_t i = 0; i < tls.data_size + tls.slots * 4; ++i)
             memory.store<uint8_t>(s.tls_static + i,
                 i < tls.raw_size ? memory.load<uint8_t>(uint64_t(tls.raw_address) + i) : 0);
@@ -117,7 +129,8 @@ struct GuestThreads::Impl {
         memory.store<uint32_t>(k + 0x78, k + 0x74);
         memory.store<uint32_t>(k + 0x7C, k + 0x7C);
         memory.store<uint32_t>(k + 0x80, k + 0x7C);
-        memory.add_import_variable(k + 0x84, "unsupported thread process-information pointer");
+        if (!reused)
+            memory.add_import_variable(k + 0x84, "unsupported thread process-information pointer");
         memory.store<uint8_t>(k + 0x8B, 1);
         memory.store<uint32_t>(k + 0x9C, 0xFDFFD7FF);
         memory.store<uint32_t>(k + 0xD0, s.stack_base);
@@ -195,12 +208,12 @@ GuestThreads::ResumeResult GuestThreads::suspend(uint32_t handle, uint32_t previ
 }
 uint32_t GuestThreads::handle_for_object(uint32_t object) const {
     for (const auto& record : impl_->records)
-        if (record->handle_open && record->state.thread_object == object) return record->state.handle;
+        if (record->owns_storage && record->handle_open && record->state.thread_object == object) return record->state.handle;
     return 0;
 }
 bool GuestThreads::owns_object(uint32_t object) const {
     for (const auto& record : impl_->records)
-        if (record->state.thread_object == object) return true;
+        if (record->owns_storage && record->state.thread_object == object) return true;
     return false;
 }
 void* GuestThreads::host_handle(uint32_t handle) const {
@@ -263,6 +276,10 @@ void GuestThreads::shutdown() noexcept {
 }
 uint32_t GuestThreads::create(const Request& r) {
     auto& i = *impl_;
+    // Storage can be reused, but published identities remain in the dispatch
+    // range for thread handles. Reject before retiring any existing storage.
+    if (!is_handle_range(i.next_handle))
+        throw RuntimeStop("thread-capacity", i.next_handle, "thread handle identities exhausted");
     const uint32_t affinity = r.flags >> 24;
     if ((r.flags & 0x00FFFFFFu) != 1 ||
         (affinity && ((affinity & ~0x3Fu) || !std::has_single_bit(affinity))))
@@ -279,20 +296,38 @@ uint32_t GuestThreads::create(const Request& r) {
     const uint64_t requested = r.stack_size ? r.stack_size : i.default_stack;
     const uint64_t stack_size = std::max<uint64_t>(0x4000, (requested + 0xFFF) & ~uint64_t(0xFFF));
     if (stack_size > stack_max) throw RuntimeStop("thread-stack", requested, "guest stack exceeds supported slot");
-    if (i.next_slot == slot_count) throw RuntimeStop("thread-capacity", i.next_slot, "thread slots exhausted");
-    const uint32_t slot = slots_begin + i.next_slot * slot_stride;
-    if (!i.memory.available(slot, slot_stride)) throw RuntimeStop("thread-memory", slot, "thread slot already reserved");
+    Impl::Record* retired = nullptr;
+    for (const auto& previous : i.records) {
+        if (previous->owns_storage && !previous->handle_open && !previous->references &&
+            previous->state.stack_base - previous->state.stack_limit == stack_size &&
+            previous->native->completed()) {
+            retired = previous.get();
+            break;
+        }
+    }
+    if (!retired && i.next_slot == slot_count)
+        throw RuntimeStop("thread-capacity", i.next_slot, "thread slots exhausted");
+    const uint32_t slot = retired ? retired->state.pcr : slots_begin + i.next_slot * slot_stride;
+    if (!retired && !i.memory.available(slot, slot_stride))
+        throw RuntimeStop("thread-memory", slot, "thread slot already reserved");
     auto record = std::make_unique<Impl::Record>();
     record->state = {i.next_handle, i.next_id, slot, slot + 0x1000, slot + 0x2000,
         slot + 0x2000 + i.tls.data_size, slot + 0x21000, slot + 0x21000 + static_cast<uint32_t>(stack_size),
-        r.startup, r.worker, r.argument};
-    i.memory.reserve(slot, slot_stride);
-    // GuestMemory has no release operation: failed creations retire their session slot.
-    ++i.next_slot;
-    i.initialize(record->state, r, cpu);
+        r.startup, r.worker, r.argument, retired != nullptr};
+    if (retired) {
+        // Entry completion precedes the final host exit. Join before touching its
+        // guest stack/PCR, but retain the native handle and record for old waiters.
+        retired->native->join();
+        retired->owns_storage = false;
+    } else {
+        i.memory.reserve(slot, slot_stride);
+        ++i.next_slot;
+    }
+    // Failed creations retire their slot, including any partly reset reused slot.
+    i.initialize(record->state, r, cpu, retired != nullptr);
     record->native = std::make_unique<NativeThread>(i.factory(record->state));
     place_guest_worker(*record->native, cpu);
-    i.records.push_back(std::move(record)); // Capacity was reserved before any outputs.
+    i.records.push_back(std::move(record)); // Complete allocation before publishing outputs.
     try {
         check_outputs(i.memory, r);
         i.memory.store<uint32_t>(r.handle_output, i.next_handle);

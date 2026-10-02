@@ -159,6 +159,8 @@ public:
         // Opt-in probe of requested bytes and exact matches; the probe itself
         // does not skip writes. Reuse savings are reported independently.
         uint64_t constant_upload_bytes = 0, constant_reusable_bytes = 0;
+        uint64_t upload_submissions = 0, upload_peak_bytes = 0, upload_budget_drains = 0;
+        double upload_wait_ms = 0;
         uint64_t constant_saved_bytes = 0; // Actual skipped writes when reuse is enabled.
     };
     PipelineWork take_pipeline_work() noexcept;

@@ -61,15 +61,20 @@ struct TextureLayout {
     uint32_t width, height;
     bool tiled = false;        // Xenos 2D tiling: 32x32-block tiles
     uint32_t guest_rows = 0;   // rows of blocks the guest stores (32-aligned when tiled)
+    uint32_t base_x_blocks = 0, base_y_blocks = 0; // packed base mip's origin in guest storage
 };
 
 // Block index of block (x, y) in a tiled 2D surface pitch_blocks wide (a
 // multiple of 32) with block_bytes per block: XGAddress2DTiledOffset.
 uint32_t tiled_block_index(uint32_t x, uint32_t y, uint32_t pitch_blocks, uint32_t block_bytes);
-// Rearranges a tiled base level into rows of layout.row_bytes.
+// Extracts a tiled or packed base level into rows of layout.row_bytes. Packed
+// offsets are applied here once; the returned rows start at the logical origin.
 std::vector<uint8_t> untile_texture(std::span<const uint8_t> tiled, const TextureLayout& layout);
 // Base-level layout of a linear 2D texture; empty when the format is unsupported.
 std::optional<TextureLayout> linear_texture_layout(const TextureFetch& fetch);
+// Expands linear k_4_4_4_4 after endian conversion to eight-bit components.
+// The layout's RGBA/BGRA view preserves the fetch's XYZW/ZYXW swizzle.
+void decode_rgba4(std::vector<uint8_t>& bytes, TextureLayout& layout);
 // For GPUs without BC formats (most phones): decodes a BC1/BC2/BC3 base level
 // laid out as `layout` (after untiling) to R8G8B8A8 texels, rewriting the
 // layout to match. Other formats are left as they are.

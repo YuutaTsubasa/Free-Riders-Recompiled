@@ -5,14 +5,18 @@
 #include "gltf_model.h"
 
 #include "plume_render_interface.h"
+#include "plume_vulkan.h"
 #include <volk.h>
 
 #ifdef _WIN32
 #include "plume_d3d12.h"
 #define NOMINMAX
 #include <windows.h>
+#else
+#include <SDL.h>
 #endif
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <chrono>
@@ -296,6 +300,33 @@ struct RestrictedSurface {
     }
 };
 
+void submissions_drain_uploads_before_completion_callbacks() {
+    sfr::NativeGraphics graphics;
+    graphics.initialize();
+    sfr::NativePresentation presentation(graphics, 64, 48);
+    std::vector<char> events;
+    presentation.before_submit([&] { events.push_back('U'); });
+    presentation.after_flush([&](bool complete) { events.push_back(complete ? 'C' : 'F'); });
+    presentation.flush();
+    require(events == std::vector<char>{'U','C'}, "empty flush drains pending uploads before resource recycling");
+    events.clear();
+    sfr::NativeClear clear{};
+    clear.color = true;
+    presentation.clear(clear);
+    presentation.flush();
+    require(events == std::vector<char>{'U','C'}, "draw flush submits uploads exactly once before completion");
+    events.clear();
+    presentation.clear(clear);
+    presentation.present();
+    require(!events.empty() && events.front() == 'U', "present submits uploads before the frame");
+    presentation.flush();
+    presentation.clear_before_submit();
+    presentation.clear_after_flush();
+    events.clear();
+    presentation.flush();
+    require(events.empty(), "renderer callback removal prevents stale owner access");
+}
+
 void completed_frames_do_not_release_guest_execution() {
     sfr::NativeGraphics graphics;
     graphics.initialize();
@@ -401,6 +432,134 @@ void invalid_dimensions_are_rejected_before_a_window_exists() {
 #ifdef _WIN32
     require(GetGuiResources(GetCurrentProcess(), GR_USEROBJECTS) == before, "invalid dimensions create no window objects");
 #endif
+}
+
+void resized_windows_keep_presenting() {
+    sfr::NativeGraphics graphics;
+    graphics.initialize();
+    sfr::NativePresentation presentation(graphics, 320, 240);
+    sfr::NativeClear clear{};
+    clear.color = true;
+    // Swap between landscape and portrait with a frame in flight and another
+    // recorded. The resize must retire old image references before replacing
+    // the swap chain, and keep the new blit framebuffers alive through submit.
+    for (unsigned frame = 0; frame < 12; ++frame) {
+        const int width = frame % 2 ? 240 : 480;
+        const int height = frame % 2 ? 480 : 240;
+        clear.color_value = {frame % 2 ? 1.f : 0.f, 0, 0, 1};
+        presentation.clear(clear);
+#ifdef _WIN32
+        require(SetWindowPos(static_cast<HWND>(presentation.window_handle()), nullptr,
+            0, 0, width, height, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE), "resize test window");
+#else
+        SDL_SetWindowSize(static_cast<SDL_Window*>(presentation.window_handle()), width, height);
+#endif
+        presentation.pump_events();
+        presentation.present();
+    }
+    const auto pixels = presentation.readback_color();
+    require(pixels.size() == 320 * 240 * 4 && pixels[2] == 255,
+        "rendering and readback survive repeated portrait/landscape resizes");
+}
+
+struct GrowingSwapchain {
+    inline static VkPhysicalDevice physical_device;
+    inline static PFN_vkCreateSwapchainKHR create;
+    inline static PFN_vkGetSwapchainImagesKHR images;
+    inline static PFN_vkCreateSemaphore semaphore;
+    inline static PFN_vkAcquireNextImageKHR acquire;
+    inline static unsigned semaphore_count = 0, required_count = 0, initial_images = 0;
+    inline static unsigned generations = 0;
+    inline static unsigned requested_images = 0;
+    inline static unsigned initial_min = 0, initial_max = 0;
+    inline static bool can_grow = false;
+    static VKAPI_ATTR VkResult VKAPI_CALL create_chain(VkDevice device,
+        const VkSwapchainCreateInfoKHR* info, const VkAllocationCallbacks* allocator, VkSwapchainKHR* chain) {
+        auto changed = *info;
+        // Vulkan may supply more than minImageCount after a surface changes.
+        // Ask the real driver for that larger chain, so all images are real.
+        VkSurfaceCapabilitiesKHR caps{};
+        require(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, info->surface, &caps) == VK_SUCCESS,
+            "query limits for the growing test surface");
+        if (!generations) {
+            requested_images = info->minImageCount;
+            initial_min = caps.minImageCount; initial_max = caps.maxImageCount;
+        } else if (caps.minImageCount == initial_min && caps.maxImageCount == initial_max) {
+            require(info->minImageCount == requested_images,
+                "driver-returned extra images must not inflate the next minimum image request");
+        }
+        const auto extra = (std::max)(initial_images + 2, caps.minImageCount);
+        // Alternating requests also exercise returning to fewer real images.
+        if (generations % 2 && (caps.maxImageCount == 0 || extra <= caps.maxImageCount))
+            changed.minImageCount = extra;
+        const auto result = create(device, &changed, allocator, chain);
+        if (result == VK_SUCCESS) {
+            uint32_t count = 0;
+            require(images(device, *chain, &count, nullptr) == VK_SUCCESS, "query real swap-chain image count");
+            if (!generations) {
+                initial_images = count;
+                can_grow = caps.maxImageCount == 0 || count + 2 <= caps.maxImageCount;
+            }
+            ++generations;
+            required_count = 2 * (count + 1);
+            semaphore_count = 0;
+        }
+        return result;
+    }
+    static VKAPI_ATTR VkResult VKAPI_CALL create_semaphore(VkDevice device,
+        const VkSemaphoreCreateInfo* info, const VkAllocationCallbacks* allocator, VkSemaphore* output) {
+        const auto result = semaphore(device, info, allocator, output);
+        if (result == VK_SUCCESS) ++semaphore_count;
+        return result;
+    }
+    static VKAPI_ATTR VkResult VKAPI_CALL acquire_image(VkDevice device, VkSwapchainKHR chain,
+        uint64_t timeout, VkSemaphore signal, VkFence fence, uint32_t* index) {
+        // Stop before an invalid index can reach the driver on the broken path.
+        require(semaphore_count >= required_count,
+            "resized swap chain needs fresh synchronization for every new image before acquisition");
+        return acquire(device, chain, timeout, signal, fence, index);
+    }
+    explicit GrowingSwapchain(VkPhysicalDevice physical) {
+        physical_device = physical;
+        create = vkCreateSwapchainKHR; images = vkGetSwapchainImagesKHR;
+        semaphore = vkCreateSemaphore; acquire = vkAcquireNextImageKHR;
+        generations = semaphore_count = required_count = initial_images = 0;
+        vkCreateSwapchainKHR = create_chain; vkCreateSemaphore = create_semaphore;
+        vkAcquireNextImageKHR = acquire_image;
+    }
+    ~GrowingSwapchain() {
+        vkCreateSwapchainKHR = create; vkCreateSemaphore = semaphore;
+        vkAcquireNextImageKHR = acquire;
+    }
+};
+
+void resized_swapchains_can_grow_image_count() {
+    if (d3d12()) return;
+    sfr::NativeGraphics graphics;
+    graphics.initialize();
+    GrowingSwapchain growing(static_cast<plume::VulkanDevice*>(&graphics.device())->physicalDevice);
+    sfr::NativePresentation presentation(graphics, 320, 240);
+    if (!GrowingSwapchain::can_grow) {
+        std::cout << "SKIP forced image-count growth: surface maximum is too small\n";
+        return;
+    }
+    sfr::NativeClear clear{};
+    clear.color = true;
+    presentation.clear(clear);
+    presentation.present(); // also covers initial present-mode changes
+    for (unsigned frame = 0; frame < 3; ++frame) {
+#ifdef _WIN32
+        require(SetWindowPos(static_cast<HWND>(presentation.window_handle()), nullptr,
+            0, 0, 480 + frame * 16, 320, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE), "resize growing chain");
+#else
+        SDL_SetWindowSize(static_cast<SDL_Window*>(presentation.window_handle()), 480 + frame * 16, 320);
+#endif
+        presentation.pump_events();
+        presentation.clear(clear);
+        presentation.present();
+    }
+    require(GrowingSwapchain::generations >= 4, "the growing swap chain really was recreated repeatedly");
+    presentation.flush();
 }
 
 void creates_hidden_fixed_size_window_and_native_resources() {
@@ -601,10 +760,13 @@ int main() {
         avatar_draws_keep_viewport_order_and_independent_poses();
         for (uint32_t percent : {50u, 75u, 150u, 200u})
             avatar_draws_keep_viewport_order_and_independent_poses(percent);
+        submissions_drain_uploads_before_completion_callbacks();
         completed_frames_do_not_release_guest_execution();
         pending_fence_queries_use_the_guarded_wait();
         vulkan_swapchain_respects_surface_usage();
         vulkan_failed_surface_query_does_not_create_swapchain();
+        resized_windows_keep_presenting();
+        resized_swapchains_can_grow_image_count();
         invalid_dimensions_are_rejected_before_a_window_exists();
         creates_hidden_fixed_size_window_and_native_resources();
         full_color_clears_reach_gpu_memory();

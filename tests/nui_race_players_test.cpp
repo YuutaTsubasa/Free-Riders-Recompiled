@@ -32,6 +32,7 @@ bool sensor_active = false, sensor_depth = false;
 uint64_t camera_sequence=0;
 uint64_t camera_now=1000000000;
 uint32_t consumed_record = 0;
+float steering_input = 0;
 }
 
 // Capture production registration, including the same entry points used by
@@ -68,6 +69,13 @@ PPC_FUNC(__imp__sub_82438930) {
 PPC_FUNC(__imp__sub_82918418) {
     ctx.r3.u64 = sfr::active_memory->load<uint32_t>(ctx.r3.u32 + 4);
 }
+PPC_FUNC(__imp__sub_822C63E8) {
+    // Guest filter boundary: preserve the latest sample, return a visibly
+    // different historical result. These tests exercise routing, not weights.
+    store_float(ctx.r3.u32, float(ctx.f1.f64));
+    store_float(ctx.r3.u32 + 40, -0.125f);
+    ctx.f1.f64 = -0.125;
+}
 PPC_FUNC(__imp__sub_822C6200) {
     if (harness::consumer_throws) throw std::runtime_error("fixture consumer stopped");
     // The original 822C6200 updates the object, then calls its body reader
@@ -95,6 +103,8 @@ ORIGINAL(822CAF48)
 ORIGINAL(822CA6B0)
 ORIGINAL(822C9BF0)
 ORIGINAL(822CB0B8)
+ORIGINAL(822C9E90)
+ORIGINAL(822CB340)
 PPC_FUNC(__imp__sub_822CA518) {
     ++harness::original_calls;
     auto& m=*sfr::active_memory;
@@ -120,10 +130,22 @@ ORIGINAL(822CD3F0)
 ORIGINAL(822CE118)
 ORIGINAL(822CB9B8)
 ORIGINAL(822B72E0)
-PPC_FUNC(sub_822C8958) { throw std::runtime_error("unexpected grouped detector"); }
+PPC_FUNC(__imp__sub_822C8958) {
+    const uint32_t detector = ctx.r3.u32, results = ctx.r5.u32;
+    ctx.r3.u64 = detector + 72;
+    ctx.f1.f64 = harness::steering_input;
+    auto found = harness::hooks().find("sub_822C63E8");
+    if (found != harness::hooks().end()) found->second(ctx, base);
+    else __imp__sub_822C63E8(ctx, base);
+    const uint32_t e = entry(results);
+    const auto strength = uint8_t(int8_t(load_float(detector + 112)));
+    set_byte(e + 76, strength); set_byte(e + 78, strength);
+    ctx.r3.u64 = 1;
+}
 
 namespace harness {
 auto& mem() { return *sfr::active_memory; }
+void begin();
 float f(uint32_t address) { return std::bit_cast<float>(mem().load<uint32_t>(address)); }
 uint32_t invoke(const char* name, unsigned source = 0, unsigned instance = 0) {
     PPCContext ctx;
@@ -133,6 +155,9 @@ uint32_t invoke(const char* name, unsigned source = 0, unsigned instance = 0) {
     auto found = hooks().find(name);
     if (found != hooks().end()) found->second(ctx, mem().base());
     else if (std::string(name) == "sub_822CA6B0") __imp__sub_822CA6B0(ctx, mem().base());
+    else if (std::string(name) == "sub_822C8958") __imp__sub_822C8958(ctx, mem().base());
+    else if (std::string(name) == "sub_822C9E90") __imp__sub_822C9E90(ctx, mem().base());
+    else if (std::string(name) == "sub_822CB340") __imp__sub_822CB340(ctx, mem().base());
     else throw std::runtime_error(std::string("unregistered hook ") + name);
     return ctx.r3.u32;
 }
@@ -153,6 +178,86 @@ void reset_results() {
     for (unsigned off = 0; off < 84; off += 4) mem().store<uint32_t>(selected + off, 0);
     mem().store<uint32_t>(selected + 4, 0x20);
     mem().store<uint32_t>(selected + 20, 0x8);
+}
+void direct_controller_lean() {
+    constexpr uint32_t source = box + 0xa000;
+    const auto filter = [&](float input, uint32_t offset, bool scoped) {
+        PPCContext ctx;
+        const auto call = [&] {
+            ctx.r3.u64 = source + offset;
+            ctx.f1.f64 = input;
+            auto found = hooks().find("sub_822C63E8");
+            if (found != hooks().end()) found->second(ctx, mem().base());
+            else __imp__sub_822C63E8(ctx, mem().base());
+        };
+        if (scoped) {
+            RaceSourceScope scope(source);
+            ctx.r3.u64 = mem().load<uint32_t>(source);
+            hooks().at("sub_82918418")(ctx, mem().base());
+            call();
+        } else call();
+        require(f(source + offset) == input, "guest filter history must still receive the input");
+        require(f(source + offset + 40) == float(ctx.f1.f64), "filter return and stored output must agree");
+        return float(ctx.f1.f64);
+    };
+    for (unsigned player = 0; player < 2; ++player) {
+        mem().store<uint32_t>(source, objects + player * 16);
+        for (float input : {3.5f, -3.5f, 0.f, .4f})
+            require(filter(input, 4, true) == input, "controller lean must respond on this update, including reversal and release");
+        require(filter(2.f, 48, true) == -.125f, "body-angle filter must retain original smoothing");
+        require(filter(2.f, 4, false) == -.125f, "shared filter outside the race consumer must stay original");
+    }
+    camera_active = true;
+    mem().store<uint32_t>(source, objects);
+    require(filter(2.f, 4, true) == -.125f, "camera player must retain original smoothing");
+    mem().store<uint32_t>(source, objects + 16);
+    require(filter(2.f, 4, true) == 2.f, "camera P1 must not delay controller P2");
+    camera_active = false;
+    mem().store<uint32_t>(race_flag_global, 0); frame();
+    require(filter(2.f, 4, true) == -.125f, "menus must retain original filter");
+}
+void steering_result_response() {
+    for (const char* name : {"sub_822C8958", "sub_822CB9B8"}) {
+        for (unsigned player = 0; player < 2; ++player) {
+            for (float input : {100.f, -100.f, 0.f, 35.f}) {
+                steering_input = input; reset_results(); invoke(name, player);
+                require(int8_t(mem().load<uint8_t>(selected + 78)) == int8_t(input) &&
+                        int8_t(mem().load<uint8_t>(selected + 76)) == int8_t(input),
+                        "final steering result must not reintroduce historical controller lean");
+            }
+        }
+    }
+    camera_active = true; steering_input = 100.f;
+    invoke("sub_822C8958", 0);
+    require(mem().load<uint8_t>(selected + 78) == 0, "Camera retains final steering smoothing");
+    invoke("sub_822C8958", 1);
+    require(mem().load<uint8_t>(selected + 78) == 100, "Camera P1 must not affect P2 final steering");
+    camera_active = false; sensor_active = true; frame();
+    invoke("sub_822C8958", 0);
+    require(mem().load<uint8_t>(selected + 78) == 0, "Kinect retains final steering smoothing");
+}
+void ring_reach() {
+    for (const char* name : {"sub_822C9E90", "sub_822CB340"}) {
+        first = {}; first.thumb_rx = -32768;
+        second = sfr::GamepadState{}; second->thumb_rx = 32767;
+        frame();
+        for (unsigned player = 0; player < 2; ++player) {
+            reset_results();
+            require(invoke(name, player) == 1, "right-stick reach must activate both Catch variants");
+            require(mem().load<uint32_t>(selected + 4) == (0x20u | (player ? 0x40000000u : 0x20000000u)), "reach primary bits must follow each player's hand");
+            require(mem().load<uint32_t>(selected + 20) == (0x8u | (player ? 0x40000u : 0x20000u)), "reach secondary bits must preserve unrelated actions");
+        }
+        for (auto [rx, ry] : {std::pair<int16_t,int16_t>{0,0}, {9000,0}, {-32768,32767}}) {
+            first.thumb_rx = rx; first.thumb_ry = ry; frame(); reset_results();
+            require(invoke(name, 0) == 2 && mem().load<uint32_t>(selected + 4) == 0x20 && mem().load<uint32_t>(selected + 20) == 8,
+                    "neutral, near-deadzone and arms-up must not reach sideways");
+        }
+        camera_active = true;
+        require(invoke(name, 0) == 99, "Camera reach must retain original geometry detection");
+        camera_active = false; sensor_active = true; frame();
+        require(invoke(name, 0) == 99, "Kinect reach must retain original geometry detection");
+        begin();
+    }
 }
 bool braking(unsigned source) {
     reset_results();
@@ -324,10 +429,10 @@ void live_reader_scope() {
     first.thumb_lx = -32768; second->thumb_lx = 32767;
     frame();
     consume(1);
-    require(consumed_record == other && f(other + 640) > f(other + 644),
+    require(consumed_record == other && f(other + 640) == 4.5f && f(other + 644) == 1.f,
             "P2 lean must receive current P2 fields after original object update");
     consume(0);
-    require(consumed_record == injected && f(injected + 644) > f(injected + 640),
+    require(consumed_record == injected && f(injected + 644) == 4.5f && f(injected + 640) == 1.f,
             "P1 lean must receive current P1 fields after original object update");
     first.buttons = sfr::gamepad_button::a;
     second->buttons = sfr::gamepad_button::b;
@@ -814,6 +919,8 @@ int main() {
         {"missing manager after disconnect", missing_manager_after_disconnect},
         {"exit while manager missing", exit_while_manager_missing},
         {"live reader scope", live_reader_scope},
+        {"direct controller lean", direct_controller_lean},
+        {"final steering response", steering_result_response}, {"ring reach", ring_reach},
         {"independent actions", independent_actions},
         {"exit and reentry", lifecycle}, {"Side override", side},
         {"camera motion controls", camera_motion_controls}, {"camera waving priority", camera_wave_priority}, {"camera frontal brake qualification", camera_brake_facing}, {"camera original detectors", camera_detectors}, {"camera body fields", camera_body_fields},

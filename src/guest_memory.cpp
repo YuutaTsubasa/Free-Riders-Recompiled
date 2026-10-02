@@ -258,6 +258,29 @@ bool GuestMemory::available(uint64_t address, uint64_t size) const {
     return !first_conflict(address, end);
 }
 
+std::optional<uint64_t> GuestMemory::find_available_top_down(uint64_t begin, uint64_t end, uint64_t size) const {
+    if (!size || begin >= end || end > address_space_size || size > end - begin)
+        return std::nullopt;
+    const uint64_t rounded = (size + page_size_ - 1) / page_size_ * page_size_;
+    if (rounded > end - begin) return std::nullopt;
+    uint64_t candidate = (end - rounded) / page_size_ * page_size_;
+    if (candidate < begin) return std::nullopt;
+    const auto layout = read_layout();
+    auto next = std::lower_bound(reservations_.begin(), reservations_.end(), end,
+        [](const Region& r, uint64_t bound) { return r.address < bound; });
+    while (next != reservations_.begin()) {
+        const Region& r = *--next;
+        const uint64_t region_end = r.address + (r.size + page_size_ - 1) / page_size_ * page_size_;
+        // Earlier regions cannot reach this candidate: reservations never overlap.
+        if (region_end <= candidate) break;
+        if (r.address >= candidate + rounded) continue;
+        if (r.address < begin + rounded) return std::nullopt;
+        candidate = (r.address - rounded) / page_size_ * page_size_;
+        if (candidate < begin) return std::nullopt;
+    }
+    return candidate;
+}
+
 uint64_t GuestMemory::lowest_conflict(uint64_t address, uint64_t size) const {
     const auto end = address + (size + page_size_ - 1) / page_size_ * page_size_;
     const Region* const conflict = first_conflict(address, end);
@@ -654,7 +677,8 @@ bool GuestMemory::readable(uint64_t address, uint64_t size) const noexcept {
     if (!size || address >= address_space_size || size > address_space_size - address) return false;
     uint64_t page = address / fast_page_size;
     const uint64_t last = (address + size - 1) / fast_page_size;
-    while (page <= last && (fast_pages_[page] & fast_access)) ++page;
+    while (page <= last &&
+           (std::atomic_ref<uint8_t>(fast_pages_[page]).load(std::memory_order_relaxed) & fast_access)) ++page;
     if (page > last) return true;
     const auto layout = read_layout();
     for (const auto& variable : variables_)
@@ -683,7 +707,8 @@ void GuestMemory::check(uint64_t address, uint64_t size) const {
     // Pages marked fast are committed and hold no import variable.
     uint64_t page = address / fast_page_size;
     const uint64_t last = (address + size - 1) / fast_page_size;
-    while (page <= last && (fast_pages_[page] & fast_access)) ++page;
+    while (page <= last &&
+           (std::atomic_ref<uint8_t>(fast_pages_[page]).load(std::memory_order_relaxed) & fast_access)) ++page;
     if (page > last) return;
     const auto layout = read_layout();
     for (const auto& variable : variables_)
@@ -706,7 +731,7 @@ void GuestMemory::add_import_variable(uint32_t address, std::string name) {
     std::unique_lock layout(layout_mutex_);
     variables_.push_back({address, std::move(name)});
     special_words_.push_back(address);
-    rebuild_fast_pages();
+    rebuild_fast_pages(address, 4);
 }
 
 void GuestMemory::store_checked(uint64_t address, uint64_t value, uint64_t size) {
@@ -722,8 +747,18 @@ void GuestMemory::store_checked(uint64_t address, uint64_t value, uint64_t size)
     complete_store(address, size);
 }
 
+__attribute__((noinline)) bool GuestMemory::special_word(uint64_t address, uint64_t size) const {
+    // Runtime registration may grow the vector beside detached guest readers.
+    // Most memory pages never call this; only guarded import/provider pages do.
+    auto layout = read_layout();
+    for (const uint32_t word : special_words_)
+        if (address < uint64_t(word)+4 && word < address+size) return true;
+    return false;
+}
+
 uint8_t GuestMemory::partial_fast_page(uint64_t address, uint64_t size, uint8_t page) const {
-    if (address % fast_page_size + size > partial_page_ends_[address / fast_page_size]) return 0;
+    if (address % fast_page_size + size >
+        std::atomic_ref<uint16_t>(partial_page_ends_[address / fast_page_size]).load(std::memory_order_relaxed)) return 0;
     // Keep special partial pages on the fully checked path: returning only
     // fast_special to the scalar caller would bypass the partial end bound.
     return (page & fast_partial_special) ? 0 : uint8_t(fast_access | (page & fast_watched));
@@ -735,29 +770,38 @@ void GuestMemory::rebuild_fast_pages(uint64_t begin, uint64_t size) {
     const uint64_t end_page = std::min<uint64_t>(address_space_size / fast_page_size,
                                                  (begin + size + fast_page_size - 1) / fast_page_size);
     if (first_page >= end_page) return;
-    std::fill(fast_pages_.get() + first_page, fast_pages_.get() + end_page, uint8_t{0});
+    // Compose locally, then publish each final permission once. Previously the
+    // live table briefly marked guarded pages as ordinary readable memory;
+    // an audio worker then read the raw KeDebugMonitorData import ordinal.
+    std::vector<uint8_t> flags(end_page - first_page, 0);
     for (const auto& r : committed_) {
         const uint64_t first = std::max((r.address + fast_page_size - 1) / fast_page_size, first_page);
         const uint64_t end = std::min((r.address + r.size) / fast_page_size, end_page);
-        for (uint64_t page = first; page < end; ++page) fast_pages_[page] = 1;
+        for (uint64_t page = first; page < end; ++page) flags[page-first_page] = fast_access;
         const uint64_t tail = (r.address + r.size) / fast_page_size;
         const uint16_t prefix = uint16_t((r.address + r.size) % fast_page_size);
         if (prefix && tail >= first_page && tail < end_page) {
-            partial_page_ends_[tail] = prefix;
-            fast_pages_[tail] = fast_partial;
+            std::atomic_ref<uint16_t>(partial_page_ends_[tail]).store(prefix, std::memory_order_relaxed);
+            flags[tail-first_page] = fast_partial;
         }
     }
     const auto clear = [&](uint64_t address, uint64_t length) {
         const uint64_t first = std::max(address / fast_page_size, first_page);
         const uint64_t last = std::min((address + length - 1) / fast_page_size + 1, end_page);
-        for (uint64_t page = first; page < last; ++page)
-            fast_pages_[page] = (fast_pages_[page] & fast_partial) ? (fast_partial | fast_partial_special)
-                : (fast_pages_[page] & (fast_access | fast_special)) ? fast_special : 0;
+        for (uint64_t page = first; page < last; ++page) {
+            auto& flag=flags[page-first_page];
+            flag = (flag & fast_partial) ? (fast_partial | fast_partial_special)
+                : (flag & (fast_access | fast_special)) ? fast_special : 0;
+        }
     };
     for (const auto& variable : variables_) clear(variable.address, 4);
     for (const auto& word : read_only_words_) clear(word.address, 4);
-    for (uint64_t page = first_page; page < end_page; ++page)
-        if ((watched_pages_[page] & 1) && fast_pages_[page]) fast_pages_[page] |= fast_watched;
+    for (uint64_t page = first_page; page < end_page; ++page) {
+        auto flag=flags[page-first_page];
+        if ((std::atomic_ref<uint8_t>(watched_pages_[page]).load(std::memory_order_relaxed) & 1) && flag)
+            flag |= fast_watched;
+        std::atomic_ref<uint8_t>(fast_pages_[page]).store(flag, std::memory_order_relaxed);
+    }
 }
 
 namespace {
@@ -908,7 +952,8 @@ void GuestMemory::watch_writes(uint64_t address, uint64_t size) {
     if (!size || address >= address_space_size || size > address_space_size - address) return;
     for (uint64_t page = address / fast_page_size; page <= (address + size - 1) / fast_page_size; ++page) {
         std::atomic_ref<uint8_t>(watched_pages_[page]).fetch_or(1, std::memory_order_relaxed);
-        if (fast_pages_[page]) fast_pages_[page] |= fast_watched;
+        auto flag=std::atomic_ref<uint8_t>(fast_pages_[page]);
+        if (flag.load(std::memory_order_relaxed)) flag.fetch_or(fast_watched, std::memory_order_relaxed);
     }
 }
 
@@ -921,7 +966,8 @@ bool GuestMemory::written_since(uint64_t address, uint64_t size, uint32_t epoch)
     if (!page_epochs_) return true;
     if (!size || address >= address_space_size || size > address_space_size - address) return true;
     for (uint64_t page = address / fast_page_size; page <= (address + size - 1) / fast_page_size; ++page) {
-        if (!(watched_pages_[page] & 1)) return true;  // not watched: no record of its writes
+        if (!(std::atomic_ref<uint8_t>(watched_pages_[page]).load(std::memory_order_relaxed) & 1))
+            return true;  // not watched: no record of its writes
         if (page_epochs_[page].load(std::memory_order_relaxed) >= epoch) return true;
     }
     return false;
@@ -940,7 +986,7 @@ bool GuestMemory::take_written(uint64_t address, uint64_t size) {
 std::atomic<uint64_t> watched_writes{0};
 void GuestMemory::mark_written(uint64_t address, uint64_t size) const {
     for (uint64_t page = address / fast_page_size; page <= (address + size - 1) / fast_page_size; ++page)
-        if (watched_pages_[page] & 1) {
+        if (std::atomic_ref<uint8_t>(watched_pages_[page]).load(std::memory_order_relaxed) & 1) {
             note_watched_write(page);
             watched_writes.fetch_add(1, std::memory_order_relaxed);
         }
@@ -996,7 +1042,7 @@ void GuestMemory::add_read_only_word(uint32_t address, std::function<uint32_t()>
     if (read_only_words_.empty()) read_only_words_.reserve(read_only_word_limit);
     read_only_words_.push_back({address, std::move(provider), access});
     special_words_.push_back(address);
-    rebuild_fast_pages();
+    rebuild_fast_pages(address, 4);
 }
 
 uint64_t GuestMemory::read_scalar(uint64_t address, uint64_t size) const {

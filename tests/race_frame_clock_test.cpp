@@ -62,10 +62,52 @@ void discontinuities_are_bounded_and_observable() {
     clock.update(std::numeric_limits<uint64_t>::max()-100'000'000,2);
     near(clock.update(std::numeric_limits<uint64_t>::max()-50'000'000,2)->frames,3,1e-6,"large monotonic epoch does not lose frame precision");
 }
+void ui_timelines_keep_time_and_events() {
+    // The guest evaluates actions for the current frame, then advances at
+    // most one frame if floor(position) changes. Scaling position alone
+    // loses both time and the intervening frame actions.
+    for (const int fps : {20,24,30,60,120}) {
+        for (const float speed : {0.5f,1.0f}) {
+            double position=0; int frame=0, last_position=0;
+            int last_event=-1; unsigned events=0;
+            for (int i=0;i<fps*10;++i) {
+                sfr::for_each_race_ui_step(60.0f/fps,[&](float step) {
+                    require(step>0 && step<=1,"UI substeps cannot skip an original frame");
+                    if (frame!=last_event) {
+                        require(frame==last_event+1,"every intermediate timeline event is evaluated");
+                        last_event=frame; ++events;
+                    }
+                    position+=double(speed)*step;
+                    const int next=int(std::floor(position));
+                    if(next!=last_position) ++frame;
+                    last_position=next;
+                    return true;
+                });
+            }
+            near(frame,600*speed,1,"UI playback duration is independent of rendering FPS");
+            require(events>=unsigned(frame),"events are not lost while catching up");
+        }
+    }
+    unsigned calls=0;
+    sfr::for_each_race_ui_step(15,[&](float) {return ++calls<3;});
+    require(calls==3,"completion is returned before processing another animation cycle");
+    calls=0;
+    sfr::for_each_race_ui_step(1000,[&](float) {++calls;return true;});
+    require(calls==15,"long stalls cannot cause unbounded UI work");
+    for(float invalid : {0.0f,-1.0f,std::numeric_limits<float>::infinity(),
+                         std::numeric_limits<float>::quiet_NaN()}) {
+        calls=0;
+        sfr::for_each_race_ui_step(invalid,[&](float step) {
+            ++calls; near(step,1,0,"invalid UI deltas retain one original update");return true;
+        });
+        require(calls==1,"invalid UI deltas cannot spin or freeze the timeline");
+    }
+}
 }
 int main() {
     try {
         transitions(); elapsed_time_is_preserved(); discontinuities_are_bounded_and_observable();
+        ui_timelines_keep_time_and_events();
         std::cout << "Race frame clock checks passed\n";
     } catch(const std::exception& error) {
         std::cerr << error.what() << '\n'; return 1;

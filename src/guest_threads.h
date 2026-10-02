@@ -21,6 +21,9 @@ public:
     struct State {
         uint32_t handle, id, pcr, thread_object, tls_static, tls_dynamic;
         uint32_t stack_limit, stack_base, startup, worker, argument;
+        // The previous entry completed and its storage was reset. Address-based
+        // registries (TLS banks) already contain these same reserved addresses.
+        bool reused_storage = false;
     };
     struct Snapshot { State state; uint32_t native_id; bool suspended, entry_started; };
     using TargetValidator = std::function<bool(uint32_t)>;

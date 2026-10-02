@@ -59,6 +59,7 @@ PPC_FUNC(__imp__sub_822C6200) {
     harness::hooks().at("sub_82918418")(ctx, base);
 }
 PPC_FUNC(__imp__sub_82918418) { ctx.r3.u64 = sfr::active_memory->load<uint32_t>(ctx.r3.u32 + 4); }
+PPC_FUNC(__imp__sub_822C63E8) { throw std::runtime_error("unexpected original lean filter"); }
 PPC_FUNC(__imp__sub_82438930) { ++harness::manager_calls; }
 PPC_FUNC(__imp__sub_822A6988) { ++harness::pose_calls; }
 
@@ -89,6 +90,8 @@ PPC_FUNC(__imp__sub_822C9050) {
     ctx.r3.u64 = 2;
 }
 UNUSED_ORIGINAL(822B60F8)
+UNUSED_ORIGINAL(822C9E90)
+UNUSED_ORIGINAL(822CB340)
 PPC_FUNC(__imp__sub_822C8778) {
     if (!harness::sensor_body) throw std::runtime_error("unexpected original detector 822C8778");
     ctx.r3.u64 = 2;
@@ -119,7 +122,7 @@ UNUSED_ORIGINAL(822CD3F0)
 UNUSED_ORIGINAL(822CE118)
 UNUSED_ORIGINAL(822CB9B8)
 UNUSED_ORIGINAL(822B72E0)
-PPC_FUNC(sub_822C8958) { throw std::runtime_error("unexpected grouped detector"); }
+PPC_FUNC(__imp__sub_822C8958) { throw std::runtime_error("unexpected grouped detector"); }
 
 namespace harness {
 uint32_t invoke(const char* name, uint32_t source = 0) {
