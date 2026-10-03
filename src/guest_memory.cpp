@@ -363,6 +363,8 @@ void GuestMemory::decommit(uint64_t address, uint64_t size) {
     }
     size_t completed = 0;
     for (const auto& operation : operations) {
+        // Discarding backing invalidates watched copies, even without a guest store.
+        mark_written(operation.address, operation.size);
         if (!VirtualFree(base_ + operation.address, operation.size, MEM_DECOMMIT))
             throw RuntimeStop("memory-decommit", address,
                 completed ? "partial native decommit failed after discarding earlier pages"
@@ -389,6 +391,8 @@ void GuestMemory::decommit(uint64_t address, uint64_t size) {
     }
     size_t completed = 0;
     for (const auto& operation : operations) {
+        // Keep invalidation conservative if the native replacement partially fails.
+        mark_written(operation.address, operation.size);
         void* const result = mmap(base_ + operation.address, operation.size, PROT_NONE,
                                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
         if (result != base_ + operation.address)
@@ -476,6 +480,8 @@ void GuestMemory::release(uint64_t address, uint64_t size) {
     }
     size_t completed = 0;
     for (const auto& backing : released_backing) {
+        // All preflight checks precede invalidation and destructive native work.
+        mark_written(backing.address, backing.size);
         if (!VirtualFree(base_ + backing.address, backing.size,
                          MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER)) {
             const DWORD error = GetLastError();
@@ -487,6 +493,8 @@ void GuestMemory::release(uint64_t address, uint64_t size) {
         ++completed;
     }
 #else
+    // Replacing the native range also discards watched contents in its rounded tail.
+    mark_written(address, host_size);
     void* const result = mmap(base_ + address, host_size, PROT_NONE,
                               MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
     if (result != base_ + address)

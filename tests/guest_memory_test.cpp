@@ -1488,6 +1488,114 @@ static void top_down_search_matches_page_oracle() {
         require(!memory.find_available_top_down(range[0],range[1],range[2]),"invalid search has no result");
 }
 
+// Lifecycle changes destroy watched contents even when no guest store occurs.
+static void decommit_invalidates_watched_contents() {
+    constexpr uint32_t base = 0x200000, page = 0x1000;
+    sfr::GuestMemory memory;
+    memory.map(base, 3 * page);
+    for (uint32_t i = 0; i < 3; ++i) memory.store<uint32_t>(base + i * page, 0x12345678 + i);
+    memory.enable_write_epochs();
+    memory.watch_writes(base, 3 * page);
+    const auto old_epoch = memory.write_epoch();
+    memory.advance_write_epoch();
+    const auto current_epoch = memory.write_epoch();
+    memory.commit(base, 3 * page);
+    require(!memory.take_written(base, 3 * page) && !memory.written_since(base, 3 * page, old_epoch),
+            "unchanged recommit does not invalidate watched contents");
+    require(memory.load<uint32_t>(base + page) == 0x12345679, "unchanged recommit preserves bytes");
+    memory.decommit(base + page, page);
+    require(memory.take_written(base + page, page), "decommit marks the destroyed watched page dirty");
+    require(memory.written_since(base + page, page, old_epoch) &&
+            memory.written_since(base + page, page, current_epoch), "decommit invalidates old and current epochs");
+    require(!memory.take_written(base, page) && !memory.take_written(base + 2 * page, page) &&
+            !memory.written_since(base, page, old_epoch) && !memory.written_since(base + 2 * page, page, old_epoch),
+            "partial decommit leaves both watched neighboring pages clean");
+    require(memory.load<uint32_t>(base) == 0x12345678 && memory.load<uint32_t>(base + 2 * page) == 0x1234567a,
+            "partial decommit preserves neighboring data");
+    memory.advance_write_epoch();
+    const auto clean_epoch = memory.write_epoch();
+    memory.decommit(base + page, page);
+    require(!memory.take_written(base + page, page) && !memory.written_since(base + page, page, clean_epoch),
+            "repeated decommit without native work creates no new invalidation");
+    memory.commit(base + page, page);
+    require(memory.load<uint32_t>(base + page) == 0, "recommit provides zeroed replacement contents");
+    require(!memory.take_written(base + page, page) && !memory.written_since(base + page, page, clean_epoch) &&
+            memory.written_since(base + page, page, current_epoch), "recommit preserves the destruction epoch without a new event");
+}
+
+static void release_invalidates_watched_contents() {
+    constexpr uint32_t base = 0x210000, page = 0x1000;
+    sfr::GuestMemory memory;
+    memory.map(base, page + 1);
+    memory.map(base + 2 * page, page);
+    memory.store<uint32_t>(base, 0x12345678);
+    memory.store<uint8_t>(base + page, 0x5a);
+    memory.store<uint32_t>(base + 2 * page, 0xabcdef01);
+    memory.enable_write_epochs();
+    memory.watch_writes(base, 3 * page);
+    const auto old_epoch = memory.write_epoch();
+    memory.advance_write_epoch();
+    const auto current_epoch = memory.write_epoch();
+    memory.release(base, page + 1);
+    require(memory.take_written(base, page) && memory.take_written(base + page, page),
+            "release marks watched backing including the rounded tail dirty");
+    require(memory.written_since(base, page, old_epoch) && memory.written_since(base + page, page, current_epoch),
+            "release invalidates old and current epochs including the rounded tail");
+    require(!memory.take_written(base + 2 * page, page) && !memory.written_since(base + 2 * page, page, old_epoch) &&
+            memory.load<uint32_t>(base + 2 * page) == 0xabcdef01, "release preserves adjacent watched reservation");
+    memory.map(base, page + 1);
+    require(memory.load<uint32_t>(base) == 0 && memory.load<uint8_t>(base + page) == 0,
+            "remap supplies zeroed replacement bytes");
+    require(!memory.take_written(base, 2 * page) && memory.written_since(base, 2 * page, current_epoch),
+            "remap retains destruction epochs without adding a dirty event");
+}
+
+static void lifecycle_dirty_bits_without_epochs() {
+    for (bool release : {false, true}) {
+        sfr::GuestMemory memory;
+        memory.map(0x220000, 0x1000);
+        memory.store<uint32_t>(0x220000, 0xaabbccdd);
+        memory.watch_writes(0x220000, 0x1000);
+        require(!memory.take_written(0x220000, 0x1000), "new write watch starts clean without epochs");
+        if (release) memory.release(0x220000, 0x1000);
+        else memory.decommit(0x220000, 0x1000);
+        require(memory.take_written(0x220000, 0x1000), "backing destruction marks dirty without epochs enabled");
+        require(!memory.take_written(0x220000, 0x1000), "lifecycle dirty bit is consumed once");
+    }
+}
+
+static void rejected_lifecycle_keeps_watches_clean() {
+    sfr::GuestMemory memory;
+    constexpr uint32_t base = 0x230000, page = 0x1000;
+    memory.map(base, page);
+    memory.store<uint32_t>(base, 0x12345678);
+    memory.enable_write_epochs();
+    memory.watch_writes(base, page);
+    auto epoch = memory.write_epoch();
+    const auto before = memory.usage();
+    const auto clean = [&] {
+        const auto after = memory.usage();
+        require(!memory.take_written(base, page) && !memory.written_since(base, page, epoch),
+                "rejected lifecycle operation leaves dirty bits and epochs clean");
+        require(memory.load<uint32_t>(base) == 0x12345678 && after.reserved_bytes == before.reserved_bytes &&
+                after.committed_bytes == before.committed_bytes, "rejected lifecycle operation preserves data and usage");
+    };
+    require_stop([&] { memory.decommit(base + 1, page); }, "memory-decommit", "misaligned decommit rejected before invalidation");
+    clean();
+    require_stop([&] { memory.release(base, page - 1); }, "memory-release", "non-exact release rejected before invalidation");
+    clean();
+    const sfr::GuestMemory::Range range{base, page};
+    auto lease = memory.pin_writes(std::span(&range, 1));
+    // Pin admission calls check_write; isolate later rejection from that event.
+    require(memory.take_written(base, page), "pin admission marks its watched output");
+    memory.advance_write_epoch();
+    epoch = memory.write_epoch();
+    require_stop([&] { memory.decommit(base, page); }, "memory-pending-write", "pinned decommit rejected before invalidation");
+    clean();
+    require_stop([&] { memory.release(base, page); }, "memory-pending-write", "pinned release rejected before invalidation");
+    clean();
+}
+
 int main() {
     try {
         top_down_search_matches_page_oracle();
@@ -1546,7 +1654,9 @@ int main() {
         memory.map(0x50000, 1);
         require(rejects([&] { memory.reserve(0x50000, 0x1000); }), "map occupies rounded host page");
         unsigned failures = 0;
-        for (auto test : {provider_execution_policy, computed_reads, computed_writes, provider_registration, provider_failures,
+        for (auto test : {decommit_invalidates_watched_contents, release_invalidates_watched_contents,
+                          lifecycle_dirty_bits_without_epochs, rejected_lifecycle_keeps_watches_clean,
+                          provider_execution_policy, computed_reads, computed_writes, provider_registration, provider_failures,
                           reservation_increment, reservation_detects_a_b_a, reservation_replacement, reservation_validation,
                           reservation_interference, reservation_changed_backing,
                           reservation_independent_instances_and_top_address, reservations_belong_to_threads,

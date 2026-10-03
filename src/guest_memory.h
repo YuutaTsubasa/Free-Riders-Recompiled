@@ -120,15 +120,18 @@ public:
     void add_read_only_word(uint32_t address, std::function<uint32_t()> provider,
                             ProviderAccess access = ProviderAccess::exclusive);
     void add_import_variable(uint32_t address, std::string name);
-    // Write watches: stores to watched pages take the checked path and mark
-    // the page dirty. Used to notice CPU rewrites of data with native copies.
+    // Write watches: stores and destructive backing operations mark watched
+    // pages dirty, so owners of native copies notice changed guest contents.
+    // Decommit/release mark each native replacement range after preflight and
+    // before discarding it; invalidation remains conservative on native failure.
+    // Recommit of unchanged backing and decommit without native work do not mark.
     void watch_writes(uint64_t address, uint64_t size);
-    // True when any watched page of the range was written since the last
+    // True when any watched page was written or its backing discarded since the last
     // call for that range; clears those pages' dirty marks.
     bool take_written(uint64_t address, uint64_t size);
-    // Write epochs, beside the written bits: once enabled, a store to a
-    // watched page records the current epoch there, and written_since tells
-    // whether any page of a range was stored to in or after an epoch. Many
+    // Write epochs, beside the written bits: once enabled, a store or backing
+    // destruction on a watched page records the current epoch there, and
+    // written_since reports either event in or after the requested epoch. Many
     // owners can ask about the same pages, which take_written's shared bits
     // do not allow. The caller advances the epoch (once a frame).
     void enable_write_epochs();
