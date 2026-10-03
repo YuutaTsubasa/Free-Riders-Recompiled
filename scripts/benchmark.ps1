@@ -114,6 +114,7 @@ $settings = @{
     'constant-reuse' = @{ SFR_CONSTANT_UPLOAD_REUSE = '1' }    # exact 4 KiB constant uploads reused (off by default)
     'priority'       = @{ SFR_GUEST_SATURATED_PRIORITY = '1' } # saturated guests' host priority raised (off by default)
     'no-host-timing' = @{ SFR_HOST_TIMING = '0' }              # the host timer and speed policy left alone (on by default)
+    'audio-parallel' = @{ SFR_AUDIO_PARALLEL = '5' }          # the audio pump beside the main thread on console processor 5 (off by default)
     # Two executables of different builds in out/build/host, compared in the same
     # rounds: copy each build's sfr_cpu_diagnostic.exe to sfr_cpu_diagnostic_a.exe
     # and sfr_cpu_diagnostic_b.exe. SFR_EXE names the file and is not passed on to the game.

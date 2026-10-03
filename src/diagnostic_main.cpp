@@ -464,14 +464,16 @@ static void parallel_slow_access(uint64_t address) {
     guest_thread_state.entry.detach_at_entry = true;
 }
 
+static thread_local std::chrono::steady_clock::time_point hook_attached_at;
+static thread_local uint32_t hook_attached = 0;
 static void parallel_function_entry(const PPCContext& ctx, uint32_t address) {
+    static const bool hook_stats = [] { const char* t = std::getenv("SFR_PARALLEL_HOOK_STATS"); return t && *t == '1'; }();
     if (execution_permit->detached()) {
         if (!is_hook(address)) return;
         execution_permit->attach();
         parallel_attached(1);
         // SFR_PARALLEL_HOOK_STATS=1: which hooks bring detached guests back
         // to the permit (counted while holding it, so without a lock).
-        static const bool hook_stats = [] { const char* t = std::getenv("SFR_PARALLEL_HOOK_STATS"); return t && *t == '1'; }();
         if (hook_stats) {
             static std::unordered_map<uint32_t, uint64_t> by_hook;
             static uint64_t attaches = 0;
@@ -485,11 +487,19 @@ static void parallel_function_entry(const PPCContext& ctx, uint32_t address) {
                 std::cerr << std::dec << char(10);
             }
         }
+        if (hook_stats) { hook_attached_at = std::chrono::steady_clock::now(); hook_attached = address; }
         guest_thread_state.entry.hook_stack_pointer = ctx.r1.u32;
     } else if (guest_thread_state.entry.hook_stack_pointer) {
         if (is_hook(address)) guest_thread_state.entry.hook_stack_pointer = (std::max)(guest_thread_state.entry.hook_stack_pointer, ctx.r1.u32);
         else if (ctx.r1.u32 > guest_thread_state.entry.hook_stack_pointer) {
             guest_thread_state.entry.hook_stack_pointer = 0;
+            if (hook_attached) {
+                const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - hook_attached_at).count();
+                if (ms >= 5.0)
+                    std::cerr << "PARALLEL_LONG_HOLD guest_id=" << current_id << " hook=0x" << std::hex << hook_attached << std::dec
+                              << " ms=" << ms << " frame=" << present_count.load() << char(10);
+                hook_attached = 0;
+            }
             execution_permit->detach();
         }
     } else if (guest_thread_state.entry.detach_at_entry) {
@@ -573,14 +583,34 @@ static void check_reservation_context(const PPCContext& ctx) {
 }
 // Host-driven system threads (argument selects the loop in the thread entry).
 constexpr uint32_t system_thread_audio = 0;
+// SFR_AUDIO_PARALLEL=N (1-5; 0 off): the audio pump gets console processor N
+// and, with SFR_PARALLEL_WORKER=cores, runs the title's audio callback beside
+// the main thread on that core's permit, as the console runs it on a hardware
+// thread of its own. Otherwise it holds the one permit and, being
+// time-critical, takes it from the main thread every 5.33 ms. On by default
+// (processor 5) on Android: an AYN Thor race (A/B/A, frames 15000-20500) halved
+// the main thread's wait for the permit (7.9 to 3.9-5.8 ms) and cut frames of
+// 50 ms or more from 126 to 21 and 14, with the same audio frame count. Off
+// elsewhere: a desktop and an Ally X measured no difference.
+static const uint32_t audio_parallel_processor = [] {
+    const char* text = std::getenv("SFR_AUDIO_PARALLEL");
+#ifdef __ANDROID__
+    constexpr long fallback = 5;
+#else
+    constexpr long fallback = 0;
+#endif
+    const long value = text && *text ? std::strtol(text, nullptr, 10) : fallback;
+    return uint32_t(value >= 1 && value <= 5 ? value : 0);
+}();
 
 // Creates and starts a system thread with its own PCR, TLS and stack, like
 // the console's kernel threads; returns its handle.
 static uint32_t start_system_thread(PPCContext& ctx, uint32_t kind) {
     check_reservation_context(ctx);
     const uint32_t output = ctx.r1.u32 - 0x100;  // below the stack pointer, unused
-    const GuestThreads::Request request{output, 0x10000, 0, 0, 0, kind, 1,
-        active_memory->load<uint8_t>(uint64_t(ctx.r13.u32) + 0x10C), true};
+    const uint8_t processor = kind == system_thread_audio && audio_parallel_processor
+        ? uint8_t(audio_parallel_processor) : active_memory->load<uint8_t>(uint64_t(ctx.r13.u32) + 0x10C);
+    const GuestThreads::Request request{output, 0x10000, 0, 0, 0, kind, 1, processor, true};
     guest_threads->create(request);
     const uint32_t handle = active_memory->load<uint32_t>(output);
     const auto resumed = guest_threads->resume(handle, 0);
@@ -1026,7 +1056,18 @@ void dispatch_import(PPCContext& ctx, const char* name, uint32_t address) {
             std::cerr << char(10);
         }
     }
+    // SFR_PARALLEL_HOOK_STATS=1 also names every import a guest beside the
+    // permit held it through for 5 ms or more: what keeps the main thread
+    // waiting at a load (PARALLEL_LONG_HOLD).
+    static const bool hold_stats = [] { const char* t = std::getenv("SFR_PARALLEL_HOOK_STATS"); return t && *t == '1'; }();
+    const auto import_start = hold_stats && !permit_free ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     dispatch_import_owned(ctx, name, address);
+    if (hold_stats && !permit_free) {
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - import_start).count();
+        if (ms >= 5.0)
+            std::cerr << "PARALLEL_LONG_HOLD guest_id=" << current_id << " import=" << name + 7 << " ms=" << ms
+                      << " frame=" << present_count.load() << " lr=0x" << std::hex << ctx.lr << std::dec << char(10);
+    }
     if (!execution_permit->detached() && !guest_thread_state.entry.hook_stack_pointer && !guest_thread_state.entry.detach_at_entry) execution_permit->detach();
 }
 // Completes an XOVERLAPPED at once: InternalLow = result, InternalHigh =
@@ -3990,7 +4031,9 @@ int main(int argc, char** argv) {
                         const unsigned processor = memory.load<uint8_t>(uint64_t(state.pcr) + 0x10C);
                         const bool on_core = sfr::parallel_worker == sfr::ParallelGuests::cores &&
                             processor != 0 && processor < sfr::guest_processors;
-                        if (state.startup && (on_core || sfr::parallel_worker == sfr::ParallelGuests::all ||
+                        const bool audio_pump = !state.startup && state.argument == sfr::system_thread_audio;
+                        if ((state.startup || (audio_pump && sfr::audio_parallel_processor && on_core)) &&
+                            (on_core || sfr::parallel_worker == sfr::ParallelGuests::all ||
                                 (sfr::parallel_worker == sfr::ParallelGuests::job_worker &&
                                  state.worker == sfr::parallel_worker_entry))) {
                             std::cerr << "PARALLEL_WORKER guest_id=" << state.id << " processor=" << processor << '\n';
@@ -4027,6 +4070,7 @@ int main(int argc, char** argv) {
                             // every 5.33 ms from the registered client callback.
                             std::cerr << "NATIVE_AUDIO_PUMP_BEGIN guest_id=" << state.id << '\n';
                             execution.set_urgent(state.id, true);
+                            if (permit->detached()) sfr::core_executions[sfr::core_index]->set_urgent(state.id, true);
                             using clock = std::chrono::steady_clock;
                             constexpr auto period = std::chrono::nanoseconds(16'000'000 / 3);
                             auto next = clock::now();
@@ -4054,11 +4098,14 @@ int main(int argc, char** argv) {
                                 }
                                 const auto now = clock::now();
                                 if (next + std::chrono::milliseconds(500) < now) next = now;  // drop a long stall
-                                permit->run_blocking([next](std::stop_token token) {
+                                const auto sleep = [next](std::stop_token token) {
                                     while (!token.stop_requested() && clock::now() < next)
                                         std::this_thread::sleep_for(std::min<clock::duration>(next - clock::now(),
                                                                                               std::chrono::milliseconds(2)));
-                                });
+                                };
+                                // Beside the permit (SFR_AUDIO_PARALLEL) it releases only its core.
+                                if (permit->detached()) permit->run_wait(sleep);
+                                else permit->run_blocking(sleep);
                             }
                         }
                         std::cerr << "ORIGINAL_WORKER_BEGIN guest_id=" << state.id
