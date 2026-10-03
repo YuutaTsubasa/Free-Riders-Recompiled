@@ -428,12 +428,18 @@ struct NativePresentation::Impl {
     // thread only queues them. One producer, one consumer; the producer
     // empties the queue (drain) before it touches the list itself.
     // SFR_RENDER_THREAD=1 forces it on, =0 off. Unset, it is on for D3D12, where
-    // it was measured, and off elsewhere until another backend has been.
+    // it was measured, and on Android. An AYN Thor race (Vulkan, frames
+    // 15000-20500, A/B/A) took the main thread from 26.7 to 23.0 ms of CPU a
+    // frame and frames of 50 ms or more from 113 to 1. Windows Vulkan stays off:
+    // on a ROG Xbox Ally X at its 60 fps cap it changed nothing but the tail.
     bool render_thread_enabled() const {
         static const int choice = [] {
             const char* const text = std::getenv("SFR_RENDER_THREAD");
             return text && *text ? (*text != '0' ? 1 : 0) : -1;
         }();
+#ifdef __ANDROID__
+        if (choice < 0) return true;
+#endif
         return choice < 0 ? graphics->backend() == sfr::GraphicsBackend::d3d12 : choice == 1;
     }
     static constexpr uint64_t queue_capacity = 4096;
@@ -481,8 +487,14 @@ struct NativePresentation::Impl {
             }
             // Empty: spin a little (the next draw is usually microseconds
             // away), then sleep until the producer wakes the thread.
+            // SFR_RENDER_SPIN: yields before sleeping (2000; an experiment knob).
+            static const int spin = [] {
+                const char* text = std::getenv("SFR_RENDER_SPIN");
+                const long value = text && *text ? std::strtol(text, nullptr, 10) : 2000;
+                return int(value >= 0 && value <= 100000 ? value : 2000);
+            }();
             bool found = false;
-            for (int i = 0; i < 2000 && !found; ++i) {
+            for (int i = 0; i < spin && !found; ++i) {
                 found = head != queue_tail.load(std::memory_order_acquire);
                 if (!found) std::this_thread::yield();
             }

@@ -77,7 +77,7 @@ public:
     // clear, present, flush, ...) first waits for the queue to empty, so the
     // commands still land in the order they were asked for. SFR_RENDER_THREAD=0
     // runs them on the calling thread, straight away; unset, that is also what
-    // every backend but D3D12 does (SFR_RENDER_THREAD=1 forces the thread).
+    // every backend but D3D12 does, except on Android (SFR_RENDER_THREAD=1 forces the thread).
     static constexpr size_t record_payload_bytes = 256;
     template <class Body>
     void record_async(const Body& body) {
