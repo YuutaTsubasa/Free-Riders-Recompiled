@@ -38,6 +38,7 @@
 #include <condition_variable>
 #include <exception>
 #include <mutex>
+#include <unordered_map>
 #include <optional>
 #include <stdexcept>
 #include <thread>
@@ -160,13 +161,56 @@ struct NativePresentation::Impl {
         return {coordinate(rect.left, render_width, width), coordinate(rect.top, render_height, height),
                 coordinate(rect.right, render_width, width), coordinate(rect.bottom, render_height, height)};
     }
+    // One of the title's own render surfaces (NativePresentation::set_target).
+    struct SurfaceTarget {
+        uint32_t width = 0, height = 0;  // pixels
+        std::unique_ptr<plume::RenderTexture> color, depth;
+        std::unique_ptr<plume::RenderFramebuffer> framebuffer;
+        bool prepared = false;  // recording side: its first barriers are in a list
+    };
+    std::unordered_map<uint64_t, std::unique_ptr<SurfaceTarget>> surfaces;
+    // Asking side: where the next draw or clear goes (null: the framebuffer),
+    // and the logical size mapped onto all of it.
+    SurfaceTarget* target = nullptr;
+    uint32_t target_logical_width = 0, target_logical_height = 0;
+    // Recording side: the framebuffer set on the open list.
+    SurfaceTarget* bound = nullptr;
+    void bind(SurfaceTarget* next) {
+        if (next == bound) return;
+        if (next) {
+            if (!next->prepared) {
+                const std::array<plume::RenderTextureBarrier, 2> barriers{
+                    plume::RenderTextureBarrier(next->color.get(), plume::RenderTextureLayout::COLOR_WRITE),
+                    plume::RenderTextureBarrier(next->depth.get(), plume::RenderTextureLayout::DEPTH_WRITE)};
+                command_list->barriers(plume::RenderBarrierStage::GRAPHICS, barriers.data(), uint32_t(barriers.size()));
+                next->prepared = true;
+            }
+            command_list->setFramebuffer(next->framebuffer.get());
+        } else {
+            command_list->setFramebuffer(framebuffer.get());
+        }
+        bound = next;
+    }
+    // A logical rectangle on the current target, in its pixels.
+    plume::RenderRect target_rectangle(const plume::RenderRect& rect) const {
+        if (!target) return render_rectangle(rect);
+        const auto coordinate = [](int32_t value, uint32_t pixels, uint32_t logical) {
+            const int64_t mapped = (int64_t(value) * pixels + logical / 2) / logical;
+            return int32_t(std::clamp<int64_t>(mapped, 0, pixels));
+        };
+        return {coordinate(rect.left, target->width, target_logical_width),
+                coordinate(rect.top, target->height, target_logical_height),
+                coordinate(rect.right, target->width, target_logical_width),
+                coordinate(rect.bottom, target->height, target_logical_height)};
+    }
     // The title's viewport and scissor at the render resolution.
     void scaled_raster(plume::RenderViewport& viewport, plume::RenderRect& scissor) const {
         viewport = raster_state->viewport();
-        const float x = float(render_width) / width, y = float(render_height) / height;
+        const float x = target ? float(target->width) / target_logical_width : float(render_width) / width;
+        const float y = target ? float(target->height) / target_logical_height : float(render_height) / height;
         viewport.x *= x; viewport.width *= x;
         viewport.y *= y; viewport.height *= y;
-        scissor = render_rectangle(raster_state->scissor());
+        scissor = target_rectangle(raster_state->scissor());
     }
     void apply_raster() {
         plume::RenderViewport viewport;
@@ -302,6 +346,7 @@ struct NativePresentation::Impl {
         blit_view.reset();
         blit_vertex.reset();
         blit_pixel.reset();
+        surfaces.clear();
         framebuffer.reset();
         depth.reset();
         color.reset();
@@ -449,6 +494,7 @@ struct NativePresentation::Impl {
     static constexpr uint64_t queue_capacity = 4096;
     struct RecordSlot {
         NativePresentation::RecordFunction function = nullptr;
+        SurfaceTarget* target = nullptr;
         plume::RenderViewport viewport;  // as the title had them when the draw was asked for
         plume::RenderRect scissor;
         uint64_t generation = 0;
@@ -473,6 +519,7 @@ struct NativePresentation::Impl {
                 auto& slot = slots[head % queue_capacity];
                 if (!worker_failed.load(std::memory_order_relaxed)) {
                     try {
+                        bind(slot.target);
                         command_list->setViewports(slot.viewport);
                         command_list->setScissors(slot.scissor);
                         slot.function(slot.payload, *command_list, slot.generation);
@@ -552,6 +599,7 @@ struct NativePresentation::Impl {
     void enqueue(NativePresentation::RecordFunction function, const void* payload, size_t bytes) {
         if (!render_thread_enabled()) {
             ensure_open();
+            bind(target);
             apply_raster();
             function(payload, *command_list, list_generation);
             return;
@@ -563,6 +611,7 @@ struct NativePresentation::Impl {
         if (tail - queue_head.load(std::memory_order_acquire) >= queue_capacity) wait_for_head(tail - queue_capacity + 1);
         auto& slot = slots[tail % queue_capacity];
         slot.function = function;
+        slot.target = target;
         scaled_raster(slot.viewport, slot.scissor);
         slot.generation = list_generation;
         std::memcpy(slot.payload, payload, bytes);
@@ -636,6 +685,7 @@ struct NativePresentation::Impl {
             plume::RenderTextureBarrier(depth.get(), plume::RenderTextureLayout::DEPTH_WRITE)};
         command_list->barriers(plume::RenderBarrierStage::GRAPHICS, barriers.data(), 2);
         command_list->setFramebuffer(framebuffer.get());
+        bound = nullptr;
         open = true;
     }
     void flush() {
@@ -1212,9 +1262,10 @@ void NativePresentation::clear(const NativeClear& clear, std::span<const plume::
     if ((clear.depth || clear.stencil) &&
         (!std::isfinite(clear.depth_value) || clear.depth_value < 0.0f || clear.depth_value > 1.0f))
         throw std::invalid_argument("clear depth must be finite and between zero and one");
+    const auto [logical_width, logical_height] = target_logical_size();
     for (const auto& rect : rectangles)
         if (rect.left < 0 || rect.top < 0 || rect.left >= rect.right || rect.top >= rect.bottom ||
-            static_cast<uint32_t>(rect.right) > impl_->width || static_cast<uint32_t>(rect.bottom) > impl_->height)
+            static_cast<uint32_t>(rect.right) > logical_width || static_cast<uint32_t>(rect.bottom) > logical_height)
             throw std::invalid_argument("clear rectangle is empty or outside the presentation bounds");
     if (!clear.color && !clear.depth && !clear.stencil) return;
 
@@ -1223,7 +1274,7 @@ void NativePresentation::clear(const NativeClear& clear, std::span<const plume::
     if (!rectangles.empty()) {
         scaled.reserve(rectangles.size());
         for (const auto& rectangle : rectangles) {
-            const auto rect = impl_->render_rectangle(rectangle);
+            const auto rect = impl_->target_rectangle(rectangle);
             if (rect.left < rect.right && rect.top < rect.bottom) scaled.push_back(rect);
         }
         // A subpixel logical rectangle may vanish at a lower scale. An empty
@@ -1233,6 +1284,7 @@ void NativePresentation::clear(const NativeClear& clear, std::span<const plume::
     }
 
     impl_->ensure_open();
+    impl_->bind(impl_->target);
     impl_->apply_raster();
     if (clear.color) {
         const auto& c = clear.color_value;
@@ -1252,6 +1304,7 @@ void NativePresentation::record(const std::function<void(plume::RenderCommandLis
     impl_->refuse_during_gpu_wait();
     impl_->drain();
     impl_->ensure_open();
+    impl_->bind(impl_->target);
     impl_->apply_raster();
     body(*impl_->command_list);
 }
@@ -1282,6 +1335,61 @@ void NativePresentation::set_raster_state(const plume::RenderViewport& viewport,
 }
 
 const NativeRasterState& NativePresentation::raster_state() const noexcept { return *impl_->raster_state; }
+
+void NativePresentation::set_target(uint64_t key, uint32_t surface_width, uint32_t surface_height,
+                                    uint32_t logical_width, uint32_t logical_height) {
+    if (!key) {
+        impl_->target = nullptr;
+        return;
+    }
+    if (!surface_width || !surface_height || !logical_width || !logical_height)
+        throw std::invalid_argument("render surface has no size");
+    auto& slot = impl_->surfaces[key];
+    if (!slot) {
+        // The render thread reaches a target only through queued slots, which
+        // take its pointer once it is complete; the map itself is the asker's.
+        auto made = std::make_unique<Impl::SurfaceTarget>();
+        const auto pixels = [](uint32_t value, uint32_t render, uint32_t logical) {
+            return (std::max)(1u, uint32_t((uint64_t(value) * render + logical / 2) / logical));
+        };
+        made->width = pixels(surface_width, impl_->render_width, impl_->width);
+        made->height = pixels(surface_height, impl_->render_height, impl_->height);
+        auto& device = impl_->graphics->device();
+        made->color = device.createTexture(
+            plume::RenderTextureDesc::ColorTarget(made->width, made->height, plume::RenderFormat::B8G8R8A8_UNORM));
+        made->depth = device.createTexture(
+            plume::RenderTextureDesc::DepthTarget(made->width, made->height, plume::RenderFormat::D32_FLOAT_S8_UINT));
+        if (!made->color || !made->depth) throw std::runtime_error("render surface texture creation failed");
+        const plume::RenderTexture* attachment = made->color.get();
+        made->framebuffer = device.createFramebuffer(plume::RenderFramebufferDesc(&attachment, 1, made->depth.get()));
+        if (!made->framebuffer) throw std::runtime_error("render surface framebuffer creation failed");
+        static uint32_t reported = 0;
+        if (reported++ < 64)
+            std::cerr << "NATIVE_SURFACE_TARGET key=0x" << std::hex << key << std::dec << " surface=" << surface_width
+                      << 'x' << surface_height << " pixels=" << made->width << 'x' << made->height
+                      << " count=" << impl_->surfaces.size() << '\n';
+        slot = std::move(made);
+    }
+    impl_->target = slot.get();
+    impl_->target_logical_width = logical_width;
+    impl_->target_logical_height = logical_height;
+}
+
+std::pair<uint32_t, uint32_t> NativePresentation::target_logical_size() const noexcept {
+    return impl_->target ? std::pair{impl_->target_logical_width, impl_->target_logical_height}
+                         : std::pair{impl_->width, impl_->height};
+}
+
+bool NativePresentation::target_is_surface() const noexcept { return impl_->target != nullptr; }
+
+plume::RenderTexture& NativePresentation::target_color() {
+    return impl_->target ? *impl_->target->color : *impl_->color;
+}
+
+std::pair<uint32_t, uint32_t> NativePresentation::target_size() const noexcept {
+    return impl_->target ? std::pair{impl_->target->width, impl_->target->height}
+                         : std::pair{impl_->render_width, impl_->render_height};
+}
 
 std::pair<uint32_t, uint32_t> NativePresentation::presented_area() const noexcept {
     return impl_->presented_area.first ? impl_->presented_area : std::pair{impl_->width, impl_->height};

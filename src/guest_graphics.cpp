@@ -1,5 +1,6 @@
 #include "guest_graphics.h"
 #include <cstdlib>
+#include <string>
 #include "guest_memory.h"
 #include "native_graphics.h"
 #include "native_shaders.h"
@@ -121,6 +122,38 @@ NativeRenderer& GuestGraphics::renderer() {
     return *impl_->renderer;
 }
 bool GuestGraphics::foreign_render_targets = false;
+bool GuestGraphics::surface_targets = [] {
+    const char* text = std::getenv("SFR_SURFACE_TARGETS");
+    return text && *text == '1';
+}();
+void GuestGraphics::select_target(uint32_t device) {
+    auto& native = presentation();
+    uint32_t attachment = 0;
+    if (surface_targets && foreign_render_targets) {
+        attachment = memory_.load<uint32_t>(uint64_t(device) + 0x3148);
+        if (!attachment) attachment = memory_.load<uint32_t>(uint64_t(device) + 0x3158);
+    }
+    if (!attachment || attachment == color_handle || attachment == depth_handle) {
+        native.set_target(0, 0, 0, 0, 0);
+        return;
+    }
+    // The +36 word read by sub_824E9460 (attachment_size in guest_graphics_state.cpp).
+    const uint32_t size = memory_.load<uint32_t>(uint64_t(attachment) + 36);
+    const uint32_t width = ((size >> 18) & 0x3FFFu) + 1, height = ((size >> 3) & 0x7FFFu) + 1;
+    // SFR_SURFACE_TARGET_ONLY=WxH,WxH (investigation): only those sizes get
+    // targets of their own; the rest alias the framebuffer as before.
+    static const std::string only = [] { const char* t = std::getenv("SFR_SURFACE_TARGET_ONLY"); return std::string(t ? t : ""); }();
+    if (!only.empty() &&
+        ("," + only + ",").find("," + std::to_string(width) + "x" + std::to_string(height) + ",") == std::string::npos) {
+        native.set_target(0, 0, 0, 0, 0);
+        return;
+    }
+    // The title reuses one surface at several sizes (a bloom chain's 110x90,
+    // 112x92 and 55x45), so the size is part of what names a target.
+    const uint64_t key = (uint64_t(attachment) << 32) | size;
+    if (viewport_surface_space_) native.set_target(key, width, height, width, height);
+    else native.set_target(key, width, height, native.width(), native.height());
+}
 GuestGraphics::GuestGraphics(GuestMemory& memory, NativeGraphics& graphics)
     : memory_(memory), graphics_(graphics) {}
 GuestGraphics::~GuestGraphics() = default;
@@ -592,6 +625,8 @@ bool GuestGraphics::clear(uint32_t device, uint32_t rectangle_count, uint32_t re
         clear.depth=bool(flags&0x10); clear.stencil=bool(flags&0x20);
     }
     if (!clear.color && !clear.depth && !clear.stencil) return false;
+    select_target(device);
+    const auto [target_width, target_height] = impl_->presentation->target_logical_size();
     clear.color_value={float((argb>>16)&255)/255.0f,float((argb>>8)&255)/255.0f,
                        float(argb&255)/255.0f,float(argb>>24)/255.0f};
     clear.depth_value=depth_value;
@@ -599,8 +634,8 @@ bool GuestGraphics::clear(uint32_t device, uint32_t rectangle_count, uint32_t re
     const int64_t x=viewport_integer(memory_,device+0x3218), y=viewport_integer(memory_,device+0x321C);
     const int64_t w=viewport_integer(memory_,device+0x3220), h=viewport_integer(memory_,device+0x3224);
     int64_t left=std::max<int64_t>(0,x),top=std::max<int64_t>(0,y);
-    int64_t right=std::min<int64_t>(impl_->presentation->width(),x+w);
-    int64_t bottom=std::min<int64_t>(impl_->presentation->height(),y+h);
+    int64_t right=std::min<int64_t>(target_width,x+w);
+    int64_t bottom=std::min<int64_t>(target_height,y+h);
     if (memory_.load<uint32_t>(device+0x2F00)) {
         left=std::max<int64_t>(left,std::bit_cast<int32_t>(memory_.load<uint32_t>(device+0x3234)));
         top=std::max<int64_t>(top,std::bit_cast<int32_t>(memory_.load<uint32_t>(device+0x3238)));

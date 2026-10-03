@@ -294,6 +294,9 @@ struct NativeRenderer::Impl {
     // Destination address of a resolve to its descriptor index (the copy of
     // the framebuffer the title samples afterwards).
     std::map<uint32_t, uint32_t> resolved_targets;
+    // Each one's size in pixels: the framebuffer's, or the render surface's
+    // it was resolved out of (NativePresentation::set_target).
+    std::map<uint32_t, std::pair<uint32_t, uint32_t>> resolved_sizes;
     std::bitset<texture_capacity> resolved_texture_indices;
     // Changes whenever texture() could answer the same fetch words
     // differently: a new frame, a resolve, a texture made or dropped.
@@ -831,9 +834,18 @@ uint32_t NativeRenderer::placeholder_texture() {
 uint32_t NativeRenderer::adopt_resolved_target(uint32_t physical) {
     auto& device = impl_->graphics.device();
     auto& presentation = impl_->presentation;
-    const uint32_t width = presentation.render_width(), height = presentation.render_height();
+    const auto [width, height] = presentation.target_size();
     constexpr auto format = plume::RenderFormat::B8G8R8A8_UNORM;
     uint32_t index;
+    // Resolved out of a target of another size before: the old copy goes the
+    // way an invalidated one does, kept for draws already recorded.
+    if (auto found = impl_->resolved_targets.find(physical); found != impl_->resolved_targets.end() &&
+        impl_->resolved_sizes[physical] != std::pair{width, height}) {
+        impl_->resolved_texture_indices.reset(found->second);
+        impl_->released_texture_indices.push_back(found->second);
+        ++impl_->texture_generation;
+        impl_->resolved_targets.erase(found);
+    }
     if (auto found = impl_->resolved_targets.find(physical); found != impl_->resolved_targets.end()) {
         index = found->second;
     } else {
@@ -856,6 +868,7 @@ uint32_t NativeRenderer::adopt_resolved_target(uint32_t physical) {
         impl_->texture_objects[slot] = std::move(texture);
         impl_->texture_views[slot] = std::move(view);
         impl_->resolved_targets.emplace(physical, index);
+        impl_->resolved_sizes[physical] = {width, height};
         impl_->resolved_texture_indices.set(index);
         ++impl_->texture_generation;
     }
@@ -864,7 +877,7 @@ uint32_t NativeRenderer::adopt_resolved_target(uint32_t physical) {
     // would cost a GPU round trip for each of a frame's resolves.
     auto* target = impl_->texture_objects[index - first_texture].get();
     ++impl_->resolve_copies;
-    presentation.record_async([color = &presentation.color(), target](plume::RenderCommandList& list, uint64_t) {
+    presentation.record_async([color = &presentation.target_color(), target](plume::RenderCommandList& list, uint64_t) {
         const std::array<plume::RenderTextureBarrier, 2> before{
             plume::RenderTextureBarrier(color, plume::RenderTextureLayout::COPY_SOURCE),
             plume::RenderTextureBarrier(target, plume::RenderTextureLayout::COPY_DEST)};
@@ -1091,6 +1104,7 @@ void NativeRenderer::invalidate(uint32_t physical, uint32_t size) {
         impl_->resolved_texture_indices.reset(it->second);
         impl_->released_texture_indices.push_back(it->second);
         ++impl_->texture_generation;
+        impl_->resolved_sizes.erase(it->first);
         it = impl_->resolved_targets.erase(it);
     }
     for (auto it = impl_->texture_ranges.begin(); it != impl_->texture_ranges.end();) {

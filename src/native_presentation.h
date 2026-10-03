@@ -52,6 +52,22 @@ public:
     void clear(const NativeClear& clear, std::span<const plume::RenderRect> rectangles = {});
     void set_raster_state(const plume::RenderViewport&, const plume::RenderRect&);
     const NativeRasterState& raster_state() const noexcept;
+    // Where the following draws and clears go, as Unleashed and Marathon
+    // Recompiled do it: key 0 is the framebuffer; any other key names one of
+    // the title's own render surfaces (surface_width x surface_height guest
+    // pixels), which gets a colour and depth texture of its own at the render
+    // scale, made the first time it is named. The raster state and clear
+    // rectangles are in a logical_width x logical_height space mapped onto the
+    // whole target. The list switches to the target only when a draw or clear
+    // reaches it, in the order they were asked for.
+    void set_target(uint64_t key, uint32_t surface_width, uint32_t surface_height,
+                    uint32_t logical_width, uint32_t logical_height);
+    // The logical size the current target maps (width() x height() for the framebuffer).
+    [[nodiscard]] std::pair<uint32_t, uint32_t> target_logical_size() const noexcept;
+    [[nodiscard]] bool target_is_surface() const noexcept;
+    // The current target's colour texture and its size in pixels.
+    plume::RenderTexture& target_color();
+    [[nodiscard]] std::pair<uint32_t, uint32_t> target_size() const noexcept;
     // Tightly packed BGRA at render_width() x render_height().
     [[nodiscard]] std::vector<uint8_t> readback_color();
     // Presents the framebuffer. When the frame only drew into the top-left

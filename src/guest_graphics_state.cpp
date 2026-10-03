@@ -121,6 +121,7 @@ bool GuestGraphics::set_viewport(uint32_t device,uint32_t descriptor) {
     // bloom target also changes the viewport saved/restored by later passes.
     // Offset split views still need the guest surface boundary; otherwise the
     // right half of an 880-wide target extends from x=440 all the way to 1280.
+    viewport_surface_space_=!(x==0 && y==0) && attachment!=color_handle && attachment!=depth_handle;
     const auto [surface_width,surface_height]=(x==0 && y==0)
         ? std::pair{native.width(),native.height()}
         : attachment_size(memory_,device,attachment);

@@ -641,6 +641,7 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
         static const bool skip=[]{ const char* t=std::getenv("SFR_SKIP_FOREIGN_TARGETS"); return t && *t!='0'; }();
         if(skip) { ++foreign_draws; return; }
     }
+    graphics().select_target(device);
     // A sanity cap on one gathered blob, not a hardware limit: the race draws
     // 56913 vertices of 20 bytes in one go, which is already past a megabyte.
     if(!count || !stride || stride>256 || uint64_t(count)*stride>0x800000)
@@ -963,14 +964,17 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     draw.shared.booleans=(memory.load<uint32_t>(uint64_t(device)+10112)&0xFFFF) |
                          ((memory.load<uint32_t>(uint64_t(device)+10112+16)&0xFFFF)<<16);
     const auto& presentation=graphics().presentation();
-    draw.shared.half_pixel_offset[0]=1.0f/float(presentation.width());
-    draw.shared.half_pixel_offset[1]=-1.0f/float(presentation.height());
+    // In the space the viewport is in: the framebuffer's, or a render
+    // surface's when the pass names it by its own pixels.
+    const auto [logical_width,logical_height]=presentation.target_logical_size();
+    draw.shared.half_pixel_offset[0]=1.0f/float(logical_width);
+    draw.shared.half_pixel_offset[1]=-1.0f/float(logical_height);
     draw.shared.alpha_threshold=state.alpha_reference.value_or(0.0f);
     // PA_CL_VTE_CNTL shadow (+10572, set by SetRenderState(VIEWPORTENABLE)):
     // without the viewport scale/offset bits the shader output is in pixels.
     if(!(memory.load<uint32_t>(uint64_t(device)+10572)&0x3F)) {
-        draw.shared.screen_space_scale[0]=2.0f/float(presentation.width());
-        draw.shared.screen_space_scale[1]=-2.0f/float(presentation.height());
+        draw.shared.screen_space_scale[0]=2.0f/float(logical_width);
+        draw.shared.screen_space_scale[1]=-2.0f/float(logical_height);
     }
 
     draw.blend=graphics().blend_control(0);
@@ -1299,9 +1303,10 @@ SFR_HOOK(sub_824F6DC8) {
     const bool submitted=foreign && sfr::GuestGraphics::foreign_render_targets && skip_foreign ? false
         : graphics().clear(ctx.r3.u32,ctx.r4.u32,ctx.r5.u32,ctx.r6.u32,
                            ctx.r7.u32,float(ctx.f1.f64),ctx.r9.u32);
-    if(sfr::graphics_trace()) std::cerr << "NATIVE_CLEAR source=0x824f6dc8 device=0x" << std::hex << ctx.r3.u32
+    static const bool clear_log=[] {const char* t=std::getenv("SFR_VIEWPORT_LOG");return t && *t=='1';}();
+    if(sfr::graphics_trace() || (clear_log && sfr::present_count%60==0)) std::cerr << "NATIVE_CLEAR source=0x824f6dc8 device=0x" << std::hex << ctx.r3.u32
               << " flags=0x" << ctx.r6.u32 << " argb=0x" << ctx.r7.u32
-              << " target=0x" << target << std::dec
+              << " target=0x" << target << " depth_target=0x" << sfr::active_memory->load<uint32_t>(uint64_t(ctx.r3.u32)+0x3158) << std::dec
               << " depth=" << ctx.f1.f64 << " stencil=" << ctx.r9.u32
               << " submitted=" << submitted << '\n';
 }
@@ -1331,6 +1336,7 @@ SFR_HOOK(sub_824E96C8) {
         auto& memory=*sfr::active_memory;
         const uint32_t target=memory.load<uint32_t>(uint64_t(ctx.r3.u32)+0x3148);
         std::cerr << " target=0x" << std::hex << target
+                  << " depth=0x" << memory.load<uint32_t>(uint64_t(ctx.r3.u32)+0x3158)
                   << std::dec << " back_buffer=" << memory.load<uint32_t>(uint64_t(ctx.r3.u32)+0x35BC)
                   << "x" << memory.load<uint32_t>(uint64_t(ctx.r3.u32)+0x35C0);
         // Render-surface dimensions use the +36 layout read by sub_824E9460,
@@ -1465,7 +1471,10 @@ SFR_HOOK(sub_824FAB08) {
                   << " destination=0x" << destination_base << std::dec << " size=" << width << 'x' << height << " format=" << format
                   << " rect=" << rect[0] << ',' << rect[1] << ',' << rect[2] << ',' << rect[3] << " copied=" << copied << '\n';
     }
-    if(copied) graphics().renderer().adopt_resolved_target(destination_base);
+    if(copied) {
+        graphics().select_target(ctx.r3.u32);
+        graphics().renderer().adopt_resolved_target(destination_base);
+    }
     // SFR_RESOLVE_DUMP=<file.bmp>: what the framebuffer held at the first few
     // colour resolves (shows whether the scene was drawn into it).
     if(copied) {
