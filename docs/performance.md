@@ -2219,3 +2219,62 @@ and 9.5359 ms, so no benefit beyond drift is established. Its 74.36 FPS also
 falls too close to the 74.19/73.49 FPS controls to support integration. The
 original lookup remains in production; simpler asymptotic complexity alone
 does not demonstrate a gameplay gain.
+
+### 2026-10-03: fresh Ally Vulkan attribution after memory preflight
+
+A separate 35-second WPR capture on Ally X uses the accepted memory change,
+Vulkan on Radeon 890M, and the existing bounded diagnostic race harness. It
+retains full rendering and normal game/UI time, with direct file logging,
+independent save/cache paths and detailed frame metrics enabled. This is CPU
+attribution, **not** a new performance comparison or an API benchmark.
+
+The exact executable SHA256 is
+`35b701374f0f85f353f85e767c229bdc62bb6662d0b6723a047863c5b739a403`;
+its linker-map SHA256 is
+`2bd7ca62db52d1d7dffce79a09fad8a85562db45396e9a6a921a9bd54ae3b0b0`.
+Extraction selects PID3540 and the first 35 seconds of the trace, resolving
+the executable's recorded load base against this map. There are 44,384 process
+samples and 22,640 main-thread samples (TID12512), with zero lost events/buffers.
+
+| Main-thread path | Samples | Share of main CPU samples |
+| --- | ---: | ---: |
+| Indexed draw hook, inclusive | 7,288 | 32.19% |
+| `native_draw`, inclusive | 5,574 | 24.62% |
+| Indexed draw hook, leaf | 1,304 | 5.76% |
+| Index decoding, leaf | 533 | 2.35% |
+| Ordinary/special write preflight, leaf | 169 | 0.75% |
+| AMD Vulkan driver module, leaf | 1,505 | 6.65% |
+
+Inclusive categories overlap: `native_draw` is called by the indexed hook.
+These percentages must not be added or treated as removable frame time. The
+earlier D3D12 attribution was on a different machine and binary, so it does not
+provide a controlled before/after CPU-sample comparison.
+
+Exact instruction attribution places the hottest indexed-hook leaf samples in
+the already-inlined fixed-stride vertex gather loops (not generic small-copy
+calls). The renderer already uses GPU indexing for sufficiently compact index
+ranges and a vertex cache for unchanged physical ranges. Sparse ranges and
+primitive-restart conversion retain the gather path. The next useful probe is
+therefore the **frequency, byte volume and write-epoch stability of sparse
+gathers**, not another blanket memcpy replacement. Any reuse proposal must
+account for index contents, base/restart semantics, vertex writes through all
+mapped aliases, remapping and bounded cache ownership. No such cache or wider
+upload threshold is introduced by this capture.
+
+Other source checks found that index decoding already has SSE/NEON paths,
+texture lookup still times every call, and draw-signature logging still probes
+an ordered set on every draw. Their existence alone does not justify a claimed
+FPS gain; timing costs and diagnostics should be measured separately from
+required rendering work.
+
+The game ended normally after 390.1 seconds. Inspected Dolphin Resort race
+screenshots show HUD34.01 ->103.83 seconds, versus 69.809 logged seconds between
+them. Source fixture hashes remain unchanged; the owned game, completed task,
+WPR recording and temporary wake session were cleaned up. The power plan was
+not changed. No Android test was started. This capture does not cover a full
+lap, audio listening quality or other courses.
+
+Evidence: `out/cpu-profile-v047/directlog-memory-vulkan-u`, including
+`verification.json`, `analysis-provenance.json`, `attribution.txt` and
+`indexed-draw-annotated.asm.txt`. ETL SHA256:
+`335aa84b08cc7bf743b3afe9c1df342cc1c54e1fc44235542eb2b310ec437fb6`.
