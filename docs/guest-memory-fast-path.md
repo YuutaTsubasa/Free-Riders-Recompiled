@@ -35,30 +35,32 @@ addresses, watched pages, a live reservation and a pinned page.
 
 ## Evidence and limits
 
-Measured on an i5-3470 with an RX 480 (D3D12, Windows 10). Each run is one
-unattended Free Race with the benchmark harness. Six interleaved rounds, plus
-one uncounted warm-up. The fps is taken over the same stretch of race time
-(seconds 20 to 75), so a faster build does not get a different part of the
-race.
+Measured on an i5-3470 with an RX 480 (D3D12, Windows 10,
+`SFR_PARALLEL_WORKER=cores`). Each run is one unattended Free Race with the
+benchmark harness. Six interleaved rounds, plus one uncounted warm-up. The fps
+is taken over the same stretch of race time (seconds 20 to 75), so a faster
+build does not get a different part of the race.
+
+Both executables were built from this branch on v0.4.7. The fast-path build
+uses the generator's output as is; the plain build uses the same output with
+every `SFR_FAST_PATH();` line removed, which is byte-identical to what the
+generator produced before this change.
 
 | | plain | fast path | change | per-round ratio | faster rounds |
 | --- | ---: | ---: | ---: | --- | ---: |
-| fps, race seconds 20–75 | 24.9 | 27.5 | **+11%** | 1.19 1.16 1.04 1.17 1.06 1.07 | 6/6 |
+| fps, race seconds 20–75 | 25.6 | 29.4 | **+15%** | 1.13 1.13 1.18 1.16 1.16 1.19 | 6/6 |
 
-- The plain build's own spread was 8% (23.7–25.8 fps). The gain was there in
-  all six rounds, with a median of +12%.
-- Main-thread permit hold per frame went from 25.8 to 22.2 ms. Frames over
-  50 ms went from 252 to 48 (median per run).
-- All 13 runs ended normally at their present limit, with no hang report.
+- The plain build's own spread was 5% (24.8–26.1 fps). The gain was there in
+  all six rounds, with a median of +16%.
+- Main-thread permit hold per frame went from 23.0 to 19.7 ms, P95 frame time
+  from 49.3 to 42.1 ms, and frames over 50 ms from 149 to 22 (median per run).
+- All 13 runs ended normally at their present limit.
 - **The executable grows from 114 MB to 162 MB**: each access now carries its
   inlined fast path.
 
-Both executables came from the same fork build, with
-`SFR_PARALLEL_WORKER=cores`. That build is v0.4.7 plus the fork's own
-render-thread work: draw constants staged and whole draws deferred to the
-render thread, DEC3N vertices repacked there, and unchanged index buffers kept.
-The two executables differ only in `SFR_FAST_PATH();`, which was added to the
-same generated sources by a post-processor. This exact branch, on plain v0.4.7,
-has not been timed yet. The Linux build of `sfr_memory_test`
-passes, and so do the Python generator tests. Not yet run: Android/AArch64,
-Vulkan, and the handhelds.
+An earlier measurement on a fork build (v0.4.7 plus render-thread changes, the
+same marker-only difference) gave 24.9 to 27.5 fps, +11%, also in all six
+rounds.
+
+The Linux build of `sfr_memory_test` passes, and so do the Python generator
+tests. Not yet run: Android/AArch64, Vulkan, and the handhelds.
