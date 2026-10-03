@@ -479,6 +479,47 @@ static void loads_beside_special_words() {
     require(memory.load<uint16_t>(0x10202) == 0xF00D, "part of a computed word too");
 }
 
+// GuestMemory::FastPath (generated code's SFR_FAST_PATH) decides as load and
+// store do: ordinary words directly, everything else through them.
+static void fast_path_matches_members() {
+    sfr::GuestMemory memory;
+    memory.map(0x10000, 0x2000);
+    const auto fast = memory.fast_path();
+    uint8_t* const base = memory.base();
+    sfr::GuestMemory::store<uint32_t>(fast, base, 0x10008, 0x55667788u);
+    require(memory.load<uint32_t>(0x10008) == 0x55667788u, "a fast store is a member store");
+    require(sfr::GuestMemory::load<uint32_t>(fast, base, 0x10008) == 0x55667788u, "a fast load reads it back");
+    sfr::GuestMemory::store<uint16_t>(fast, base, 0x10FFF, 0xABCDu);
+    require(memory.load<uint16_t>(0x10FFF) == 0xABCDu &&
+            sfr::GuestMemory::load<uint16_t>(fast, base, 0x10FFF) == 0xABCDu, "a word across pages takes the member path");
+    memory.add_read_only_word(0x10200, [] { return 0xCAFEF00Du; });
+    memory.add_import_variable(0x10100, "variable");
+    require(sfr::GuestMemory::load<uint32_t>(fast, base, 0x10200) == 0xCAFEF00Du, "a computed word comes from its provider");
+    require(sfr::GuestMemory::load<uint32_t>(fast, base, 0x10008) == 0x55667788u, "beside it, words load as before");
+    require_stop([&] { sfr::GuestMemory::load<uint32_t>(fast, base, 0x10100); }, "import-variable", "a variable stays guarded");
+    require_stop([&] { sfr::GuestMemory::store<uint32_t>(fast, base, 0x10200, 0); }, "memory-readonly",
+                 "a computed word stays read-only");
+    require_stop([&] { sfr::GuestMemory::load<uint32_t>(fast, base, 0x12000); }, "memory-access", "unmapped stays unmapped");
+    memory.watch_writes(0x11000, 0x1000);
+    memory.take_written(0x11000, 0x1000);
+    memory.enable_write_epochs();
+    const auto epoch = memory.write_epoch();
+    sfr::GuestMemory::store<uint32_t>(fast, base, 0x11010, 1);
+    require(memory.take_written(0x11000, 0x1000) && memory.written_since(0x11000, 0x1000, epoch),
+            "a fast store marks a watched page");
+    memory.load_reserved_word(0x11020);
+    require_stop([&] { memory.store<uint32_t>(0x11030, 7); }, "reservation-interference",
+                 "a member store under a live reservation is checked");
+    require_stop([&] { sfr::GuestMemory::store<uint32_t>(fast, base, 0x11030, 7); }, "reservation-interference",
+                 "so is a fast store");
+    require(memory.store_conditional_word(0x11020, 9) && memory.load<uint32_t>(0x11020) == 9,
+            "the reservation completes as before");
+    const sfr::GuestMemory::Range range{0x11040, 4};
+    auto pinned = memory.pin_writes(std::span(&range, 1));
+    require_stop([&] { sfr::GuestMemory::store<uint32_t>(fast, base, 0x11040, 0); }, "memory-pending-write",
+                 "a fast store to a pinned page is refused");
+}
+
 static void provider_guard_survives_unrelated_import_registration() {
     sfr::GuestMemory memory;
     memory.map(0x10000, 0x2000000);
@@ -1492,6 +1533,7 @@ int main() {
     try {
         top_down_search_matches_page_oracle();
         partial_page_fast_access();
+        fast_path_matches_members();
         sfr::GuestMemory memory;
         memory.map(0x10000, 0x1000);
         memory.store<uint32_t>(0x10003, 0x12345678);

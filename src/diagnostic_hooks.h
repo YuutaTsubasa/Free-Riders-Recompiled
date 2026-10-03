@@ -140,14 +140,41 @@ void stop_nui_skeleton_events();
 }
 // Scalar accesses are bounded and big-endian. Recognized reservation pairs use
 // explicit hooks; other raw guest-memory bodies remain diagnostic stops.
-#define PPC_LOAD_U8(x) sfr::active_memory->load<uint8_t>(uint64_t(x))
-#define PPC_LOAD_U16(x) sfr::active_memory->load<uint16_t>(uint64_t(x))
-#define PPC_LOAD_U32(x) sfr::active_memory->load<uint32_t>(uint64_t(x))
-#define PPC_LOAD_U64(x) sfr::active_memory->load<uint64_t>(uint64_t(x))
-#define PPC_STORE_U8(x,y) sfr::active_memory->store<uint8_t>(uint64_t(x), uint8_t(y))
-#define PPC_STORE_U16(x,y) sfr::active_memory->store<uint16_t>(uint64_t(x), uint16_t(y))
-#define PPC_STORE_U32(x,y) sfr::active_memory->store<uint32_t>(uint64_t(x), uint32_t(y))
-#define PPC_STORE_U64(x,y) sfr::active_memory->store<uint64_t>(uint64_t(x), uint64_t(y))
+//
+// A function that begins with SFR_FAST_PATH() (scripts/generate_diagnostic.py
+// puts it after each PPC_FUNC_PROLOGUE) reads what every access needs from
+// the GuestMemory once (GuestMemory::FastPath) and keeps it, with its base
+// argument, in locals: without strict aliasing, each guest store otherwise
+// makes the compiler load active_memory, the page table and the base again.
+// Elsewhere sfr_fast names the namespace-scope NoFastPath below, and the
+// accesses are the GuestMemory member calls they always were.
+namespace sfr {
+struct NoFastPath {};
+template<typename T> inline T guest_load(NoFastPath, const uint8_t*, uint64_t address) {
+    return active_memory->load<T>(address);
+}
+template<typename T> inline void guest_store(NoFastPath, uint8_t*, uint64_t address, T value) {
+    active_memory->store<T>(address, value);
+}
+template<typename T> __attribute__((always_inline)) inline T guest_load(const GuestMemory::FastPath& fast,
+                                                                        const uint8_t* base, uint64_t address) {
+    return GuestMemory::load<T>(fast, base, address);
+}
+template<typename T> __attribute__((always_inline)) inline void guest_store(const GuestMemory::FastPath& fast,
+                                                                            uint8_t* base, uint64_t address, T value) {
+    GuestMemory::store<T>(fast, base, address, value);
+}
+}
+inline constexpr sfr::NoFastPath sfr_fast{};
+#define SFR_FAST_PATH() const ::sfr::GuestMemory::FastPath sfr_fast = ::sfr::active_memory->fast_path()
+#define PPC_LOAD_U8(x) sfr::guest_load<uint8_t>(sfr_fast, base, uint64_t(x))
+#define PPC_LOAD_U16(x) sfr::guest_load<uint16_t>(sfr_fast, base, uint64_t(x))
+#define PPC_LOAD_U32(x) sfr::guest_load<uint32_t>(sfr_fast, base, uint64_t(x))
+#define PPC_LOAD_U64(x) sfr::guest_load<uint64_t>(sfr_fast, base, uint64_t(x))
+#define PPC_STORE_U8(x,y) sfr::guest_store<uint8_t>(sfr_fast, base, uint64_t(x), uint8_t(y))
+#define PPC_STORE_U16(x,y) sfr::guest_store<uint16_t>(sfr_fast, base, uint64_t(x), uint16_t(y))
+#define PPC_STORE_U32(x,y) sfr::guest_store<uint32_t>(sfr_fast, base, uint64_t(x), uint32_t(y))
+#define PPC_STORE_U64(x,y) sfr::guest_store<uint64_t>(sfr_fast, base, uint64_t(x), uint64_t(y))
 #define PPC_CALL_INDIRECT_FUNC(x) sfr::call_indirect(ctx, base, uint32_t(x))
 
 // Defines a replacement of original function x and records it as a hook.

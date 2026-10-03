@@ -180,6 +180,46 @@ public:
         }
         store_checked(address, uint64_t(value), sizeof(T));
     }
+    // What load and store read from the object at every access, taken once.
+    // The build has no strict aliasing, so after any guest store the compiler
+    // must assume the object (and the global pointer to it) changed, and
+    // load them again before the next access. Generated code takes this
+    // copy at function entry (PPC_FUNC_PROLOGUE) and passes it, with its own
+    // base argument (which is base()), to the overloads below; they decide
+    // exactly as load and store do, and fall back to them for the rest.
+    struct FastPath {
+        GuestMemory* memory;
+        const uint8_t* pages;
+        const std::atomic<uint16_t>* pinned;
+        uint64_t owner;
+    };
+    FastPath fast_path() noexcept { return {this, fast_pages_.get(), pinned_pages_, reservation_owner_}; }
+    template<typename T> __attribute__((always_inline)) static T load(const FastPath& fast, const uint8_t* base,
+                                                                      uint64_t address) {
+        static_assert(std::is_unsigned_v<T>);
+        if (address < address_space_size && address % fast_page_size <= fast_page_size - sizeof(T)) [[likely]] {
+            const uint8_t page = std::atomic_ref<const uint8_t>(fast.pages[address / fast_page_size])
+                                     .load(std::memory_order_relaxed);
+            if (page & fast_access) [[likely]]
+                return byte_swap(T(*reinterpret_cast<const volatile T*>(base + address)));
+        }
+        return fast.memory->load<T>(address);
+    }
+    template<typename T> __attribute__((always_inline)) static void store(const FastPath& fast, uint8_t* base,
+                                                                          uint64_t address, T value) {
+        static_assert(std::is_unsigned_v<T>);
+        if (address < address_space_size && address % fast_page_size <= fast_page_size - sizeof(T)) [[likely]] {
+            const uint8_t page = std::atomic_ref<const uint8_t>(fast.pages[address / fast_page_size])
+                                     .load(std::memory_order_relaxed);
+            if ((page & fast_access) && guest_thread_state.reservation.owner != fast.owner &&
+                !fast.pinned[address / fast_page_size].load(std::memory_order_relaxed)) [[likely]] {
+                *reinterpret_cast<volatile T*>(base + address) = byte_swap(value);
+                if (page & fast_watched) [[unlikely]] fast.memory->note_watched_write(address / fast_page_size);
+                return;
+            }
+        }
+        fast.memory->store<T>(address, value);
+    }
 private:
     static inline std::atomic<uint64_t> next_reservation_owner_{1};
     const uint64_t reservation_owner_ = next_reservation_owner_.fetch_add(1);
