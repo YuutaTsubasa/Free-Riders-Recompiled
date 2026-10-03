@@ -1,0 +1,36 @@
+# Existing vertex-cache lifecycle integration audit
+
+> **For agentic workers:** Use superpowers:subagent-driven-development, with scope then quality review before local GPU execution.
+
+**Goal:** Test actual NativeRenderer cache decisions under supported memory operations before expanding the 4x indexed route. Preserve the frozen guarded candidate and production source.
+
+**Architecture:** A standalone private C++ probe links the exact accepted-memory object and production renderer/presentation objects used by the guarded benchmark. Instantiate a small hidden native presentation without game assets or saves. Exercise the public vertex_cache API and actual GuestMemory/PhysicalMemory APIs, reporting cache miss/fill/hit transitions. A separately linked probe may use the already reviewed private lifecycle memory object as an observation control; it must never replace a game binary.
+
+**Tech stack:** C++20, existing native-resolution link recipe, Windows Vulkan and D3D12, Python bounded build/run helper. New artifacts only under out/cpu-vertex-cache-audit-v047 and out/build/cpu-vertex-cache-audit-v047.
+
+## Scope
+
+The prior epoch-only test found lifecycle changes can leave epochs unchanged; this audit must establish whether the actual renderer retains a stale cache decision. The real MmFreePhysicalMemory hook calls PhysicalMemory::free then renderer.invalidate. The renderer invalidate implementation currently covers texture/resolved targets, while vertex invalidation is write-epoch based. Test that exact public API sequence, plus normal retained 0x404/GPU-marked reuse, and avoid claiming a demonstrated gameplay failure from a synthetic scenario.
+
+- [x] Build the probe from pinned actual objects using the existing sfr_native_resolution_test link recipe; save compile/link commands and all input/source hashes. Do not use a reimplementation or change renderer logic. New test source/build helpers only, no production edits or game builds.
+- [x] Include stable miss -> next epoch fill -> hit control; ordinary and same-epoch watched writes must invalidate; unchanged remap/recommit must preserve data as appropriate. Check both raw lifecycle reset and actual PhysicalMemory protect=4 free -> renderer.invalidate -> bounded same-address allocation. Distinguish reused stale hit (buffer non-null, fill empty, old data changed) from pointer reuse after valid refilling.
+- [x] Include retained protect=0x404 and explicitly GPU-marked allocator controls: reuse calls check_write before zeroing. Never generalize an unmarked released-allocation case to these paths. Test key changes (layout, size, selected readable view) and report newly visible secondary views without treating separate backing allocations as real aliases.
+- [x] A private lifecycle-object variant may reuse the same probe to isolate whether the already-tested epoch extension changes observed decisions. Keep identity/provenance separate and do not label it a fix for all cache contracts.
+- [x] Scope and quality reviewers inspect the harness, fixture realism, observation interpretation, hidden windows, exact link inputs and <=120-second subprocess limits before execution. No remote-device access, no background services, no user settings/saves.
+- [x] Run baseline and optional private-memory variants sequentially on both local backends, retain raw observations and expected control assertions, check no owned processes remain. Record pass/failure/counterexample accurately. No performance claim from these probes.
+
+If a concrete stale decision is found, record minimal reproduction and actual callers before proposing a repair; do not silently combine the private lifecycle patch into the guarded optimization. Rendered image equivalence, concurrent snapshots, GPU command lifetime, all-course traversal and Android remain outside the cache-decision probe. No merge, release, push or external messages.
+
+## Verified outcome (2026-10-03)
+
+Scope and quality reviews passed before execution. The first source-equivalent build was retained and replaced by a final build linking the guarded benchmark's exact accepted memory, PhysicalMemory, renderer and presentation objects. Review also corrected the fixture's clean-epoch refill expectation and the runner's backend-label casing before any GPU execution.
+
+Four sequential RTX 4090 probes completed normally in less than one second each. Accepted memory produced 107 successful control assertions and 50 cache observations per backend, including three stale reuse decisions: decommit/recommit, release/map, and normal protect-4 PhysicalMemory free/invalidate/reallocate. The separate private lifecycle-memory variant produced 119 successful assertions, 59 observations and zero stale decisions per backend. The additional observations are the proper miss/clean-epoch/refill paths, not a larger input workload. Vulkan and D3D12 observation rows are identical. All fixture failures are zero; baseline exit zero means the observation audit completed, not that the baseline cache was correct.
+
+The fixture confirms that selected guest bytes became zero while the cache returned the previously filled buffer with no new fill span. This uses exact CPU byte comparisons against the bytes previously supplied to that buffer. It does not read back GPU memory or submit a draw. Retained protect-0x404 and explicitly GPU-marked reuse invalidated properly in both variants, as did ordinary/same-epoch writes. Stable recommit retained data and its valid cache hit.
+
+The minimal actual-call sequence is PhysicalMemory::allocation_size, free, NativeRenderer::invalidate with the production physical-address translation, then a constrained same-address allocate. The guest hook in diagnostic_main.cpp uses the same free/invalidate ordering. Current invalidate covers textures/resolves, while vertex reuse relies on GuestMemory write epochs. The accepted release/decommit paths discard backing without recording a write epoch; the private experiment records destructive lifecycle changes. The fixture does not prove that a real game vertex allocation follows this exact sequence without an intervening watched write.
+
+Frozen artifacts: out/cpu-vertex-cache-audit-v047/runs, ready.json and verification.json; out/build/cpu-vertex-cache-audit-v047/provenance.json and preserved earlier builds. Final accepted probe SHA256 b1d432a42d92ba465dd4fa4b2c2f0049a9d89eea348278e45a2bb615190d98b6; private lifecycle probe c78779a6baa696ac64d34cf2dc4ffa04ecab934f88b90577efcc1336cfb95263; provenance 7b0173a6a78cdea7c8bce73e710f537eb0a7f38042f714a602705f8427b1ad63; primary verification 6f73b8184fafd764bc138285c71b0408f004908cd72a180a4183bf897a970e89.
+
+No owned processes remain. No game, saves, settings, remote devices or wake requests were used. Production source and the guarded optimization binary are unchanged. This is a concrete existing cache-decision counterexample, not a demonstrated gameplay/rendered-image failure or speed improvement. Keep the lifecycle correction separate pending a deliberate integration plan with regression tests; do not silently combine it with the guarded performance candidate. Full-course, concurrency, GPU retirement and Android validation remain outstanding.
