@@ -53,9 +53,12 @@ race.
 - **The executable grows from 114 MB to 162 MB**: each access now carries its
   inlined fast path.
 
-Both executables came from the same fork build, a v0.4.6-era base, with
-`SFR_PARALLEL_WORKER=cores`. The two differ only in `SFR_FAST_PATH();`, which
-was added to the same generated sources by a post-processor. This exact branch,
-on v0.4.7, has not been timed yet. The Linux build of `sfr_memory_test`
+Both executables came from the same fork build, with
+`SFR_PARALLEL_WORKER=cores`. That build is v0.4.7 plus the fork's own
+render-thread work: draw constants staged and whole draws deferred to the
+render thread, DEC3N vertices repacked there, and unchanged index buffers kept.
+The two executables differ only in `SFR_FAST_PATH();`, which was added to the
+same generated sources by a post-processor. This exact branch, on plain v0.4.7,
+has not been timed yet. The Linux build of `sfr_memory_test`
 passes, and so do the Python generator tests. Not yet run: Android/AArch64,
 Vulkan, and the handhelds.
