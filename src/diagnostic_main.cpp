@@ -250,7 +250,6 @@ static ThreadLocalStorage* thread_local_storage = nullptr;
 static GuestClock* active_clock = nullptr;
 static std::atomic<uint64_t> time_base_reads{0};
 static uint64_t conditional_stores = 0;
-static uint64_t vector_loads = 0, vector_stores = 0;
 static uint64_t cache_block_zeroes = 0;
 struct CopyObservation {
     bool active = false;
@@ -741,48 +740,30 @@ void store_conditional_doubleword(PPCContext& ctx, uint64_t address, uint64_t va
         std::cerr << "STORE_CONDITIONAL_DOUBLEWORD address=0x" << std::hex << address << " value=0x" << value
                   << " success=" << std::dec << success << '\n';
 }
-// The sixteen bytes of an aligned vector reversed (the register holds byte 15
-// of memory in element 0), in one shuffle where SSSE3 exists.
-static inline void reverse_vector(const uint8_t* from, uint8_t* to) {
-#if defined(__SSSE3__)
-    const __m128i order = _mm_setr_epi8(15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0);
-    _mm_storeu_si128(reinterpret_cast<__m128i*>(to),
-                     _mm_shuffle_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(from)), order));
-#elif defined(__ARM_NEON)
-    // Reverse the bytes of each half, then exchange the halves.
-    const uint8x16_t halves = vrev64q_u8(vld1q_u8(from));
-    vst1q_u8(to, vextq_u8(halves, halves, 8));
-#else
-    for (unsigned i = 0; i < 16; ++i) to[i] = from[15 - i];
-#endif
-}
-void load_vector_memory(uint32_t address, uint8_t (&destination)[16]) {
+void load_vector_memory_slow(uint32_t address, uint8_t (&destination)[16]) {
     if (!active_memory) throw RuntimeStop("memory-context", address, "guest memory is not initialized");
-    // Common case inline: an aligned vector in one fast page.
-    if (const uint8_t* bytes = active_memory->fast_read(address & ~0xFu, 16)) {
-        reverse_vector(bytes, destination);
-        if (vector_loads < 4 && ++vector_loads)
-            std::cerr << "VECTOR_LOAD address=0x" << std::hex << (address & ~0xFu) << std::dec << '\n';
-        return;
+    if (const uint8_t* bytes = active_memory->fast_read(address & ~0xFu, 16)) reverse_vector(bytes, destination);
+    else {
+        const auto value = load_vector_memory(*active_memory, address);
+        std::copy(value.begin(), value.end(), destination);
     }
-    const auto value = load_vector_memory(*active_memory, address);
-    std::copy(value.begin(), value.end(), destination);
-    if (++vector_loads <= 4)
+    if (vector_load_traces) {
+        --vector_load_traces;
         std::cerr << "VECTOR_LOAD address=0x" << std::hex << (address & ~0xFu) << std::dec << '\n';
-}
-void store_vector_memory(uint32_t address, const uint8_t (&source)[16]) {
-    if (!active_memory) throw RuntimeStop("memory-context", address, "guest memory is not initialized");
-    if (uint8_t* bytes = active_memory->fast_write(address & ~0xFu, 16)) {
-        reverse_vector(source, bytes);
-        if (vector_stores < 4 && ++vector_stores)
-            std::cerr << "VECTOR_STORE address=0x" << std::hex << (address & ~0xFu) << std::dec << '\n';
-        return;
     }
-    VectorBytes value;
-    std::copy(std::begin(source), std::end(source), value.begin());
-    store_vector_memory(*active_memory, address, value);
-    if (++vector_stores <= 4)
+}
+void store_vector_memory_slow(uint32_t address, const uint8_t (&source)[16]) {
+    if (!active_memory) throw RuntimeStop("memory-context", address, "guest memory is not initialized");
+    if (uint8_t* bytes = active_memory->fast_write(address & ~0xFu, 16)) reverse_vector(source, bytes);
+    else {
+        VectorBytes value;
+        std::copy(std::begin(source), std::end(source), value.begin());
+        store_vector_memory(*active_memory, address, value);
+    }
+    if (vector_store_traces) {
+        --vector_store_traces;
         std::cerr << "VECTOR_STORE address=0x" << std::hex << (address & ~0xFu) << std::dec << '\n';
+    }
 }
 void store_vector_word(uint32_t address, const uint8_t (&source)[16]) {
     if (!active_memory) throw RuntimeStop("memory-context", address, "guest memory is not initialized");

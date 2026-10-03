@@ -1,6 +1,11 @@
 #pragma once
 #include <atomic>
 #include <optional>
+#if defined(__SSSE3__)
+#include <tmmintrin.h>
+#elif defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
 #include "guest_memory.h"
 #include "integer_arithmetic.h"
 #include "store_halfword_update.h"
@@ -74,10 +79,48 @@ uint32_t load_reserved_word(PPCContext&, uint64_t);
 void store_conditional_word(PPCContext&, uint64_t, uint32_t);
 uint64_t load_reserved_doubleword(PPCContext&, uint64_t);
 void store_conditional_doubleword(PPCContext&, uint64_t, uint64_t);
-void load_vector_memory(uint32_t, uint8_t (&)[16]);
+// The sixteen bytes of an aligned vector reversed (the register holds byte 15
+// of memory in element 0), in one shuffle where SSSE3 or NEON exists.
+inline void reverse_vector(const uint8_t* from, uint8_t* to) {
+#if defined(__SSSE3__)
+    const __m128i order = _mm_setr_epi8(15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0);
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(to),
+                     _mm_shuffle_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(from)), order));
+#elif defined(__ARM_NEON)
+    // Reverse the bytes of each half, then exchange the halves.
+    const uint8x16_t halves = vrev64q_u8(vld1q_u8(from));
+    vst1q_u8(to, vextq_u8(halves, halves, 8));
+#else
+    for (unsigned i = 0; i < 16; ++i) to[i] = from[15 - i];
+#endif
+}
+// Vector loads and stores: an aligned vector in one ordinary page is read or
+// written here, inline in the generated code; everything else (special and
+// watched pages, a reservation, the first ones logged) goes to the checked
+// path. As a call every time they were 3.8% of a Thor race's main thread and
+// 8.1% of its busiest worker.
+void load_vector_memory_slow(uint32_t, uint8_t (&)[16]);
+void store_vector_memory_slow(uint32_t, const uint8_t (&)[16]);
+// The first few of each still go the checked way, which logs them.
+inline uint32_t vector_load_traces = 4, vector_store_traces = 4;
+inline void load_vector_memory(uint32_t address, uint8_t (&destination)[16]) {
+    if (active_memory && !vector_load_traces) [[likely]]
+        if (const uint8_t* bytes = active_memory->fast_read(address & ~0xFu, 16)) [[likely]] {
+            reverse_vector(bytes, destination);
+            return;
+        }
+    load_vector_memory_slow(address, destination);
+}
 void load_vector_left(uint32_t, uint8_t (&)[16]);
 void load_vector_right(uint32_t, uint8_t (&)[16]);
-void store_vector_memory(uint32_t, const uint8_t (&)[16]);
+inline void store_vector_memory(uint32_t address, const uint8_t (&source)[16]) {
+    if (active_memory && !vector_store_traces) [[likely]]
+        if (uint8_t* bytes = active_memory->fast_write(address & ~0xFu, 16)) [[likely]] {
+            reverse_vector(source, bytes);
+            return;
+        }
+    store_vector_memory_slow(address, source);
+}
 void store_vector_word(uint32_t, const uint8_t (&)[16]);
 void store_vector_left(uint32_t, const uint8_t (&)[16]);
 void store_vector_right(uint32_t, const uint8_t (&)[16]);
