@@ -469,6 +469,22 @@ static void parallel_function_entry(const PPCContext& ctx, uint32_t address) {
         if (!is_hook(address)) return;
         execution_permit->attach();
         parallel_attached(1);
+        // SFR_PARALLEL_HOOK_STATS=1: which hooks bring detached guests back
+        // to the permit (counted while holding it, so without a lock).
+        static const bool hook_stats = [] { const char* t = std::getenv("SFR_PARALLEL_HOOK_STATS"); return t && *t == '1'; }();
+        if (hook_stats) {
+            static std::unordered_map<uint32_t, uint64_t> by_hook;
+            static uint64_t attaches = 0;
+            ++by_hook[address];
+            if (++attaches % 50000 == 0) {
+                std::vector<std::pair<uint64_t, uint32_t>> top;
+                for (const auto& [hook, count] : by_hook) top.push_back({count, hook});
+                std::sort(top.rbegin(), top.rend());
+                std::cerr << "PARALLEL_HOOKS" << std::hex;
+                for (size_t i = 0; i < top.size() && i < 12; ++i) std::cerr << " 0x" << top[i].second << '=' << std::dec << top[i].first << std::hex;
+                std::cerr << std::dec << char(10);
+            }
+        }
         guest_thread_state.entry.hook_stack_pointer = ctx.r1.u32;
     } else if (guest_thread_state.entry.hook_stack_pointer) {
         if (is_hook(address)) guest_thread_state.entry.hook_stack_pointer = (std::max)(guest_thread_state.entry.hook_stack_pointer, ctx.r1.u32);
@@ -2657,10 +2673,17 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
     if (address == 0x82ACB60C && std::string_view(name) == "__imp__NtSetInformationFile" && guest_files) {
         const uint32_t handle = ctx.r3.u32, io = ctx.r4.u32, input = ctx.r5.u32, length = ctx.r6.u32, info_class = ctx.r7.u32;
         ctx.r3.u64 = guest_files->set_information(handle, io, input, length, info_class);
-        std::cerr << "RESULT NtSetInformationFile handle=0x" << std::hex << handle << std::dec << " class=" << info_class
-                  << " length=" << length << " status=0x" << std::hex << ctx.r3.u32 << std::dec;
-        if (info_class == 14 && length >= 8) std::cerr << " position=" << active_memory->load<uint64_t>(input);
-        std::cerr << '\n';
+        // The streamed music seeks every 32 KiB (166 times in a 92 s race window)
+        // from a guest holding the permit; an unconditional line here was the
+        // only frequent write during play, so it could wait out the stderr
+        // flusher's disk write while the main thread waited for the permit.
+        // Failures stay visible.
+        if (trace_imports || ctx.r3.u32) {
+            std::cerr << "RESULT NtSetInformationFile handle=0x" << std::hex << handle << std::dec << " class=" << info_class
+                      << " length=" << length << " status=0x" << std::hex << ctx.r3.u32 << std::dec;
+            if (info_class == 14 && length >= 8) std::cerr << " position=" << active_memory->load<uint64_t>(input);
+            std::cerr << '\n';
+        }
         return;
     }
     if (address == 0x82ACB6AC && std::string_view(name) == "__imp__NtQueryFullAttributesFile" && guest_files) {
