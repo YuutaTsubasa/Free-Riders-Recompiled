@@ -970,7 +970,7 @@ class DiagnosticGenerationTests(unittest.TestCase):
             '\t// li r3,0\n\tif (ctx.r3.u32) { ctx.r3.u32 = 0; }\n'
             '\t// blr \n\treturn;')])
         result, report = self.run_generation()
-        instrumentation = '\n\tsfr::enter_function(ctx, "named_function", 0x00001000);'
+        instrumentation = '\n\tSFR_FAST_PATH();\n\tsfr::enter_function(ctx, "named_function", 0x00001000);'
         self.assertIn(instrumentation, result)
         self.assertIn(raw, result.replace(instrumentation, ''))
         self.assertEqual((self.source / 'ppc_recomp.0.cpp').read_text(), raw)

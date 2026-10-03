@@ -1632,7 +1632,7 @@ def generate(input_dir, log_path, output_dir, jump_table_path=None):
                         lambda match: match[1] + match[2] + '\tsfr::guest_checkpoint();' + match[2],
                         rewritten_body, flags=re.MULTILINE)
                     chunks.append((rewritten_body + '}').replace(
-                        'PPC_FUNC_PROLOGUE();', 'PPC_FUNC_PROLOGUE();\n\tsfr::enter_function(ctx, '
+                        'PPC_FUNC_PROLOGUE();', 'PPC_FUNC_PROLOGUE();\n\tSFR_FAST_PATH();\n\tsfr::enter_function(ctx, '
                         + json.dumps(name) + f', 0x{addresses[name]:08X});', 1))
                 cursor = end
             chunks.append(source[cursor:])
