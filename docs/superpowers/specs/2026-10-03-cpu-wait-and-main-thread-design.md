@@ -1,6 +1,6 @@
 # CPU bottleneck follow-up after v0.4.7
 
-Status: user approved this design on 2026-10-03. The worker-wait experiment is complete and remains unaccepted; its production budget is unchanged. Subsequent common-path work accepted only the ordinary-page memory preflight, recorded in `../plans/2026-10-03-memory-preflight-experiment.md`. Read the latest continuation before starting more tests; the completed stationary comparisons must not be restarted automatically.
+Status: user approved this design on 2026-10-03. The worker-wait experiment is complete and remains unaccepted; its production budget is unchanged. Subsequent work locally accepted the ordinary-page memory preflight and memory lifecycle cache invalidation, recorded in `../plans/2026-10-03-memory-preflight-experiment.md` and `../plans/2026-10-03-memory-lifecycle-integration.md`. The lifecycle correction passed Windows normal-game start checks and Linux x86_64/4KiB CPU regressions. The guarded indexed-window candidate remains private: Dolphin showed reduced main CPU cost, while the completed Frozen Forest comparison did not establish an overall speedup; see `../plans/2026-10-03-indexed-window-frozen-comparison.md`. Read the latest continuation before starting more tests; the completed stationary comparisons must not be restarted automatically.
 
 ## Scope and evidence
 
