@@ -475,6 +475,7 @@ SFR_HOOK(sub_824E65A0) {
               << " record_ms=" << frame_record_ms << " draw_ms=" << frame_draw_ms
               << " pipelines=" << pipeline_work.created << " pipeline_ms=" << pipeline_work.milliseconds
               << " ring_flushes=" << pipeline_work.ring_flushes
+              << " resolve_copies=" << pipeline_work.resolve_copies
               << " constant_upload_bytes=" << pipeline_work.constant_upload_bytes
               << " constant_reusable_bytes=" << pipeline_work.constant_reusable_bytes
               << " constant_saved_bytes=" << pipeline_work.constant_saved_bytes
@@ -1453,6 +1454,17 @@ SFR_HOOK(sub_824FAB08) {
     // Source 4 is the depth surface (shadow maps), which the native backend
     // cannot copy out yet.
     const bool copied=(flags&7)<4 && destination_base!=0;
+    // SFR_RESOLVE_STATS=1: every resolve of one race frame (present 15000),
+    // with its source rectangle and destination size: how much of the
+    // framebuffer each resolve really needs.
+    static const bool resolve_stats=[]{ const char* t=std::getenv("SFR_RESOLVE_STATS"); return t && *t=='1'; }();
+    if(resolve_stats && (sfr::present_count==15000 || sfr::present_count==15001)) {
+        int32_t rect[4]={-1,-1,-1,-1};
+        if(ctx.r5.u32) try { for(int i=0;i<4;++i) rect[i]=int32_t(memory.load<uint32_t>(uint64_t(ctx.r5.u32)+i*4)); } catch(const sfr::RuntimeStop&) {}
+        std::cerr << "RESOLVE_STAT frame=" << sfr::present_count.load() << " source=" << (flags&7) << " flags=0x" << std::hex << flags
+                  << " destination=0x" << destination_base << std::dec << " size=" << width << 'x' << height << " format=" << format
+                  << " rect=" << rect[0] << ',' << rect[1] << ',' << rect[2] << ',' << rect[3] << " copied=" << copied << '\n';
+    }
     if(copied) graphics().renderer().adopt_resolved_target(destination_base);
     // SFR_RESOLVE_DUMP=<file.bmp>: what the framebuffer held at the first few
     // colour resolves (shows whether the scene was drawn into it).

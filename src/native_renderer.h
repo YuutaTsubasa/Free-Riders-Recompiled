@@ -164,6 +164,9 @@ public:
         uint64_t upload_submissions = 0, upload_peak_bytes = 0, upload_budget_drains = 0;
         double upload_wait_ms = 0;
         uint64_t constant_saved_bytes = 0; // Actual skipped writes when reuse is enabled.
+        // Resolves copied this frame: each ends the render pass, which a tiling
+        // GPU pays for with a store and a reload of the whole color and depth.
+        uint32_t resolve_copies = 0;
     };
     PipelineWork take_pipeline_work() noexcept;
     // Unchanged while texture() and sampler() would answer the same fetch

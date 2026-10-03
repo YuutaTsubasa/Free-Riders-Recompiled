@@ -359,6 +359,7 @@ struct NativePresentation::Impl {
         if (!spare_in_flight) return;
         spare_in_flight = false;
         wait_for(spare_fence.get());
+        read_timing(spare_timing.get(), spare_timing_ended);
     }
     // Vulkan: the list that draws into an acquired swap-chain image waits for
     // the acquisition and signals the presentation (D3D12 needs neither).
@@ -403,6 +404,7 @@ struct NativePresentation::Impl {
     void execute() {
         run_list();
         wait_for(fence.get());
+        read_timing(timing.get(), timing_ended);
         wait_in_flight();
     }
     // Submits without waiting; the frame in flight before it must finish
@@ -412,6 +414,8 @@ struct NativePresentation::Impl {
         run_list();
         std::swap(command_list, spare_list);
         std::swap(fence, spare_fence);
+        std::swap(timing, spare_timing);
+        std::swap(timing_ended, spare_timing_ended);
         spare_in_flight = true;
     }
     static std::function<void(const std::function<void()>&)>& gpu_wait() {
@@ -576,10 +580,53 @@ struct NativePresentation::Impl {
     // Binding generation: new lists and custom passes both invalidate the
     // layout/pipeline/descriptors cached by NativeRenderer.
     uint64_t list_generation = 0;
+    // SFR_GPU_TIMING=1: GPU time of every submitted list (a timestamp at its
+    // start and end), read only after the CPU has waited for that list
+    // anyway, and logged as GPU_TIMING every 120 lists. Off: nothing is created.
+    static bool gpu_timing() {
+        static const bool enabled = [] { const char* t = std::getenv("SFR_GPU_TIMING"); return t && *t == '1'; }();
+        return enabled;
+    }
+    std::unique_ptr<plume::RenderQueryPool> timing, spare_timing;
+    bool timing_ended = false, spare_timing_ended = false;
+    uint32_t timing_count = 0;
+    double timing_sum_ms = 0, timing_max_ms = 0;
     void begin_list() {
         drain();
         command_list->begin();
         ++list_generation;
+        if (gpu_timing()) {
+            if (!timing) timing = graphics->device().createQueryPool(2);
+            if (timing) {
+                command_list->resetQueryPool(timing.get(), 0, 2);
+                command_list->writeTimestamp(timing.get(), 0);
+            }
+            timing_ended = false;
+        }
+    }
+    void end_list() {
+        if (gpu_timing() && timing) {
+            command_list->writeTimestamp(timing.get(), 1);
+            timing_ended = true;
+        }
+        command_list->end();
+    }
+    // The list whose fence was just waited for: its two timestamps are final.
+    void read_timing(plume::RenderQueryPool* pool, bool& ended) {
+        if (!pool || !ended) return;
+        ended = false;
+        pool->queryResults();
+        const uint64_t* r = pool->getResults();
+        if (!r || r[1] < r[0]) return;
+        const double ms = double(r[1] - r[0]) / 1e6;
+        timing_sum_ms += ms;
+        timing_max_ms = (std::max)(timing_max_ms, ms);
+        if (++timing_count == 120) {
+            std::cerr << "GPU_TIMING lists=" << timing_count << " mean_ms=" << timing_sum_ms / timing_count
+                      << " max_ms=" << timing_max_ms << '\n';
+            timing_count = 0;
+            timing_sum_ms = timing_max_ms = 0;
+        }
     }
     void ensure_open() {
         if (open) return;
@@ -614,7 +661,7 @@ struct NativePresentation::Impl {
             std::rethrow_exception(error);
         }
         if (open) {
-            command_list->end();
+            end_list();
             execute();
             open = false;
         } else {
@@ -1261,7 +1308,7 @@ std::vector<uint8_t> NativePresentation::readback_color() {
                                static_cast<plume::VulkanBuffer*>(buffer.get())->vk, 1, &region);
         impl_->command_list->barriers(plume::RenderBarrierStage::GRAPHICS,
             plume::RenderTextureBarrier(impl_->color.get(), plume::RenderTextureLayout::COLOR_WRITE));
-        impl_->command_list->end();
+        impl_->end_list();
         impl_->execute();
         const auto* mapped = static_cast<const uint8_t*>(buffer->map());
         if (!mapped) unavailable("mapped readback buffer");
@@ -1304,7 +1351,7 @@ std::vector<uint8_t> NativePresentation::readback_color() {
         &destination, 0, 0, 0, &source, nullptr);
     impl_->command_list->barriers(plume::RenderBarrierStage::GRAPHICS,
         plume::RenderTextureBarrier(impl_->color.get(), plume::RenderTextureLayout::COLOR_WRITE));
-    impl_->command_list->end();
+    impl_->end_list();
     impl_->execute();
 
     const auto* mapped = static_cast<const uint8_t*>(buffer->map());
@@ -1492,7 +1539,7 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height) {
         plume::RenderTextureBarrier(swap_texture, plume::RenderTextureLayout::PRESENT));
     impl_->command_list->barriers(plume::RenderBarrierStage::GRAPHICS,
         plume::RenderTextureBarrier(impl_->color.get(), plume::RenderTextureLayout::COLOR_WRITE));
-    impl_->command_list->end();
+    impl_->end_list();
     impl_->wait_semaphore = acquired;
     impl_->signal_semaphore = rendered;
     if (pipelined) {

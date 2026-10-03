@@ -353,7 +353,7 @@ struct NativeRenderer::Impl {
     uint32_t draws = 0;
     uint32_t pipelines_created = 0;
     double pipeline_ms = 0;
-    uint32_t ring_flushes = 0, textures_uploaded = 0;
+    uint32_t ring_flushes = 0, textures_uploaded = 0, resolve_copies = 0;
     double texture_ms = 0;
     // Two upload rings: while the GPU renders one frame from one, the next
     // frame fills the other (NativePresentation::after_flush).
@@ -694,6 +694,8 @@ NativeRenderer::PipelineWork NativeRenderer::take_pipeline_work() noexcept {
     }
     work.constant_saved_bytes = impl_->constant_saved_bytes;
     impl_->constant_saved_bytes = 0;
+    work.resolve_copies = impl_->resolve_copies;
+    impl_->resolve_copies = 0;
     impl_->pipelines_created = 0;
     impl_->pipeline_ms = 0;
     impl_->ring_flushes = 0;
@@ -861,6 +863,7 @@ uint32_t NativeRenderer::adopt_resolved_target(uint32_t physical) {
     // before the ones that sample it: submitting and waiting here instead
     // would cost a GPU round trip for each of a frame's resolves.
     auto* target = impl_->texture_objects[index - first_texture].get();
+    ++impl_->resolve_copies;
     presentation.record_async([color = &presentation.color(), target](plume::RenderCommandList& list, uint64_t) {
         const std::array<plume::RenderTextureBarrier, 2> before{
             plume::RenderTextureBarrier(color, plume::RenderTextureLayout::COPY_SOURCE),
