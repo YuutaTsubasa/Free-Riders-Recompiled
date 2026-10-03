@@ -858,6 +858,11 @@ if(SFR_BUILD_DIAGNOSTIC)
         # touch the checked guest memory, so the canaries and the fortified
         # library calls buy nothing here and are paid for in every one of them.
         target_compile_options(sfr_cpu_diagnostic PRIVATE -fno-stack-protector -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
+        # A shared library lets its exported functions be interposed, so every
+        # call between them went through a PLT stub: 19822 of them, 3.9% of the
+        # main thread in a Thor race (simpleperf). Nothing replaces them, so
+        # bind the library's own calls inside it.
+        target_link_options(sfr_cpu_diagnostic PRIVATE -Wl,-Bsymbolic-functions)
     else()
         add_executable(sfr_cpu_diagnostic)
     endif()
