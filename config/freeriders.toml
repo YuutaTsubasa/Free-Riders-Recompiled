@@ -70,3 +70,27 @@ name = "WorkShareWaitDoneMidAsmHook"
 address = 0x823B5E9C
 registers = ["r3"]
 after_instruction = true
+
+# Job helpers (game_patches.cpp): a helper's time inside a job, which the
+# work-share wait above and deferred deletion wait for, starts when it takes
+# a job from the queue (82750B30 at 0x823B60F4) and ends when the take fails
+# or it signals done (SetEvent at 0x823B614C).
+[[midasm_hook]]
+name = "HelperQueueTakeMidAsmHook"
+address = 0x823B60F4
+
+[[midasm_hook]]
+name = "HelperQueueTakenMidAsmHook"
+address = 0x823B60F8
+registers = ["r3"]
+
+[[midasm_hook]]
+name = "HelperDoneMidAsmHook"
+address = 0x823B614C
+
+# Worker 824C39C8 signals done (SetEvent at 0x824C3A38) and then suspends
+# itself; its suspension is registered first, so a resume that a phone runs
+# between the two is not lost.
+[[midasm_hook]]
+name = "WorkerDoneMidAsmHook"
+address = 0x824C3A38

@@ -167,14 +167,42 @@ SFR_CONCURRENT_HOOK(sub_823B60C0) {
     __imp__sub_823B60C0(ctx,base);
 }
 
-PPC_FUNC_IMPL(__imp__sub_82750B30);
-SFR_CONCURRENT_HOOK(sub_82750B30) {
-    sfr::enter_function(ctx,"sub_82750B30",0x82750B30);
-    const bool helper=ctx.lr==0x823B60F8;
-    if(helper && !helper_lifetime) {
+// Where the generated code has the job mid-asm hooks (config/freeriders.toml),
+// they do what the whole-function hooks below do by return address; the first
+// one to run turns those off.
+static std::atomic<bool> job_midasm_hooks{false};
+static void admit_helper() {
+    if(!helper_lifetime) {
         helper_lifetime.emplace(job_lifetime,sfr::JobLifetime::Kind::helper);
         acquire_lifetime(*helper_lifetime);
     }
+}
+static bool completion_suspend_handoff() {
+    static const bool handoff=[]{
+        const char* t=std::getenv("SFR_COMPLETION_SUSPEND_HANDOFF");
+        return !t || *t!='0';
+    }();
+    return handoff;
+}
+namespace sfr { void prepare_worker_self_suspend(); }
+
+// Helper 823B60C0 takes a job from the queue (82750B30 at 0x823B60F4) ...
+void HelperQueueTakeMidAsmHook() { job_midasm_hooks.store(true,std::memory_order_relaxed); admit_helper(); }
+// ... and leaves when the take failed (r3 nonzero) ...
+void HelperQueueTakenMidAsmHook(PPCRegister& r3) { if(r3.u32!=0) helper_leaves_job(); }
+// ... or when it signals the jobs it took done (SetEvent at 0x823B614C).
+void HelperDoneMidAsmHook() { job_midasm_hooks.store(true,std::memory_order_relaxed); helper_leaves_job(); }
+// Worker 824C39C8 signals done (SetEvent at 0x824C3A38), then suspends itself.
+void WorkerDoneMidAsmHook() {
+    job_midasm_hooks.store(true,std::memory_order_relaxed);
+    if(completion_suspend_handoff()) sfr::prepare_worker_self_suspend();
+}
+
+PPC_FUNC_IMPL(__imp__sub_82750B30);
+SFR_CONCURRENT_HOOK(sub_82750B30) {
+    sfr::enter_function(ctx,"sub_82750B30",0x82750B30);
+    const bool helper=ctx.lr==0x823B60F8 && !job_midasm_hooks.load(std::memory_order_relaxed);
+    if(helper) admit_helper();
     __imp__sub_82750B30(ctx,base);
     // Include the interval before a successful queue take, failed takes,
     // and null callbacks. An empty poll means the last callback returned.
@@ -199,25 +227,19 @@ SFR_CONCURRENT_HOOK(sub_8249FD50) {
 }
 
 PPC_FUNC_IMPL(__imp__sub_824D0B18);
-namespace sfr { void prepare_worker_self_suspend(); }
 
 // SetEvent. The helper's own (return address 823B6150) says it has finished
 // the jobs it took.
 SFR_CONCURRENT_HOOK(sub_824D0B18) {
     sfr::enter_function(ctx,"sub_824D0B18",0x824D0B18);
-    if(ctx.lr==0x823B6150) helper_leaves_job();
+    const bool by_address=!job_midasm_hooks.load(std::memory_order_relaxed);
+    if(by_address && ctx.lr==0x823B6150) helper_leaves_job();
     // Worker 824C39C8 signals done and then suspends itself. A phone can run
     // the main thread's next ResumeThread between those two calls, losing
     // that resume and hanging its next completion wait (824C3A98). Register
     // the suspension before publishing done; its following self-suspend
     // consumes that registration instead of incrementing the count again.
-    if(ctx.lr==0x824C3A3C) {
-        static const bool handoff=[]{
-            const char* t=std::getenv("SFR_COMPLETION_SUSPEND_HANDOFF");
-            return !t || *t!='0';
-        }();
-        if(handoff) sfr::prepare_worker_self_suspend();
-    }
+    if(by_address && ctx.lr==0x824C3A3C && completion_suspend_handoff()) sfr::prepare_worker_self_suspend();
     __imp__sub_824D0B18(ctx,base);
 }
 
