@@ -20,6 +20,34 @@ void RaceInput::update(const GamepadState& pad, float seconds) {
     RaceBody& b = body_;
     b.left_x = race_axis(pad.thumb_lx, 7849);
     b.left_y = race_axis(pad.thumb_ly, 7849);
+    b.stick_x = b.left_x;
+    b.stick_y = b.left_y;
+    // A spin: the stick swept 270 degrees or more one way without stopping.
+    // Steering from one side to the other through the top sweeps at most
+    // 180. The spin ends once the stick has been still (or centred) for a
+    // fifth of a second.
+    constexpr float spin_degrees = 270.0f, still_end = 0.2f, still_rate = 60.0f;  // degrees a second
+    const bool deflected = b.left_x * b.left_x + b.left_y * b.left_y >= 0.25f;
+    float delta = 0;
+    if (deflected) {
+        const float angle = std::atan2(b.left_y, b.left_x) * 57.29578f;
+        if (had_angle_) {
+            delta = angle - last_angle_;
+            if (delta > 180.0f) delta -= 360.0f;
+            else if (delta < -180.0f) delta += 360.0f;
+        }
+        last_angle_ = angle;
+    }
+    had_angle_ = deflected;
+    if (seconds > 0 && std::fabs(delta) >= still_rate * seconds) {
+        still_seconds_ = 0;
+        sweep_ = (sweep_ != 0 && (sweep_ > 0) != (delta > 0)) ? delta : sweep_ + delta;
+        if (std::fabs(sweep_) >= spin_degrees) b.spinning = true;
+    } else {
+        still_seconds_ += seconds;
+        if (still_seconds_ >= still_end) { b.spinning = false; sweep_ = 0; }
+    }
+    if (b.spinning) b.left_x = b.left_y = 0.0f;
     b.right_x = race_axis(pad.thumb_rx, 8689);
     b.right_y = race_axis(pad.thumb_ry, 8689);
     // 0 - x rather than -x: negating a neutral stick gives negative zero,

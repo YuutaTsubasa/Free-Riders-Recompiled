@@ -123,6 +123,8 @@ with [docs/progress.md](docs/progress.md).
   Moved the runtime to the Unleashed/Marathon Recompiled model: one render target per guest surface with deferred and depth resolves (race shadows now appear), direct guest memory access, a host o1heap for the title's heap and physical memory, every guest thread running in parallel with per-subsystem locks instead of a global lock, the render thread on every backend, and real-time race stepping on every platform. On the tested AYN Thor a race went from about 25 to about 49–50 FPS.
 - [v0.5.1 — Controller air tricks](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.5.1)
   Fixed air tricks with a controller: turning the left stick in the air now raises a jump's rating, as turning the body does with Kinect. Also integrates a faster guest-memory path for the checked (debugging) build.
+- [v0.5.2 — Air trick landing fix](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.5.2)
+  Spinning the left stick for an air trick no longer leans or accelerates the board, which had carried trick jumps off the side of Rocky Ridge out of the course.
 
 ## System Requirements
 

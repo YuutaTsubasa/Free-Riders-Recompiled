@@ -45,6 +45,14 @@ struct RaceBody {
     float lean_right = 1.0f;    // +640
     float lean_left = 1.0f;     // +644
     uint32_t hands = 0;         // +740 / +756 tracking state of both hands (2 = tracked)
+    // The left stick as the player holds it, for the trick turn (822C9938).
+    // While the stick goes round in circles (spinning), left_x, left_y and
+    // the lean read as a centred stick: a Kinect player twisting for a trick
+    // does not also lean or bend forward, and a spun stick passing its top
+    // every turn accelerated the board in the air, carrying side jumps (Rocky
+    // Ridge) off the course.
+    float stick_x = 0, stick_y = 0;
+    bool spinning = false;
 };
 
 constexpr uint32_t race_body_size = 4788;
@@ -62,5 +70,9 @@ public:
 private:
     RaceBody body_;
     uint16_t previous_ = 0;
+    // Spin detection: the stick's last angle (valid when deflected), the
+    // turn swept in one direction so far, and how long it has been still.
+    float last_angle_ = 0, sweep_ = 0, still_seconds_ = 0;
+    bool had_angle_ = false;
 };
 }
