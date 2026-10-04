@@ -799,10 +799,10 @@ RACE_DETECTOR(822CAC90, {
 // call. (Half turns at +56, as this used to write, are 180 times too small:
 // no amount of turning rated a jump.)
 RACE_DETECTOR(822C9938, {
-    const bool turning = b.left_x * b.left_x + b.left_y * b.left_y >= 0.25f;
+    const bool turning = b.stick_x * b.stick_x + b.stick_y * b.stick_y >= 0.25f;
     float total = load_float(detector + 72);
     if (turning) {
-        const float angle = std::atan2(b.left_y, b.left_x) * 57.29578f;
+        const float angle = std::atan2(b.stick_y, b.stick_x) * 57.29578f;
         if (memory().load<uint8_t>(detector + 80)) {
             float delta = angle - load_float(detector + 76);
             if (delta > 180.0f) delta -= 360.0f;

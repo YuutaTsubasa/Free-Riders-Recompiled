@@ -82,9 +82,48 @@ void run(float steering_scale) {
 }
 }
 
+// The stick at an angle (degrees), fully deflected.
+sfr::GamepadState stick_at(float degrees) {
+    const float r = degrees * 3.14159265f / 180.0f;
+    return pad(0, int16_t(std::cos(r) * 32767), int16_t(std::sin(r) * 32767));
+}
+
+void spins() {
+    sfr::RaceInput race;
+    const float frame = 1.0f / 60;
+    // Steering from full left over the top to full right sweeps 180 degrees:
+    // still steering, so the lean and the forward push stay.
+    for (float a = 180; a >= 0; a -= 15) race.update(stick_at(a), frame);
+    require(!race.body().spinning && race.body().left_x > .9f && race.body().lean_right > 1.0f,
+            "steering across the top is not a spin");
+    // Round and round (24 degrees a frame, about four turns a second).
+    sfr::RaceInput spin;
+    bool accelerated_while_spinning = false;
+    for (int i = 0; i < 60; ++i) {
+        spin.update(stick_at(-24.0f * i), frame);
+        if (spin.body().spinning && spin.body().left_y >= 0.65f) accelerated_while_spinning = true;
+    }
+    require(spin.body().spinning, "circling the stick is a spin");
+    require(!accelerated_while_spinning, "a spin never pushes the board forward");
+    require(spin.body().left_x == 0 && spin.body().left_y == 0 && spin.body().lean_right == 1.0f &&
+            spin.body().lean_left == 1.0f && spin.body().lean == 0, "a spin neither leans nor steers");
+    require(spin.body().stick_x != 0 || spin.body().stick_y != 0, "the trick still sees the stick");
+    // Held still, the spin ends after a fifth of a second and steering returns.
+    for (int i = 0; i < 6; ++i) spin.update(stick_at(0), frame);
+    require(spin.body().spinning, "a pause shorter than a fifth of a second keeps the spin");
+    for (int i = 0; i < 12; ++i) spin.update(stick_at(0), frame);
+    require(!spin.body().spinning && spin.body().left_x > .9f, "a still stick steers again");
+    // Centred, the spin ends as well.
+    for (int i = 0; i < 60; ++i) spin.update(stick_at(24.0f * i), frame);
+    require(spin.body().spinning, "spinning the other way is a spin");
+    for (int i = 0; i < 13; ++i) spin.update(pad(0), frame);
+    require(!spin.body().spinning, "a centred stick ends the spin");
+}
+
 int main(int argc, char** argv) {
     try {
         run(argc > 1 ? std::strtof(argv[1], nullptr) : 3.5f);
+        spins();
         std::cout << "nui race tests passed\n";
         return 0;
     } catch (const std::exception& error) {
