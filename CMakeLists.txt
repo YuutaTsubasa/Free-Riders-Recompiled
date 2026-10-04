@@ -16,6 +16,13 @@ if(APPLE)
     add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include cstdlib>")
 endif()
 option(SFR_BUILD_DIAGNOSTIC "Build the game CPU diagnostic (requires generated code)" OFF)
+# Guest memory read and written as base + address by generated code, as in
+# Unleashed and Marathon Recompiled, instead of through GuestMemory's checks
+# (docs/architecture-migration.md, phase 3).
+option(SFR_DIRECT_MEMORY "Generated code accesses guest memory directly" OFF)
+if(SFR_DIRECT_MEMORY)
+    add_compile_definitions(SFR_DIRECT_MEMORY=1)
+endif()
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/XenonRecomp/CMakeLists.txt")
     message(FATAL_ERROR "Run scripts/bootstrap.py to obtain the pinned XenonRecomp tools.")
 endif()
@@ -900,6 +907,11 @@ if(SFR_BUILD_DIAGNOSTIC)
     target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_wait_trace)
     target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_native_timer_resolution)
     target_sources(sfr_cpu_diagnostic PRIVATE src/guest_graphics_hooks.cpp src/game_patches.cpp src/nui_hooks.cpp src/nui_race_hooks.cpp)
+    # The title's heap on o1heap (SFR_HOST_HEAP=1; docs/architecture-migration.md, phase 2).
+    # o1heap is C: its own library, clear of the diagnostic's C++ options.
+    add_library(sfr_o1heap STATIC src/o1heap/o1heap.c)
+    target_sources(sfr_cpu_diagnostic PRIVATE src/heap_hooks.cpp src/guest_heap.cpp)
+    target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_o1heap)
     target_sources(sfr_cpu_diagnostic PRIVATE src/native_winsock.cpp)
     target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_native_notifications)
     target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_guest_graphics sfr_asset_files sfr_native_sync_objects sfr_guest_threads)

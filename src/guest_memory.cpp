@@ -16,6 +16,7 @@
 #endif
 #else
 #include <sys/mman.h>
+#include <signal.h>
 #include <unistd.h>
 #endif
 
@@ -647,6 +648,7 @@ void GuestMemory::commit_impl(uint64_t address, uint64_t size, bool write_combin
     auto next_backing = backing_;
     next_backing.insert(next_backing.end(), fresh.begin(), fresh.end());
     (void)write_combined;  // cached, see map_write_combined
+    disarm_watch(address, host_size);  // read-write again, watched or not
     if (mprotect(base_ + address, host_size, PROT_READ | PROT_WRITE) != 0)
 #endif
         throw RuntimeStop("memory-map", address, "cannot commit guest pages");
@@ -956,6 +958,153 @@ void GuestMemory::zero_cache_line(uint32_t effective_address) {
     complete_store(address, 128);
 }
 
+namespace {
+// One memory owns the protected pages at a time (the diagnostic has one).
+std::atomic<GuestMemory*> watched_memory{nullptr};
+// Serializes protection changes with the fault handler, which cannot take a
+// mutex. Nothing holding it writes guest memory, so a fault never waits on
+// its own thread.
+std::atomic_flag watch_lock = ATOMIC_FLAG_INIT;
+struct WatchLock {
+    WatchLock() { while (watch_lock.test_and_set(std::memory_order_acquire)) {} }
+    ~WatchLock() { watch_lock.clear(std::memory_order_release); }
+};
+bool protect_pages(uint8_t* at, uint64_t size, bool read_only) {
+#ifdef _WIN32
+    DWORD old = 0;
+    return VirtualProtect(at, size, read_only ? PAGE_READONLY : PAGE_READWRITE, &old) != 0;
+#else
+    return mprotect(at, size, read_only ? PROT_READ : PROT_READ | PROT_WRITE) == 0;
+#endif
+}
+void report_guest_fault(uint64_t guest) {
+    // Async-signal-safe: no allocation, no stdio.
+    char text[64] = "GUEST_ACCESS_VIOLATION guest=0x";
+    size_t length = 31;
+    for (int shift = 28; shift >= 0; shift -= 4) text[length++] = "0123456789abcdef"[(guest >> shift) & 15];
+    text[length++] = '\n';
+#ifdef _WIN32
+    DWORD written = 0;
+    WriteFile(GetStdHandle(STD_ERROR_HANDLE), text, DWORD(length), &written, nullptr);
+#else
+    (void)!write(2, text, length);
+#endif
+}
+#ifdef _WIN32
+LONG CALLBACK watch_fault_handler(EXCEPTION_POINTERS* info) {
+    const auto* record = info->ExceptionRecord;
+    if (record->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || record->NumberParameters < 2)
+        return EXCEPTION_CONTINUE_SEARCH;
+    GuestMemory* memory = watched_memory.load(std::memory_order_acquire);
+    const uintptr_t address = uintptr_t(record->ExceptionInformation[1]);
+    if (!memory) return EXCEPTION_CONTINUE_SEARCH;
+    if (record->ExceptionInformation[0] == 1 && memory->handle_watch_fault(address))
+        return EXCEPTION_CONTINUE_EXECUTION;
+    if (address >= uintptr_t(memory->base()) && address - uintptr_t(memory->base()) < GuestMemory::address_space_size)
+        report_guest_fault(address - uintptr_t(memory->base()));
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+#else
+struct sigaction previous_segv{};
+void watch_fault_handler(int signal, siginfo_t* info, void* context) {
+    GuestMemory* memory = watched_memory.load(std::memory_order_acquire);
+    const uintptr_t address = uintptr_t(info->si_addr);
+    if (memory && memory->handle_watch_fault(address)) return;
+    if (memory && address >= uintptr_t(memory->base()) &&
+        address - uintptr_t(memory->base()) < GuestMemory::address_space_size)
+        report_guest_fault(address - uintptr_t(memory->base()));
+    if (previous_segv.sa_flags & SA_SIGINFO) {
+        if (previous_segv.sa_sigaction) { previous_segv.sa_sigaction(signal, info, context); return; }
+    } else if (previous_segv.sa_handler != SIG_DFL && previous_segv.sa_handler != SIG_IGN) {
+        previous_segv.sa_handler(signal);
+        return;
+    }
+    // The default action: let the fault happen again without us.
+    struct sigaction fallback{};
+    fallback.sa_handler = SIG_DFL;
+    sigaction(signal, &fallback, nullptr);
+}
+#endif
+void install_watch_handler(GuestMemory* memory) {
+    GuestMemory* expected = nullptr;
+    if (!watched_memory.compare_exchange_strong(expected, memory) && expected != memory)
+        throw RuntimeStop("memory-watch", 0, "page-protection watches support one guest memory");
+    static const bool installed = [] {
+#ifdef _WIN32
+        return AddVectoredExceptionHandler(1, watch_fault_handler) != nullptr;
+#else
+        struct sigaction action{};
+        action.sa_sigaction = watch_fault_handler;
+        action.sa_flags = SA_SIGINFO | SA_ONSTACK;
+        sigemptyset(&action.sa_mask);
+        return sigaction(SIGSEGV, &action, &previous_segv) == 0;
+#endif
+    }();
+    if (!installed) throw RuntimeStop("memory-watch", 0, "cannot install the page-protection fault handler");
+}
+}
+
+void GuestMemory::arm_watch(uint64_t first_page, uint64_t last_page) {
+    install_watch_handler(this);
+    // Protection works in host pages, which may hold several 4 KiB guest pages.
+    const uint64_t per_host = page_size_ / fast_page_size;
+    WatchLock lock;
+    if (!fault_epochs_) {
+        fault_epochs_ = std::make_unique<uint32_t[]>(address_space_size / fast_page_size);
+        fault_streaks_ = std::make_unique<uint8_t[]>(address_space_size / fast_page_size);
+    }
+    const uint32_t epoch = write_epoch_.load(std::memory_order_relaxed);
+    for (uint64_t host = first_page / per_host; host <= last_page / per_host; ++host) {
+        const uint64_t first = host * per_host;
+        bool committed = true, armed = true;
+        for (uint64_t page = first; page < first + per_host; ++page) {
+            committed &= fast_pages_[page] != 0 || (partial_page_ends_[page] != 0);
+            armed &= (watched_pages_[page] & watch_armed) != 0;
+        }
+        if (armed || !committed) continue;
+        if (fault_streaks_[first] >= 2 && epoch - fault_epochs_[first] < 300) continue;
+        if (!protect_pages(base_ + first * fast_page_size, page_size_, true)) continue;
+        for (uint64_t page = first; page < first + per_host; ++page)
+            std::atomic_ref<uint8_t>(watched_pages_[page]).fetch_or(watch_armed, std::memory_order_relaxed);
+    }
+}
+
+void GuestMemory::disarm_watch(uint64_t address, uint64_t size) const {
+    if (!direct_guest_access || !size) return;
+    const uint64_t per_host = page_size_ / fast_page_size;
+    WatchLock lock;
+    for (uint64_t page = address / fast_page_size / per_host * per_host;
+         page <= (address + size - 1) / fast_page_size && page < address_space_size / fast_page_size; ++page)
+        std::atomic_ref<uint8_t>(watched_pages_[page]).fetch_and(uint8_t(~watch_armed), std::memory_order_relaxed);
+}
+
+bool GuestMemory::handle_watch_fault(uintptr_t host_address) noexcept {
+    if (host_address < uintptr_t(base_) || host_address - uintptr_t(base_) >= address_space_size) return false;
+    const uint64_t per_host = page_size_ / fast_page_size;
+    const uint64_t first = (host_address - uintptr_t(base_)) / page_size_ * per_host;
+    WatchLock lock;
+    // Ours whenever any guest page in it is watched: an arm racing an earlier
+    // fault can leave a protected page with its armed bit already cleared.
+    bool watched = false;
+    for (uint64_t page = first; page < first + per_host; ++page) watched |= (watched_pages_[page] & 1) != 0;
+    if (!watched) return false;
+    if (!protect_pages(base_ + first * fast_page_size, page_size_, false)) return false;
+    for (uint64_t page = first; page < first + per_host; ++page) {
+        std::atomic_ref<uint8_t>(watched_pages_[page]).fetch_and(uint8_t(~watch_armed), std::memory_order_relaxed);
+        if (watched_pages_[page] & 1) note_watched_write(page);
+    }
+    if (fault_epochs_) {
+        const uint32_t epoch = write_epoch_.load(std::memory_order_relaxed);
+        uint8_t& streak = fault_streaks_[first];
+        streak = epoch - fault_epochs_[first] <= 120 ? uint8_t(std::min(streak + 1, 255)) : uint8_t(1);
+        fault_epochs_[first] = epoch;
+    }
+    watch_faults.fetch_add(1, std::memory_order_relaxed);
+    fault_pages[fault_cursor.fetch_add(1, std::memory_order_relaxed) % 256].store(
+        uint32_t(first * fast_page_size), std::memory_order_relaxed);
+    return true;
+}
+
 void GuestMemory::watch_writes(uint64_t address, uint64_t size) {
     if (!size || address >= address_space_size || size > address_space_size - address) return;
     for (uint64_t page = address / fast_page_size; page <= (address + size - 1) / fast_page_size; ++page) {
@@ -963,6 +1112,7 @@ void GuestMemory::watch_writes(uint64_t address, uint64_t size) {
         auto flag=std::atomic_ref<uint8_t>(fast_pages_[page]);
         if (flag.load(std::memory_order_relaxed)) flag.fetch_or(fast_watched, std::memory_order_relaxed);
     }
+    if (direct_guest_access) arm_watch(address / fast_page_size, (address + size - 1) / fast_page_size);
 }
 
 void GuestMemory::enable_write_epochs() {
@@ -974,8 +1124,10 @@ bool GuestMemory::written_since(uint64_t address, uint64_t size, uint32_t epoch)
     if (!page_epochs_) return true;
     if (!size || address >= address_space_size || size > address_space_size - address) return true;
     for (uint64_t page = address / fast_page_size; page <= (address + size - 1) / fast_page_size; ++page) {
-        if (!(std::atomic_ref<uint8_t>(watched_pages_[page]).load(std::memory_order_relaxed) & 1))
-            return true;  // not watched: no record of its writes
+        const uint8_t bits = std::atomic_ref<uint8_t>(watched_pages_[page]).load(std::memory_order_relaxed);
+        if (!(bits & 1)) return true;  // not watched: no record of its writes
+        // Open (direct_guest_access): later writes leave no record.
+        if (direct_guest_access && !(bits & watch_armed)) return true;
         if (page_epochs_[page].load(std::memory_order_relaxed) >= epoch) return true;
     }
     return false;
@@ -986,13 +1138,18 @@ bool GuestMemory::take_written(uint64_t address, uint64_t size) {
     bool written = false;
     for (uint64_t page = address / fast_page_size; page <= (address + size - 1) / fast_page_size; ++page) {
         // Written bits are set by stores on other threads too.
-        written |= (std::atomic_ref<uint8_t>(watched_pages_[page]).fetch_and(uint8_t(~2), std::memory_order_relaxed) & 2) != 0;
+        const uint8_t bits = std::atomic_ref<uint8_t>(watched_pages_[page]).fetch_and(uint8_t(~2), std::memory_order_relaxed);
+        written |= (bits & 2) != 0 || (direct_guest_access && (bits & 1) && !(bits & watch_armed));
     }
+    // Protected again, so the next write is seen.
+    if (direct_guest_access) arm_watch(address / fast_page_size, (address + size - 1) / fast_page_size);
     return written;
 }
 
 std::atomic<uint64_t> watched_writes{0};
 void GuestMemory::mark_written(uint64_t address, uint64_t size) const {
+    // Backing that is discarded or remade loses its protection with it.
+    disarm_watch(address, size);
     for (uint64_t page = address / fast_page_size; page <= (address + size - 1) / fast_page_size; ++page)
         if (std::atomic_ref<uint8_t>(watched_pages_[page]).load(std::memory_order_relaxed) & 1) {
             note_watched_write(page);
@@ -1055,6 +1212,19 @@ void GuestMemory::add_read_only_word(uint32_t address, std::function<uint32_t()>
     read_only_words_.push_back({address, std::move(provider), access});
     special_words_.push_back(address);
     rebuild_fast_pages(address, 4);
+    // Generated code reads the word itself (direct_guest_access): it holds
+    // the provider's value as it is now. Changing values are written by their
+    // owners (refresh_word); a provider that needs a guest context leaves the
+    // word to its owner as well.
+    if (direct_guest_access) {
+        layout.unlock();
+        try { refresh_word(address, read_only_words_.back().provider()); } catch (...) {}
+    }
+}
+
+void GuestMemory::refresh_word(uint32_t address, uint32_t value) {
+    const uint32_t big = __builtin_bswap32(value);
+    std::memcpy(base_ + address, &big, 4);
 }
 
 uint64_t GuestMemory::read_scalar(uint64_t address, uint64_t size) const {

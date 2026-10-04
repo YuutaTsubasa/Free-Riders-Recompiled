@@ -382,6 +382,12 @@ struct NativeRenderer::Impl {
         uint32_t view_count = 0;
         uint32_t epoch = 0;
         uint64_t last_frame = 0, size = 0;
+        // Rewritten at consecutive lookups: with page protection recording
+        // the writes (GuestMemory::direct_guest_access) each rewrite is a
+        // fault, so a buffer the title fills every frame is copied without
+        // being watched until dynamic_until.
+        uint32_t rewrites = 0;
+        uint64_t dynamic_until = 0;
     };
     std::unordered_map<VertexKey, VertexEntry, VertexKeyHash> vertex_entries;
     std::vector<std::pair<uint64_t, std::unique_ptr<plume::RenderBuffer>>> retired_vertex_buffers;
@@ -733,11 +739,20 @@ NativeRenderer::CachedVertices NativeRenderer::vertex_cache(GuestMemory& memory,
         entry.epoch = now;
         return {};
     }
+    if (impl_->frame < entry.dynamic_until) return {};
     if (written()) {
         impl_->retire_vertices(entry);
         entry.epoch = now;
+        if (GuestMemory::direct_guest_access && ++entry.rewrites >= 3) {
+            entry.rewrites = 0;
+            entry.dynamic_until = impl_->frame + 300;
+            return {};
+        }
+        // Protected again where page protection records the writes.
+        for (uint32_t i = 0; i < entry.view_count; ++i) memory.watch_writes(entry.views[i], bytes);
         return {};
     }
+    entry.rewrites = 0;
     if (entry.buffer) return {entry.buffer.get(), {}};
     if (entry.epoch >= now || impl_->cached_vertex_bytes + host_bytes > budget) return {};
     // Unwritten for a whole frame: keep it. Stores from here on (including

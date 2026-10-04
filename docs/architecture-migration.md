@@ -51,6 +51,11 @@
 - **做法：** o1heap（或等價）＋ mutex，照 Unleashed 的 `kernel/heap.cpp`；池配置器整組換掉後就不需要全域許可。
 - **效益：** 拿掉比賽開場時配置器持有全域許可 100–570 ms 的卡頓；也是第 4 階段的前置。
 - **風險：** 中高（要完整掌握配置器的語意）。
+- **進度（2026-10-04）：** `SFR_HOST_HEAP=1`（預設關），`src/guest_heap.cpp`、`src/heap_hooks.cpp`。
+  - 依呼叫結構辨認 XAPI 的 NT heap：`824E15E8` RtlAllocateHeap、`824E1EE0` RtlFreeHeap、`824E21D8` RtlReAllocateHeap、`824E0860` RtlSizeHeap、`824E01C8` RtlDestroyHeap（`824E1018` RtlCreateHeap 照舊）。XAllocMem `824DAD90`／XFreeMem `824DAEB0`／XMemSize `824DAED0` 的非實體路徑經由 HeapAlloc／HeapFree 走到這些 hook；實體路徑仍用 `MmAllocatePhysicalMemoryEx`（GPU 位址的視圖對應依賴它）。
+  - o1heap 兩個 arena：`0x20400000–0x40000000`、`0x50000000–0x70000000`（約 1 GB），一把 mutex；hook 是 `SFR_CONCURRENT_HOOK`，不拿許可。
+  - 與 Marathon 的差異：每個區塊記住它的 heap handle，`RtlDestroyHeap` 會一起釋放（遊戲有 6 處 HeapDestroy，Marathon 的做法會洩漏）。
+  - 桌機整場比賽（三圈到結算）正常。池配置器 `824A3398` 尚未處理。
 
 ### 第 3 階段：直接記憶體存取
 
@@ -61,6 +66,12 @@
   - 非法存取會從 `RuntimeStop`（帶 guest 位址）變成主機 access violation → 加一個把主機位址換回 guest 位址的崩潰處理。
 - **效益：** Thor 主執行緒約 12% 花在記憶體檢查與 helper。
 - **風險：** 高（失去目前的除錯能力，快取失效錯誤會變成畫面錯誤而不是停止）。
+- **進度（2026-10-04）：** CMake `-DSFR_DIRECT_MEMORY=ON`（預設關）。
+  - `PPC_LOAD_*`／`PPC_STORE_*` 是 `bswap(*(volatile T*)(base + uint32_t(x)))`，向量存取與 `dcbz` 也直接做；reservation、更新形式、屏障的 rewrite 不變。
+  - 寫入監看改用頁面保護（`GuestMemory::direct_guest_access`）：被監看的頁面唯讀，第一次寫入時例外處理記錄並打開；打開的頁面視為已寫入，直到再被監看。Windows 用 vectored handler，Android／Linux 用 `SIGSEGV`（串接原本的 handler）。不在監看範圍的 guest 位址錯誤會印 `GUEST_ACCESS_VIOLATION guest=0x…`。
+  - 每幀都被改寫的頁面（GPU 讀的環狀緩衝區）在 120 幀內第二次觸發就 300 幀不再上鎖；頂點快取同一項目連續三次被改寫也停止監看 300 幀。移動中的比賽每幀約 9.5 次例外（沒有這兩條規則時約 57 次）。
+  - 特殊字：常數 provider 在註冊時寫入值；`VdGlobalDevice` 寫入 device cell（provider 的副作用只是診斷記錄）；`KeTimeStampBundle` 的 uptime 由主機執行緒每毫秒寫入。
+  - AYN Thor（surface targets 開，A/B/A/B）：29.6／29.5 → 40.6／40.0 fps，主執行緒 CPU 22.5 → 17.4 ms。桌機整場比賽到結算畫面正確。
 
 ### 第 4 階段：拿掉全域許可
 

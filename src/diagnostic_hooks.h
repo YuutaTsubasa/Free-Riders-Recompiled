@@ -103,6 +103,23 @@ void load_vector_memory_slow(uint32_t, uint8_t (&)[16]);
 void store_vector_memory_slow(uint32_t, const uint8_t (&)[16]);
 // The first few of each still go the checked way, which logs them.
 inline uint32_t vector_load_traces = 4, vector_store_traces = 4;
+// GuestMemory::base() of active_memory, for the direct accesses below.
+inline uint8_t* guest_base = nullptr;
+#if SFR_DIRECT_MEMORY
+// SFR_DIRECT_MEMORY: guest memory is read and written as base + address, as
+// in Unleashed and Marathon Recompiled (their ppc_context.h); nothing is
+// checked, logged or watched per access (see GuestMemory::direct_guest_access).
+inline void load_vector_memory(uint32_t address, uint8_t (&destination)[16]) {
+    reverse_vector(guest_base + (address & ~0xFu), destination);
+}
+inline void store_vector_memory(uint32_t address, const uint8_t (&source)[16]) {
+    reverse_vector(source, guest_base + (address & ~0xFu));
+}
+void load_vector_left(uint32_t, uint8_t (&)[16]);
+void load_vector_right(uint32_t, uint8_t (&)[16]);
+inline void zero_cache_block(uint32_t address) { std::memset(guest_base + (address & ~31u), 0, 32); }
+inline void zero_cache_line(uint32_t address) { std::memset(guest_base + (address & ~127u), 0, 128); }
+#else
 inline void load_vector_memory(uint32_t address, uint8_t (&destination)[16]) {
     if (active_memory && !vector_load_traces) [[likely]]
         if (const uint8_t* bytes = active_memory->fast_read(address & ~0xFu, 16)) [[likely]] {
@@ -121,11 +138,12 @@ inline void store_vector_memory(uint32_t address, const uint8_t (&source)[16]) {
         }
     store_vector_memory_slow(address, source);
 }
+void zero_cache_block(uint32_t);
+void zero_cache_line(uint32_t);
+#endif
 void store_vector_word(uint32_t, const uint8_t (&)[16]);
 void store_vector_left(uint32_t, const uint8_t (&)[16]);
 void store_vector_right(uint32_t, const uint8_t (&)[16]);
-void zero_cache_block(uint32_t);
-void zero_cache_line(uint32_t);
 void synchronize_resource_memory(PPCContext&);
 // Frames presented so far (guest_graphics_hooks.cpp).
 extern std::atomic<uint32_t> present_count;
@@ -183,6 +201,18 @@ void stop_nui_skeleton_events();
 }
 // Scalar accesses are bounded and big-endian. Recognized reservation pairs use
 // explicit hooks; other raw guest-memory bodies remain diagnostic stops.
+#if SFR_DIRECT_MEMORY
+// As XenonRecomp's own ppc_context.h: volatile, so a thread's accesses are
+// neither merged nor reordered by the compiler (guests run in parallel).
+#define PPC_LOAD_U8(x) (*(volatile uint8_t*)(base + uint32_t(x)))
+#define PPC_LOAD_U16(x) __builtin_bswap16(*(volatile uint16_t*)(base + uint32_t(x)))
+#define PPC_LOAD_U32(x) __builtin_bswap32(*(volatile uint32_t*)(base + uint32_t(x)))
+#define PPC_LOAD_U64(x) __builtin_bswap64(*(volatile uint64_t*)(base + uint32_t(x)))
+#define PPC_STORE_U8(x,y) (*(volatile uint8_t*)(base + uint32_t(x)) = uint8_t(y))
+#define PPC_STORE_U16(x,y) (*(volatile uint16_t*)(base + uint32_t(x)) = __builtin_bswap16(uint16_t(y)))
+#define PPC_STORE_U32(x,y) (*(volatile uint32_t*)(base + uint32_t(x)) = __builtin_bswap32(uint32_t(y)))
+#define PPC_STORE_U64(x,y) (*(volatile uint64_t*)(base + uint32_t(x)) = __builtin_bswap64(uint64_t(y)))
+#else
 #define PPC_LOAD_U8(x) sfr::active_memory->load<uint8_t>(uint64_t(x))
 #define PPC_LOAD_U16(x) sfr::active_memory->load<uint16_t>(uint64_t(x))
 #define PPC_LOAD_U32(x) sfr::active_memory->load<uint32_t>(uint64_t(x))
@@ -191,6 +221,7 @@ void stop_nui_skeleton_events();
 #define PPC_STORE_U16(x,y) sfr::active_memory->store<uint16_t>(uint64_t(x), uint16_t(y))
 #define PPC_STORE_U32(x,y) sfr::active_memory->store<uint32_t>(uint64_t(x), uint32_t(y))
 #define PPC_STORE_U64(x,y) sfr::active_memory->store<uint64_t>(uint64_t(x), uint64_t(y))
+#endif
 #define PPC_CALL_INDIRECT_FUNC(x) sfr::call_indirect(ctx, base, uint32_t(x))
 
 // Defines a replacement of original function x and records it as a hook.

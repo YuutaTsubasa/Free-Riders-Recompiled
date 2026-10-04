@@ -14,6 +14,7 @@
 #include "native_vertex_layout.h"
 #include "guest_execution.h"
 #include "wait_trace.h"
+#include <map>
 #include <plume_render_interface.h>
 #include <algorithm>
 #include <array>
@@ -457,6 +458,16 @@ SFR_HOOK(sub_824E65A0) {
         }
     }
 #endif
+    // SFR_WATCH_TRACE=1: every 600 presents, the guest pages behind the
+    // latest page-protection faults (GuestMemory::direct_guest_access).
+    static const bool watch_trace=[]{ const char* t=std::getenv("SFR_WATCH_TRACE"); return t && *t=='1'; }();
+    if(watch_trace && sfr::present_count%600==0) {
+        std::map<uint32_t,uint32_t> pages;
+        for(const auto& page:sfr::GuestMemory::fault_pages) if(const uint32_t p=page.load(std::memory_order_relaxed)) ++pages[p];
+        std::cerr << "WATCH_FAULT_PAGES" << std::hex;
+        for(const auto& [page,count]:pages) std::cerr << " 0x" << page << ':' << std::dec << count << std::hex;
+        std::cerr << std::dec << '\n';
+    }
     if(frame_metrics) {
     uint64_t main_ready_ns=execution_work[0].main_ready_unowned_ns;
     for(const auto ns:execution_work[0].main_ready_by_owner_ns) main_ready_ns+=ns;
@@ -476,6 +487,7 @@ SFR_HOOK(sub_824E65A0) {
               << " pipelines=" << pipeline_work.created << " pipeline_ms=" << pipeline_work.milliseconds
               << " ring_flushes=" << pipeline_work.ring_flushes
               << " resolve_copies=" << pipeline_work.resolve_copies
+              << " watch_faults=" << sfr::GuestMemory::watch_faults.exchange(0, std::memory_order_relaxed)
               << " constant_upload_bytes=" << pipeline_work.constant_upload_bytes
               << " constant_reusable_bytes=" << pipeline_work.constant_reusable_bytes
               << " constant_saved_bytes=" << pipeline_work.constant_saved_bytes

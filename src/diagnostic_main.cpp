@@ -3,6 +3,7 @@
 #include "ppc_recomp_shared.h"
 #include "xex_module.h"
 #include "virtual_memory.h"
+#include "guest_heap.h"
 #include "critical_section.h"
 #include "hardware_info.h"
 #include "thread_local_storage.h"
@@ -771,6 +772,7 @@ void store_vector_word(uint32_t address, const uint8_t (&source)[16]) {
     std::copy(std::begin(source), std::end(source), value.begin());
     store_vector_word(*active_memory, address, value);
 }
+#if !SFR_DIRECT_MEMORY
 void zero_cache_block(uint32_t address) {
     if (!active_memory) throw RuntimeStop("memory-context", address, "guest memory is not initialized");
     active_memory->zero_cache_block(address);
@@ -778,6 +780,7 @@ void zero_cache_block(uint32_t address) {
         std::cerr << "CACHE_BLOCK_ZERO effective=0x" << std::hex << address
                   << " aligned=0x" << (address & ~uint32_t{31}) << std::dec << " bytes=32\n";
 }
+#endif
 void load_vector_left(uint32_t address, uint8_t (&destination)[16]) {
     if (!active_memory) throw RuntimeStop("memory-context", address, "guest memory is not initialized");
     const auto value = load_vector_left(*active_memory, address);
@@ -800,10 +803,12 @@ void store_vector_right(uint32_t address, const uint8_t (&source)[16]) {
     std::copy(std::begin(source), std::end(source), value.begin());
     store_vector_right(*active_memory, address, value);
 }
+#if !SFR_DIRECT_MEMORY
 void zero_cache_line(uint32_t address) {
     if (!active_memory) throw RuntimeStop("memory-context", address, "guest memory is not initialized");
     active_memory->zero_cache_line(address);
 }
+#endif
 // SFR_WAIT_GRAPH=1: every five seconds, the main thread's time blocked on
 // each wait object and which guests signalled it: what a frame waits for.
 static const bool wait_trace_enabled = [] {
@@ -1464,6 +1469,8 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
             protection = physical_memory->query_address_protect(queried_address);
         else if (image_protection->contains(queried_address))
             protection = image_protection->query_address_protect(queried_address);
+        else if (active_heap && GuestHeap::in_arena(queried_address))
+            protection = 4;  // PAGE_READWRITE: the host heap's arenas
         else
             throw RuntimeStop("memory-protection", queried_address, "unsupported address class for protection query");
         ctx.r3.u64 = protection;
@@ -3728,10 +3735,21 @@ int main(int argc, char** argv) {
             throw std::runtime_error("decoded image size differs from compiled game");
         sfr::GuestClock clock;
         sfr::active_clock = &clock;
-        sfr::GuestMemory memory;
+#if SFR_DIRECT_MEMORY
+        sfr::GuestMemory::direct_guest_access = true;
+#endif
+        // The host heap's arenas (SFR_HOST_HEAP) are committed beside the
+        // title's own allocations.
+        sfr::GuestMemory memory(sfr::GuestHeap::enabled()
+                                    ? sfr::GuestMemory::default_backing_budget + 0x40000000ull
+                                    : sfr::GuestMemory::default_backing_budget);
         sfr::VirtualMemory allocations(memory);
+        // Never destroyed: detached guests may still be in a heap call when
+        // the program leaves, and the arenas go with the memory.
+        if (sfr::GuestHeap::enabled()) sfr::active_heap = new sfr::GuestHeap(memory);
         sfr::virtual_memory = &allocations;
         sfr::active_memory = &memory;
+        sfr::guest_base = memory.base();
         memory.map(PPC_IMAGE_BASE, PPC_IMAGE_SIZE);
         std::ifstream image(dump / "image.bin", std::ios::binary);
         if (!image.read(reinterpret_cast<char*>(memory.base() + PPC_IMAGE_BASE), PPC_IMAGE_SIZE))
@@ -3829,6 +3847,10 @@ int main(int argc, char** argv) {
                               << " resource=0x" << ctx.r31.u32 << " caller=0x" << caller << std::dec << '\n';
                     return cell;
                 });
+                // Read directly by generated code there: the provider's
+                // checks only audit its one consumer, and the value is fixed.
+                if (sfr::GuestMemory::direct_guest_access)
+                    memory.refresh_word(static_cast<uint32_t>(value), sfr::VideoGlobals::device_cell);
                 std::cerr << "BIND VdGlobalDevice cell=0x" << std::hex << sfr::VideoGlobals::device_cell
                           << std::dec << " scope=shared-surface-destruction\n";
             }
