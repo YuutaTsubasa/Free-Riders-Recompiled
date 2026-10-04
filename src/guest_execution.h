@@ -73,6 +73,7 @@ public:
         bool owns_ = false;
         std::atomic<std::thread::id> owner_thread_{};
         std::chrono::steady_clock::time_point acquired_at_{};
+        std::chrono::steady_clock::time_point owned_since_{};  // not renewed by quanta
         void released();  // accounts the hold that ends
         uint32_t checkpoints_ = 0;
         bool urgent_owner_ = false;
@@ -83,6 +84,9 @@ public:
     // Minimum run time before a checkpoint hands the permit to a ready guest.
     // Zero (the default) hands off at every checkpoint while a guest is ready.
     void set_scheduling_quantum(std::chrono::microseconds quantum);
+    // Called, under the permit's lock and on the holding thread, when a hold
+    // of this permit of 20 ms or more ends (SFR_PERMIT_HOLD_TRACE).
+    void set_long_hold(void (*report)(uint64_t guest_id, double milliseconds));
     // Time-critical guests preempt at the owner's next checkpoint when they
     // become ready after a wait (see State::enqueue).
     void set_urgent(uint32_t guest_id, bool urgent);

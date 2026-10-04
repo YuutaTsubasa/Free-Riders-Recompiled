@@ -53,6 +53,9 @@ public:
     uint32_t guest_suspends(uint32_t handle) const;
     // Host handle of an open guest thread handle, or null.
     void* host_handle(uint32_t handle) const;
+    // Calls use with the thread's host handle (null when there is none) while
+    // no create or close can change it, so use may take its own reference.
+    void with_host_handle(uint32_t handle, const std::function<void(void*)>& use) const;
     // Open handle of the thread with this object, or 0 (e.g. the main thread).
     uint32_t handle_for_object(uint32_t object) const;
     bool owns_object(uint32_t object) const;
@@ -68,6 +71,7 @@ public:
     Snapshot snapshot(uint32_t handle) const;
     size_t size() const;
 private:
+    ResumeResult suspend_unlocked(uint32_t handle, uint32_t previous_output);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

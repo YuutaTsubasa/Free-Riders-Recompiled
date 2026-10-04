@@ -1,4 +1,5 @@
 #include "guest_execution.h"
+#include <iostream>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -21,6 +22,7 @@ GuestExecutionCancelled::GuestExecutionCancelled()
     : std::runtime_error("guest execution cancelled") {}
 
 struct GuestExecution::State {
+    void (*long_hold)(uint64_t guest_id, double milliseconds) = nullptr;
     struct Waiter {
         uint64_t guest_id;
         std::thread::id host_thread;
@@ -192,11 +194,16 @@ GuestExecution::Lease::~Lease() noexcept {
 
 void GuestExecution::Lease::released() {
     state_->account();
+    if (state_->long_hold) {
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - owned_since_).count();
+        if (ms >= 20.0) state_->long_hold(guest_id_, ms);
+    }
 }
 
 void GuestExecution::Lease::acquired() {
     owner_thread_.store(std::this_thread::get_id(), std::memory_order_relaxed);
     acquired_at_ = std::chrono::steady_clock::now();
+    owned_since_ = acquired_at_;
     state_->accounted_at = acquired_at_;
     checkpoints_ = 0;
     urgent_owner_ = state_->urgent_ids.contains(guest_id_);  // callers hold the mutex
@@ -323,6 +330,10 @@ void GuestExecution::Lease::run_wait(std::function<void(std::stop_token)> operat
 void GuestExecution::Lease::run_blocking(std::function<void(std::stop_token)> operation,
                                         std::function<void()> before_release) {
     if (!operation) throw std::logic_error("blocking guest operation is required");
+    if (detached_) {
+        if (before_release) before_release();
+        return run_wait(std::move(operation));
+    }
     auto self = std::make_shared<State::QueuedWaiter>(guest_id_, std::this_thread::get_id());
     std::stop_token stop_token;
     {
@@ -467,6 +478,8 @@ void GuestExecution::set_urgent(uint32_t guest_id, bool urgent) {
     else state_->urgent_ids.erase(guest_id);
 }
 
+void GuestExecution::set_long_hold(void (*report)(uint64_t, double)) { state_->long_hold = report; }
+
 void GuestExecution::set_scheduling_quantum(std::chrono::microseconds quantum) {
     state_->quantum_us.store(quantum.count(), std::memory_order_relaxed);
 }
@@ -540,7 +553,14 @@ void GuestExecution::fail(std::exception_ptr failure) noexcept {
     std::stop_source stop_source(std::nostopstate);
     {
         std::lock_guard lock(state_->mutex);
-        if (!state_->failure && failure) state_->failure = failure;
+        if (!state_->failure && failure) {
+            state_->failure = failure;
+            // Said now: the teardown that reports it at the end can itself
+            // crash (a broken command list), and the reason was lost with it.
+            try { std::rethrow_exception(failure); }
+            catch (const std::exception& error) { std::cerr << "EXECUTION_FAILURE " << error.what() << std::endl; }
+            catch (...) { std::cerr << "EXECUTION_FAILURE (not a std::exception)" << std::endl; }
+        }
         state_->stopping = true;
         state_->stopping_flag.store(true, std::memory_order_relaxed);
         stop_source = state_->stop_source;

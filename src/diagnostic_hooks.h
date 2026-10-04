@@ -1,6 +1,11 @@
 #pragma once
 #include <atomic>
 #include <optional>
+#if defined(__SSSE3__)
+#include <tmmintrin.h>
+#elif defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
 #include "guest_memory.h"
 #include "integer_arithmetic.h"
 #include "store_halfword_update.h"
@@ -34,6 +39,43 @@ inline bool is_hook(uint32_t address) {
     const uint32_t index = offset / 4;
     return (hook_bits[index / 64] >> (index % 64)) & 1;
 }
+// Hooks of the title's Direct3D (guest_graphics_hooks.cpp): with
+// SFR_PARALLEL_MAIN they take the graphics lock, which keeps one thread at a
+// time in the native device, and those that reach no other host state
+// (graphics_only) not the global permit. Unleashed and Marathon Recompiled
+// guard their device the same way, with no lock around the whole program.
+inline uint64_t graphics_hook_bits[(hook_limit - hook_base) / 4 / 64];
+inline uint64_t graphics_only_hook_bits[(hook_limit - hook_base) / 4 / 64];
+bool register_graphics_hook(const char* name, bool host_state);
+// Hooks of the title's motion input -- its skeleton frames and the race's
+// readers of them (nui_hooks.cpp, nui_race_hooks.cpp) -- take the input lock
+// instead of the global permit: what they share is the emulated players'
+// state, not the kernel's.
+inline uint64_t input_hook_bits[(hook_limit - hook_base) / 4 / 64];
+bool register_input_hook(const char* name);
+// Hooks of the title's menus -- the pad and voice standing in for the hand
+// cursor (nui_hooks.cpp) -- take the menu lock: what they share is the menu
+// emulation's state (the buttons pressed since the last input update, the
+// manager last updated, the scripted words).
+inline uint64_t menu_hook_bits[(hook_limit - hook_base) / 4 / 64];
+bool register_menu_hook(const char* name);
+// The graphics lock around host code outside the graphics hooks that changes
+// the native device (the Avatar's model drawn from its draw hook). Taken
+// after the input and menu locks, never before them.
+struct HostGraphicsScope {
+    HostGraphicsScope();
+    ~HostGraphicsScope();
+    HostGraphicsScope(const HostGraphicsScope&) = delete;
+    HostGraphicsScope& operator=(const HostGraphicsScope&) = delete;
+private:
+    bool owned_ = false;
+};
+inline bool test_hook_bit(const uint64_t* bits, uint32_t address) {
+    const uint32_t offset = address - hook_base;
+    if (offset >= hook_limit - hook_base || (address & 3)) return false;
+    const uint32_t index = offset / 4;
+    return (bits[index / 64] >> (index % 64)) & 1;
+}
 // Whether a guest function entry does more than name itself and checkpoint.
 // Everything else it does is observation: the ORIGINAL_* audits, the entry
 // traces and dumps, the sampler's address for SFR_SAMPLE_PROFILE. Playing turns it
@@ -56,12 +98,32 @@ inline void guest_checkpoint() {
     guest_checkpoint_permit();
 }
 void enter_function_observed(PPCContext&, const char*, uint32_t);
+// Gives back the permit and graphics lock the outermost hook's entry took.
+void hook_scope_exit() noexcept;
+struct HookScope {
+    HookScope() { ++guest_thread_state.entry.hook_depth; }
+    ~HookScope() {
+        auto& entry = guest_thread_state.entry;
+        if (!--entry.hook_depth && (entry.hook_stack_pointer || entry.graphics_stack_pointer || entry.input_stack_pointer))
+            hook_scope_exit();
+    }
+    HookScope(const HookScope&) = delete;
+    HookScope& operator=(const HookScope&) = delete;
+};
 // Every guest function entry; inline, as it runs millions of times a second.
 inline void enter_function(PPCContext& ctx, const char* name, uint32_t address) {
     GuestEntryState& entry = guest_thread_state.entry;
+    // A guest running beside the permit is observed only for hooks: an entry
+    // that is no hook, outside every hook, needs nothing more than the fast
+    // path. Taken out of line every time, these entries cost the main thread
+    // about 4 ms of an AYN Thor race frame once it ran beside the permit.
     if (entry.observed) [[unlikely]] {
-        enter_function_observed(ctx, name, address);
-        return;
+        if (!entry.parallel || entry.watched || entry.hook_stack_pointer || entry.graphics_stack_pointer ||
+            entry.input_stack_pointer ||
+            entry.detach_at_entry || is_hook(address)) {
+            enter_function_observed(ctx, name, address);
+            return;
+        }
     }
     if (entry.checkpoint_countdown) [[likely]] --entry.checkpoint_countdown;
     else guest_checkpoint_permit();
@@ -74,15 +136,71 @@ uint32_t load_reserved_word(PPCContext&, uint64_t);
 void store_conditional_word(PPCContext&, uint64_t, uint32_t);
 uint64_t load_reserved_doubleword(PPCContext&, uint64_t);
 void store_conditional_doubleword(PPCContext&, uint64_t, uint64_t);
-void load_vector_memory(uint32_t, uint8_t (&)[16]);
+// The sixteen bytes of an aligned vector reversed (the register holds byte 15
+// of memory in element 0), in one shuffle where SSSE3 or NEON exists.
+inline void reverse_vector(const uint8_t* from, uint8_t* to) {
+#if defined(__SSSE3__)
+    const __m128i order = _mm_setr_epi8(15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0);
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(to),
+                     _mm_shuffle_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(from)), order));
+#elif defined(__ARM_NEON)
+    // Reverse the bytes of each half, then exchange the halves.
+    const uint8x16_t halves = vrev64q_u8(vld1q_u8(from));
+    vst1q_u8(to, vextq_u8(halves, halves, 8));
+#else
+    for (unsigned i = 0; i < 16; ++i) to[i] = from[15 - i];
+#endif
+}
+// Vector loads and stores: an aligned vector in one ordinary page is read or
+// written here, inline in the generated code; everything else (special and
+// watched pages, a reservation, the first ones logged) goes to the checked
+// path. As a call every time they were 3.8% of a Thor race's main thread and
+// 8.1% of its busiest worker.
+void load_vector_memory_slow(uint32_t, uint8_t (&)[16]);
+void store_vector_memory_slow(uint32_t, const uint8_t (&)[16]);
+// The first few of each still go the checked way, which logs them.
+inline uint32_t vector_load_traces = 4, vector_store_traces = 4;
+// GuestMemory::base() of active_memory, for the direct accesses below.
+inline uint8_t* guest_base = nullptr;
+#if SFR_DIRECT_MEMORY
+// SFR_DIRECT_MEMORY: guest memory is read and written as base + address, as
+// in Unleashed and Marathon Recompiled (their ppc_context.h); nothing is
+// checked, logged or watched per access (see GuestMemory::direct_guest_access).
+inline void load_vector_memory(uint32_t address, uint8_t (&destination)[16]) {
+    reverse_vector(guest_base + (address & ~0xFu), destination);
+}
+inline void store_vector_memory(uint32_t address, const uint8_t (&source)[16]) {
+    reverse_vector(source, guest_base + (address & ~0xFu));
+}
 void load_vector_left(uint32_t, uint8_t (&)[16]);
 void load_vector_right(uint32_t, uint8_t (&)[16]);
-void store_vector_memory(uint32_t, const uint8_t (&)[16]);
+inline void zero_cache_block(uint32_t address) { std::memset(guest_base + (address & ~31u), 0, 32); }
+inline void zero_cache_line(uint32_t address) { std::memset(guest_base + (address & ~127u), 0, 128); }
+#else
+inline void load_vector_memory(uint32_t address, uint8_t (&destination)[16]) {
+    if (active_memory && !vector_load_traces) [[likely]]
+        if (const uint8_t* bytes = active_memory->fast_read(address & ~0xFu, 16)) [[likely]] {
+            reverse_vector(bytes, destination);
+            return;
+        }
+    load_vector_memory_slow(address, destination);
+}
+void load_vector_left(uint32_t, uint8_t (&)[16]);
+void load_vector_right(uint32_t, uint8_t (&)[16]);
+inline void store_vector_memory(uint32_t address, const uint8_t (&source)[16]) {
+    if (active_memory && !vector_store_traces) [[likely]]
+        if (uint8_t* bytes = active_memory->fast_write(address & ~0xFu, 16)) [[likely]] {
+            reverse_vector(source, bytes);
+            return;
+        }
+    store_vector_memory_slow(address, source);
+}
+void zero_cache_block(uint32_t);
+void zero_cache_line(uint32_t);
+#endif
 void store_vector_word(uint32_t, const uint8_t (&)[16]);
 void store_vector_left(uint32_t, const uint8_t (&)[16]);
 void store_vector_right(uint32_t, const uint8_t (&)[16]);
-void zero_cache_block(uint32_t);
-void zero_cache_line(uint32_t);
 void synchronize_resource_memory(PPCContext&);
 // Frames presented so far (guest_graphics_hooks.cpp).
 extern std::atomic<uint32_t> present_count;
@@ -140,6 +258,18 @@ void stop_nui_skeleton_events();
 }
 // Scalar accesses are bounded and big-endian. Recognized reservation pairs use
 // explicit hooks; other raw guest-memory bodies remain diagnostic stops.
+#if SFR_DIRECT_MEMORY
+// As XenonRecomp's own ppc_context.h: volatile, so a thread's accesses are
+// neither merged nor reordered by the compiler (guests run in parallel).
+#define PPC_LOAD_U8(x) (*(volatile uint8_t*)(base + uint32_t(x)))
+#define PPC_LOAD_U16(x) __builtin_bswap16(*(volatile uint16_t*)(base + uint32_t(x)))
+#define PPC_LOAD_U32(x) __builtin_bswap32(*(volatile uint32_t*)(base + uint32_t(x)))
+#define PPC_LOAD_U64(x) __builtin_bswap64(*(volatile uint64_t*)(base + uint32_t(x)))
+#define PPC_STORE_U8(x,y) (*(volatile uint8_t*)(base + uint32_t(x)) = uint8_t(y))
+#define PPC_STORE_U16(x,y) (*(volatile uint16_t*)(base + uint32_t(x)) = __builtin_bswap16(uint16_t(y)))
+#define PPC_STORE_U32(x,y) (*(volatile uint32_t*)(base + uint32_t(x)) = __builtin_bswap32(uint32_t(y)))
+#define PPC_STORE_U64(x,y) (*(volatile uint64_t*)(base + uint32_t(x)) = __builtin_bswap64(uint64_t(y)))
+#else
 #define PPC_LOAD_U8(x) sfr::active_memory->load<uint8_t>(uint64_t(x))
 #define PPC_LOAD_U16(x) sfr::active_memory->load<uint16_t>(uint64_t(x))
 #define PPC_LOAD_U32(x) sfr::active_memory->load<uint32_t>(uint64_t(x))
@@ -148,12 +278,28 @@ void stop_nui_skeleton_events();
 #define PPC_STORE_U16(x,y) sfr::active_memory->store<uint16_t>(uint64_t(x), uint16_t(y))
 #define PPC_STORE_U32(x,y) sfr::active_memory->store<uint32_t>(uint64_t(x), uint32_t(y))
 #define PPC_STORE_U64(x,y) sfr::active_memory->store<uint64_t>(uint64_t(x), uint64_t(y))
+#endif
 #define PPC_CALL_INDIRECT_FUNC(x) sfr::call_indirect(ctx, base, uint32_t(x))
 
 // Defines a replacement of original function x and records it as a hook.
-#define SFR_HOOK(x) [[maybe_unused]] static const bool x##_hook = ::sfr::register_hook(#x); PPC_FUNC(x)
-// A replacement that touches only guest memory, its arguments and atomics,
-// so a detached guest runs it without taking the execution permit. Hot
-// functions only: a hook called by every thread brought them all back to
-// the permit (docs/performance.md).
+// The replacement runs inside a HookScope, so the permit and graphics lock a
+// parallel guest took at the hook's entry are given back as it returns.
+// (Inferring the return from the stack pointer of a later entry missed a
+// thread that calls the hook from a loop in the same frame: the Kinect
+// skeleton thread then held the global permit for good after its first
+// NuiSkeletonGetNextFrame, stalling the whole game for its time slices.)
+#define SFR_SCOPED_HOOK(x, registration) [[maybe_unused]] static const bool x##_hook = registration; \
+    static void x##_hooked(PPCContext& __restrict ctx, uint8_t* base); \
+    PPC_FUNC(x) { ::sfr::HookScope scope; x##_hooked(ctx, base); } \
+    static void x##_hooked(PPCContext& __restrict ctx, uint8_t* base)
+#define SFR_HOOK(x) SFR_SCOPED_HOOK(x, ::sfr::register_hook(#x))
+// A Direct3D replacement that touches only the native device and guest memory
+// (see graphics_hook_bits), and one that also reaches other host state.
+#define SFR_GRAPHICS_HOOK(x) SFR_SCOPED_HOOK(x, ::sfr::register_graphics_hook(#x, false))
+#define SFR_GRAPHICS_HOST_HOOK(x) SFR_SCOPED_HOOK(x, ::sfr::register_graphics_hook(#x, true))
+#define SFR_INPUT_HOOK(x) SFR_SCOPED_HOOK(x, ::sfr::register_input_hook(#x))
+#define SFR_MENU_HOOK(x) SFR_SCOPED_HOOK(x, ::sfr::register_menu_hook(#x))
+// A replacement that touches only guest memory, its arguments, atomics and
+// host objects that keep their own lock, so a detached guest runs it without
+// taking any lock of the runtime's (docs/architecture-migration.md, phase 4).
 #define SFR_CONCURRENT_HOOK(x) PPC_FUNC(x)

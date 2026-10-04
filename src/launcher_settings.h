@@ -19,7 +19,7 @@ struct LauncherSettings {
     bool skip_movies = false;
     bool vertex_cache = true;        // SFR_VERTEX_CACHE
     bool gpu_pipeline = true;        // SFR_GPU_PIPELINE
-    bool parallel = true;            // SFR_PARALLEL_WORKER=cores (off: serial)
+    bool parallel = true;            // SFR_PARALLEL_WORKER=all (off: serial)
     uint32_t race_render_every = 1;  // SFR_RENDER_EVERY
     bool ui_sounds = true;           // the launcher's own sounds
     bool vulkan = true;             // legacy settings key; selects Vulkan or D3D12

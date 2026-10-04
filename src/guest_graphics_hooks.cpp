@@ -14,6 +14,7 @@
 #include "native_vertex_layout.h"
 #include "guest_execution.h"
 #include "wait_trace.h"
+#include <map>
 #include <plume_render_interface.h>
 #include <algorithm>
 #include <array>
@@ -167,7 +168,7 @@ void set_sampler_filter(PPCContext& ctx, const char* name, uint32_t address, sfr
 
 // Strong public definitions replace only the verified weak generated aliases.
 // The original game caller, entry point and all other generated code remain.
-SFR_HOOK(sub_824F4CF0) {
+SFR_GRAPHICS_HOST_HOOK(sub_824F4CF0) {
     sfr::enter_function(ctx,"sub_824F4CF0",0x824F4CF0);
     ctx.r3.u64=graphics().create_device(ctx.r3.u32,ctx.r4.u32,ctx.r5.u32,ctx.r6.u32,ctx.r7.u32,ctx.r8.u32);
     // The original CreateDevice finishes with 82500B38: every render and
@@ -188,7 +189,7 @@ SFR_HOOK(sub_824F4CF0) {
 // device down (824F8BC0) and creates it again (82500DA0). The native device
 // stays; a reset to the parameters it was created with (stored at +0x35BC)
 // only restores the default state, as creation does with 82500B38.
-SFR_HOOK(sub_824F4858) {
+SFR_GRAPHICS_HOST_HOOK(sub_824F4858) {
     sfr::enter_function(ctx,"sub_824F4858",0x824F4858);
     auto& memory=*sfr::active_memory;
     const uint32_t device=ctx.r3.u32, parameters=ctx.r4.u32;
@@ -225,7 +226,7 @@ SFR_HOOK(sub_824F4858) {
 // The original makes room by submitting the current command segment to the
 // GPU ring. Natively nothing consumes Xenos packets: discard them and return
 // the reset write pointer, as the original returns device+48.
-SFR_HOOK(sub_824F8720) {
+SFR_GRAPHICS_HOOK(sub_824F8720) {
     sfr::enter_function(ctx,"sub_824F8720",0x824F8720);
     uint32_t discarded=0;
     ctx.r3.u64=graphics().discard_commands(ctx.r3.u32,discarded);
@@ -377,7 +378,7 @@ static const auto process_start=std::chrono::steady_clock::now();
 // GPU completion callbacks (InsertCallback) waiting for the frame's end.
 static std::vector<std::pair<uint32_t,uint32_t>> frame_callbacks;
 
-SFR_HOOK(sub_824E65A0) {
+SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
     sfr::enter_function(ctx,"sub_824E65A0",0x824E65A0);
     // Preload in the menu; actual geometry is drawn in the Avatar's pass.
     graphics().presentation().prepare_player_model();
@@ -457,6 +458,16 @@ SFR_HOOK(sub_824E65A0) {
         }
     }
 #endif
+    // SFR_WATCH_TRACE=1: every 600 presents, the guest pages behind the
+    // latest page-protection faults (GuestMemory::direct_guest_access).
+    static const bool watch_trace=[]{ const char* t=std::getenv("SFR_WATCH_TRACE"); return t && *t=='1'; }();
+    if(watch_trace && sfr::present_count%600==0) {
+        std::map<uint32_t,uint32_t> pages;
+        for(const auto& page:sfr::GuestMemory::fault_pages) if(const uint32_t p=page.load(std::memory_order_relaxed)) ++pages[p];
+        std::cerr << "WATCH_FAULT_PAGES" << std::hex;
+        for(const auto& [page,count]:pages) std::cerr << " 0x" << page << ':' << std::dec << count << std::hex;
+        std::cerr << std::dec << '\n';
+    }
     if(frame_metrics) {
     uint64_t main_ready_ns=execution_work[0].main_ready_unowned_ns;
     for(const auto ns:execution_work[0].main_ready_by_owner_ns) main_ready_ns+=ns;
@@ -475,6 +486,8 @@ SFR_HOOK(sub_824E65A0) {
               << " record_ms=" << frame_record_ms << " draw_ms=" << frame_draw_ms
               << " pipelines=" << pipeline_work.created << " pipeline_ms=" << pipeline_work.milliseconds
               << " ring_flushes=" << pipeline_work.ring_flushes
+              << " resolve_copies=" << pipeline_work.resolve_copies
+              << " watch_faults=" << sfr::GuestMemory::watch_faults.exchange(0, std::memory_order_relaxed)
               << " constant_upload_bytes=" << pipeline_work.constant_upload_bytes
               << " constant_reusable_bytes=" << pipeline_work.constant_reusable_bytes
               << " constant_saved_bytes=" << pipeline_work.constant_saved_bytes
@@ -640,6 +653,7 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
         static const bool skip=[]{ const char* t=std::getenv("SFR_SKIP_FOREIGN_TARGETS"); return t && *t!='0'; }();
         if(skip) { ++foreign_draws; return; }
     }
+    graphics().select_target(device);
     // A sanity cap on one gathered blob, not a hardware limit: the race draws
     // 56913 vertices of 20 bytes in one go, which is already past a megabyte.
     if(!count || !stride || stride>256 || uint64_t(count)*stride>0x800000)
@@ -962,14 +976,17 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     draw.shared.booleans=(memory.load<uint32_t>(uint64_t(device)+10112)&0xFFFF) |
                          ((memory.load<uint32_t>(uint64_t(device)+10112+16)&0xFFFF)<<16);
     const auto& presentation=graphics().presentation();
-    draw.shared.half_pixel_offset[0]=1.0f/float(presentation.width());
-    draw.shared.half_pixel_offset[1]=-1.0f/float(presentation.height());
+    // In the space the viewport is in: the framebuffer's, or a render
+    // surface's when the pass names it by its own pixels.
+    const auto [logical_width,logical_height]=presentation.target_logical_size();
+    draw.shared.half_pixel_offset[0]=1.0f/float(logical_width);
+    draw.shared.half_pixel_offset[1]=-1.0f/float(logical_height);
     draw.shared.alpha_threshold=state.alpha_reference.value_or(0.0f);
     // PA_CL_VTE_CNTL shadow (+10572, set by SetRenderState(VIEWPORTENABLE)):
     // without the viewport scale/offset bits the shader output is in pixels.
     if(!(memory.load<uint32_t>(uint64_t(device)+10572)&0x3F)) {
-        draw.shared.screen_space_scale[0]=2.0f/float(presentation.width());
-        draw.shared.screen_space_scale[1]=-2.0f/float(presentation.height());
+        draw.shared.screen_space_scale[0]=2.0f/float(logical_width);
+        draw.shared.screen_space_scale[1]=-2.0f/float(logical_height);
     }
 
     draw.blend=graphics().blend_control(0);
@@ -977,8 +994,12 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     // it into RB_COLOR_MASK (+10460) for a bound RT0; the native device binds RT0
     // without running it, so read the render state directly.
     draw.write_mask=uint8_t(memory.load<uint32_t>(uint64_t(device)+12036)&0xF);
-    draw.depth_enabled=state.depth_enable_requested.value_or(false) &&
-                       memory.load<uint32_t>(uint64_t(device)+0x3158)==sfr::GuestGraphics::depth_handle;
+    // The native depth, or (drawing into one of the title's own surfaces)
+    // that surface's depth, which stands for the depth surface it binds.
+    const uint32_t depth_binding=memory.load<uint32_t>(uint64_t(device)+0x3158);
+    const bool depth_bound=depth_binding==sfr::GuestGraphics::depth_handle ||
+                           (depth_binding && presentation.target_is_surface());
+    draw.depth_enabled=state.depth_enable_requested.value_or(false) && depth_bound;
     draw.depth_write=draw.depth_enabled && state.depth_write_enabled.value_or(false);
     draw.depth_function=state.depth_function.value_or(plume::RenderComparisonFunction::LESS_EQUAL);
     // Stencil: the setters are not bridged, so it is read from the device's
@@ -988,8 +1009,7 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     {
         const uint32_t control=memory.load<uint32_t>(uint64_t(device)+10548);
         const uint32_t refmask=memory.load<uint32_t>(uint64_t(device)+10496);
-        const bool target=memory.load<uint32_t>(uint64_t(device)+0x3158)==sfr::GuestGraphics::depth_handle;
-        draw.stencil_enabled=target && (control&1);
+        draw.stencil_enabled=depth_bound && (control&1);
         if(draw.stencil_enabled) {
             using Compare=plume::RenderComparisonFunction;
             using Op=plume::RenderStencilOp;
@@ -1085,7 +1105,7 @@ static std::span<const uint8_t> guest_bytes(uint32_t address, uint64_t size) {
 }
 
 // DrawVerticesUP(device, primitive, vertex count, data, stride).
-SFR_HOOK(sub_824F5288) {
+SFR_GRAPHICS_HOOK(sub_824F5288) {
     sfr::enter_function(ctx,"sub_824F5288",0x824F5288);
     const uint32_t count=ctx.r5.u32, stride=ctx.r7.u32;
     native_draw(ctx,0x824F5288,ctx.r3.u32,ctx.r4.u32,count,guest_bytes(ctx.r6.u32,uint64_t(count)*stride),stride);
@@ -1123,7 +1143,7 @@ static Stream0 stream0(uint32_t device) {
 // device +0x778: physical address | 3, then the byte size) and its stride
 // in dwords at +12704; the draw reads the buffer through that constant
 // (word 0: byte address | type 3).
-SFR_HOOK(sub_824F52D0) {
+SFR_GRAPHICS_HOOK(sub_824F52D0) {
     sfr::enter_function(ctx,"sub_824F52D0",0x824F52D0);
     auto& memory=*sfr::active_memory;
     const uint32_t device=ctx.r3.u32, primitive=ctx.r4.u32, start=ctx.r5.u32, count=ctx.r6.u32;
@@ -1178,7 +1198,7 @@ static void gather_vertices(uint8_t* destination,const uint8_t* source,const uin
         std::memcpy(destination+i*stride,source+size_t(order[i])*stride,stride);
 }
 
-SFR_HOOK(sub_824F56E8) {
+SFR_GRAPHICS_HOOK(sub_824F56E8) {
     sfr::enter_function(ctx,"sub_824F56E8",0x824F56E8);
     if(skip_draws() || !rendering_this_frame()) return;
     auto& memory=*sfr::active_memory;
@@ -1275,7 +1295,7 @@ SFR_HOOK(sub_824F56E8) {
 // packet the GPU turns into an interrupt that runs callback(context) once the
 // preceding commands complete. Native draws are recorded (their data copied)
 // immediately and complete with the frame, so the callback runs at present.
-SFR_HOOK(sub_824F8AD8) {
+SFR_GRAPHICS_HOOK(sub_824F8AD8) {
     sfr::enter_function(ctx,"sub_824F8AD8",0x824F8AD8);
     if(ctx.r3.u32!=sfr::GuestGraphics::device_address)
         throw sfr::RuntimeStop("native-callback",ctx.r3.u32,"callback on a non-native device");
@@ -1286,7 +1306,7 @@ SFR_HOOK(sub_824F8AD8) {
     frame_callbacks.emplace_back(ctx.r5.u32,ctx.r6.u32);
 }
 
-SFR_HOOK(sub_824F6DC8) {
+SFR_GRAPHICS_HOOK(sub_824F6DC8) {
     sfr::enter_function(ctx,"sub_824F6DC8",0x824F6DC8);
     if(!rendering_this_frame()) return;
     // RT0 as SetRenderTarget left it: the native colour surface, or one of the
@@ -1298,14 +1318,15 @@ SFR_HOOK(sub_824F6DC8) {
     const bool submitted=foreign && sfr::GuestGraphics::foreign_render_targets && skip_foreign ? false
         : graphics().clear(ctx.r3.u32,ctx.r4.u32,ctx.r5.u32,ctx.r6.u32,
                            ctx.r7.u32,float(ctx.f1.f64),ctx.r9.u32);
-    if(sfr::graphics_trace()) std::cerr << "NATIVE_CLEAR source=0x824f6dc8 device=0x" << std::hex << ctx.r3.u32
+    static const bool clear_log=[] {const char* t=std::getenv("SFR_VIEWPORT_LOG");return t && *t=='1';}();
+    if(sfr::graphics_trace() || (clear_log && sfr::present_count%60==0)) std::cerr << "NATIVE_CLEAR source=0x824f6dc8 device=0x" << std::hex << ctx.r3.u32
               << " flags=0x" << ctx.r6.u32 << " argb=0x" << ctx.r7.u32
-              << " target=0x" << target << std::dec
+              << " target=0x" << target << " depth_target=0x" << sfr::active_memory->load<uint32_t>(uint64_t(ctx.r3.u32)+0x3158) << std::dec
               << " depth=" << ctx.f1.f64 << " stencil=" << ctx.r9.u32
               << " submitted=" << submitted << '\n';
 }
 
-SFR_HOOK(sub_824E96C8) {
+SFR_GRAPHICS_HOOK(sub_824E96C8) {
     sfr::enter_function(ctx,"sub_824E96C8",0x824E96C8);
     // Sample viewport requests/results without enabling per-draw graphics
     // logging. One presented frame per second retains every pass in it.
@@ -1330,6 +1351,7 @@ SFR_HOOK(sub_824E96C8) {
         auto& memory=*sfr::active_memory;
         const uint32_t target=memory.load<uint32_t>(uint64_t(ctx.r3.u32)+0x3148);
         std::cerr << " target=0x" << std::hex << target
+                  << " depth=0x" << memory.load<uint32_t>(uint64_t(ctx.r3.u32)+0x3158)
                   << std::dec << " back_buffer=" << memory.load<uint32_t>(uint64_t(ctx.r3.u32)+0x35BC)
                   << "x" << memory.load<uint32_t>(uint64_t(ctx.r3.u32)+0x35C0);
         // Render-surface dimensions use the +36 layout read by sub_824E9460,
@@ -1345,19 +1367,19 @@ SFR_HOOK(sub_824E96C8) {
     std::cerr << '\n';
 }
 
-SFR_HOOK(sub_824E8C70) {
+SFR_GRAPHICS_HOOK(sub_824E8C70) {
     sfr::enter_function(ctx,"sub_824E8C70",0x824E8C70);
     graphics().set_scissor(ctx.r3.u32,ctx.r4.u32);
     std::cerr << "NATIVE_SCISSOR source=0x824e8c70 rectangle=0x" << std::hex << ctx.r4.u32 << std::dec << '\n';
 }
 
-SFR_HOOK(sub_824E96B8) {
+SFR_GRAPHICS_HOOK(sub_824E96B8) {
     sfr::enter_function(ctx,"sub_824E96B8",0x824E96B8);
     graphics().set_scissor_enabled(ctx.r3.u32,ctx.r4.u32);
     std::cerr << "NATIVE_SCISSOR_ENABLE source=0x824e96b8 value=" << ctx.r4.u32 << '\n';
 }
 
-SFR_HOOK(sub_824E9218) {
+SFR_GRAPHICS_HOOK(sub_824E9218) {
     sfr::enter_function(ctx,"sub_824E9218",0x824E9218);
     graphics().set_blend_control(ctx.r3.u32,ctx.r4.u32,ctx.r5.u32);
     // The original void setter has no return value. State is retained for
@@ -1369,7 +1391,7 @@ SFR_HOOK(sub_824E9218) {
 
 // SetTexture(device, slot, texture, dirty mask): the native setter performs the
 // original fetch-constant merge; host resources are created when a draw uses them.
-SFR_HOOK(sub_824F4220) {
+SFR_GRAPHICS_HOOK(sub_824F4220) {
     sfr::enter_function(ctx,"sub_824F4220",0x824F4220);
     graphics().set_texture(ctx.r3.u32,ctx.r4.u32,ctx.r5.u32,ctx.r6.u64);
     if(!sfr::graphics_trace()) return;
@@ -1392,7 +1414,7 @@ SFR_HOOK(sub_824F4220) {
               << " state=fetch-retained\n";
 }
 
-SFR_HOOK(sub_824E7F68) {
+SFR_GRAPHICS_HOOK(sub_824E7F68) {
     sfr::enter_function(ctx,"sub_824E7F68",0x824E7F68);
     graphics().set_primitive_restart(ctx.r3.u32,ctx.r4.u32);
     std::cerr << "NATIVE_PRIMITIVE_RESTART source=0x824e7f68 value=0x" << std::hex << ctx.r4.u32
@@ -1400,24 +1422,24 @@ SFR_HOOK(sub_824E7F68) {
               << " retained=1\n";
 }
 
-SFR_HOOK(sub_824ED770) {
+SFR_GRAPHICS_HOOK(sub_824ED770) {
     sfr::enter_function(ctx,"sub_824ED770",0x824ED770);
     create_shader(ctx,base,sfr::ShaderStage::vertex,__imp__sub_824ED770);
 }
-SFR_HOOK(sub_824E6A08) { set_render_state(ctx,"sub_824E6A08",0x824E6A08,sfr::RenderState::alpha_test_enable); }
-SFR_HOOK(sub_824E6EC8) { set_render_state(ctx,"sub_824E6EC8",0x824E6EC8,sfr::RenderState::alpha_function); }
-SFR_HOOK(sub_824E6E68) { set_render_state(ctx,"sub_824E6E68",0x824E6E68,sfr::RenderState::alpha_reference); }
-SFR_HOOK(sub_824E70D0) { set_render_state(ctx,"sub_824E70D0",0x824E70D0,sfr::RenderState::depth_enable); }
-SFR_HOOK(sub_824E7140) { set_render_state(ctx,"sub_824E7140",0x824E7140,sfr::RenderState::depth_function); }
-SFR_HOOK(sub_824E7110) { set_render_state(ctx,"sub_824E7110",0x824E7110,sfr::RenderState::depth_write); }
-SFR_HOOK(sub_824E69A8) { set_render_state(ctx,"sub_824E69A8",0x824E69A8,sfr::RenderState::cull_mode); }
-SFR_HOOK(sub_824E6A40) { set_blend_request(ctx,"sub_824E6A40",0x824E6A40,sfr::BlendRequest::enable); }
-SFR_HOOK(sub_824E6B60) { set_blend_request(ctx,"sub_824E6B60",0x824E6B60,sfr::BlendRequest::source); }
-SFR_HOOK(sub_824E6BF0) { set_blend_request(ctx,"sub_824E6BF0",0x824E6BF0,sfr::BlendRequest::destination); }
-SFR_HOOK(sub_824E6AD0) { set_blend_request(ctx,"sub_824E6AD0",0x824E6AD0,sfr::BlendRequest::operation); }
-SFR_HOOK(sub_824E8248) { set_sampler_filter(ctx,"sub_824E8248",0x824E8248,sfr::SamplerFilter::minification); }
-SFR_HOOK(sub_824E83F0) { set_sampler_filter(ctx,"sub_824E83F0",0x824E83F0,sfr::SamplerFilter::magnification); }
-SFR_HOOK(sub_824ED588) {
+SFR_GRAPHICS_HOOK(sub_824E6A08) { set_render_state(ctx,"sub_824E6A08",0x824E6A08,sfr::RenderState::alpha_test_enable); }
+SFR_GRAPHICS_HOOK(sub_824E6EC8) { set_render_state(ctx,"sub_824E6EC8",0x824E6EC8,sfr::RenderState::alpha_function); }
+SFR_GRAPHICS_HOOK(sub_824E6E68) { set_render_state(ctx,"sub_824E6E68",0x824E6E68,sfr::RenderState::alpha_reference); }
+SFR_GRAPHICS_HOOK(sub_824E70D0) { set_render_state(ctx,"sub_824E70D0",0x824E70D0,sfr::RenderState::depth_enable); }
+SFR_GRAPHICS_HOOK(sub_824E7140) { set_render_state(ctx,"sub_824E7140",0x824E7140,sfr::RenderState::depth_function); }
+SFR_GRAPHICS_HOOK(sub_824E7110) { set_render_state(ctx,"sub_824E7110",0x824E7110,sfr::RenderState::depth_write); }
+SFR_GRAPHICS_HOOK(sub_824E69A8) { set_render_state(ctx,"sub_824E69A8",0x824E69A8,sfr::RenderState::cull_mode); }
+SFR_GRAPHICS_HOOK(sub_824E6A40) { set_blend_request(ctx,"sub_824E6A40",0x824E6A40,sfr::BlendRequest::enable); }
+SFR_GRAPHICS_HOOK(sub_824E6B60) { set_blend_request(ctx,"sub_824E6B60",0x824E6B60,sfr::BlendRequest::source); }
+SFR_GRAPHICS_HOOK(sub_824E6BF0) { set_blend_request(ctx,"sub_824E6BF0",0x824E6BF0,sfr::BlendRequest::destination); }
+SFR_GRAPHICS_HOOK(sub_824E6AD0) { set_blend_request(ctx,"sub_824E6AD0",0x824E6AD0,sfr::BlendRequest::operation); }
+SFR_GRAPHICS_HOOK(sub_824E8248) { set_sampler_filter(ctx,"sub_824E8248",0x824E8248,sfr::SamplerFilter::minification); }
+SFR_GRAPHICS_HOOK(sub_824E83F0) { set_sampler_filter(ctx,"sub_824E83F0",0x824E83F0,sfr::SamplerFilter::magnification); }
+SFR_GRAPHICS_HOOK(sub_824ED588) {
     sfr::enter_function(ctx,"sub_824ED588",0x824ED588);
     create_shader(ctx,base,sfr::ShaderStage::pixel,__imp__sub_824ED588);
 }
@@ -1428,7 +1450,7 @@ SFR_HOOK(sub_824ED588) {
 // The native backend renders into its own framebuffer and has no offscreen
 // targets yet, so nothing is copied; with SFR_ALLOW_RENDER_TARGETS=1 this
 // reports what a race resolves instead of stopping.
-SFR_HOOK(sub_824FAB08) {
+SFR_GRAPHICS_HOOK(sub_824FAB08) {
     sfr::enter_function(ctx,"sub_824FAB08",0x824FAB08);
     if(!rendering_this_frame()) return;
     auto& memory=*sfr::active_memory;
@@ -1452,8 +1474,27 @@ SFR_HOOK(sub_824FAB08) {
     // drawn, so a copy of it becomes the texture at the destination address.
     // Source 4 is the depth surface (shadow maps), which the native backend
     // cannot copy out yet.
-    const bool copied=(flags&7)<4 && destination_base!=0;
-    if(copied) graphics().renderer().adopt_resolved_target(destination_base);
+    // Source 4 (the depth surface: shadow maps, the scene's depth) is kept as
+    // a sampled depth texture; SFR_DEPTH_RESOLVE=0 leaves it uncopied, as
+    // before.
+    static const bool depth_resolves=[]{ const char* t=std::getenv("SFR_DEPTH_RESOLVE"); return !t || *t!='0'; }();
+    const bool depth=(flags&7)==4;
+    const bool copied=destination_base!=0 && ((flags&7)<4 || (depth && depth_resolves));
+    // SFR_RESOLVE_STATS=1: every resolve of one race frame (present 15000),
+    // with its source rectangle and destination size: how much of the
+    // framebuffer each resolve really needs.
+    static const bool resolve_stats=[]{ const char* t=std::getenv("SFR_RESOLVE_STATS"); return t && *t=='1'; }();
+    if(resolve_stats && (sfr::present_count==15000 || sfr::present_count==15001)) {
+        int32_t rect[4]={-1,-1,-1,-1};
+        if(ctx.r5.u32) try { for(int i=0;i<4;++i) rect[i]=int32_t(memory.load<uint32_t>(uint64_t(ctx.r5.u32)+i*4)); } catch(const sfr::RuntimeStop&) {}
+        std::cerr << "RESOLVE_STAT frame=" << sfr::present_count.load() << " source=" << (flags&7) << " flags=0x" << std::hex << flags
+                  << " destination=0x" << destination_base << std::dec << " size=" << width << 'x' << height << " format=" << format
+                  << " rect=" << rect[0] << ',' << rect[1] << ',' << rect[2] << ',' << rect[3] << " copied=" << copied << '\n';
+    }
+    if(copied) {
+        graphics().select_target(ctx.r3.u32);
+        graphics().renderer().adopt_resolved_target(destination_base,depth);
+    }
     // SFR_RESOLVE_DUMP=<file.bmp>: what the framebuffer held at the first few
     // colour resolves (shows whether the scene was drawn into it).
     if(copied) {

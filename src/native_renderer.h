@@ -110,7 +110,14 @@ public:
     // Registers a copy of the current framebuffer as the texture the title
     // resolved to this destination address, so later draws that sample the
     // address read what was rendered. Returns the descriptor index.
-    uint32_t adopt_resolved_target(uint32_t physical);
+    // depth: the resolve's source is the depth surface (a shadow map, the
+    // scene's depth), kept as a sampled depth texture. Out of one of the
+    // title's own surfaces the resolve is aliased (Marathon Recompiled's
+    // deferred resolve): the surface itself is sampled, and copied out only
+    // before it is drawn to again (NativePresentation::mark_target_read).
+    uint32_t adopt_resolved_target(uint32_t physical, bool depth = false);
+    // Copies out what is still resolved from a surface about to be drawn to.
+    void materialize_aliases(const void* surface);
     // Flat white texture used for formats without a native layout while
     // SFR_ALLOW_RENDER_TARGETS is set.
     uint32_t placeholder_texture();
@@ -164,14 +171,18 @@ public:
         uint64_t upload_submissions = 0, upload_peak_bytes = 0, upload_budget_drains = 0;
         double upload_wait_ms = 0;
         uint64_t constant_saved_bytes = 0; // Actual skipped writes when reuse is enabled.
+        // Resolves copied this frame: each ends the render pass, which a tiling
+        // GPU pays for with a store and a reload of the whole color and depth.
+        uint32_t resolve_copies = 0;
     };
     PipelineWork take_pipeline_work() noexcept;
     // Unchanged while texture() and sampler() would answer the same fetch
     // words the same way, so a caller may keep their answers until it moves.
     uint64_t texture_generation() const noexcept;
 
-private:
+    // Named outside for the resolve helpers in native_renderer.cpp.
     struct Impl;
+private:
     std::unique_ptr<Impl> impl_;
 };
 }

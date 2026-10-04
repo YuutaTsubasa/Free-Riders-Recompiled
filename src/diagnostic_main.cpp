@@ -3,6 +3,7 @@
 #include "ppc_recomp_shared.h"
 #include "xex_module.h"
 #include "virtual_memory.h"
+#include "guest_heap.h"
 #include "critical_section.h"
 #include "hardware_info.h"
 #include "thread_local_storage.h"
@@ -250,7 +251,6 @@ static ThreadLocalStorage* thread_local_storage = nullptr;
 static GuestClock* active_clock = nullptr;
 static std::atomic<uint64_t> time_base_reads{0};
 static uint64_t conditional_stores = 0;
-static uint64_t vector_loads = 0, vector_stores = 0;
 static uint64_t cache_block_zeroes = 0;
 struct CopyObservation {
     bool active = false;
@@ -414,6 +414,56 @@ std::array<GuestExecution::Timing, 7> take_guest_execution_timings() {
 }
 static thread_local std::unique_ptr<GuestExecution::Lease> core_permit;
 static thread_local unsigned core_index = 0;
+// On unless SFR_PARALLEL_MAIN=0 (with cores or all): processor 0 too, the main thread's, runs
+// detached on its core's permit, so no guest code holds the global permit
+// any more: it is taken only by hooks and imports that reach host state, as
+// a lock (docs/architecture-migration.md, phase 4). Unleashed and Marathon
+// Recompiled have no such permit at all.
+static const bool parallel_main = [] {
+    const char* text = std::getenv("SFR_PARALLEL_MAIN");
+    return !text || *text != '0';
+}();
+// Imports and hooks take their subsystem's lock instead of the permit
+// (import_lock(), the hook locks below); SFR_SUBSYSTEM_LOCKS=0 goes back to
+// the permit as the lock of everything else.
+static const bool import_locks = [] { const char* text = std::getenv("SFR_SUBSYSTEM_LOCKS"); return !text || *text != '0'; }();
+static bool runs_on_core(unsigned processor) {
+    return parallel_worker == ParallelGuests::cores && processor < guest_processors && (processor != 0 || parallel_main);
+}
+static void parallel_slow_access(uint64_t address);
+static void refresh_entry_observation();
+// The calling guest thread leaves the global permit and runs on processor's
+// core permit, following the title when it moves the thread to another one.
+static void join_core(GuestExecution::Lease& permit, unsigned processor, uint32_t guest_id,
+                      bool after_processor_0 = false) {
+    guest_thread_state.entry.parallel = true;
+    GuestMemory::concurrent_reader = true;
+    GuestMemory::slow_access_hook = parallel_slow_access;
+    permit.detach();
+    // A thread just started waits, as it did while processor 0 held the
+    // global permit, until that processor's guest (usually the main thread,
+    // which resumed it) yields: the title fills a job in after resuming the
+    // worker that takes it (STOP worker-memory-access in sub_8270D980
+    // without this).
+    if (after_processor_0 && processor != 0) core_executions[0]->enter(guest_id).reset();
+    // Global permit released first: a core is only ever awaited without it.
+    core_index = processor;
+    core_permit = core_executions[processor]->enter(guest_id);
+    // The core is taken after the global permit, and released whenever this
+    // thread waits for it.
+    permit.set_companion(core_permit.get());
+    permit.set_after_blocking([] {
+        // Moved to another processor meanwhile: continue there.
+        const unsigned now = active_memory->load<uint8_t>(uint64_t(current_pcr) + 0x10C);
+        if (now != core_index && runs_on_core(now)) {
+            execution_permit->set_companion(nullptr);
+            core_permit.reset();
+            core_index = now;
+            core_permit = core_executions[now]->enter(current_id);
+            execution_permit->set_companion(core_permit.get());
+        }
+    });
+}
 static constexpr uint32_t parallel_worker_entry = 0x8222E008;
 // A parallel guest's three flags live in guest_thread_state.entry (diagnostic_hooks.h)
 // beside the rest of what a function entry reads, so that an entry resolves
@@ -437,7 +487,7 @@ static void parallel_attached(int reason) {
 // Called only by the completion/suspend pair in worker 824C39C8. Reserve
 // its suspension before SetEvent lets the main thread queue the next job.
 void prepare_worker_self_suspend() {
-    const bool detached = execution_permit->detached();
+    const bool detached = execution_permit->detached() && !import_locks;
     if (detached) {
         execution_permit->attach();
         parallel_attached(0);
@@ -464,16 +514,170 @@ static void parallel_slow_access(uint64_t address) {
     guest_thread_state.entry.detach_at_entry = true;
 }
 
+static thread_local std::chrono::steady_clock::time_point hook_attached_at;
+static thread_local uint32_t hook_attached = 0;
+// One thread at a time in the native device (graphics_hook_bits); taken
+// before the global permit. A thread that holds the global permit and finds
+// it taken waits without the permit, so the holder can still get it.
+static std::mutex graphics_lock;
+static std::mutex input_lock;  // SFR_INPUT_HOOK
+static std::mutex menu_lock;   // SFR_MENU_HOOK
+// Who holds the graphics and input locks and since when, for waits of 100 ms
+// or more (reported by the waiter: LOCK_LONG_WAIT).
+static std::atomic<uint32_t> graphics_holder{0}, input_holder{0}, menu_holder{0};
+static std::atomic<uint32_t> graphics_holder_function{0}, input_holder_function{0}, menu_holder_function{0};
+static void lock_with_report(std::mutex& lock, const char* name, std::atomic<uint32_t>& holder,
+                             std::atomic<uint32_t>& holder_function) {
+    const auto started = std::chrono::steady_clock::now();
+    const uint32_t was = holder.load(std::memory_order_relaxed), was_function = holder_function.load(std::memory_order_relaxed);
+    const auto wait = [&](std::stop_token) { lock.lock(); };
+    if (execution_permit->detached()) execution_permit->run_wait(wait);
+    else execution_permit->run_blocking(wait);
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+    if (ms >= 100)
+        std::cerr << "LOCK_LONG_WAIT lock=" << name << " guest_id=" << current_id << " ms=" << ms
+                  << " holder=" << was << " holder_function=0x" << std::hex << was_function
+                  << " waiter_function=0x" << guest_thread_state.entry.current_address << std::dec
+                  << " frame=" << present_count.load() << std::endl;
+}
+static void graphics_lock_entry(const PPCContext& ctx, uint32_t address) {
+    auto& entry = guest_thread_state.entry;
+    const bool graphics = test_hook_bit(graphics_hook_bits, address);
+    if (entry.graphics_stack_pointer) {
+        if (graphics) entry.graphics_stack_pointer = (std::max)(entry.graphics_stack_pointer, ctx.r1.u32);
+        else if (ctx.r1.u32 > entry.graphics_stack_pointer) {
+            entry.graphics_stack_pointer = 0;
+            graphics_lock.unlock();
+        }
+        return;
+    }
+    if (!graphics) return;
+    if (!graphics_lock.try_lock())
+        lock_with_report(graphics_lock, "graphics", graphics_holder, graphics_holder_function);
+    graphics_holder.store(current_id, std::memory_order_relaxed);
+    graphics_holder_function.store(address, std::memory_order_relaxed);
+    entry.graphics_stack_pointer = ctx.r1.u32;
+}
+void hook_scope_exit() noexcept {
+    auto& entry = guest_thread_state.entry;
+    if (entry.graphics_stack_pointer) {
+        entry.graphics_stack_pointer = 0;
+        graphics_lock.unlock();
+    }
+    if (entry.input_stack_pointer) {
+        entry.input_stack_pointer = 0;
+        input_lock.unlock();
+    }
+    if (entry.menu_stack_pointer) {
+        entry.menu_stack_pointer = 0;
+        menu_lock.unlock();
+    }
+    if (entry.hook_stack_pointer) {
+        entry.hook_stack_pointer = 0;
+        hook_attached = 0;
+        // A stopping guest's detach throws; it is leaving anyway.
+        try { if (execution_permit && !execution_permit->detached()) execution_permit->detach(); } catch (...) {}
+    }
+}
+// The graphics lock around host code outside the graphics hooks that changes
+// the native device (an import dropping the renderer's copies of freed memory).
+using HostGraphicsLock = HostGraphicsScope;
+HostGraphicsScope::HostGraphicsScope() {
+    if (!parallel_main || guest_thread_state.entry.graphics_stack_pointer) return;
+    if (!graphics_lock.try_lock()) {
+        const auto wait = [](std::stop_token) { graphics_lock.lock(); };
+        if (!execution_permit) graphics_lock.lock();
+        else if (execution_permit->detached()) execution_permit->run_wait(wait);
+        else execution_permit->run_blocking(wait);
+    }
+    owned_ = true;
+}
+HostGraphicsScope::~HostGraphicsScope() { if (owned_) graphics_lock.unlock(); }
+// The input lock (SFR_INPUT_HOOK) and the menu lock (SFR_MENU_HOOK), taken as
+// the graphics lock is.
+static void hook_lock_entry(const PPCContext& ctx, uint32_t address, const uint64_t* bits, std::mutex& lock,
+                            uint32_t& stack_pointer, const char* name, std::atomic<uint32_t>& holder,
+                            std::atomic<uint32_t>& holder_function) {
+    const bool hooked = test_hook_bit(bits, address);
+    if (stack_pointer) {
+        if (hooked) stack_pointer = (std::max)(stack_pointer, ctx.r1.u32);
+        else if (ctx.r1.u32 > stack_pointer) {
+            stack_pointer = 0;
+            lock.unlock();
+        }
+        return;
+    }
+    if (!hooked) return;
+    if (!lock.try_lock()) lock_with_report(lock, name, holder, holder_function);
+    holder.store(current_id, std::memory_order_relaxed);
+    holder_function.store(address, std::memory_order_relaxed);
+    stack_pointer = ctx.r1.u32;
+}
+static void input_lock_entry(const PPCContext& ctx, uint32_t address) {
+    hook_lock_entry(ctx, address, input_hook_bits, input_lock, guest_thread_state.entry.input_stack_pointer,
+                    "input", input_holder, input_holder_function);
+}
+static void menu_lock_entry(const PPCContext& ctx, uint32_t address) {
+    hook_lock_entry(ctx, address, menu_hook_bits, menu_lock, guest_thread_state.entry.menu_stack_pointer,
+                    "menu", menu_holder, menu_holder_function);
+}
 static void parallel_function_entry(const PPCContext& ctx, uint32_t address) {
+    static const bool hook_stats = [] { const char* t = std::getenv("SFR_PARALLEL_HOOK_STATS"); return t && *t == '1'; }();
+    if (parallel_main) {
+        // Menu, then input, then graphics: a menu hook's original reads the
+        // skeletons and draws, never the other way round.
+        menu_lock_entry(ctx, address);
+        input_lock_entry(ctx, address);
+        graphics_lock_entry(ctx, address);
+    }
     if (execution_permit->detached()) {
         if (!is_hook(address)) return;
+        // With the subsystem locks, every hook's lock is its subsystem's: the
+        // permit is no lock at all. (A graphics hook that reaches other host
+        // state -- creating the device, presenting -- runs on the thread
+        // that owns the window, and that state is that thread's.)
+        if (parallel_main && (import_locks || test_hook_bit(graphics_only_hook_bits, address) ||
+                              test_hook_bit(input_hook_bits, address) || test_hook_bit(menu_hook_bits, address))) return;
         execution_permit->attach();
         parallel_attached(1);
+        // SFR_PARALLEL_HOOK_STATS=1: which hooks bring detached guests back
+        // to the permit (counted while holding it, so without a lock).
+        if (hook_stats) {
+            static std::unordered_map<uint32_t, uint64_t> by_hook;
+            static std::unordered_map<uint64_t, uint64_t> by_guest;  // hook << 32 | guest
+            static uint64_t attaches = 0;
+            ++by_hook[address];
+            ++by_guest[uint64_t(address) << 32 | current_id];
+            if ((attaches + 1) % 200000 == 0) {
+                std::vector<std::pair<uint64_t, uint64_t>> top(by_guest.begin(), by_guest.end());
+                std::sort(top.begin(), top.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+                std::cerr << "PARALLEL_HOOK_GUESTS" << std::hex;
+                for (size_t i = 0; i < top.size() && i < 40; ++i)
+                    std::cerr << " 0x" << (top[i].first >> 32) << '/' << std::dec << (top[i].first & 0xFFFFFFFF) << '=' << top[i].second << std::hex;
+                std::cerr << std::dec << char(10);
+            }
+            if (++attaches % 50000 == 0) {
+                std::vector<std::pair<uint64_t, uint32_t>> top;
+                for (const auto& [hook, count] : by_hook) top.push_back({count, hook});
+                std::sort(top.rbegin(), top.rend());
+                std::cerr << "PARALLEL_HOOKS" << std::hex;
+                for (size_t i = 0; i < top.size() && i < 12; ++i) std::cerr << " 0x" << top[i].second << '=' << std::dec << top[i].first << std::hex;
+                std::cerr << std::dec << char(10);
+            }
+        }
+        if (hook_stats) { hook_attached_at = std::chrono::steady_clock::now(); hook_attached = address; }
         guest_thread_state.entry.hook_stack_pointer = ctx.r1.u32;
     } else if (guest_thread_state.entry.hook_stack_pointer) {
         if (is_hook(address)) guest_thread_state.entry.hook_stack_pointer = (std::max)(guest_thread_state.entry.hook_stack_pointer, ctx.r1.u32);
         else if (ctx.r1.u32 > guest_thread_state.entry.hook_stack_pointer) {
             guest_thread_state.entry.hook_stack_pointer = 0;
+            if (hook_attached) {
+                const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - hook_attached_at).count();
+                if (ms >= 5.0)
+                    std::cerr << "PARALLEL_LONG_HOLD guest_id=" << current_id << " hook=0x" << std::hex << hook_attached << std::dec
+                              << " ms=" << ms << " frame=" << present_count.load() << char(10);
+                hook_attached = 0;
+            }
             execution_permit->detach();
         }
     } else if (guest_thread_state.entry.detach_at_entry) {
@@ -501,6 +705,28 @@ bool register_hook(const char* name) {
     return true;
 }
 bool is_hook_outside_the_image(uint32_t address) { return hooks().contains(address); }
+bool register_input_hook(const char* name) {
+    register_hook(name);
+    const uint32_t address = uint32_t(std::strtoul(name + 4, nullptr, 16));
+    const uint32_t index = (address - hook_base) / 4;
+    input_hook_bits[index / 64] |= uint64_t(1) << (index % 64);
+    return true;
+}
+bool register_menu_hook(const char* name) {
+    register_hook(name);
+    const uint32_t address = uint32_t(std::strtoul(name + 4, nullptr, 16));
+    const uint32_t index = (address - hook_base) / 4;
+    menu_hook_bits[index / 64] |= uint64_t(1) << (index % 64);
+    return true;
+}
+bool register_graphics_hook(const char* name, bool host_state) {
+    register_hook(name);
+    const uint32_t address = uint32_t(std::strtoul(name + 4, nullptr, 16));
+    const uint32_t index = (address - hook_base) / 4;
+    graphics_hook_bits[index / 64] |= uint64_t(1) << (index % 64);
+    if (!host_state) graphics_only_hook_bits[index / 64] |= uint64_t(1) << (index % 64);
+    return true;
+}
 
 // The guest call chain from a stack pointer: each frame's first word links
 // to the caller's frame, and the saved LR sits 8 bytes below that frame.
@@ -557,18 +783,38 @@ static void check_reservation_context(const PPCContext& ctx) {
 }
 // Host-driven system threads (argument selects the loop in the thread entry).
 constexpr uint32_t system_thread_audio = 0;
+// SFR_AUDIO_PARALLEL=N (1-5; 0 off): the audio pump gets console processor N
+// and, with SFR_PARALLEL_WORKER=cores, runs the title's audio callback beside
+// the main thread on that core's permit, as the console runs it on a hardware
+// thread of its own. Otherwise it holds the one permit and, being
+// time-critical, takes it from the main thread every 5.33 ms. On by default
+// (processor 5) on Android: an AYN Thor race (A/B/A, frames 15000-20500) halved
+// the main thread's wait for the permit (7.9 to 3.9-5.8 ms) and cut frames of
+// 50 ms or more from 126 to 21 and 14, with the same audio frame count. Off
+// elsewhere: a desktop and an Ally X measured no difference.
+static const uint32_t audio_parallel_processor = [] {
+    const char* text = std::getenv("SFR_AUDIO_PARALLEL");
+#ifdef __ANDROID__
+    constexpr long fallback = 5;
+#else
+    constexpr long fallback = 0;
+#endif
+    const long value = text && *text ? std::strtol(text, nullptr, 10) : fallback;
+    return uint32_t(value >= 1 && value <= 5 ? value : 0);
+}();
 
 // Creates and starts a system thread with its own PCR, TLS and stack, like
 // the console's kernel threads; returns its handle.
 static uint32_t start_system_thread(PPCContext& ctx, uint32_t kind) {
     check_reservation_context(ctx);
     const uint32_t output = ctx.r1.u32 - 0x100;  // below the stack pointer, unused
-    const GuestThreads::Request request{output, 0x10000, 0, 0, 0, kind, 1,
-        active_memory->load<uint8_t>(uint64_t(ctx.r13.u32) + 0x10C), true};
+    const uint8_t processor = kind == system_thread_audio && audio_parallel_processor
+        ? uint8_t(audio_parallel_processor) : active_memory->load<uint8_t>(uint64_t(ctx.r13.u32) + 0x10C);
+    const GuestThreads::Request request{output, 0x10000, 0, 0, 0, kind, 1, processor, true};
     guest_threads->create(request);
     const uint32_t handle = active_memory->load<uint32_t>(output);
     const auto resumed = guest_threads->resume(handle, 0);
-    if (!resumed.status && resumed.started) {
+    if (!resumed.status && resumed.started && !execution_permit->detached()) {
         execution->wait_until_ready(resumed.id);
         execution_permit->renew_quantum();
     }
@@ -654,7 +900,10 @@ void store_conditional_word(PPCContext& ctx, uint64_t address, uint32_t value) {
                   << " success=" << std::dec << success << '\n';
 }
 void synchronize_resource_memory(PPCContext& ctx) {
-    parallel_slow_access(ctx.r23.u32);
+    // The device's lock, not the permit: waiting for the GPU and dropping the
+    // renderer's copies are both the native device's business.
+    if (!import_locks) parallel_slow_access(ctx.r23.u32);
+    HostGraphicsLock device;
     check_reservation_context(ctx);
     if (active_memory->has_reservation())
         throw RuntimeStop("resource-coherency", ctx.r23.u32, "GPU synchronization during a live reservation");
@@ -695,48 +944,30 @@ void store_conditional_doubleword(PPCContext& ctx, uint64_t address, uint64_t va
         std::cerr << "STORE_CONDITIONAL_DOUBLEWORD address=0x" << std::hex << address << " value=0x" << value
                   << " success=" << std::dec << success << '\n';
 }
-// The sixteen bytes of an aligned vector reversed (the register holds byte 15
-// of memory in element 0), in one shuffle where SSSE3 exists.
-static inline void reverse_vector(const uint8_t* from, uint8_t* to) {
-#if defined(__SSSE3__)
-    const __m128i order = _mm_setr_epi8(15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0);
-    _mm_storeu_si128(reinterpret_cast<__m128i*>(to),
-                     _mm_shuffle_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(from)), order));
-#elif defined(__ARM_NEON)
-    // Reverse the bytes of each half, then exchange the halves.
-    const uint8x16_t halves = vrev64q_u8(vld1q_u8(from));
-    vst1q_u8(to, vextq_u8(halves, halves, 8));
-#else
-    for (unsigned i = 0; i < 16; ++i) to[i] = from[15 - i];
-#endif
-}
-void load_vector_memory(uint32_t address, uint8_t (&destination)[16]) {
+void load_vector_memory_slow(uint32_t address, uint8_t (&destination)[16]) {
     if (!active_memory) throw RuntimeStop("memory-context", address, "guest memory is not initialized");
-    // Common case inline: an aligned vector in one fast page.
-    if (const uint8_t* bytes = active_memory->fast_read(address & ~0xFu, 16)) {
-        reverse_vector(bytes, destination);
-        if (vector_loads < 4 && ++vector_loads)
-            std::cerr << "VECTOR_LOAD address=0x" << std::hex << (address & ~0xFu) << std::dec << '\n';
-        return;
+    if (const uint8_t* bytes = active_memory->fast_read(address & ~0xFu, 16)) reverse_vector(bytes, destination);
+    else {
+        const auto value = load_vector_memory(*active_memory, address);
+        std::copy(value.begin(), value.end(), destination);
     }
-    const auto value = load_vector_memory(*active_memory, address);
-    std::copy(value.begin(), value.end(), destination);
-    if (++vector_loads <= 4)
+    if (vector_load_traces) {
+        --vector_load_traces;
         std::cerr << "VECTOR_LOAD address=0x" << std::hex << (address & ~0xFu) << std::dec << '\n';
-}
-void store_vector_memory(uint32_t address, const uint8_t (&source)[16]) {
-    if (!active_memory) throw RuntimeStop("memory-context", address, "guest memory is not initialized");
-    if (uint8_t* bytes = active_memory->fast_write(address & ~0xFu, 16)) {
-        reverse_vector(source, bytes);
-        if (vector_stores < 4 && ++vector_stores)
-            std::cerr << "VECTOR_STORE address=0x" << std::hex << (address & ~0xFu) << std::dec << '\n';
-        return;
     }
-    VectorBytes value;
-    std::copy(std::begin(source), std::end(source), value.begin());
-    store_vector_memory(*active_memory, address, value);
-    if (++vector_stores <= 4)
+}
+void store_vector_memory_slow(uint32_t address, const uint8_t (&source)[16]) {
+    if (!active_memory) throw RuntimeStop("memory-context", address, "guest memory is not initialized");
+    if (uint8_t* bytes = active_memory->fast_write(address & ~0xFu, 16)) reverse_vector(source, bytes);
+    else {
+        VectorBytes value;
+        std::copy(std::begin(source), std::end(source), value.begin());
+        store_vector_memory(*active_memory, address, value);
+    }
+    if (vector_store_traces) {
+        --vector_store_traces;
         std::cerr << "VECTOR_STORE address=0x" << std::hex << (address & ~0xFu) << std::dec << '\n';
+    }
 }
 void store_vector_word(uint32_t address, const uint8_t (&source)[16]) {
     if (!active_memory) throw RuntimeStop("memory-context", address, "guest memory is not initialized");
@@ -744,6 +975,7 @@ void store_vector_word(uint32_t address, const uint8_t (&source)[16]) {
     std::copy(std::begin(source), std::end(source), value.begin());
     store_vector_word(*active_memory, address, value);
 }
+#if !SFR_DIRECT_MEMORY
 void zero_cache_block(uint32_t address) {
     if (!active_memory) throw RuntimeStop("memory-context", address, "guest memory is not initialized");
     active_memory->zero_cache_block(address);
@@ -751,6 +983,7 @@ void zero_cache_block(uint32_t address) {
         std::cerr << "CACHE_BLOCK_ZERO effective=0x" << std::hex << address
                   << " aligned=0x" << (address & ~uint32_t{31}) << std::dec << " bytes=32\n";
 }
+#endif
 void load_vector_left(uint32_t address, uint8_t (&destination)[16]) {
     if (!active_memory) throw RuntimeStop("memory-context", address, "guest memory is not initialized");
     const auto value = load_vector_left(*active_memory, address);
@@ -773,10 +1006,12 @@ void store_vector_right(uint32_t address, const uint8_t (&source)[16]) {
     std::copy(std::begin(source), std::end(source), value.begin());
     store_vector_right(*active_memory, address, value);
 }
+#if !SFR_DIRECT_MEMORY
 void zero_cache_line(uint32_t address) {
     if (!active_memory) throw RuntimeStop("memory-context", address, "guest memory is not initialized");
     active_memory->zero_cache_line(address);
 }
+#endif
 // SFR_WAIT_GRAPH=1: every five seconds, the main thread's time blocked on
 // each wait object and which guests signalled it: what a frame waits for.
 static const bool wait_trace_enabled = [] {
@@ -855,7 +1090,10 @@ void flush_main_wait_trace(uint32_t frame, bool force) {
 template<class Operation> static void measured_guest_wait(Operation&& operation, const WaitSite& site,
                                                          bool global = false, const uint32_t* status = nullptr) {
     auto runner = [&](auto&& callback) {
-        if (global) execution_permit->run_blocking(std::forward<decltype(callback)>(callback));
+        // A thread that does not hold the global permit (SFR_PARALLEL_MAIN: the
+        // main thread inside a graphics-only hook, waiting for the GPU) has
+        // only its core to give up.
+        if (global && !execution_permit->detached()) execution_permit->run_blocking(std::forward<decltype(callback)>(callback));
         else execution_permit->run_wait(std::forward<decltype(callback)>(callback));
     };
     if (!wait_trace_enabled || (current_id != 1 && (!wait_trace_guest || current_id != wait_trace_guest))) {
@@ -931,14 +1169,115 @@ static const std::vector<uint32_t> resumer_wait_workers = [] {
     }
     return entries;
 }();
+// Always with SFR_PARALLEL_MAIN: the main thread starts helpers to run one
+// function each on data in its own frame and fills that in after resuming
+// them (boot, sub_8222CD98 through 824B2320); while it held the global permit
+// they could not start before it blocked, and now they wait for that.
 static const bool resumer_wait_all = [] {
     const char* text = std::getenv("SFR_RESUMER_WAIT_WORKERS");
-    return text && std::string_view(text) == "all";
+    return (text && std::string_view(text) == "all") || parallel_main;
 }();
 static std::mutex thread_resumers_lock;
 static std::unordered_map<uint32_t, ThreadResumer> thread_resumers;
 
 static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t address);
+// What an import is serialized by, in place of the execution permit, as
+// Unleashed and Marathon Recompiled guard each kernel subsystem with its own
+// mutex rather than the whole program with one lock (SFR_SUBSYSTEM_LOCKS=0
+// goes back to the permit: docs/architecture-migration.md, phase 4).
+//   none    -- touches only its arguments, guest memory and objects that keep
+//              their own lock: critical sections, TLS values, sync objects and
+//              waits, the thread registry's resume/suspend, the physical heap,
+//              string and format helpers, constants.
+//   memory  -- VirtualMemory, which has no lock of its own.
+//   files   -- the file tables (GuestFiles, ContentFiles, AssetFiles) and saves.
+//   objects -- creating and ending threads, their priorities and references,
+//              TLS slots, event and semaphore creation.
+//   system  -- everything else: XAM, XMsg, Xex modules, XAudio clients,
+//              notifications' listeners, configuration.
+// No import calls guest code, so none holds its lock across a guest wait; a
+// wait inside one (an asynchronous read's submission) gives back only its core.
+enum class ImportLock : uint8_t { none, memory, files, objects, system, count };
+static ImportLock import_lock(uint32_t address) {
+    switch (address) {
+    case 0x82ACB4AC: case 0x82ACB4BC:  // Rtl{Enter,Leave}CriticalSection
+    case 0x82ACB49C: case 0x82ACC2DC:  // RtlInitializeCriticalSection(AndSpinCount)
+    case 0x82ACBCAC: case 0x82ACBCBC:  // KeTls{Get,Set}Value
+    case 0x82ACB59C:                   // KeGetCurrentProcessType
+    case 0x82ACB86C: case 0x82ACC1CC:  // KeWaitFor{Single,Multiple}Object(s)
+    case 0x82ACB78C:                   // KeDelayExecutionThread
+    case 0x82ACB87C: case 0x82ACB9DC:  // Ke{Set,Reset}Event
+    case 0x82ACC2EC:                   // KeReleaseSemaphore
+    case 0x82ACB5EC: case 0x82ACB6CC:  // Nt{Set,Clear}Event
+    case 0x82ACB63C: case 0x82ACB5DC:  // NtWaitFor{Single,Multiple}Object(s)Ex
+    case 0x82ACB54C: case 0x82ACB51C:  // Nt{Resume,Suspend}Thread
+    case 0x82ACB85C: case 0x82ACB83C:  // Ke{Enter,Leave}CriticalRegion
+    case 0x82ACC18C:                   // XAudioGetVoiceCategoryVolume
+    case 0x82ACC1DC:                   // XAudioSubmitRenderDriverFrame (the audio pump alone)
+    case 0x82ACB25C:                   // XNotifyGetNext (NativeNotifications' lock)
+    case 0x82ACC16C: case 0x82ACC46C:  // XamInputGetKeystrokeEx, HidReadKeys
+    case 0x82ACC14C: case 0x82ACC15C:  // XamInput{Get,Set}State
+    case 0x82ACBA0C: case 0x82ACBA3C:  // Mm{Allocate,Free}PhysicalMemory(Ex): the physical heap's lock
+    case 0x82ACBA1C:                   // MmQueryAllocationSize
+    case 0x82ACB57C: case 0x82ACC43C:  // RtlInit{Ansi,Unicode}String
+    case 0x82ACC42C: case 0x82ACC41C:  // RtlUnicodeStringToAnsiString, RtlFreeAnsiString (the pool's lock)
+    case 0x82ACB6BC: case 0x82ACB68C:  // RtlMultiByteToUnicodeN, RtlNtStatusToDosError
+    case 0x82ACB67C:                   // RtlImageXexHeaderField
+    case 0x82ACB69C: case 0x82ACBB7C:  // _snprintf, _vsnprintf
+    case 0x82ACBB6C: case 0x82ACB6EC:  // sprintf, vsprintf
+    case 0x82ACBAAC: case 0x82ACB94C:  // KeQueryPerformanceFrequency, KeQuerySystemTime
+    case 0x82ACB24C: case 0x82ACB35C:  // XGetGameRegion, XamGetSystemVersion
+    case 0x82ACB23C:                   // XGetVideoMode
+    case 0x82ACB5AC:                   // XexCheckExecutablePrivilege
+        return ImportLock::none;
+    case 0x82ACB99C: case 0x82ACB98C:  // Nt{Allocate,Free}VirtualMemory
+    case 0x82ACB6DC: case 0x82ACC44C:  // MmQueryAddressProtect, MmQueryStatistics
+        return ImportLock::memory;
+    case 0x82ACB58C: case 0x82ACB7BC:  // NtCreateFile, NtReadFile
+    case 0x82ACB64C: case 0x82ACB66C:  // NtWriteFile, NtQueryInformationFile
+    case 0x82ACB60C: case 0x82ACB6AC:  // NtSetInformationFile, NtQueryFullAttributesFile
+    case 0x82ACB9AC: case 0x82ACB62C:  // NtFlushBuffersFile, NtClose
+    case 0x82ACBEEC:                   // XamContentOpenFile
+    case 0x82ACB27C: case 0x82ACB28C:  // XamContent{CreateEx,Close}
+    case 0x82ACB29C: case 0x82ACB2DC:  // XamContentGet{Creator,DeviceData}
+    case 0x82ACB2CC: case 0x82ACB3EC:  // XamContentGetDeviceState, XamShowNuiDeviceSelectorUI
+        return ImportLock::files;
+    case 0x82ACB77C: case 0x82ACB7DC:  // Ex{Create,Terminate}Thread
+    case 0x82ACB4EC: case 0x82ACB50C:  // Ke{Set,Query}BasePriorityThread
+    case 0x82ACB53C:                   // KeSetAffinityThread
+    case 0x82ACB4FC: case 0x82ACB4CC:  // ObReferenceObjectByHandle, ObDereferenceObject
+    case 0x82ACBCCC: case 0x82ACBCDC:  // KeTls{Alloc,Free}
+    case 0x82ACB55C: case 0x82ACB5BC:  // Nt{CreateEvent,CreateSemaphore}
+    case 0x82ACB9EC:                   // ExRegisterTitleTerminateNotification
+        return ImportLock::objects;
+    default:
+        return ImportLock::system;
+    }
+}
+static std::recursive_mutex import_mutexes[size_t(ImportLock::count)];
+// Takes an import's lock. A guest holding the permit waits for it without the
+// permit, so a detached holder never waits behind it.
+struct ImportLockScope {
+    std::recursive_mutex* mutex = nullptr;
+    explicit ImportLockScope(ImportLock lock) {
+        if (lock == ImportLock::none) return;
+        mutex = &import_mutexes[size_t(lock)];
+        if (mutex->try_lock()) return;
+        const auto started = std::chrono::steady_clock::now();
+        const auto wait = [this](std::stop_token) { mutex->lock(); };
+        if (!execution_permit) mutex->lock();
+        else if (execution_permit->detached()) execution_permit->run_wait(wait);
+        else execution_permit->run_blocking(wait);
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+        if (ms >= 100)
+            std::cerr << "LOCK_LONG_WAIT lock=import-" << int(lock) << " guest_id=" << current_id << " ms=" << ms
+                      << " frame=" << present_count.load() << std::endl;
+    }
+    ~ImportLockScope() { if (mutex) mutex->unlock(); }
+    ImportLockScope(const ImportLockScope&) = delete;
+    ImportLockScope& operator=(const ImportLockScope&) = delete;
+};
+
 void dispatch_import(PPCContext& ctx, const char* name, uint32_t address) {
     // SFR_MAIN_IMPORT_TIME=1: every five seconds, the main thread's time in
     // each import (waits included) since the last report.
@@ -950,7 +1289,10 @@ void dispatch_import(PPCContext& ctx, const char* name, uint32_t address) {
         static std::unordered_map<const char*, double> spent;
         static auto reported = std::chrono::steady_clock::now();
         const auto started = std::chrono::steady_clock::now();
-        dispatch_import_owned(ctx, name, address);
+        {
+            ImportLockScope lock(import_locks ? import_lock(address) : ImportLock::none);
+            dispatch_import_owned(ctx, name, address);
+        }
         const auto now = std::chrono::steady_clock::now();
         spent[name] += std::chrono::duration<double, std::milli>(now - started).count();
         if (now - reported > std::chrono::seconds(5)) {
@@ -965,7 +1307,10 @@ void dispatch_import(PPCContext& ctx, const char* name, uint32_t address) {
         }
         return;
     }
-    if (!guest_thread_state.entry.parallel || !execution_permit->detached()) return dispatch_import_owned(ctx, name, address);
+    if (!guest_thread_state.entry.parallel || !execution_permit->detached()) {
+        ImportLockScope lock(import_locks ? import_lock(address) : ImportLock::none);
+        return dispatch_import_owned(ctx, name, address);
+    }
     // Imports a detached guest runs as it is: critical sections keep their
     // own lock (contended waits attach unless the experiment is enabled), a TLS value lives
     // in the calling thread's own bank, and the process type is a constant.
@@ -973,8 +1318,8 @@ void dispatch_import(PPCContext& ctx, const char* name, uint32_t address) {
     // four hundred thousand times in a race's first minute.
     // Waits, event signals and sleeps too: the sync objects keep their own
     // lock (and dispatcher_mutex the guest-side state), and a wait releases
-    // only the core (block_guest). A thread handle's wait reads the thread
-    // registry, so it still takes the permit.
+    // only the core (block_guest). A thread handle's wait finds the host
+    // thread under the registry's own lock (GuestThreads::host_handle).
     const bool permit_free = address == 0x82ACB4AC || address == 0x82ACB4BC ||  // Rtl{Enter,Leave}CriticalSection
         address == 0x82ACBCAC || address == 0x82ACBCBC ||                        // KeTls{Get,Set}Value
         address == 0x82ACB59C ||                                                 // KeGetCurrentProcessType
@@ -993,8 +1338,16 @@ void dispatch_import(PPCContext& ctx, const char* name, uint32_t address) {
         // lock, and writes only the caller's sixteen bytes.
         address == 0x82ACC16C || address == 0x82ACC46C ||                        // XamInputGetKeystrokeEx, HidReadKeys
         address == 0x82ACC14C ||                                                 // XamInputGetState
-        (address == 0x82ACB63C && !GuestThreads::is_handle_range(ctx.r3.u32));  // NtWaitForSingleObjectEx
-    if (!permit_free) {
+        address == 0x82ACB63C ||                                                 // NtWaitForSingleObjectEx
+        // Waits on several objects, as on one; resuming and suspending a
+        // thread (the registry's own locks, GuestThreads::resume); the next
+        // notification (NativeNotifications keeps its own lock); the audio
+        // pump handing a frame to the host (its one caller).
+        address == 0x82ACB5DC ||                                                 // NtWaitForMultipleObjectsEx
+        address == 0x82ACB54C || address == 0x82ACB51C ||                        // Nt{Resume,Suspend}Thread
+        address == 0x82ACB25C ||                                                 // XNotifyGetNext
+        address == 0x82ACC1DC;                                                   // XAudioSubmitRenderDriverFrame
+    if (!permit_free && !import_locks) {
         execution_permit->attach();
         parallel_attached(0);
         // Holding the permit: which imports bring detached guests back to it.
@@ -1010,7 +1363,21 @@ void dispatch_import(PPCContext& ctx, const char* name, uint32_t address) {
             std::cerr << char(10);
         }
     }
-    dispatch_import_owned(ctx, name, address);
+    // SFR_PARALLEL_HOOK_STATS=1 also names every import a guest beside the
+    // permit held it through for 5 ms or more: what keeps the main thread
+    // waiting at a load (PARALLEL_LONG_HOLD).
+    static const bool hold_stats = [] { const char* t = std::getenv("SFR_PARALLEL_HOOK_STATS"); return t && *t == '1'; }();
+    const auto import_start = hold_stats && !permit_free ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    {
+        ImportLockScope lock(import_locks ? import_lock(address) : ImportLock::none);
+        dispatch_import_owned(ctx, name, address);
+    }
+    if (hold_stats && !permit_free) {
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - import_start).count();
+        if (ms >= 5.0)
+            std::cerr << "PARALLEL_LONG_HOLD guest_id=" << current_id << " import=" << name + 7 << " ms=" << ms
+                      << " frame=" << present_count.load() << " lr=0x" << std::hex << ctx.lr << std::dec << char(10);
+    }
     if (!execution_permit->detached() && !guest_thread_state.entry.hook_stack_pointer && !guest_thread_state.entry.detach_at_entry) execution_permit->detach();
 }
 // Completes an XOVERLAPPED at once: InternalLow = result, InternalHigh =
@@ -1426,6 +1793,8 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
             protection = physical_memory->query_address_protect(queried_address);
         else if (image_protection->contains(queried_address))
             protection = image_protection->query_address_protect(queried_address);
+        else if (active_heap && GuestHeap::in_arena(queried_address))
+            protection = 4;  // PAGE_READWRITE: the host heap's arenas
         else
             throw RuntimeStop("memory-protection", queried_address, "unsupported address class for protection query");
         ctx.r3.u64 = protection;
@@ -1467,8 +1836,10 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
             throw RuntimeStop("physical-memory", freed, "free of an address that is no physical allocation base");
         // The pages may come back as another resource: drop what the renderer
         // cached from them (virtual 0xE0000000 is physical 0x1000).
-        if (active_guest_graphics && active_guest_graphics->created() && freed >= 0xE0000000u)
+        if (active_guest_graphics && active_guest_graphics->created() && freed >= 0xE0000000u) {
+            HostGraphicsLock graphics;
             active_guest_graphics->renderer().invalidate(freed - 0xE0000000u + 0x1000u, freed_size);
+        }
         static uint32_t frees = 0;
         if (frees++ < 16)
             std::cerr << "RESULT MmFreePhysicalMemory type=0x" << std::hex << ctx.r3.u32 << " address=0x" << freed
@@ -1707,7 +2078,7 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
                 // establishes a benefit. Set 0 to try a core-only detached wait.
                 static const bool global_wait = [] {
                     const char* text = std::getenv("SFR_CRITICAL_WAIT_GLOBAL");
-                    return !text || *text != '0';
+                    return text ? *text != '0' : !import_locks;
                 }();
                 // Let both comparison runs use the same startup policy. Some
                 // existing movie waits stall before a race can be measured.
@@ -1913,8 +2284,12 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         // A thread handle is signaled when its thread exits.
         auto prepared = GuestWait::prepare(*active_memory, *native_sync_objects,
             handle, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, [](uint32_t other) {
-                void* host = guest_threads && GuestThreads::is_handle_range(other) ? guest_threads->host_handle(other) : nullptr;
-                return host ? NativeSyncObjects::wait_on_host(host, other) : nullptr;
+                std::unique_ptr<NativeSyncObjects::WaitHandle> wait;
+                if (guest_threads && GuestThreads::is_handle_range(other))
+                    guest_threads->with_host_handle(other, [&](void* host) {
+                        if (host) wait = NativeSyncObjects::wait_on_host(host, other);
+                    });
+                return wait;
             });
         NativeSyncObjects::WaitResult result{prepared.status, false};
         if (!prepared.status) {
@@ -1943,8 +2318,12 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
             prepared.push_back(GuestWait::prepare(*active_memory, *native_sync_objects,
                 active_memory->load<uint32_t>(uint64_t(handles) + i * 4), ctx.r6.u32, ctx.r7.u32, ctx.r8.u32,
                 [](uint32_t other) {
-                    void* host = guest_threads && GuestThreads::is_handle_range(other) ? guest_threads->host_handle(other) : nullptr;
-                    return host ? NativeSyncObjects::wait_on_host(host, other) : nullptr;
+                    std::unique_ptr<NativeSyncObjects::WaitHandle> wait;
+                    if (guest_threads && GuestThreads::is_handle_range(other))
+                        guest_threads->with_host_handle(other, [&](void* host) {
+                            if (host) wait = NativeSyncObjects::wait_on_host(host, other);
+                        });
+                    return wait;
                 }));
             if (prepared.back().status) {
                 ctx.r3.u64 = prepared.back().status;
@@ -1988,7 +2367,9 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         if (trace_imports) std::cerr << "RESULT NtResumeThread handle=0x" << std::hex << handle << " output=0x" << output
                   << " status=0x" << result.status << std::dec << " previous=" << result.previous
                   << " guest_id=" << result.id << " backend=windows-thread\n";
-        if (!result.status && result.started) {
+        // Holding the global permit, the resumer lets the new thread get in
+        // line first; a detached resumer holds nothing it could wait behind.
+        if (!result.status && result.started && !execution_permit->detached()) {
             execution->wait_until_ready(result.id);
             execution_permit->renew_quantum();
         }
@@ -2146,7 +2527,7 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
             const auto resumed = guest_threads->resume(state.handle, 0);
             std::cerr << "RESULT ExCreateThread start=running guest_id=" << resumed.id
                       << " status=0x" << std::hex << resumed.status << std::dec << '\n';
-            if (!resumed.status && resumed.started) {
+            if (!resumed.status && resumed.started && !execution_permit->detached()) {
                 execution->wait_until_ready(resumed.id);
                 execution_permit->renew_quantum();
             }
@@ -2657,10 +3038,17 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
     if (address == 0x82ACB60C && std::string_view(name) == "__imp__NtSetInformationFile" && guest_files) {
         const uint32_t handle = ctx.r3.u32, io = ctx.r4.u32, input = ctx.r5.u32, length = ctx.r6.u32, info_class = ctx.r7.u32;
         ctx.r3.u64 = guest_files->set_information(handle, io, input, length, info_class);
-        std::cerr << "RESULT NtSetInformationFile handle=0x" << std::hex << handle << std::dec << " class=" << info_class
-                  << " length=" << length << " status=0x" << std::hex << ctx.r3.u32 << std::dec;
-        if (info_class == 14 && length >= 8) std::cerr << " position=" << active_memory->load<uint64_t>(input);
-        std::cerr << '\n';
+        // The streamed music seeks every 32 KiB (166 times in a 92 s race window)
+        // from a guest holding the permit; an unconditional line here was the
+        // only frequent write during play, so it could wait out the stderr
+        // flusher's disk write while the main thread waited for the permit.
+        // Failures stay visible.
+        if (trace_imports || ctx.r3.u32) {
+            std::cerr << "RESULT NtSetInformationFile handle=0x" << std::hex << handle << std::dec << " class=" << info_class
+                      << " length=" << length << " status=0x" << std::hex << ctx.r3.u32 << std::dec;
+            if (info_class == 14 && length >= 8) std::cerr << " position=" << active_memory->load<uint64_t>(input);
+            std::cerr << '\n';
+        }
         return;
     }
     if (address == 0x82ACB6AC && std::string_view(name) == "__imp__NtQueryFullAttributesFile" && guest_files) {
@@ -3683,10 +4071,21 @@ int main(int argc, char** argv) {
             throw std::runtime_error("decoded image size differs from compiled game");
         sfr::GuestClock clock;
         sfr::active_clock = &clock;
-        sfr::GuestMemory memory;
+#if SFR_DIRECT_MEMORY
+        sfr::GuestMemory::direct_guest_access = true;
+#endif
+        // The host heap's arenas (SFR_HOST_HEAP) and the physical heap
+        // (SFR_PHYSICAL_HEAP) are committed beside the title's own allocations.
+        sfr::GuestMemory memory(sfr::GuestMemory::default_backing_budget +
+                                (sfr::GuestHeap::enabled() ? 0x40000000ull : 0) +
+                                (sfr::PhysicalMemory::heap_enabled() ? sfr::PhysicalMemory::arena_size : 0));
         sfr::VirtualMemory allocations(memory);
+        // Never destroyed: detached guests may still be in a heap call when
+        // the program leaves, and the arenas go with the memory.
+        if (sfr::GuestHeap::enabled()) sfr::active_heap = new sfr::GuestHeap(memory);
         sfr::virtual_memory = &allocations;
         sfr::active_memory = &memory;
+        sfr::guest_base = memory.base();
         memory.map(PPC_IMAGE_BASE, PPC_IMAGE_SIZE);
         std::ifstream image(dump / "image.bin", std::ios::binary);
         if (!image.read(reinterpret_cast<char*>(memory.base() + PPC_IMAGE_BASE), PPC_IMAGE_SIZE))
@@ -3784,6 +4183,10 @@ int main(int argc, char** argv) {
                               << " resource=0x" << ctx.r31.u32 << " caller=0x" << caller << std::dec << '\n';
                     return cell;
                 });
+                // Read directly by generated code there: the provider's
+                // checks only audit its one consumer, and the value is fixed.
+                if (sfr::GuestMemory::direct_guest_access)
+                    memory.refresh_word(static_cast<uint32_t>(value), sfr::VideoGlobals::device_cell);
                 std::cerr << "BIND VdGlobalDevice cell=0x" << std::hex << sfr::VideoGlobals::device_cell
                           << std::dec << " scope=shared-surface-destruction\n";
             }
@@ -3849,12 +4252,22 @@ int main(int argc, char** argv) {
         memory.store<uint32_t>(teb + 0x68, sfr::ThreadLocalStorage::static_address);
         memory.store<uint32_t>(teb + 0x14c, 1);
         const uint64_t tls_backing_size = (uint64_t(tls_data_size) + uint64_t(tls_slots) * 4 + 4095) & ~uint64_t(4095);
-        sfr::PhysicalMemory physical(memory);
+        sfr::PhysicalMemory physical(memory, sfr::PhysicalMemory::heap_enabled());
         sfr::physical_memory = &physical;
         sfr::GuestExecution execution;
         // Guest threads run one at a time; a 2 ms quantum keeps handoffs rare
         // enough for the title to run at speed while others still progress.
         execution.set_scheduling_quantum(std::chrono::microseconds(2000));
+        // SFR_PERMIT_HOLD_TRACE=1: every hold of the global permit of 20 ms or
+        // more, with the guest function its holder was in when it let go.
+        if (const char* trace = std::getenv("SFR_PERMIT_HOLD_TRACE"); trace && *trace == '1')
+            execution.set_long_hold([](uint64_t guest, double ms) {
+                std::cerr << "PERMIT_LONG_HOLD guest_id=" << guest << " ms=" << ms
+                          << " function=" << sfr::guest_thread_state.entry.current_function
+                          << " address=0x" << std::hex << sfr::guest_thread_state.entry.current_address
+                          << " lr=0x" << (sfr::current_context ? uint32_t(sfr::current_context->lr) : 0u) << std::dec
+                          << " frame=" << sfr::present_count.load() << std::endl;
+            });
         for (auto& core : sfr::core_executions) {
             core = std::make_unique<sfr::GuestExecution>();
             core->set_scheduling_quantum(std::chrono::microseconds(2000));
@@ -3965,35 +4378,25 @@ int main(int argc, char** argv) {
                                 });
                         }
                         const unsigned processor = memory.load<uint8_t>(uint64_t(state.pcr) + 0x10C);
-                        const bool on_core = sfr::parallel_worker == sfr::ParallelGuests::cores &&
-                            processor != 0 && processor < sfr::guest_processors;
-                        if (state.startup && (on_core || sfr::parallel_worker == sfr::ParallelGuests::all ||
+                        const bool on_core = sfr::runs_on_core(processor);
+                        const bool audio_pump = !state.startup && state.argument == sfr::system_thread_audio;
+                        // With every thread free (all + SFR_PARALLEL_MAIN) the audio
+                        // pump is too: holding the global permit through its
+                        // callback, it held up the main thread's present by up to
+                        // a quarter of a second.
+                        const bool free_audio = audio_pump && sfr::parallel_main &&
+                                                sfr::parallel_worker == sfr::ParallelGuests::all;
+                        if ((state.startup || free_audio || (audio_pump && sfr::audio_parallel_processor && on_core)) &&
+                            (on_core || sfr::parallel_worker == sfr::ParallelGuests::all ||
                                 (sfr::parallel_worker == sfr::ParallelGuests::job_worker &&
                                  state.worker == sfr::parallel_worker_entry))) {
                             std::cerr << "PARALLEL_WORKER guest_id=" << state.id << " processor=" << processor << '\n';
-                            sfr::guest_thread_state.entry.parallel = true;
-                            sfr::GuestMemory::concurrent_reader = true;
-                            sfr::GuestMemory::slow_access_hook = sfr::parallel_slow_access;
-                            permit->detach();
-                            if (on_core) {
-                                // Global permit released first: a core is only
-                                // ever awaited without the global permit.
-                                sfr::core_index = processor;
-                                sfr::core_permit = sfr::core_executions[processor]->enter(state.id);
-                                // The core is taken after the global permit, and
-                                // released whenever this thread waits for it.
-                                permit->set_companion(sfr::core_permit.get());
-                                permit->set_after_blocking([] {
-                                    // Moved to another processor meanwhile: continue there.
-                                    const unsigned now = sfr::active_memory->load<uint8_t>(uint64_t(sfr::current_pcr) + 0x10C);
-                                    if (now != sfr::core_index && now != 0 && now < sfr::guest_processors) {
-                                        sfr::execution_permit->set_companion(nullptr);
-                                        sfr::core_permit.reset();
-                                        sfr::core_index = now;
-                                        sfr::core_permit = sfr::core_executions[now]->enter(sfr::current_id);
-                                        sfr::execution_permit->set_companion(sfr::core_permit.get());
-                                    }
-                                });
+                            if (on_core) sfr::join_core(*permit, processor, state.id, sfr::parallel_main && state.startup);
+                            else {
+                                sfr::guest_thread_state.entry.parallel = true;
+                                sfr::GuestMemory::concurrent_reader = true;
+                                sfr::GuestMemory::slow_access_hook = sfr::parallel_slow_access;
+                                permit->detach();
                             }
                         }
                         sfr::refresh_entry_observation();
@@ -4004,6 +4407,7 @@ int main(int argc, char** argv) {
                             // every 5.33 ms from the registered client callback.
                             std::cerr << "NATIVE_AUDIO_PUMP_BEGIN guest_id=" << state.id << '\n';
                             execution.set_urgent(state.id, true);
+                            if (permit->detached()) sfr::core_executions[sfr::core_index]->set_urgent(state.id, true);
                             using clock = std::chrono::steady_clock;
                             constexpr auto period = std::chrono::nanoseconds(16'000'000 / 3);
                             auto next = clock::now();
@@ -4031,11 +4435,14 @@ int main(int argc, char** argv) {
                                 }
                                 const auto now = clock::now();
                                 if (next + std::chrono::milliseconds(500) < now) next = now;  // drop a long stall
-                                permit->run_blocking([next](std::stop_token token) {
+                                const auto sleep = [next](std::stop_token token) {
                                     while (!token.stop_requested() && clock::now() < next)
                                         std::this_thread::sleep_for(std::min<clock::duration>(next - clock::now(),
                                                                                               std::chrono::milliseconds(2)));
-                                });
+                                };
+                                // Beside the permit (SFR_AUDIO_PARALLEL) it releases only its core.
+                                if (permit->detached()) permit->run_wait(sleep);
+                                else permit->run_blocking(sleep);
                             }
                         }
                         std::cerr << "ORIGINAL_WORKER_BEGIN guest_id=" << state.id
@@ -4253,6 +4660,18 @@ int main(int argc, char** argv) {
             auto permit = execution.enter(1);
             sfr::execution_permit = permit.get();
             sfr::current_context = &ctx;
+            if (sfr::runs_on_core(0) && sfr::parallel_main) {
+                std::cerr << "PARALLEL_WORKER guest_id=1 processor=0\n";
+                sfr::join_core(*permit, 0, 1);
+            } else if (sfr::parallel_worker == sfr::ParallelGuests::all && sfr::parallel_main) {
+                // Every guest thread runs freely, as in Unleashed and Marathon
+                // Recompiled; the global permit is only the hooks' lock.
+                std::cerr << "PARALLEL_WORKER guest_id=1 processor=any\n";
+                sfr::guest_thread_state.entry.parallel = true;
+                sfr::GuestMemory::concurrent_reader = true;
+                sfr::GuestMemory::slow_access_hook = sfr::parallel_slow_access;
+                permit->detach();
+            }
             sfr::refresh_entry_observation();
             std::cerr << "GUEST_HOST_THREAD guest_id=1 tid=" << sfr::host_thread_id() << " worker=0x824d22f0\n";
 #ifdef _WIN32
@@ -4263,11 +4682,16 @@ int main(int argc, char** argv) {
                           << " import_variables=" << variable_count << '\n';
                 std::cerr << "DIAGNOSTIC_LIMITS calls=" << sfr::call_budget << " watchdog_seconds=" << sfr::watchdog_seconds << '\n';
                 _xstart(ctx, memory.base());
+                std::cerr << "MAIN_ENTRY_RETURNED frame=" << sfr::present_count.load() << std::endl;
             } catch (const sfr::GuestExecutionCancelled&) {
+                std::cerr << "MAIN_CANCELLED frame=" << sfr::present_count.load() << std::endl;
             } catch (...) {
                 execution.fail(std::current_exception());
             }
             sfr::flush_main_wait_trace(sfr::present_count.load(), true);
+            // How often a guest beside the permit came back to it, by reason.
+            std::cerr << "PARALLEL_ATTACHES imports=" << sfr::parallel_attaches[0] << " hooks=" << sfr::parallel_attaches[1]
+                      << " memory=" << sfr::parallel_attaches[2] << std::endl;
             sfr::execution_permit = nullptr;
             sfr::current_context = nullptr;
         } // Permit released, then workers stopped/joined before their dependencies.

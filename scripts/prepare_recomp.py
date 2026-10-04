@@ -88,7 +88,12 @@ def main():
                                             for f in table_functions]
         switch_report['unplaced_tables'] = unplaced
         (output / 'switches.json').write_text(json.dumps(switch_report, indent=1) + '\n')
-        config = tomllib.loads((ROOT / 'config/freeriders.toml').read_text())['main']
+        document = tomllib.loads((ROOT / 'config/freeriders.toml').read_text())
+        config = document['main']
+        # Mid-asm hooks, in XenonRecomp's (and Unleashed Recompiled's) format:
+        # a call to a named runtime function at one instruction, passing the
+        # registers it may read and change.
+        midasm_hooks = document.get('midasm_hook', [])
         config['functions'] = config.get('functions', []) + [
             {'address': f['address'], 'size': f['size']} for f in table_functions]
         # Verify each configured helper against this decoded executable.
@@ -104,7 +109,9 @@ def main():
         config.update(file_path=relative_xex,
                       out_directory_path='ppc', switch_table_file_path='switches.toml')
         (output / 'recomp.toml').write_text('[main]\n' + ''.join(
-            f'{key} = {toml_value(value)}\n' for key, value in config.items()))
+            f'{key} = {toml_value(value)}\n' for key, value in config.items()) + ''.join(
+            '\n[[midasm_hook]]\n' + ''.join(f'{key} = {toml_value(value)}\n' for key, value in hook.items())
+            for hook in midasm_hooks))
         (output / 'ppc').mkdir()
         status['stage'] = 'recompile'
         save_status()

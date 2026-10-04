@@ -35,6 +35,11 @@ public:
     // framebuffer: the scene is drawn into the back buffer and whatever the
     // title resolves out of its surface is not what it rendered.
     static bool foreign_render_targets;
+    // On unless SFR_SURFACE_TARGETS=0 (with foreign_render_targets): each of the title's
+    // own surfaces is drawn into a texture of its size instead of the
+    // framebuffer (NativePresentation::set_target), as Unleashed and Marathon
+    // Recompiled do. A race's bloom chain then draws 110x90 instead of 1280x720.
+    static bool surface_targets;
     static constexpr uint32_t color_handle = 0x71700000;
     static constexpr uint32_t depth_handle = 0x71701000;
     static constexpr uint32_t presentation_handle = 0x71702000;
@@ -56,6 +61,9 @@ public:
     bool clear(uint32_t device, uint32_t rectangle_count, uint32_t rectangles,
                uint32_t flags, uint32_t argb, float depth, uint32_t stencil);
     bool set_viewport(uint32_t device, uint32_t descriptor);
+    // Points the presentation at the surface RT0 is bound to (the depth
+    // surface when there is no colour one), before a draw, clear or resolve.
+    void select_target(uint32_t device);
     void set_scissor(uint32_t device, uint32_t rectangle);
     void set_scissor_enabled(uint32_t device, uint32_t enabled);
     void set_blend_control(uint32_t device, uint32_t target, uint32_t packed);
@@ -89,6 +97,10 @@ private:
     GuestMemory& memory_;
     NativeGraphics& graphics_;
     std::unique_ptr<Impl> impl_;
+    // The last viewport on one of the title's surfaces had an offset, so it
+    // is in that surface's pixels; origin-zero ones are in the framebuffer's
+    // (set_viewport).
+    bool viewport_surface_space_ = false;
 };
 
 extern GuestGraphics* active_guest_graphics;

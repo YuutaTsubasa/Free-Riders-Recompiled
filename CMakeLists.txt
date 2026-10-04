@@ -16,6 +16,13 @@ if(APPLE)
     add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include cstdlib>")
 endif()
 option(SFR_BUILD_DIAGNOSTIC "Build the game CPU diagnostic (requires generated code)" OFF)
+# Guest memory read and written as base + address by generated code, as in
+# Unleashed and Marathon Recompiled, instead of through GuestMemory's checks
+# (docs/architecture-migration.md, phase 3).
+option(SFR_DIRECT_MEMORY "Generated code accesses guest memory directly" ON)
+if(SFR_DIRECT_MEMORY)
+    add_compile_definitions(SFR_DIRECT_MEMORY=1)
+endif()
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/XenonRecomp/CMakeLists.txt")
     message(FATAL_ERROR "Run scripts/bootstrap.py to obtain the pinned XenonRecomp tools.")
 endif()
@@ -503,16 +510,22 @@ add_test(NAME texture_fetch COMMAND sfr_texture_fetch_test)
 add_executable(sfr_vector_integer_test tests/vector_integer_test.cpp)
 target_include_directories(sfr_vector_integer_test PRIVATE src)
 add_test(NAME vector_integer COMMAND sfr_vector_integer_test)
+# o1heap is C: its own library, clear of the diagnostic's C++ options. The
+# title's heap and the physical heap (PhysicalMemory) allocate from it.
+add_library(sfr_o1heap STATIC src/o1heap/o1heap.c)
 add_executable(sfr_memory_statistics_test tests/memory_statistics_test.cpp src/memory_statistics.cpp src/virtual_memory.cpp src/physical_memory.cpp src/guest_memory.cpp)
+target_link_libraries(sfr_memory_statistics_test PRIVATE sfr_o1heap)
 target_include_directories(sfr_memory_statistics_test PRIVATE src)
 add_test(NAME memory_statistics COMMAND sfr_memory_statistics_test)
 add_executable(sfr_video_mode_test tests/video_mode_test.cpp src/video_mode.cpp src/guest_memory.cpp)
 target_include_directories(sfr_video_mode_test PRIVATE src)
 add_test(NAME video_mode COMMAND sfr_video_mode_test)
 add_executable(sfr_physical_memory_test tests/physical_memory_test.cpp src/physical_memory.cpp src/guest_memory.cpp)
+target_link_libraries(sfr_physical_memory_test PRIVATE sfr_o1heap)
 target_include_directories(sfr_physical_memory_test PRIVATE src)
 add_test(NAME physical_memory COMMAND sfr_physical_memory_test)
 add_executable(sfr_resource_coherency_test tests/resource_coherency_test.cpp src/resource_coherency.cpp src/physical_memory.cpp src/guest_memory.cpp)
+target_link_libraries(sfr_resource_coherency_test PRIVATE sfr_o1heap)
 target_include_directories(sfr_resource_coherency_test PRIVATE src)
 add_test(NAME resource_coherency COMMAND sfr_resource_coherency_test)
 add_executable(sfr_ansi_string_test tests/ansi_string_test.cpp src/ansi_string.cpp src/guest_memory.cpp)
@@ -813,6 +826,9 @@ if(WIN32 OR UNIX)
     add_executable(sfr_guest_graphics_test tests/guest_graphics_test.cpp src/guest_memory.cpp)
     target_link_libraries(sfr_guest_graphics_test PRIVATE sfr_guest_graphics)
     add_test(NAME guest_graphics COMMAND sfr_guest_graphics_test)
+    # Its clears and draws on the title's own surfaces read the framebuffer
+    # back: the aliasing that SFR_SURFACE_TARGETS=0 keeps.
+    set_tests_properties(guest_graphics PROPERTIES ENVIRONMENT SFR_SURFACE_TARGETS=0)
     add_executable(sfr_native_formats_test tests/native_formats_test.cpp)
     target_link_libraries(sfr_native_formats_test PRIVATE sfr_guest_graphics)
     add_test(NAME native_formats COMMAND sfr_native_formats_test)
@@ -858,6 +874,11 @@ if(SFR_BUILD_DIAGNOSTIC)
         # touch the checked guest memory, so the canaries and the fortified
         # library calls buy nothing here and are paid for in every one of them.
         target_compile_options(sfr_cpu_diagnostic PRIVATE -fno-stack-protector -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
+        # A shared library lets its exported functions be interposed, so every
+        # call between them went through a PLT stub: 19822 of them, 3.9% of the
+        # main thread in a Thor race (simpleperf). Nothing replaces them, so
+        # bind the library's own calls inside it.
+        target_link_options(sfr_cpu_diagnostic PRIVATE -Wl,-Bsymbolic-functions)
     else()
         add_executable(sfr_cpu_diagnostic)
     endif()
@@ -895,6 +916,9 @@ if(SFR_BUILD_DIAGNOSTIC)
     target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_wait_trace)
     target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_native_timer_resolution)
     target_sources(sfr_cpu_diagnostic PRIVATE src/guest_graphics_hooks.cpp src/game_patches.cpp src/nui_hooks.cpp src/nui_race_hooks.cpp)
+    # The title's heap on o1heap (SFR_HOST_HEAP=1; docs/architecture-migration.md, phase 2).
+    target_sources(sfr_cpu_diagnostic PRIVATE src/heap_hooks.cpp src/guest_heap.cpp)
+    target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_o1heap)
     target_sources(sfr_cpu_diagnostic PRIVATE src/native_winsock.cpp)
     target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_native_notifications)
     target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_guest_graphics sfr_asset_files sfr_native_sync_objects sfr_guest_threads)

@@ -7,6 +7,7 @@
 #include "avatar_transform.h"
 #include "avatar_clip_pose.h"
 #include "job_lifetime.h"
+#include <mutex>
 #include <algorithm>
 #include <bit>
 #include <atomic>
@@ -29,7 +30,7 @@ PPC_FUNC_IMPL(__imp__sub_82437F38);
 // so with no Kinect the stale heap contents there are passed to the D3D
 // release (824F1F50), which decrements an arbitrary word. Clear the four
 // slots first, as freshly committed memory would be, then run the original.
-SFR_HOOK(sub_82437F38) {
+SFR_CONCURRENT_HOOK(sub_82437F38) {
     sfr::enter_function(ctx,"sub_82437F38",0x82437F38);
     const uint32_t object=ctx.r3.u32;
     sfr::active_memory->check_write(uint64_t(object)+12,16);
@@ -53,7 +54,7 @@ PPC_FUNC_IMPL(__imp__sub_82817B48);
 // Skipping: A, B, START or BACK on the pad (or SFR_SKIP_MOVIES=1) ends the
 // movie as the player's end of file does (XMV_ENDOFFILE, which the callers
 // 8243A728 and 8243A968 test). Decoder throughput depends on the host.
-SFR_HOOK(sub_82817B48) {
+SFR_CONCURRENT_HOOK(sub_82817B48) {
     sfr::enter_function(ctx,"sub_82817B48",0x82817B48);
     // A movie ended before its first frames leaves the title waiting on a
     // white screen, so SFR_SKIP_MOVIES lets each player show 30 frames.
@@ -73,9 +74,11 @@ SFR_HOOK(sub_82817B48) {
         double trace_ms=0, trace_max_ms=0;
         std::chrono::steady_clock::time_point first{}, trace_reported{};
     };
+    // Its own lock: a player's entry, once made, is its caller's alone.
+    static std::mutex players_lock;
     static std::unordered_map<uint32_t,Progress> players;
     const uint32_t player=ctx.r3.u32;
-    auto& progress=players[player];
+    Progress& progress=[&]() -> Progress& { std::lock_guard lock(players_lock); return players[player]; }();
     const auto now=std::chrono::steady_clock::now();
     if(progress.first==std::chrono::steady_clock::time_point{}) progress.first=now;
     static const bool trace_movie=[]{ const char* t=std::getenv("SFR_WAIT_TRACE"); return t && *t=='1'; }();
@@ -167,14 +170,42 @@ SFR_CONCURRENT_HOOK(sub_823B60C0) {
     __imp__sub_823B60C0(ctx,base);
 }
 
-PPC_FUNC_IMPL(__imp__sub_82750B30);
-SFR_CONCURRENT_HOOK(sub_82750B30) {
-    sfr::enter_function(ctx,"sub_82750B30",0x82750B30);
-    const bool helper=ctx.lr==0x823B60F8;
-    if(helper && !helper_lifetime) {
+// Where the generated code has the job mid-asm hooks (config/freeriders.toml),
+// they do what the whole-function hooks below do by return address; the first
+// one to run turns those off.
+static std::atomic<bool> job_midasm_hooks{false};
+static void admit_helper() {
+    if(!helper_lifetime) {
         helper_lifetime.emplace(job_lifetime,sfr::JobLifetime::Kind::helper);
         acquire_lifetime(*helper_lifetime);
     }
+}
+static bool completion_suspend_handoff() {
+    static const bool handoff=[]{
+        const char* t=std::getenv("SFR_COMPLETION_SUSPEND_HANDOFF");
+        return !t || *t!='0';
+    }();
+    return handoff;
+}
+namespace sfr { void prepare_worker_self_suspend(); }
+
+// Helper 823B60C0 takes a job from the queue (82750B30 at 0x823B60F4) ...
+void HelperQueueTakeMidAsmHook() { job_midasm_hooks.store(true,std::memory_order_relaxed); admit_helper(); }
+// ... and leaves when the take failed (r3 nonzero) ...
+void HelperQueueTakenMidAsmHook(PPCRegister& r3) { if(r3.u32!=0) helper_leaves_job(); }
+// ... or when it signals the jobs it took done (SetEvent at 0x823B614C).
+void HelperDoneMidAsmHook() { job_midasm_hooks.store(true,std::memory_order_relaxed); helper_leaves_job(); }
+// Worker 824C39C8 signals done (SetEvent at 0x824C3A38), then suspends itself.
+void WorkerDoneMidAsmHook() {
+    job_midasm_hooks.store(true,std::memory_order_relaxed);
+    if(completion_suspend_handoff()) sfr::prepare_worker_self_suspend();
+}
+
+PPC_FUNC_IMPL(__imp__sub_82750B30);
+SFR_CONCURRENT_HOOK(sub_82750B30) {
+    sfr::enter_function(ctx,"sub_82750B30",0x82750B30);
+    const bool helper=ctx.lr==0x823B60F8 && !job_midasm_hooks.load(std::memory_order_relaxed);
+    if(helper) admit_helper();
     __imp__sub_82750B30(ctx,base);
     // Include the interval before a successful queue take, failed takes,
     // and null callbacks. An empty poll means the last callback returned.
@@ -199,25 +230,19 @@ SFR_CONCURRENT_HOOK(sub_8249FD50) {
 }
 
 PPC_FUNC_IMPL(__imp__sub_824D0B18);
-namespace sfr { void prepare_worker_self_suspend(); }
 
 // SetEvent. The helper's own (return address 823B6150) says it has finished
 // the jobs it took.
 SFR_CONCURRENT_HOOK(sub_824D0B18) {
     sfr::enter_function(ctx,"sub_824D0B18",0x824D0B18);
-    if(ctx.lr==0x823B6150) helper_leaves_job();
+    const bool by_address=!job_midasm_hooks.load(std::memory_order_relaxed);
+    if(by_address && ctx.lr==0x823B6150) helper_leaves_job();
     // Worker 824C39C8 signals done and then suspends itself. A phone can run
     // the main thread's next ResumeThread between those two calls, losing
     // that resume and hanging its next completion wait (824C3A98). Register
     // the suspension before publishing done; its following self-suspend
     // consumes that registration instead of incrementing the count again.
-    if(ctx.lr==0x824C3A3C) {
-        static const bool handoff=[]{
-            const char* t=std::getenv("SFR_COMPLETION_SUSPEND_HANDOFF");
-            return !t || *t!='0';
-        }();
-        if(handoff) sfr::prepare_worker_self_suspend();
-    }
+    if(by_address && ctx.lr==0x824C3A3C && completion_suspend_handoff()) sfr::prepare_worker_self_suspend();
     __imp__sub_824D0B18(ctx,base);
 }
 
@@ -235,19 +260,17 @@ PPC_FUNC_IMPL(__imp__sub_824D0B10);
 // suspends itself only after the next frame's resume is released by the
 // next frame's wait - but gets SFR_WORK_SHARE_WAIT_MS (default 1000) instead
 // of 16. Timeouts are reported.
-SFR_CONCURRENT_HOOK(sub_824D0B10) {
-    sfr::enter_function(ctx,"sub_824D0B10",0x824D0B10);
-    const bool work_share=ctx.lr==0x823B5EA0 && ctx.r3.u32==3 && ctx.r5.u32==1 && ctx.r6.u32==16;
-    if(work_share) {
-        static const uint32_t wait_ms=[]{
-            const char* text=std::getenv("SFR_WORK_SHARE_WAIT_MS");
-            const long value=text?std::strtol(text,nullptr,10):1000;
-            return uint32_t(value>0?value:1000);
-        }();
-        ctx.r6.u64=wait_ms;
-    }
-    __imp__sub_824D0B10(ctx,base);
-    if(work_share && ctx.r3.u32==0x102) {
+namespace {
+uint32_t work_share_wait_ms() {
+    static const uint32_t wait_ms=[]{
+        const char* text=std::getenv("SFR_WORK_SHARE_WAIT_MS");
+        const long value=text?std::strtol(text,nullptr,10):1000;
+        return uint32_t(value>0?value:1000);
+    }();
+    return wait_ms;
+}
+void work_share_wait_done(uint32_t status) {
+    if(status==0x102) {
         static std::atomic<uint32_t> timeouts{0};
         if(timeouts++<16) std::cerr << "GAME_PATCH work_share_wait_timeout count=" << timeouts << '\n';
     }
@@ -255,13 +278,33 @@ SFR_CONCURRENT_HOOK(sub_824D0B10) {
     // is recorded before the helper inspects the queue, so even a helper
     // between its empty check and its callback is covered. Waits release the
     // execution permits needed by callbacks entering host hooks.
-    if(work_share && !job_lifetime.helpers_idle()) {
+    if(!job_lifetime.helpers_idle()) {
         while(!job_lifetime.helpers_idle()) lifetime_wait();
         static std::atomic<uint32_t> waits{0};
         const uint32_t count=++waits;
         if(count<=8 || count%256==0)
             std::cerr << "GAME_PATCH job_drain_wait count=" << count << " still_running=0\n";
     }
+}
+}
+
+// The same patch as mid-asm hooks (config/freeriders.toml), where the
+// generated code has them: r6 before the call at 0x823B5E9C, r3 after it.
+void WorkShareWaitMidAsmHook(PPCRegister& r6) {
+    static std::atomic<bool> reported{false};
+    if(!reported.exchange(true)) std::cerr << "GAME_PATCH work_share_wait midasm=1 ms=" << work_share_wait_ms() << char(10);
+    r6.u64=work_share_wait_ms();
+}
+void WorkShareWaitDoneMidAsmHook(PPCRegister& r3) { work_share_wait_done(r3.u32); }
+
+// Generated code without those hooks: the call is recognized by its return
+// address and arguments (with them, r6 already holds the longer wait).
+SFR_CONCURRENT_HOOK(sub_824D0B10) {
+    sfr::enter_function(ctx,"sub_824D0B10",0x824D0B10);
+    const bool work_share=ctx.lr==0x823B5EA0 && ctx.r3.u32==3 && ctx.r5.u32==1 && ctx.r6.u32==16;
+    if(work_share) ctx.r6.u64=work_share_wait_ms();
+    __imp__sub_824D0B10(ctx,base);
+    if(work_share) work_share_wait_done(ctx.r3.u32);
 }
 
 PPC_FUNC_IMPL(__imp__sub_82A53BC0);
@@ -283,7 +326,7 @@ PPC_FUNC_IMPL(__imp__sub_82A53BC0);
 // whole game. This is what stopped about one Grand Prix load in four; the
 // 2 ms SFR_THREAD_START_DELAY_US hid it on this machine, but no fixed delay
 // can be right for every host, and a phone is much slower.
-SFR_HOOK(sub_82A53BC0) {
+SFR_CONCURRENT_HOOK(sub_82A53BC0) {
     sfr::enter_function(ctx,"sub_82A53BC0",0x82A53BC0);
     // Only the two job-dispatch call sites; any other pure call is a real one.
     if((ctx.lr==0x823B5E88 || ctx.lr==0x823B6144) && sfr::active_memory) {
@@ -379,14 +422,14 @@ void note_avatar_skip(uint32_t address) {
 
 #define SFR_AVATAR_PART_WALK(address) \
     PPC_FUNC_IMPL(__imp__sub_##address); \
-    SFR_HOOK(sub_##address) { \
+    SFR_CONCURRENT_HOOK(sub_##address) { \
         sfr::enter_function(ctx,"sub_" #address,0x##address); \
         if(!avatar_has_parts(ctx.r3.u32)) { note_avatar_skip(0x##address); return; } \
         __imp__sub_##address(ctx,base); \
     }
 
 PPC_FUNC_IMPL(__imp__sub_823B9D60);
-SFR_HOOK(sub_823B9D60) {
+SFR_CONCURRENT_HOOK(sub_823B9D60) {
     sfr::enter_function(ctx, "sub_823B9D60", 0x823B9D60);
     if (!avatar_has_parts(ctx.r3.u32)) {
         const uint32_t avatar = ctx.r3.u32;
@@ -408,7 +451,7 @@ SFR_HOOK(sub_823B9D60) {
 }
 
 PPC_FUNC_IMPL(__imp__sub_823B9F00);
-SFR_HOOK(sub_823B9F00) {
+SFR_CONCURRENT_HOOK(sub_823B9F00) {
     sfr::enter_function(ctx, "sub_823B9F00", 0x823B9F00);
     if (!avatar_has_parts(ctx.r3.u32)) {
         note_avatar_skip(0x823B9F00);
@@ -425,7 +468,10 @@ SFR_AVATAR_PART_WALK(823BB2E8)
 
 PPC_FUNC_IMPL(__imp__sub_823B97A8);
 namespace {
+// Written as a clip is evaluated, read as the hands and the model are drawn,
+// perhaps on other threads: under avatar_clips_lock, held for the copy only.
 std::array<sfr::AvatarClipPose, 2> avatar_clips;
+std::mutex avatar_clips_lock;
 sfr::AvatarPose read_avatar_pose(const sfr::GuestMemory& memory, uint32_t animation) {
     sfr::AvatarPose pose;
     if (!animation || !memory.readable(uint64_t(animation) + 11556, 4)) return pose;
@@ -443,7 +489,7 @@ sfr::AvatarPose read_avatar_pose(const sfr::GuestMemory& memory, uint32_t animat
 }
 }
 PPC_FUNC_IMPL(__imp__sub_823BBCB8);
-SFR_HOOK(sub_823BBCB8) {
+SFR_CONCURRENT_HOOK(sub_823BBCB8) {
     sfr::enter_function(ctx, "sub_823BBCB8", 0x823BBCB8);
     const uint32_t controller = ctx.r3.u32, renderer = ctx.r4.u32, animation = ctx.r5.u32;
     __imp__sub_823BBCB8(ctx, base);
@@ -452,10 +498,12 @@ SFR_HOOK(sub_823BBCB8) {
     const auto owner = sfr::local_avatar_for_animation(memory, controller, renderer, animation);
     if (!owner) return;
     // Preserve evaluated/blended clip output before tracked shoulder corrections.
-    avatar_clips[owner->local_slot] = {owner->rider, animation, sfr::present_count.load(), read_avatar_pose(memory, animation), owner->manager, renderer, controller};
+    const sfr::AvatarClipPose clip{owner->rider, animation, sfr::present_count.load(), read_avatar_pose(memory, animation), owner->manager, renderer, controller};
+    std::lock_guard lock(avatar_clips_lock);
+    avatar_clips[owner->local_slot] = clip;
 }
 PPC_FUNC_IMPL(__imp__sub_823BC330);
-SFR_HOOK(sub_823BC330) {
+SFR_CONCURRENT_HOOK(sub_823BC330) {
     sfr::enter_function(ctx, "sub_823BC330", 0x823BC330);
     // Only the hand attachment getter used by 8227FD58. Gameplay IK and
     // all other native palette consumers retain the original SDK matrices.
@@ -463,7 +511,10 @@ SFR_HOOK(sub_823BC330) {
         auto& memory = *sfr::active_memory;
         const auto owner = sfr::local_avatar_for_animation(memory, ctx.r3.u32);
         if (owner && memory.readable(ctx.r5.u32, 64)) {
-            auto pose = avatar_clips[owner->local_slot].current(owner->rider, owner->animation, sfr::present_count.load(), owner->manager, owner->renderer, owner->controller);
+            auto pose = [&] {
+                std::lock_guard lock(avatar_clips_lock);
+                return avatar_clips[owner->local_slot].current(owner->rider, owner->animation, sfr::present_count.load(), owner->manager, owner->renderer, owner->controller);
+            }();
             if (pose) {
                 pose->mirrored = memory.load<uint8_t>(uint64_t(owner->renderer) + 8) != 0;
                 if (const auto hand = sfr::avatar_hand_transform(*pose, ctx.r4.u32)) {
@@ -484,7 +535,7 @@ SFR_HOOK(sub_823BC330) {
     }
     __imp__sub_823BC330(ctx, base);
 }
-SFR_HOOK(sub_823B97A8) {
+SFR_CONCURRENT_HOOK(sub_823B97A8) {
     sfr::enter_function(ctx, "sub_823B97A8", 0x823B97A8);
     // A scene camera's Avatar draw (the other caller is the shadow pass).
     // r5/r6/r7 are row-major world, view, projection. Copy before the guest
@@ -501,12 +552,18 @@ SFR_HOOK(sub_823B97A8) {
                     frame.view[i] = std::bit_cast<float>(memory.load<uint32_t>(uint64_t(ctx.r6.u32) + i * 4));
                     frame.projection[i] = std::bit_cast<float>(memory.load<uint32_t>(uint64_t(ctx.r7.u32) + i * 4));
                 }
-                if (auto clip = avatar_clips[owner->local_slot].current(rider, ctx.r4.u32, sfr::present_count.load(), owner->manager, owner->renderer, owner->controller)) frame.pose = *clip;
+                {
+                    std::lock_guard lock(avatar_clips_lock);
+                    if (auto clip = avatar_clips[owner->local_slot].current(rider, ctx.r4.u32, sfr::present_count.load(), owner->manager, owner->renderer, owner->controller)) frame.pose = *clip;
+                }
                 // BA028 reflects the completed skeleton across X for goofy.
                 if (memory.readable(uint64_t(ctx.r3.u32) + 8, 1))
                     frame.pose.mirrored = memory.load<uint8_t>(uint64_t(ctx.r3.u32) + 8) != 0;
                 frame.present = sfr::present_count.load();
-                sfr::draw_avatar_model(frame);
+                {
+                    sfr::HostGraphicsScope graphics;
+                    sfr::draw_avatar_model(frame);
+                }
                 static const bool trace_pose = std::getenv("SFR_TRACE_AVATAR_POSE") != nullptr;
                 static const unsigned pose_every = [] {
                     const char* text = std::getenv("SFR_TRACE_AVATAR_POSE_EVERY");

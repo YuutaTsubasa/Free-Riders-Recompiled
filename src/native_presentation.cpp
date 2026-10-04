@@ -38,6 +38,7 @@
 #include <condition_variable>
 #include <exception>
 #include <mutex>
+#include <unordered_map>
 #include <optional>
 #include <stdexcept>
 #include <thread>
@@ -160,13 +161,91 @@ struct NativePresentation::Impl {
         return {coordinate(rect.left, render_width, width), coordinate(rect.top, render_height, height),
                 coordinate(rect.right, render_width, width), coordinate(rect.bottom, render_height, height)};
     }
+    // One of the title's own render surfaces (NativePresentation::set_target).
+    struct SurfaceTarget {
+        uint32_t width = 0, height = 0;  // pixels
+        std::unique_ptr<plume::RenderTexture> color, depth;
+        std::unique_ptr<plume::RenderFramebuffer> framebuffer;
+        bool prepared = false;  // recording side: its first barriers are in a list
+        // Asking side: colour (1) and depth (2) laid out for sampling.
+        uint8_t reading = 0;
+    };
+    std::function<void(const void*)> before_surface_write;
+    // Asking side, before a draw or clear records into the current target:
+    // copies out what was resolved from it and makes it writable again. The
+    // copies are queued in order, ahead of the write.
+    uint32_t non_writing = 0;
+    void prepare_write() {
+        if (non_writing || !target || !target->reading) return;
+        SurfaceTarget* const surface = target;
+        const uint8_t reading = surface->reading;
+        surface->reading = 0;
+        if (before_surface_write) before_surface_write(surface);
+        struct Writable {
+            plume::RenderTexture* color; plume::RenderTexture* depth;
+            void operator()(plume::RenderCommandList& list, uint64_t) const {
+                std::array<plume::RenderTextureBarrier, 2> barriers{};
+                uint32_t count = 0;
+                if (color) barriers[count++] = plume::RenderTextureBarrier(color, plume::RenderTextureLayout::COLOR_WRITE);
+                if (depth) barriers[count++] = plume::RenderTextureBarrier(depth, plume::RenderTextureLayout::DEPTH_WRITE);
+                list.barriers(plume::RenderBarrierStage::GRAPHICS, barriers.data(), count);
+            }
+        };
+        const Writable writable{(reading & 1) ? surface->color.get() : nullptr, (reading & 2) ? surface->depth.get() : nullptr};
+        enqueue_body(writable);
+    }
+    template <class Body> void enqueue_body(const Body& body) {
+        enqueue([](const void* payload, plume::RenderCommandList& list, uint64_t generation) {
+            (*static_cast<const Body*>(payload))(list, generation);
+        }, &body, sizeof(Body));
+    }
+    std::unordered_map<uint64_t, std::unique_ptr<SurfaceTarget>> surfaces;
+    // Asking side: where the next draw or clear goes (null: the framebuffer),
+    // and the logical size mapped onto all of it.
+    SurfaceTarget* target = nullptr;
+    uint32_t target_logical_width = 0, target_logical_height = 0;
+    // Recording side: the framebuffer set on the open list.
+    SurfaceTarget* bound = nullptr;
+    void bind(SurfaceTarget* next) {
+        if (next == bound) return;
+        if (next) {
+            if (!next->prepared) {
+                const std::array<plume::RenderTextureBarrier, 2> barriers{
+                    plume::RenderTextureBarrier(next->color.get(), plume::RenderTextureLayout::COLOR_WRITE),
+                    plume::RenderTextureBarrier(next->depth.get(), plume::RenderTextureLayout::DEPTH_WRITE)};
+                command_list->barriers(plume::RenderBarrierStage::GRAPHICS, barriers.data(), uint32_t(barriers.size()));
+                command_list->setFramebuffer(next->framebuffer.get());
+                // A new surface's depth holds nothing until the title clears it;
+                // start it at the far plane rather than undefined bytes.
+                command_list->clearDepthStencil(true, true, 1.0f, 0);
+                next->prepared = true;
+            }
+            command_list->setFramebuffer(next->framebuffer.get());
+        } else {
+            command_list->setFramebuffer(framebuffer.get());
+        }
+        bound = next;
+    }
+    // A logical rectangle on the current target, in its pixels.
+    plume::RenderRect target_rectangle(const plume::RenderRect& rect) const {
+        if (!target) return render_rectangle(rect);
+        const auto coordinate = [](int32_t value, uint32_t pixels, uint32_t logical) {
+            const int64_t mapped = (int64_t(value) * pixels + logical / 2) / logical;
+            return int32_t(std::clamp<int64_t>(mapped, 0, pixels));
+        };
+        return {coordinate(rect.left, target->width, target_logical_width),
+                coordinate(rect.top, target->height, target_logical_height),
+                coordinate(rect.right, target->width, target_logical_width),
+                coordinate(rect.bottom, target->height, target_logical_height)};
+    }
     // The title's viewport and scissor at the render resolution.
     void scaled_raster(plume::RenderViewport& viewport, plume::RenderRect& scissor) const {
         viewport = raster_state->viewport();
-        const float x = float(render_width) / width, y = float(render_height) / height;
+        const float x = target ? float(target->width) / target_logical_width : float(render_width) / width;
+        const float y = target ? float(target->height) / target_logical_height : float(render_height) / height;
         viewport.x *= x; viewport.width *= x;
         viewport.y *= y; viewport.height *= y;
-        scissor = render_rectangle(raster_state->scissor());
+        scissor = target_rectangle(raster_state->scissor());
     }
     void apply_raster() {
         plume::RenderViewport viewport;
@@ -302,6 +381,7 @@ struct NativePresentation::Impl {
         blit_view.reset();
         blit_vertex.reset();
         blit_pixel.reset();
+        surfaces.clear();
         framebuffer.reset();
         depth.reset();
         color.reset();
@@ -359,6 +439,7 @@ struct NativePresentation::Impl {
         if (!spare_in_flight) return;
         spare_in_flight = false;
         wait_for(spare_fence.get());
+        read_timing(spare_timing.get(), spare_timing_ended);
     }
     // Vulkan: the list that draws into an acquired swap-chain image waits for
     // the acquisition and signals the presentation (D3D12 needs neither).
@@ -403,6 +484,7 @@ struct NativePresentation::Impl {
     void execute() {
         run_list();
         wait_for(fence.get());
+        read_timing(timing.get(), timing_ended);
         wait_in_flight();
     }
     // Submits without waiting; the frame in flight before it must finish
@@ -412,6 +494,8 @@ struct NativePresentation::Impl {
         run_list();
         std::swap(command_list, spare_list);
         std::swap(fence, spare_fence);
+        std::swap(timing, spare_timing);
+        std::swap(timing_ended, spare_timing_ended);
         spare_in_flight = true;
     }
     static std::function<void(const std::function<void()>&)>& gpu_wait() {
@@ -427,18 +511,23 @@ struct NativePresentation::Impl {
     // thread of its own (NativePresentation::record_async), so the guest's
     // thread only queues them. One producer, one consumer; the producer
     // empties the queue (drain) before it touches the list itself.
-    // SFR_RENDER_THREAD=1 forces it on, =0 off. Unset, it is on for D3D12, where
-    // it was measured, and off elsewhere until another backend has been.
+    // On unless SFR_RENDER_THREAD=0, on every backend: Unleashed and Marathon
+    // Recompiled record every draw on their render thread. An AYN Thor race
+    // (Vulkan, frames 15000-20500, A/B/A) took the main thread from 26.7 to
+    // 23.0 ms of CPU a frame and frames of 50 ms or more from 113 to 1; on a
+    // ROG Xbox Ally X (Windows Vulkan) at its 60 fps cap it changed only the
+    // tail.
     bool render_thread_enabled() const {
-        static const int choice = [] {
+        static const bool enabled = [] {
             const char* const text = std::getenv("SFR_RENDER_THREAD");
-            return text && *text ? (*text != '0' ? 1 : 0) : -1;
+            return !(text && *text == '0');
         }();
-        return choice < 0 ? graphics->backend() == sfr::GraphicsBackend::d3d12 : choice == 1;
+        return enabled;
     }
     static constexpr uint64_t queue_capacity = 4096;
     struct RecordSlot {
         NativePresentation::RecordFunction function = nullptr;
+        SurfaceTarget* target = nullptr;
         plume::RenderViewport viewport;  // as the title had them when the draw was asked for
         plume::RenderRect scissor;
         uint64_t generation = 0;
@@ -463,6 +552,7 @@ struct NativePresentation::Impl {
                 auto& slot = slots[head % queue_capacity];
                 if (!worker_failed.load(std::memory_order_relaxed)) {
                     try {
+                        bind(slot.target);
                         command_list->setViewports(slot.viewport);
                         command_list->setScissors(slot.scissor);
                         slot.function(slot.payload, *command_list, slot.generation);
@@ -481,8 +571,14 @@ struct NativePresentation::Impl {
             }
             // Empty: spin a little (the next draw is usually microseconds
             // away), then sleep until the producer wakes the thread.
+            // SFR_RENDER_SPIN: yields before sleeping (2000; an experiment knob).
+            static const int spin = [] {
+                const char* text = std::getenv("SFR_RENDER_SPIN");
+                const long value = text && *text ? std::strtol(text, nullptr, 10) : 2000;
+                return int(value >= 0 && value <= 100000 ? value : 2000);
+            }();
             bool found = false;
-            for (int i = 0; i < 2000 && !found; ++i) {
+            for (int i = 0; i < spin && !found; ++i) {
                 found = head != queue_tail.load(std::memory_order_acquire);
                 if (!found) std::this_thread::yield();
             }
@@ -534,8 +630,10 @@ struct NativePresentation::Impl {
         render_thread.join();
     }
     void enqueue(NativePresentation::RecordFunction function, const void* payload, size_t bytes) {
+        prepare_write();
         if (!render_thread_enabled()) {
             ensure_open();
+            bind(target);
             apply_raster();
             function(payload, *command_list, list_generation);
             return;
@@ -547,6 +645,7 @@ struct NativePresentation::Impl {
         if (tail - queue_head.load(std::memory_order_acquire) >= queue_capacity) wait_for_head(tail - queue_capacity + 1);
         auto& slot = slots[tail % queue_capacity];
         slot.function = function;
+        slot.target = target;
         scaled_raster(slot.viewport, slot.scissor);
         slot.generation = list_generation;
         std::memcpy(slot.payload, payload, bytes);
@@ -564,10 +663,53 @@ struct NativePresentation::Impl {
     // Binding generation: new lists and custom passes both invalidate the
     // layout/pipeline/descriptors cached by NativeRenderer.
     uint64_t list_generation = 0;
+    // SFR_GPU_TIMING=1: GPU time of every submitted list (a timestamp at its
+    // start and end), read only after the CPU has waited for that list
+    // anyway, and logged as GPU_TIMING every 120 lists. Off: nothing is created.
+    static bool gpu_timing() {
+        static const bool enabled = [] { const char* t = std::getenv("SFR_GPU_TIMING"); return t && *t == '1'; }();
+        return enabled;
+    }
+    std::unique_ptr<plume::RenderQueryPool> timing, spare_timing;
+    bool timing_ended = false, spare_timing_ended = false;
+    uint32_t timing_count = 0;
+    double timing_sum_ms = 0, timing_max_ms = 0;
     void begin_list() {
         drain();
         command_list->begin();
         ++list_generation;
+        if (gpu_timing()) {
+            if (!timing) timing = graphics->device().createQueryPool(2);
+            if (timing) {
+                command_list->resetQueryPool(timing.get(), 0, 2);
+                command_list->writeTimestamp(timing.get(), 0);
+            }
+            timing_ended = false;
+        }
+    }
+    void end_list() {
+        if (gpu_timing() && timing) {
+            command_list->writeTimestamp(timing.get(), 1);
+            timing_ended = true;
+        }
+        command_list->end();
+    }
+    // The list whose fence was just waited for: its two timestamps are final.
+    void read_timing(plume::RenderQueryPool* pool, bool& ended) {
+        if (!pool || !ended) return;
+        ended = false;
+        pool->queryResults();
+        const uint64_t* r = pool->getResults();
+        if (!r || r[1] < r[0]) return;
+        const double ms = double(r[1] - r[0]) / 1e6;
+        timing_sum_ms += ms;
+        timing_max_ms = (std::max)(timing_max_ms, ms);
+        if (++timing_count == 120) {
+            std::cerr << "GPU_TIMING lists=" << timing_count << " mean_ms=" << timing_sum_ms / timing_count
+                      << " max_ms=" << timing_max_ms << '\n';
+            timing_count = 0;
+            timing_sum_ms = timing_max_ms = 0;
+        }
     }
     void ensure_open() {
         if (open) return;
@@ -577,6 +719,7 @@ struct NativePresentation::Impl {
             plume::RenderTextureBarrier(depth.get(), plume::RenderTextureLayout::DEPTH_WRITE)};
         command_list->barriers(plume::RenderBarrierStage::GRAPHICS, barriers.data(), 2);
         command_list->setFramebuffer(framebuffer.get());
+        bound = nullptr;
         open = true;
     }
     void flush() {
@@ -602,9 +745,12 @@ struct NativePresentation::Impl {
             std::rethrow_exception(error);
         }
         if (open) {
-            command_list->end();
-            execute();
+            end_list();
+            // Ended: a wait below that fails (a stopping guest) must not leave
+            // the list open for the teardown to end again, which crashed the
+            // Adreno driver (vkEndCommandBuffer on a submitted buffer).
             open = false;
+            execute();
         } else {
             for (auto& callback : before_submit) callback();
             wait_in_flight();
@@ -1153,9 +1299,10 @@ void NativePresentation::clear(const NativeClear& clear, std::span<const plume::
     if ((clear.depth || clear.stencil) &&
         (!std::isfinite(clear.depth_value) || clear.depth_value < 0.0f || clear.depth_value > 1.0f))
         throw std::invalid_argument("clear depth must be finite and between zero and one");
+    const auto [logical_width, logical_height] = target_logical_size();
     for (const auto& rect : rectangles)
         if (rect.left < 0 || rect.top < 0 || rect.left >= rect.right || rect.top >= rect.bottom ||
-            static_cast<uint32_t>(rect.right) > impl_->width || static_cast<uint32_t>(rect.bottom) > impl_->height)
+            static_cast<uint32_t>(rect.right) > logical_width || static_cast<uint32_t>(rect.bottom) > logical_height)
             throw std::invalid_argument("clear rectangle is empty or outside the presentation bounds");
     if (!clear.color && !clear.depth && !clear.stencil) return;
 
@@ -1164,7 +1311,7 @@ void NativePresentation::clear(const NativeClear& clear, std::span<const plume::
     if (!rectangles.empty()) {
         scaled.reserve(rectangles.size());
         for (const auto& rectangle : rectangles) {
-            const auto rect = impl_->render_rectangle(rectangle);
+            const auto rect = impl_->target_rectangle(rectangle);
             if (rect.left < rect.right && rect.top < rect.bottom) scaled.push_back(rect);
         }
         // A subpixel logical rectangle may vanish at a lower scale. An empty
@@ -1173,7 +1320,10 @@ void NativePresentation::clear(const NativeClear& clear, std::span<const plume::
         rectangles = scaled;
     }
 
+    impl_->prepare_write();
+    impl_->drain();
     impl_->ensure_open();
+    impl_->bind(impl_->target);
     impl_->apply_raster();
     if (clear.color) {
         const auto& c = clear.color_value;
@@ -1191,8 +1341,10 @@ void NativePresentation::record_async_raw(RecordFunction function, const void* p
 
 void NativePresentation::record(const std::function<void(plume::RenderCommandList&)>& body) {
     impl_->refuse_during_gpu_wait();
+    impl_->prepare_write();
     impl_->drain();
     impl_->ensure_open();
+    impl_->bind(impl_->target);
     impl_->apply_raster();
     body(*impl_->command_list);
 }
@@ -1224,6 +1376,78 @@ void NativePresentation::set_raster_state(const plume::RenderViewport& viewport,
 
 const NativeRasterState& NativePresentation::raster_state() const noexcept { return *impl_->raster_state; }
 
+void NativePresentation::set_target(uint64_t key, uint32_t surface_width, uint32_t surface_height,
+                                    uint32_t logical_width, uint32_t logical_height) {
+    if (!key) {
+        impl_->target = nullptr;
+        return;
+    }
+    if (!surface_width || !surface_height || !logical_width || !logical_height)
+        throw std::invalid_argument("render surface has no size");
+    auto& slot = impl_->surfaces[key];
+    if (!slot) {
+        // The render thread reaches a target only through queued slots, which
+        // take its pointer once it is complete; the map itself is the asker's.
+        auto made = std::make_unique<Impl::SurfaceTarget>();
+        const auto pixels = [](uint32_t value, uint32_t render, uint32_t logical) {
+            return (std::max)(1u, uint32_t((uint64_t(value) * render + logical / 2) / logical));
+        };
+        made->width = pixels(surface_width, impl_->render_width, impl_->width);
+        made->height = pixels(surface_height, impl_->render_height, impl_->height);
+        auto& device = impl_->graphics->device();
+        made->color = device.createTexture(
+            plume::RenderTextureDesc::ColorTarget(made->width, made->height, plume::RenderFormat::B8G8R8A8_UNORM));
+        made->depth = device.createTexture(
+            plume::RenderTextureDesc::DepthTarget(made->width, made->height, plume::RenderFormat::D32_FLOAT_S8_UINT));
+        if (!made->color || !made->depth) throw std::runtime_error("render surface texture creation failed");
+        const plume::RenderTexture* attachment = made->color.get();
+        made->framebuffer = device.createFramebuffer(plume::RenderFramebufferDesc(&attachment, 1, made->depth.get()));
+        if (!made->framebuffer) throw std::runtime_error("render surface framebuffer creation failed");
+        static uint32_t reported = 0;
+        if (reported++ < 64)
+            std::cerr << "NATIVE_SURFACE_TARGET key=0x" << std::hex << key << std::dec << " surface=" << surface_width
+                      << 'x' << surface_height << " pixels=" << made->width << 'x' << made->height
+                      << " count=" << impl_->surfaces.size() << '\n';
+        slot = std::move(made);
+    }
+    impl_->target = slot.get();
+    impl_->target_logical_width = logical_width;
+    impl_->target_logical_height = logical_height;
+}
+
+std::pair<uint32_t, uint32_t> NativePresentation::target_logical_size() const noexcept {
+    return impl_->target ? std::pair{impl_->target_logical_width, impl_->target_logical_height}
+                         : std::pair{impl_->width, impl_->height};
+}
+
+bool NativePresentation::target_is_surface() const noexcept { return impl_->target != nullptr; }
+
+plume::RenderTexture& NativePresentation::target_color() {
+    return impl_->target ? *impl_->target->color : *impl_->color;
+}
+
+plume::RenderTexture& NativePresentation::target_depth() {
+    return impl_->target ? *impl_->target->depth : *impl_->depth;
+}
+
+const void* NativePresentation::target_identity() const noexcept { return impl_->target; }
+
+void NativePresentation::begin_non_writing_records() noexcept { ++impl_->non_writing; }
+void NativePresentation::end_non_writing_records() noexcept { --impl_->non_writing; }
+
+void NativePresentation::mark_target_read(bool color, bool depth) {
+    if (impl_->target) impl_->target->reading |= (color ? 1 : 0) | (depth ? 2 : 0);
+}
+
+void NativePresentation::set_before_surface_write(std::function<void(const void*)> callback) {
+    impl_->before_surface_write = std::move(callback);
+}
+
+std::pair<uint32_t, uint32_t> NativePresentation::target_size() const noexcept {
+    return impl_->target ? std::pair{impl_->target->width, impl_->target->height}
+                         : std::pair{impl_->render_width, impl_->render_height};
+}
+
 std::pair<uint32_t, uint32_t> NativePresentation::presented_area() const noexcept {
     return impl_->presented_area.first ? impl_->presented_area : std::pair{impl_->width, impl_->height};
 }
@@ -1249,7 +1473,7 @@ std::vector<uint8_t> NativePresentation::readback_color() {
                                static_cast<plume::VulkanBuffer*>(buffer.get())->vk, 1, &region);
         impl_->command_list->barriers(plume::RenderBarrierStage::GRAPHICS,
             plume::RenderTextureBarrier(impl_->color.get(), plume::RenderTextureLayout::COLOR_WRITE));
-        impl_->command_list->end();
+        impl_->end_list();
         impl_->execute();
         const auto* mapped = static_cast<const uint8_t*>(buffer->map());
         if (!mapped) unavailable("mapped readback buffer");
@@ -1292,7 +1516,7 @@ std::vector<uint8_t> NativePresentation::readback_color() {
         &destination, 0, 0, 0, &source, nullptr);
     impl_->command_list->barriers(plume::RenderBarrierStage::GRAPHICS,
         plume::RenderTextureBarrier(impl_->color.get(), plume::RenderTextureLayout::COLOR_WRITE));
-    impl_->command_list->end();
+    impl_->end_list();
     impl_->execute();
 
     const auto* mapped = static_cast<const uint8_t*>(buffer->map());
@@ -1480,7 +1704,7 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height) {
         plume::RenderTextureBarrier(swap_texture, plume::RenderTextureLayout::PRESENT));
     impl_->command_list->barriers(plume::RenderBarrierStage::GRAPHICS,
         plume::RenderTextureBarrier(impl_->color.get(), plume::RenderTextureLayout::COLOR_WRITE));
-    impl_->command_list->end();
+    impl_->end_list();
     impl_->wait_semaphore = acquired;
     impl_->signal_semaphore = rendered;
     if (pipelined) {

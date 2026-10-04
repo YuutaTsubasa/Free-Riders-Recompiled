@@ -114,6 +114,7 @@ $settings = @{
     'constant-reuse' = @{ SFR_CONSTANT_UPLOAD_REUSE = '1' }    # exact 4 KiB constant uploads reused (off by default)
     'priority'       = @{ SFR_GUEST_SATURATED_PRIORITY = '1' } # saturated guests' host priority raised (off by default)
     'no-host-timing' = @{ SFR_HOST_TIMING = '0' }              # the host timer and speed policy left alone (on by default)
+    'audio-parallel' = @{ SFR_AUDIO_PARALLEL = '5' }          # the audio pump beside the main thread on console processor 5 (off by default)
     # Two executables of different builds in out/build/host, compared in the same
     # rounds: copy each build's sfr_cpu_diagnostic.exe to sfr_cpu_diagnostic_a.exe
     # and sfr_cpu_diagnostic_b.exe. SFR_EXE names the file and is not passed on to the game.
@@ -161,7 +162,7 @@ $base = [ordered]@{
     SFR_CALL_BUDGET = '18446744073709551615'; SFR_WATCHDOG_SECONDS = '31536000'
     SFR_ALLOW_RENDER_TARGETS = '1'; SFR_TRACE_GRAPHICS = '0'; SFR_DIAGNOSTIC_ENTRIES = '0'; SFR_TRACE_IMPORTS = '0'
     SFR_FRAME_LIMIT = $(if ($Capped) { '60' } else { '0' })
-    SFR_RENDER_EVERY = '1'; SFR_PARALLEL_WORKER = 'cores'; SFR_VERTEX_CACHE = '1'; SFR_GPU_PIPELINE = '1'
+    SFR_RENDER_EVERY = '1'; SFR_PARALLEL_WORKER = 'all'; SFR_VERTEX_CACHE = '1'; SFR_GPU_PIPELINE = '1'
     SFR_AUDIO = $(if ($NoAudio) { '0' } else { '1' }); SFR_PROFILE = '1'; SFR_SKIP_MOVIES = '1'
     SFR_REALTIME_RACE = '1'; SFR_REALTIME_UI = '1'; SFR_GRAPHICS = $Backend
     SFR_GAME_LANGUAGE = 'en'; SFR_PLAYER1_INPUT = 'none'; SFR_PLAYER2_INPUT = 'none'

@@ -2107,3 +2107,174 @@ The pre-integration current-host checks covered both graphics backends. That
 test build retained default 32 pending the later Windows decision; a slower Windows
 host would strengthen coverage. Android evidence remains inconclusive;
 Issue #31 and GP mission 3 remain separate work.
+
+## Post-v0.4.7 CPU investigation
+
+A 35-second Windows CPU sample, resolved against its exact executable map,
+recorded 68,680 samples with no lost ETW events. Of the process samples, about
+35% belonged to the guest main thread and 31% to the D3D12 recording worker.
+Most worker stacks passed through its empty-queue `SwitchToThread` loop.
+These are sampled attribution figures, including some kernel/interrupt
+activity, not percentages of removable work.
+
+An isolated candidate reduces only that worker's yield budget from 2,000 to
+32 before using its existing condition-variable handshake. Producer waiting,
+queue ordering, drawing and game time are unchanged. The candidate-linked
+presentation oracle passes for D3D12 and Vulkan, including queue wrap, drain,
+shutdown and failure cases. Independent scope and synchronization reviews
+found no change-induced correctness defect.
+
+The following sequential Ally X D3D12 tests use an independent save per run,
+the same stationary Dolphin Resort scene, AC power and the Turbo power plan.
+Menus are capped; the private harness then runs an uncapped, normal-time race
+for 120 seconds. Frame metrics use the middle 100 seconds; process/thread CPU
+deltas cover approximately 85 seconds inside that window. Diagnostic logging
+is identical across these cases. CPU ms/frame is summed across process
+threads; it is not elapsed frame time.
+
+| Run / worker budget | FPS | Process CPU ms/frame | Main CPU ms/frame | P95 / P99 frame ms | Frames >50 / >100 ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| A / 2000 | 70.87 | 29.72 | 9.70 | 16.09 / 18.91 | 3 / 0 |
+| B / 32 | 73.73 | 24.26 | 9.72 | 15.11 / 16.61 | 5 / 1 |
+| C / 2000 | 74.70 | 28.63 | 9.47 | 14.96 / 16.30 | 0 / 0 |
+| D / 32 | 72.53 | 24.80 | 9.82 | 15.43 / 17.12 | 5 / 1 |
+| E / 2000 | 74.51 | 28.44 | 9.44 | 15.09 / 16.62 | 1 / 0 |
+
+The experiment remains **on hold**. Process CPU/frame falls about 13–18%,
+but main-thread CPU does not improve and FPS gains are not established against
+baseline drift. Recording/draw cost also increases slightly. Both candidate
+windows include a frame above 100 ms, versus none in the baseline windows;
+baseline A and E still have substantial shorter stalls. This does not prove
+that the wait budget causes the long frames. Their extra wall time appears
+mostly under main-thread execution ownership, which can include host
+descheduling. Subsequent scheduler traces distinguish running, runnable and
+blocked time but did not reproduce the large candidate stalls. Production
+retains the original budget.
+
+Screenshots in D show the race clock advancing about 66.08 seconds while
+logged elapsed time advances 66.0768 seconds between presents 14400 and 19200.
+They confirm the full stationary scene and normal race-clock progression;
+they do not validate every animation or course. Neither reduced CPU cost nor
+passing correctness tests establishes a handheld FPS or battery-life gain.
+Default Vulkan and Android do not use this D3D12 worker.
+
+Local evidence is under `out/cpu-profile-v047/`: exact source/object/executable
+hashes, five completed case logs, frame and CPU summaries, screenshots, and
+review records. The original `baseline-a` menu-only attempt is rejected;
+table A is the corrected `baseline-profile-a`. `SFR_PROFILE=1` enables the
+local player profile and is not a performance-logging switch. Raw system
+traces remain private and are not release assets.
+
+A separate four-line ordinary-page memory-preflight optimization has passed
+1,208 baseline/candidate state comparisons and the existing guest-memory,
+pending-write and vector-memory suites. It retains all slow paths, write
+watches, reservations and pending-output semantics. The linked diagnostic
+keeps the original worker budget so its effect can be measured independently.
+An initial baseline/candidate/baseline sequence measured 9.463 / 9.144 / 9.454
+main-thread CPU ms/frame. This roughly 3.3% reduction is promising, but is not
+on its own sufficient for acceptance. The last baseline also had a
+576.8 ms frame, showing that large stalls are not exclusive to either
+candidate. Cleaner repeated measurements below support accepting only this
+preflight change into the current branch; it is not yet released.
+
+Three separate 90-second scheduler captures confirmed lower D3D12 worker CPU
+occupancy with the shorter wait, but are excluded from throughput comparisons.
+Two accurately aligned captures show some 25–40 ms frames waiting on the
+diagnostic stderr stream lock. Exact call-site disassembly identifies the
+stream, and the readying thread is the diagnostic periodic `fflush` worker.
+Neither capture reproduced a frame above 50 ms. PowerShell redirected-pipe
+backpressure is a hypothesis, not a proven cause of all stalls. A private
+launcher using inherited disk handles isolates that measurement variable
+without changing the game executables. Its results must be compared within
+the same launcher configuration; a harness improvement is not a shipped game
+optimization. The production Windows launcher already uses file handles.
+
+Two direct-file baseline/candidate pairs retain the exact executables, isolated
+saves, settings and normal-time race procedure described above:
+
+| Run | Main CPU ms/frame | Process CPU ms/frame | FPS | P99 / maximum frame ms |
+| --- | ---: | ---: | ---: | ---: |
+| L baseline | 9.613 | 28.603 | 73.19 | 16.50 / 22.94 |
+| M preflight | 9.218 | 27.613 | 76.19 | 15.89 / 29.31 |
+| N baseline | 9.441 | 28.652 | 74.19 | 16.36 / 24.50 |
+| O preflight | 9.187 | 28.054 | 74.92 | 15.97 / 24.25 |
+
+Adjacent main-thread reductions are **4.10% and 2.70%**, exceeding the 1.78%
+drift between these controls. Mean vertex/index counts differ by about
+0.21%/0.23%, while draw count differs by 2.22%; the workloads are not identical.
+All four middle windows have no frames above 33.33 ms. Candidate P99 improves,
+but M has a worse maximum than both controls. Adjacent FPS gains vary from
+0.99% to 4.10%; there is no claim of uniformly better worst-case latency or a
+fixed FPS gain.
+
+Independent scope, correctness and measurement reviews support the narrow
+preflight change. The promoted source was freshly compiled against the four
+standalone memory oracles and exactly matches the original baseline results.
+This evidence covers one stationary Dolphin Resort scene on Ally X, not every
+course or Android. The D3D12 worker budget remains unchanged.
+
+A separate ordered special-word lookup passed correctness tests but is **not
+accepted**: its main CPU/frame is 9.4565 ms between original controls at 9.4412
+and 9.5359 ms, so no benefit beyond drift is established. Its 74.36 FPS also
+falls too close to the 74.19/73.49 FPS controls to support integration. The
+original lookup remains in production; simpler asymptotic complexity alone
+does not demonstrate a gameplay gain.
+
+### 2026-10-03: fresh Ally Vulkan attribution after memory preflight
+
+A separate 35-second WPR capture on Ally X uses the accepted memory change,
+Vulkan on Radeon 890M, and the existing bounded diagnostic race harness. It
+retains full rendering and normal game/UI time, with direct file logging,
+independent save/cache paths and detailed frame metrics enabled. This is CPU
+attribution, **not** a new performance comparison or an API benchmark.
+
+The exact executable SHA256 is
+`35b701374f0f85f353f85e767c229bdc62bb6662d0b6723a047863c5b739a403`;
+its linker-map SHA256 is
+`2bd7ca62db52d1d7dffce79a09fad8a85562db45396e9a6a921a9bd54ae3b0b0`.
+Extraction selects PID3540 and the first 35 seconds of the trace, resolving
+the executable's recorded load base against this map. There are 44,384 process
+samples and 22,640 main-thread samples (TID12512), with zero lost events/buffers.
+
+| Main-thread path | Samples | Share of main CPU samples |
+| --- | ---: | ---: |
+| Indexed draw hook, inclusive | 7,288 | 32.19% |
+| `native_draw`, inclusive | 5,574 | 24.62% |
+| Indexed draw hook, leaf | 1,304 | 5.76% |
+| Index decoding, leaf | 533 | 2.35% |
+| Ordinary/special write preflight, leaf | 169 | 0.75% |
+| AMD Vulkan driver module, leaf | 1,505 | 6.65% |
+
+Inclusive categories overlap: `native_draw` is called by the indexed hook.
+These percentages must not be added or treated as removable frame time. The
+earlier D3D12 attribution was on a different machine and binary, so it does not
+provide a controlled before/after CPU-sample comparison.
+
+Exact instruction attribution places the hottest indexed-hook leaf samples in
+the already-inlined fixed-stride vertex gather loops (not generic small-copy
+calls). The renderer already uses GPU indexing for sufficiently compact index
+ranges and a vertex cache for unchanged physical ranges. Sparse ranges and
+primitive-restart conversion retain the gather path. The next useful probe is
+therefore the **frequency, byte volume and write-epoch stability of sparse
+gathers**, not another blanket memcpy replacement. Any reuse proposal must
+account for index contents, base/restart semantics, vertex writes through all
+mapped aliases, remapping and bounded cache ownership. No such cache or wider
+upload threshold is introduced by this capture.
+
+Other source checks found that index decoding already has SSE/NEON paths,
+texture lookup still times every call, and draw-signature logging still probes
+an ordered set on every draw. Their existence alone does not justify a claimed
+FPS gain; timing costs and diagnostics should be measured separately from
+required rendering work.
+
+The game ended normally after 390.1 seconds. Inspected Dolphin Resort race
+screenshots show HUD34.01 ->103.83 seconds, versus 69.809 logged seconds between
+them. Source fixture hashes remain unchanged; the owned game, completed task,
+WPR recording and temporary wake session were cleaned up. The power plan was
+not changed. No Android test was started. This capture does not cover a full
+lap, audio listening quality or other courses.
+
+Evidence: `out/cpu-profile-v047/directlog-memory-vulkan-u`, including
+`verification.json`, `analysis-provenance.json`, `attribution.txt` and
+`indexed-draw-annotated.asm.txt`. ETL SHA256:
+`335aa84b08cc7bf743b3afe9c1df342cc1c54e1fc44235542eb2b310ec437fb6`.

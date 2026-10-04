@@ -294,6 +294,39 @@ struct NativeRenderer::Impl {
     // Destination address of a resolve to its descriptor index (the copy of
     // the framebuffer the title samples afterwards).
     std::map<uint32_t, uint32_t> resolved_targets;
+    // Each destination's own copy, once it has one: the descriptor and the
+    // texture's size and format (the source surface's at the resolve).
+    struct OwnResolve { uint32_t index, width, height; plume::RenderFormat format; };
+    std::map<uint32_t, OwnResolve> resolved_own;
+    // A render surface's colour or depth texture as a sampled descriptor,
+    // for the resolves aliased to it. Permanent: never released.
+    std::unordered_map<const plume::RenderTexture*, uint32_t> surface_views;
+    std::set<uint32_t> alias_indices;
+    struct Alias {
+        uint32_t physical;
+        plume::RenderTexture* source;
+        uint32_t width, height;
+        plume::RenderFormat format;
+        bool depth;
+    };
+    // By surface: destinations still sampling it.
+    std::unordered_map<const void*, std::vector<Alias>> pending_aliases;
+    uint32_t take_texture_index() {
+        uint32_t index;
+        if (!free_texture_indices.empty()) {
+            index = free_texture_indices.back();
+            free_texture_indices.pop_back();
+        } else {
+            index = first_texture + next_texture_index++;
+        }
+        if (index >= texture_capacity) throw RuntimeStop("native-texture", index, "native texture descriptor capacity exhausted");
+        const size_t slot = index - first_texture;
+        if (texture_objects.size() <= slot) {
+            texture_objects.resize(slot + 1);
+            texture_views.resize(slot + 1);
+        }
+        return index;
+    }
     std::bitset<texture_capacity> resolved_texture_indices;
     // Changes whenever texture() could answer the same fetch words
     // differently: a new frame, a resolve, a texture made or dropped.
@@ -353,7 +386,7 @@ struct NativeRenderer::Impl {
     uint32_t draws = 0;
     uint32_t pipelines_created = 0;
     double pipeline_ms = 0;
-    uint32_t ring_flushes = 0, textures_uploaded = 0;
+    uint32_t ring_flushes = 0, textures_uploaded = 0, resolve_copies = 0;
     double texture_ms = 0;
     // Two upload rings: while the GPU renders one frame from one, the next
     // frame fills the other (NativePresentation::after_flush).
@@ -379,6 +412,12 @@ struct NativeRenderer::Impl {
         uint32_t view_count = 0;
         uint32_t epoch = 0;
         uint64_t last_frame = 0, size = 0;
+        // Rewritten at consecutive lookups: with page protection recording
+        // the writes (GuestMemory::direct_guest_access) each rewrite is a
+        // fault, so a buffer the title fills every frame is copied without
+        // being watched until dynamic_until.
+        uint32_t rewrites = 0;
+        uint64_t dynamic_until = 0;
     };
     std::unordered_map<VertexKey, VertexEntry, VertexKeyHash> vertex_entries;
     std::vector<std::pair<uint64_t, std::unique_ptr<plume::RenderBuffer>>> retired_vertex_buffers;
@@ -539,6 +578,7 @@ void NativeRenderer::prepare_pipelines() {
 
 NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& presentation)
     : impl_(std::make_unique<Impl>(graphics, presentation)) {
+    presentation.set_before_surface_write([this](const void* surface) { materialize_aliases(surface); });
     if (const char* setting = std::getenv("SFR_CONSTANT_REUSE_TRACE"); setting && *setting == '1')
         impl_->constant_reuse_probe = std::make_unique<Impl::ConstantReuseProbe>();
     if (const char* setting = std::getenv("SFR_CONSTANT_UPLOAD_REUSE"); setting && *setting == '1')
@@ -666,6 +706,7 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
 
 NativeRenderer::~NativeRenderer() {
     // Complete recorded draws while their upload ring and textures still exist.
+    impl_->presentation.set_before_surface_write({});
     try { impl_->presentation.flush(); } catch (...) {}
     impl_->presentation.clear_before_submit();
     impl_->presentation.clear_after_flush();
@@ -694,6 +735,8 @@ NativeRenderer::PipelineWork NativeRenderer::take_pipeline_work() noexcept {
     }
     work.constant_saved_bytes = impl_->constant_saved_bytes;
     impl_->constant_saved_bytes = 0;
+    work.resolve_copies = impl_->resolve_copies;
+    impl_->resolve_copies = 0;
     impl_->pipelines_created = 0;
     impl_->pipeline_ms = 0;
     impl_->ring_flushes = 0;
@@ -728,11 +771,20 @@ NativeRenderer::CachedVertices NativeRenderer::vertex_cache(GuestMemory& memory,
         entry.epoch = now;
         return {};
     }
+    if (impl_->frame < entry.dynamic_until) return {};
     if (written()) {
         impl_->retire_vertices(entry);
         entry.epoch = now;
+        if (GuestMemory::direct_guest_access && ++entry.rewrites >= 3) {
+            entry.rewrites = 0;
+            entry.dynamic_until = impl_->frame + 300;
+            return {};
+        }
+        // Protected again where page protection records the writes.
+        for (uint32_t i = 0; i < entry.view_count; ++i) memory.watch_writes(entry.views[i], bytes);
         return {};
     }
+    entry.rewrites = 0;
     if (entry.buffer) return {entry.buffer.get(), {}};
     if (entry.epoch >= now || impl_->cached_vertex_bytes + host_bytes > budget) return {};
     // Unwritten for a whole frame: keep it. Stores from here on (including
@@ -826,53 +878,133 @@ uint32_t NativeRenderer::placeholder_texture() {
     return index;
 }
 
-uint32_t NativeRenderer::adopt_resolved_target(uint32_t physical) {
-    auto& device = impl_->graphics.device();
-    auto& presentation = impl_->presentation;
-    const uint32_t width = presentation.render_width(), height = presentation.render_height();
-    constexpr auto format = plume::RenderFormat::B8G8R8A8_UNORM;
-    uint32_t index;
-    if (auto found = impl_->resolved_targets.find(physical); found != impl_->resolved_targets.end()) {
-        index = found->second;
-    } else {
-        auto texture = device.createTexture(plume::RenderTextureDesc::Texture2D(width, height, 1, format));
-        if (!texture) unsupported(physical, "native resolve target creation failed");
-        if (!impl_->free_texture_indices.empty()) {
-            index = impl_->free_texture_indices.back();
-            impl_->free_texture_indices.pop_back();
-        } else {
-            index = first_texture + impl_->next_texture_index++;
-        }
-        if (index >= texture_capacity) unsupported(index, "native texture descriptor capacity exhausted");
-        auto view = texture->createTextureView(plume::RenderTextureViewDesc::Texture2D(format));
-        impl_->textures->setTexture(index, texture.get(), plume::RenderTextureLayout::SHADER_READ, view.get());
-        const size_t slot = index - first_texture;
-        if (impl_->texture_objects.size() <= slot) {
-            impl_->texture_objects.resize(slot + 1);
-            impl_->texture_views.resize(slot + 1);
-        }
-        impl_->texture_objects[slot] = std::move(texture);
-        impl_->texture_views[slot] = std::move(view);
-        impl_->resolved_targets.emplace(physical, index);
-        impl_->resolved_texture_indices.set(index);
-        ++impl_->texture_generation;
-    }
-    // Recorded in the frame's own command list, after the draws it copies and
-    // before the ones that sample it: submitting and waiting here instead
-    // would cost a GPU round trip for each of a frame's resolves.
-    auto* target = impl_->texture_objects[index - first_texture].get();
-    presentation.record_async([color = &presentation.color(), target](plume::RenderCommandList& list, uint64_t) {
+namespace {
+// SFR_ALIASED_RESOLVES=0 copies every resolve when it happens, as before.
+bool aliased_resolves() {
+    static const bool on = [] { const char* t = std::getenv("SFR_ALIASED_RESOLVES"); return !t || *t != '0'; }();
+    return on;
+}
+struct NonWritingRecords {
+    NativePresentation& presentation;
+    explicit NonWritingRecords(NativePresentation& p) : presentation(p) { presentation.begin_non_writing_records(); }
+    ~NonWritingRecords() { presentation.end_non_writing_records(); }
+};
+// Copies source (in from_layout) into target, leaving target sampled and
+// the source as it was found.
+struct ResolveCopy {
+    plume::RenderTexture* source;
+    plume::RenderTexture* target;
+    plume::RenderTextureLayout from_layout;
+    void operator()(plume::RenderCommandList& list, uint64_t) const {
         const std::array<plume::RenderTextureBarrier, 2> before{
-            plume::RenderTextureBarrier(color, plume::RenderTextureLayout::COPY_SOURCE),
+            plume::RenderTextureBarrier(source, plume::RenderTextureLayout::COPY_SOURCE),
             plume::RenderTextureBarrier(target, plume::RenderTextureLayout::COPY_DEST)};
         list.barriers(plume::RenderBarrierStage::COPY, before.data(), uint32_t(before.size()));
-        list.copyTexture(target, color);
+        list.copyTexture(target, source);
         const std::array<plume::RenderTextureBarrier, 2> after{
             plume::RenderTextureBarrier(target, plume::RenderTextureLayout::SHADER_READ),
-            plume::RenderTextureBarrier(color, plume::RenderTextureLayout::COLOR_WRITE)};
+            plume::RenderTextureBarrier(source, from_layout)};
         list.barriers(plume::RenderBarrierStage::GRAPHICS, after.data(), uint32_t(after.size()));
-    });
+    }
+};
+}
+
+// The destination's own texture, made (or remade at another size or
+// format) when missing. The old one goes the way an invalidated one does.
+static uint32_t own_resolve(NativeRenderer::Impl& impl, uint32_t physical, uint32_t width, uint32_t height,
+                            plume::RenderFormat format, bool depth);
+
+uint32_t NativeRenderer::adopt_resolved_target(uint32_t physical, bool depth) {
+    auto& presentation = impl_->presentation;
+    const auto [width, height] = presentation.target_size();
+    const auto format = depth ? plume::RenderFormat::D32_FLOAT_S8_UINT : plume::RenderFormat::B8G8R8A8_UNORM;
+    auto* source = depth ? &presentation.target_depth() : &presentation.target_color();
+    NonWritingRecords records(presentation);
+    if (const void* surface = presentation.target_identity(); surface && aliased_resolves()) {
+        auto& view = impl_->surface_views[source];
+        if (!view) {
+            view = impl_->take_texture_index();
+            auto texture_view = source->createTextureView(plume::RenderTextureViewDesc::Texture2D(format));
+            if (!texture_view) unsupported(physical, "render surface view creation failed");
+            impl_->textures->setTexture(view, source, plume::RenderTextureLayout::SHADER_READ, texture_view.get());
+            impl_->texture_views[view - first_texture] = std::move(texture_view);
+            impl_->alias_indices.insert(view);
+            impl_->resolved_texture_indices.set(view);
+        }
+        // Laid out for sampling in order, after the draws that made it.
+        struct Readable {
+            plume::RenderTexture* texture;
+            void operator()(plume::RenderCommandList& list, uint64_t) const {
+                list.barriers(plume::RenderBarrierStage::GRAPHICS,
+                              plume::RenderTextureBarrier(texture, plume::RenderTextureLayout::SHADER_READ));
+            }
+        };
+        presentation.record_async(Readable{source});
+        presentation.mark_target_read(!depth, depth);
+        auto& aliases = impl_->pending_aliases[surface];
+        std::erase_if(aliases, [&](const Impl::Alias& alias) { return alias.physical == physical; });
+        aliases.push_back({physical, source, width, height, format, depth});
+        impl_->resolved_targets[physical] = view;
+        ++impl_->texture_generation;
+        return view;
+    }
+    // Out of the framebuffer (drawn to again at once): copied now. Recorded
+    // in the frame's own list, after the draws it copies and before the ones
+    // that sample it: submitting and waiting here would cost a GPU round trip
+    // for each of a frame's resolves.
+    const uint32_t index = own_resolve(*impl_, physical, width, height, format, depth);
+    impl_->resolved_targets[physical] = index;
+    ++impl_->texture_generation;
+    ++impl_->resolve_copies;
+    presentation.record_async(ResolveCopy{source, impl_->texture_objects[index - first_texture].get(),
+        depth ? plume::RenderTextureLayout::DEPTH_WRITE : plume::RenderTextureLayout::COLOR_WRITE});
     return index;
+}
+
+static uint32_t own_resolve(NativeRenderer::Impl& impl, uint32_t physical, uint32_t width, uint32_t height,
+                            plume::RenderFormat format, bool depth) {
+    if (auto found = impl.resolved_own.find(physical); found != impl.resolved_own.end()) {
+        const auto& own = found->second;
+        if (own.width == width && own.height == height && own.format == format) return own.index;
+        impl.resolved_texture_indices.reset(own.index);
+        impl.released_texture_indices.push_back(own.index);
+        ++impl.texture_generation;
+        impl.resolved_own.erase(found);
+    }
+    auto& device = impl.graphics.device();
+    auto texture = device.createTexture(depth ? plume::RenderTextureDesc::DepthTarget(width, height, format)
+                                              : plume::RenderTextureDesc::Texture2D(width, height, 1, format));
+    if (!texture) throw RuntimeStop("native-resolve", physical, "native resolve target creation failed");
+    const uint32_t index = impl.take_texture_index();
+    auto view = texture->createTextureView(plume::RenderTextureViewDesc::Texture2D(format));
+    impl.textures->setTexture(index, texture.get(), plume::RenderTextureLayout::SHADER_READ, view.get());
+    impl.texture_objects[index - first_texture] = std::move(texture);
+    impl.texture_views[index - first_texture] = std::move(view);
+    impl.resolved_own[physical] = {index, width, height, format};
+    impl.resolved_texture_indices.set(index);
+    return index;
+}
+
+// Before the title draws to a surface again: what was resolved out of it
+// and is still sampled from it gets its own copy, ahead of the draw.
+void NativeRenderer::materialize_aliases(const void* surface) {
+    auto found = impl_->pending_aliases.find(surface);
+    if (found == impl_->pending_aliases.end()) return;
+    const auto aliases = std::move(found->second);
+    impl_->pending_aliases.erase(found);
+    for (const auto& alias : aliases) {
+        const auto view = impl_->surface_views.find(alias.source);
+        const auto current = impl_->resolved_targets.find(alias.physical);
+        // Dropped (its memory freed) or resolved again since: nothing to keep.
+        if (view == impl_->surface_views.end() || current == impl_->resolved_targets.end() ||
+            current->second != view->second) continue;
+        const uint32_t index = own_resolve(*impl_, alias.physical, alias.width, alias.height, alias.format, alias.depth);
+        current->second = index;
+        ++impl_->texture_generation;
+        ++impl_->resolve_copies;
+        impl_->presentation.record_async(ResolveCopy{alias.source, impl_->texture_objects[index - first_texture].get(),
+                                                     plume::RenderTextureLayout::SHADER_READ});
+    }
 }
 
 uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
@@ -1085,10 +1217,15 @@ void NativeRenderer::invalidate(uint32_t physical, uint32_t size) {
     // Only the destination base is known here, not its guest byte extent.
     for (auto it = impl_->resolved_targets.lower_bound(physical);
          it != impl_->resolved_targets.end() && uint64_t(it->first) < end;) {
-        impl_->resolved_texture_indices.reset(it->second);
-        impl_->released_texture_indices.push_back(it->second);
         ++impl_->texture_generation;
         it = impl_->resolved_targets.erase(it);
+    }
+    // Own copies are released; a surface's view stays (alias_indices).
+    for (auto it = impl_->resolved_own.lower_bound(physical);
+         it != impl_->resolved_own.end() && uint64_t(it->first) < end;) {
+        impl_->resolved_texture_indices.reset(it->second.index);
+        impl_->released_texture_indices.push_back(it->second.index);
+        it = impl_->resolved_own.erase(it);
     }
     for (auto it = impl_->texture_ranges.begin(); it != impl_->texture_ranges.end();) {
         if (it->second.begin < end && begin < it->second.end) {

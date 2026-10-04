@@ -10,10 +10,9 @@ param(
     # unaffected). A race holds about 60 fps drawing every frame now, so 1
     # is the setting to use.
     [int]$RaceRenderEvery = 1,
-    # Guest threads on processors 1-5 run in parallel with the main thread,
-    # those the title pinned to one processor taking turns as on the console
-    # (SFR_PARALLEL_WORKER=cores, docs/performance.md); -Serial runs every
-    # guest thread one at a time, as before.
+    # Every guest thread runs freely, as in Unleashed and Marathon Recompiled
+    # (SFR_PARALLEL_WORKER=all, docs/architecture-migration.md); -Serial runs
+    # every guest thread one at a time, as before.
     [switch]$Serial,
     # Vertices that stay the same across frames are kept on the GPU side
     # (SFR_VERTEX_CACHE, docs/performance.md); if geometry ever looks stale,
@@ -45,7 +44,7 @@ $env:SFR_TRACE_GRAPHICS = '0'
 $env:SFR_DIAGNOSTIC_ENTRIES = '0'
 $env:SFR_TRACE_IMPORTS = '0'
 $env:SFR_RENDER_EVERY = "$RaceRenderEvery"
-$env:SFR_PARALLEL_WORKER = if ($Serial) { '0' } else { 'cores' }
+$env:SFR_PARALLEL_WORKER = if ($Serial) { '0' } else { 'all' }
 # A race steps a sixtieth of a second per frame: never faster than 60 fps.
 $env:SFR_FRAME_LIMIT = '60'
 $env:SFR_VERTEX_CACHE = if ($NoVertexCache) { '0' } else { '1' }

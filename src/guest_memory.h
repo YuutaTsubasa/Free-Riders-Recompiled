@@ -120,15 +120,37 @@ public:
     void add_read_only_word(uint32_t address, std::function<uint32_t()> provider,
                             ProviderAccess access = ProviderAccess::exclusive);
     void add_import_variable(uint32_t address, std::string name);
-    // Write watches: stores to watched pages take the checked path and mark
-    // the page dirty. Used to notice CPU rewrites of data with native copies.
+    // Stores a computed word's current value where generated code reads it
+    // (direct_guest_access), bypassing its read-only guard.
+    void refresh_word(uint32_t address, uint32_t value);
+    // Write watches: stores and destructive backing operations mark watched
+    // pages dirty, so owners of native copies notice changed guest contents.
+    // Decommit/release mark each native replacement range after preflight and
+    // before discarding it; invalidation remains conservative on native failure.
+    // Recommit of unchanged backing and decommit without native work do not mark.
     void watch_writes(uint64_t address, uint64_t size);
-    // True when any watched page of the range was written since the last
+    // SFR_DIRECT_MEMORY builds: generated code reads and writes guest memory
+    // as base + address, as Unleashed and Marathon Recompiled do, so none of
+    // the per-access paths above see its stores. Write watches then use the
+    // host's page protection: a watched page is read-only ("armed") until its
+    // first write, which records the write and opens the page; an open page
+    // counts as written until it is watched again. Computed words are stored
+    // as values. Set once, before anything is watched.
+    static inline bool direct_guest_access = false;
+    // Faults the protection raises (direct_guest_access), for the frame log.
+    static inline std::atomic<uint64_t> watch_faults{0};
+    // The guest pages of the latest faults (SFR_WATCH_TRACE=1 reads them).
+    static inline std::atomic<uint32_t> fault_pages[256]{};
+    static inline std::atomic<uint32_t> fault_cursor{0};
+    // The fault handler's half: true when host_address lies in a watched page
+    // of this memory (it is then recorded and opened).
+    bool handle_watch_fault(uintptr_t host_address) noexcept;
+    // True when any watched page was written or its backing discarded since the last
     // call for that range; clears those pages' dirty marks.
     bool take_written(uint64_t address, uint64_t size);
-    // Write epochs, beside the written bits: once enabled, a store to a
-    // watched page records the current epoch there, and written_since tells
-    // whether any page of a range was stored to in or after an epoch. Many
+    // Write epochs, beside the written bits: once enabled, a store or backing
+    // destruction on a watched page records the current epoch there, and
+    // written_since reports either event in or after the requested epoch. Many
     // owners can ask about the same pages, which take_written's shared bits
     // do not allow. The caller advances the epoch (once a frame).
     void enable_write_epochs();
@@ -190,6 +212,16 @@ private:
     static constexpr uint64_t fast_page_size = 4096;
     static constexpr uint8_t fast_access = 1, fast_watched = 2;
     std::unique_ptr<std::atomic<uint32_t>[]> page_epochs_;
+    // watched_pages_ bit 2 (direct_guest_access): the page is protected.
+    static constexpr uint8_t watch_armed = 4;
+    void arm_watch(uint64_t first_page, uint64_t last_page);
+    // Per page: the write epoch of its last fault and how many faults came
+    // within a few epochs of each other. A page the title rewrites every frame
+    // (a ring the GPU reads from) is left open for a while instead of faulting
+    // once a frame; it then counts as written, as an unwatched page does.
+    std::unique_ptr<uint32_t[]> fault_epochs_;
+    std::unique_ptr<uint8_t[]> fault_streaks_;
+    void disarm_watch(uint64_t address, uint64_t size) const;
     std::atomic<uint32_t> write_epoch_{1};
     void note_watched_write(uint64_t page) const {
         std::atomic_ref<uint8_t>(watched_pages_[page]).fetch_or(2, std::memory_order_relaxed);
