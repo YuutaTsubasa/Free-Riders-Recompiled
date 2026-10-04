@@ -41,7 +41,8 @@
 - **進度（2026-10-04）：** 第 1、2 項已做，`SFR_SURFACE_TARGETS=1` 開啟（預設關）。
   - 遊戲每個 pass 都設 0,0,1280,720 的 viewport（連 110×90、768×768 的 surface 也是），畫的是蓋滿 viewport 的四邊形；所以原點為 0 的 pass 把「虛擬 1280×720 畫面」映到整張 surface，有偏移的（分割畫面）用 surface 自己的像素。
   - 同一個 surface 物件會以不同大小重用（110×90／112×92／55×45），target 以（surface 指標, +36 大小字）為鍵；每張有自己的深度（bloom pass 的深度測試都是關的）。
-  - Resolve 從目前的 target 複製到同大小的貼圖（第 3 項的「延遲／別名」還沒做）。
+  - Resolve（第 3 項，`SFR_ALIASED_RESOLVES=0` 關閉）：照 Marathon 的延遲／別名 resolve，從遊戲自己的 surface resolve 時不複製，目的位址直接取樣該 surface（每個 surface 一個永久的取樣描述子）；等那個 surface 下一次要被畫或清除前，才把內容複製到目的地自己的貼圖（`NativePresentation::mark_target_read`／`set_before_surface_write`、`NativeRenderer::materialize_aliases`）。GPU 依序執行，所以先錄下的繪製會在覆寫前讀到正確內容，不需改寫使用中的描述子。從 framebuffer 的 resolve 仍當下複製。
+  - 深度 resolve（`SFR_DEPTH_RESOLVE=0` 關閉）：來源 4（深度 surface：陰影貼圖、場景深度）保留成可取樣的深度貼圖，畫進 surface 時也用該 surface 的深度做測試與 stencil。比賽開始有陰影了（之前陰影貼圖是 guest 記憶體裡的舊位元組）。
   - 結果：選單逐像素相同；比賽中舊路徑會隨時間變亮（曝光鏈 64→16→4→1 原本讀的是全解析度的一個像素，不是平均），新路徑聚光燈周圍較暗、對比較高——推測較接近主機，但尚未與主機或 Xenia 截圖比對。
   - AYN Thor（frames 15000–20500，A/B/A/B，同一個 APK 切換環境變數）：GPU 39.3／38.7 → 21.9／21.9 ms，fps 25.0／25.5 → 29.6／29.5。RTX 4090：6.7 → 5.8 ms。CTest 141/141。
 
@@ -89,7 +90,7 @@
   - 並行執行緒每次進函式都走非內聯的觀察路徑；改成「不是 hook、也不在 hook 裡」時走內聯快速路徑（Thor 上沒有可量到的差別）。
   - `all` 模式長幀的真正原因：脫離的執行緒在 hook 入口拿了全域許可，要等之後進入一個堆疊更高的函式才放；Kinect 骨架執行緒在同一層迴圈裡呼叫 `NuiSkeletonGetNextFrame`，第一次之後就一直拿著，整個遊戲跟著它的時間片停頓。hook 現在包在 `HookScope` 裡，返回時就放掉全域許可與圖形鎖（`SFR_PERMIT_HOLD_TRACE=1` 會列出 20 ms 以上的持有）。同時：頁面保護改成連續頁一次設定、監看鎖每 64 頁放開一次；等待執行緒 handle 改由執行緒表自己的讀寫鎖查詢，不再拿全域許可。
   - 結果（Thor，同一個 APK，A/B/A/B）：`cores` 46.3／44.4 fps、`all` 46.4／46.3 fps（之前兩者都是約 41 fps）。**`all` 已是預設**（啟動器、Android、play 腳本），每個 guest 執行緒自由執行；全域許可只剩 import 與碰到主機狀態的 hook 的鎖。
-  - 尚未做到的：把這把鎖再拆成各子系統自己的鎖（Unleashed 的做法），例如 NUI hook 仍偶有 20–30 ms 的持有。
+  - 子系統各自的鎖（Unleashed 的做法）：NUI 骨架與比賽輸入的 hook 拿輸入鎖（`SFR_INPUT_HOOK`）；池配置器的配置與兩個釋放（`824A3398`、`824A3250`、`824A3598`）拿池鎖；執行緒的 resume／suspend、多物件等待在執行緒表自己的讀寫鎖下查表；`XNotifyGetNext`（通知佇列有自己的鎖）與 `XAudioSubmitRenderDriverFrame`（只有音訊泵呼叫）不拿全域許可。一場比賽中 hook 回到全域許可的次數 560 萬 → 43 萬，import 52 萬 → 14 萬。全域許可剩下的角色就是 Unleashed 的 `g_kernelLock`：其餘少數核心 import 的鎖。鎖等待 100 ms 以上會印 `LOCK_LONG_WAIT`。
 
 ### 第 5 階段：重編譯期的 mid-asm hook 與幀率
 
@@ -97,6 +98,7 @@
 - 拿掉遊戲的 vsync 等待、做 delta time 修正，支援 60 以上的幀率（與現有實時比賽時鐘整合）。
 - **進度（2026-10-04）：** `config/freeriders.toml` 的 `[[midasm_hook]]`（XenonRecomp／Unleashed 的格式）會經由 `prepare_recomp.py` 寫進 `recomp.toml`，`generate_diagnostic.py` 保留 XenonRecomp 輸出的 hook 宣告與呼叫。
   - 重新產生可重現：沒有 hook 時輸出和目前使用的生成程式碼逐位元組相同；加入 hook 後只有對應的檔案改變。
+  - 第二組：工作分派輔助執行緒的進出（`823B60F4` 取工作前、`823B60F8` 取完後、`823B614C` 完成時）與 worker `824C39C8` 完成前預約自我暫停（`824C3A38`），取代用返回位址判斷的整函式 hook；mid-asm hook 一執行，舊的 hook 就不再處理這些呼叫點。間接呼叫（`bctrl`）的修補（Avatar 手部、場景繪製、純虛函式等待）語意與呼叫點 hook 不同，保留為函式 hook。
   - 第一組：工作分派等待（`823B5D40` 在 `0x823B5E9C` 呼叫 `sub_824D0B10`）改成 `WorkShareWaitMidAsmHook`（`0x823B5E98`，改 r6）與 `WorkShareWaitDoneMidAsmHook`（`0x823B5E9C` 之後，看 r3），取代用 LR 判斷的整函式 hook；舊的生成程式碼仍走原本的 hook。
   - 幀率：比賽與 UI 已用實時時鐘（`race_frame_clock_hooks.cpp`），幀率上限是主機端的 `SFR_FRAME_LIMIT`。
 
