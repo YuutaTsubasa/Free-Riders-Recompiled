@@ -414,6 +414,52 @@ std::array<GuestExecution::Timing, 7> take_guest_execution_timings() {
 }
 static thread_local std::unique_ptr<GuestExecution::Lease> core_permit;
 static thread_local unsigned core_index = 0;
+// SFR_PARALLEL_MAIN=1 (with cores): processor 0 too, the main thread's, runs
+// detached on its core's permit, so no guest code holds the global permit
+// any more: it is taken only by hooks and imports that reach host state, as
+// a lock (docs/architecture-migration.md, phase 4). Unleashed and Marathon
+// Recompiled have no such permit at all.
+static const bool parallel_main = [] {
+    const char* text = std::getenv("SFR_PARALLEL_MAIN");
+    return text && *text == '1';
+}();
+static bool runs_on_core(unsigned processor) {
+    return parallel_worker == ParallelGuests::cores && processor < guest_processors && (processor != 0 || parallel_main);
+}
+static void parallel_slow_access(uint64_t address);
+static void refresh_entry_observation();
+// The calling guest thread leaves the global permit and runs on processor's
+// core permit, following the title when it moves the thread to another one.
+static void join_core(GuestExecution::Lease& permit, unsigned processor, uint32_t guest_id,
+                      bool after_processor_0 = false) {
+    guest_thread_state.entry.parallel = true;
+    GuestMemory::concurrent_reader = true;
+    GuestMemory::slow_access_hook = parallel_slow_access;
+    permit.detach();
+    // A thread just started waits, as it did while processor 0 held the
+    // global permit, until that processor's guest (usually the main thread,
+    // which resumed it) yields: the title fills a job in after resuming the
+    // worker that takes it (STOP worker-memory-access in sub_8270D980
+    // without this).
+    if (after_processor_0 && processor != 0) core_executions[0]->enter(guest_id).reset();
+    // Global permit released first: a core is only ever awaited without it.
+    core_index = processor;
+    core_permit = core_executions[processor]->enter(guest_id);
+    // The core is taken after the global permit, and released whenever this
+    // thread waits for it.
+    permit.set_companion(core_permit.get());
+    permit.set_after_blocking([] {
+        // Moved to another processor meanwhile: continue there.
+        const unsigned now = active_memory->load<uint8_t>(uint64_t(current_pcr) + 0x10C);
+        if (now != core_index && runs_on_core(now)) {
+            execution_permit->set_companion(nullptr);
+            core_permit.reset();
+            core_index = now;
+            core_permit = core_executions[now]->enter(current_id);
+            execution_permit->set_companion(core_permit.get());
+        }
+    });
+}
 static constexpr uint32_t parallel_worker_entry = 0x8222E008;
 // A parallel guest's three flags live in guest_thread_state.entry (diagnostic_hooks.h)
 // beside the rest of what a function entry reads, so that an entry resolves
@@ -476,8 +522,18 @@ static void parallel_function_entry(const PPCContext& ctx, uint32_t address) {
         // to the permit (counted while holding it, so without a lock).
         if (hook_stats) {
             static std::unordered_map<uint32_t, uint64_t> by_hook;
+            static std::unordered_map<uint64_t, uint64_t> by_guest;  // hook << 32 | guest
             static uint64_t attaches = 0;
             ++by_hook[address];
+            ++by_guest[uint64_t(address) << 32 | current_id];
+            if ((attaches + 1) % 200000 == 0) {
+                std::vector<std::pair<uint64_t, uint64_t>> top(by_guest.begin(), by_guest.end());
+                std::sort(top.begin(), top.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+                std::cerr << "PARALLEL_HOOK_GUESTS" << std::hex;
+                for (size_t i = 0; i < top.size() && i < 40; ++i)
+                    std::cerr << " 0x" << (top[i].first >> 32) << '/' << std::dec << (top[i].first & 0xFFFFFFFF) << '=' << top[i].second << std::hex;
+                std::cerr << std::dec << char(10);
+            }
             if (++attaches % 50000 == 0) {
                 std::vector<std::pair<uint64_t, uint32_t>> top;
                 for (const auto& [hook, count] : by_hook) top.push_back({count, hook});
@@ -963,9 +1019,13 @@ static const std::vector<uint32_t> resumer_wait_workers = [] {
     }
     return entries;
 }();
+// Always with SFR_PARALLEL_MAIN: the main thread starts helpers to run one
+// function each on data in its own frame and fills that in after resuming
+// them (boot, sub_8222CD98 through 824B2320); while it held the global permit
+// they could not start before it blocked, and now they wait for that.
 static const bool resumer_wait_all = [] {
     const char* text = std::getenv("SFR_RESUMER_WAIT_WORKERS");
-    return text && std::string_view(text) == "all";
+    return (text && std::string_view(text) == "all") || parallel_main;
 }();
 static std::mutex thread_resumers_lock;
 static std::unordered_map<uint32_t, ThreadResumer> thread_resumers;
@@ -4032,37 +4092,19 @@ int main(int argc, char** argv) {
                                 });
                         }
                         const unsigned processor = memory.load<uint8_t>(uint64_t(state.pcr) + 0x10C);
-                        const bool on_core = sfr::parallel_worker == sfr::ParallelGuests::cores &&
-                            processor != 0 && processor < sfr::guest_processors;
+                        const bool on_core = sfr::runs_on_core(processor);
                         const bool audio_pump = !state.startup && state.argument == sfr::system_thread_audio;
                         if ((state.startup || (audio_pump && sfr::audio_parallel_processor && on_core)) &&
                             (on_core || sfr::parallel_worker == sfr::ParallelGuests::all ||
                                 (sfr::parallel_worker == sfr::ParallelGuests::job_worker &&
                                  state.worker == sfr::parallel_worker_entry))) {
                             std::cerr << "PARALLEL_WORKER guest_id=" << state.id << " processor=" << processor << '\n';
-                            sfr::guest_thread_state.entry.parallel = true;
-                            sfr::GuestMemory::concurrent_reader = true;
-                            sfr::GuestMemory::slow_access_hook = sfr::parallel_slow_access;
-                            permit->detach();
-                            if (on_core) {
-                                // Global permit released first: a core is only
-                                // ever awaited without the global permit.
-                                sfr::core_index = processor;
-                                sfr::core_permit = sfr::core_executions[processor]->enter(state.id);
-                                // The core is taken after the global permit, and
-                                // released whenever this thread waits for it.
-                                permit->set_companion(sfr::core_permit.get());
-                                permit->set_after_blocking([] {
-                                    // Moved to another processor meanwhile: continue there.
-                                    const unsigned now = sfr::active_memory->load<uint8_t>(uint64_t(sfr::current_pcr) + 0x10C);
-                                    if (now != sfr::core_index && now != 0 && now < sfr::guest_processors) {
-                                        sfr::execution_permit->set_companion(nullptr);
-                                        sfr::core_permit.reset();
-                                        sfr::core_index = now;
-                                        sfr::core_permit = sfr::core_executions[now]->enter(sfr::current_id);
-                                        sfr::execution_permit->set_companion(sfr::core_permit.get());
-                                    }
-                                });
+                            if (on_core) sfr::join_core(*permit, processor, state.id, sfr::parallel_main && state.startup);
+                            else {
+                                sfr::guest_thread_state.entry.parallel = true;
+                                sfr::GuestMemory::concurrent_reader = true;
+                                sfr::GuestMemory::slow_access_hook = sfr::parallel_slow_access;
+                                permit->detach();
                             }
                         }
                         sfr::refresh_entry_observation();
@@ -4326,6 +4368,10 @@ int main(int argc, char** argv) {
             auto permit = execution.enter(1);
             sfr::execution_permit = permit.get();
             sfr::current_context = &ctx;
+            if (sfr::runs_on_core(0) && sfr::parallel_main) {
+                std::cerr << "PARALLEL_WORKER guest_id=1 processor=0\n";
+                sfr::join_core(*permit, 0, 1);
+            }
             sfr::refresh_entry_observation();
             std::cerr << "GUEST_HOST_THREAD guest_id=1 tid=" << sfr::host_thread_id() << " worker=0x824d22f0\n";
 #ifdef _WIN32
