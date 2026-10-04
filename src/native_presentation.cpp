@@ -712,8 +712,11 @@ struct NativePresentation::Impl {
         }
         if (open) {
             end_list();
-            execute();
+            // Ended: a wait below that fails (a stopping guest) must not leave
+            // the list open for the teardown to end again, which crashed the
+            // Adreno driver (vkEndCommandBuffer on a submitted buffer).
             open = false;
+            execute();
         } else {
             for (auto& callback : before_submit) callback();
             wait_in_flight();
