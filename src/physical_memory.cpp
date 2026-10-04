@@ -27,8 +27,13 @@ PhysicalMemory::PhysicalMemory(GuestMemory& memory, bool heap) : memory_(memory)
     // The instance header takes the first pages' worth of the shadow, which
     // the window does not use.
     const size_t bytes = size_t(arena_size / page_size * shadow_page);
-    shadow_ = std::make_unique<uint64_t[]>(bytes / sizeof(uint64_t));
-    heap_ = o1heapInit(shadow_.get(), bytes);
+    // o1heap wants its arena aligned to O1HEAP_ALIGNMENT, more than new[]
+    // promises (glibc gives 16 bytes, where Windows and Android happened to
+    // give more): align it here.
+    shadow_ = std::make_unique<uint8_t[]>(bytes + shadow_page);
+    shadow_base_ = reinterpret_cast<uint8_t*>(
+        (reinterpret_cast<uintptr_t>(shadow_.get()) + shadow_page - 1) & ~uintptr_t(shadow_page - 1));
+    heap_ = o1heapInit(shadow_base_, bytes);
     if (!heap_) unsupported(arena_base, "o1heap physical arena initialization failed");
 }
 
@@ -62,7 +67,7 @@ uint32_t PhysicalMemory::heap_allocate(uint32_t size, uint32_t protect, uint32_t
                   << " peak=" << diagnostics.peak_allocated / shadow_page * page_size << '\n';
         return 0;
     }
-    const uint64_t page = uint64_t(static_cast<uint8_t*>(shadow) - reinterpret_cast<uint8_t*>(shadow_.get())) / shadow_page;
+    const uint64_t page = uint64_t(static_cast<uint8_t*>(shadow) - shadow_base_) / shadow_page;
     const uint64_t first = arena_base + page * page_size;
     const uint32_t address = static_cast<uint32_t>((first + align - 1) & ~(align - 1));
     blocks_[address] = {shadow, static_cast<uint32_t>(rounded), protect};

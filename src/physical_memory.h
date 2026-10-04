@@ -73,7 +73,8 @@ private:
     GuestMemory& memory_;
     mutable std::recursive_mutex mutex_;
     O1HeapInstance* heap_ = nullptr;
-    std::unique_ptr<uint64_t[]> shadow_;  // o1heap's arena: shadow_page bytes a page
+    std::unique_ptr<uint8_t[]> shadow_;  // o1heap's arena: shadow_page bytes a page
+    uint8_t* shadow_base_ = nullptr;     // shadow_, aligned for o1heap
     std::map<uint32_t, Block> blocks_;  // heap mode, by aligned address
     uint64_t live_bytes_ = 0, peak_live_bytes_ = 0;  // heap mode, the pages asked for
     std::vector<Allocation> allocations_;
