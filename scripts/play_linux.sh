@@ -7,7 +7,7 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 exe="${SFR_LINUX_BUILD:-$HOME/sfr-build}/sfr_cpu_diagnostic"
-skip_movies="" render_every=1 parallel=cores vertex_cache=1 audio=1 region=ntsc-us log=out/play.log
+skip_movies="" render_every=1 parallel=all vertex_cache=1 audio=1 region=ntsc-us log=out/play.log
 while [ $# -gt 0 ]; do
     case "$1" in
         --skip-movies) skip_movies=1; shift ;;

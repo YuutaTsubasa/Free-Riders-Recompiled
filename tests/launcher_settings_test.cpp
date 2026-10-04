@@ -212,7 +212,7 @@ void malformed_values_keep_defaults() {
 void environment_follows_settings() {
     sfr::LauncherSettings settings;
     require(value_of(settings, "SFR_FRAME_LIMIT") == "60", "the game is capped at 60 fps");
-    require(value_of(settings, "SFR_PARALLEL_WORKER") == "cores", "parallel guest cores by default");
+    require(value_of(settings, "SFR_PARALLEL_WORKER") == "all", "every guest thread in parallel by default");
     require(value_of(settings, "SFR_SKIP_MOVIES").empty(), "movies play by default");
     require(value_of(settings, "SFR_GRAPHICS") == "vulkan", "Vulkan by default");
     require(value_of(settings, "SFR_CAMERA").empty(), "the camera is left alone by default");

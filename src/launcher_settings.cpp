@@ -178,7 +178,7 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         // A race steps a sixtieth of a second per frame.
         {"SFR_FRAME_LIMIT", "60"},
         {"SFR_RENDER_EVERY", std::to_string(s.race_render_every)},
-        {"SFR_PARALLEL_WORKER", s.parallel ? "cores" : "0"},
+        {"SFR_PARALLEL_WORKER", s.parallel ? "all" : "0"},
         {"SFR_VERTEX_CACHE", s.vertex_cache ? "1" : "0"},
         {"SFR_GPU_PIPELINE", s.gpu_pipeline ? "1" : "0"},
         {"SFR_AUDIO", s.audio ? "1" : "0"},

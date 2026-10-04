@@ -21,7 +21,7 @@ public class GameActivity extends SDLActivity {
         {"SFR_TRACE_IMPORTS", "0"},
         {"SFR_FRAME_LIMIT", "60"},
         {"SFR_RENDER_EVERY", "1"},
-        {"SFR_PARALLEL_WORKER", "cores"},
+        {"SFR_PARALLEL_WORKER", "all"},
         {"SFR_VERTEX_CACHE", "1"},
         {"SFR_AUDIO", "1"},
         {"SFR_PROFILE", "1"},
