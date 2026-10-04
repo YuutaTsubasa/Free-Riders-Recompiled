@@ -119,6 +119,8 @@ with [docs/progress.md](docs/progress.md).
   Fixed low-frame-rate traversal failures in Frozen Forest, Final Factory, Metropolis Speedway and Forgotten Tomb, plus loading and long-session stability issues. Improved controller steering and side reach, Android rotation recovery, race UI timing and texture handling. Added Android diagnostic ZIP export and further CPU/rendering optimizations; performance still varies by device.
 - [v0.4.7 — Windows CPU optimizations and rendering stability](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.4.7)
   Reduced Windows guest checkpoint overhead and added D3D12 draw recording on a render thread. Fixed stale resolved textures when guest memory is reused and improved cleanup after rendering errors. Added isolated benchmark tooling and expanded rendering regression coverage. Vulkan retains synchronous recording by default; Android performance gains are not established by this release.
+- [v0.5.0 — Unleashed/Marathon-style architecture](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.5.0)
+  Moved the runtime to the Unleashed/Marathon Recompiled model: one render target per guest surface with deferred and depth resolves (race shadows now appear), direct guest memory access, a host o1heap for the title's heap and physical memory, every guest thread running in parallel with per-subsystem locks instead of a global lock, the render thread on every backend, and real-time race stepping on every platform. On the tested AYN Thor a race went from about 25 to about 49–50 FPS.
 
 ## System Requirements
 
