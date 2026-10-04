@@ -791,24 +791,32 @@ RACE_DETECTOR(822CAC90, {
     }
 })
 
-// Tricks: turning the left stick around turns the trick (+56 of the result
-// accumulates half turns, +4 bit 0x800).
-namespace { struct Turn { bool started = false; float angle = 0; }; std::unordered_map<uint32_t, Turn> turns; }
+// Tricks: turning the left stick around turns the trick. As the original
+// detector does with the body's turn angle (body+772, degrees, valid when
+// body+788 is set): the detector keeps the last angle at +76 and whether it
+// had one at +80, adds each frame's turn to its total at +72, and reports
+// that total in degrees at +56 of the result, with +4 bit 0x800, on every
+// call. (Half turns at +56, as this used to write, are 180 times too small:
+// no amount of turning rated a jump.)
 RACE_DETECTOR(822C9938, {
-    result = 1;
-    if (b.left_x != 0 || b.left_y != 0) {
-        Turn& turn = turns[detector];
-        const float angle = std::fmod(std::atan2(b.left_y, b.left_x) * 57.29578f + 360.0f, 360.0f);
-        if (turn.started && angle != turn.angle) {
-            float delta = angle - turn.angle;
-            if (std::fabs(delta) > 180.0f) delta += delta > 0 ? -360.0f : 360.0f;
-            const uint32_t e = entry(results);
-            store_float(e + 56, load_float(e + 56) + delta / 180.0f);
-            set_bits(e + 4, 0x800);
+    const bool turning = b.left_x * b.left_x + b.left_y * b.left_y >= 0.25f;
+    float total = load_float(detector + 72);
+    if (turning) {
+        const float angle = std::atan2(b.left_y, b.left_x) * 57.29578f;
+        if (memory().load<uint8_t>(detector + 80)) {
+            float delta = angle - load_float(detector + 76);
+            if (delta > 180.0f) delta -= 360.0f;
+            else if (delta < -180.0f) delta += 360.0f;
+            total += delta;
+            store_float(detector + 72, total);
         }
-        turn.started = true;
-        turn.angle = angle;
+        store_float(detector + 76, angle);
     }
+    set_byte(detector + 80, turning ? 1 : 0);
+    const uint32_t e = entry(results);
+    store_float(e + 56, total);
+    set_bits(e + 4, 0x800);
+    result = 1;
 })
 
 // Item and special-gear actions: the right trigger (+20 bits).
