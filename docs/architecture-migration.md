@@ -18,6 +18,23 @@
 | 渲染執行緒 | 所有錄製在 render thread（無鎖佇列，32 個一批） | D3D12 與 Android 開 render thread，Windows Vulkan 關 |
 | 時間 | QPC／`mftb` 對到主機時鐘；拿掉遊戲的 vsync 等待；delta time 修正 | 實時比賽／UI 時鐘（Android 預設） |
 
+## 對照結果（2026-10-05，`claude/marathon-architecture`）
+
+上表「現在」一欄是遷移前的盤點。逐項對照目前的預設：
+
+| 面向 | 目前預設 | 證據 | 仍不同的地方與原因 |
+| --- | --- | --- | --- |
+| 記憶體 | 直接存取：`PPC_LOAD/STORE` 是 `bswap(*(volatile T*)(base+x))`（CMake `SFR_DIRECT_MEMORY` 預設 ON） | 第 3 階段；Thor 29.6 → 40.6 fps | 寫入監看改用頁面保護（renderer 的頂點、貼圖快取要知道 guest 改了哪些頁；Unleashed／Marathon 在 D3D API 層 HLE，不需要） |
+| lwarx／stwcx. | 帶版本的 stripe | `docs/reservations.md` | 刻意保留：只比值的 CAS 讓 Grand Prix 載入 R6025 |
+| 執行緒 | `SFR_PARALLEL_WORKER=all`：每個 guest 執行緒自由執行，沒有全域鎖、沒有每核心許可 | 第 4 階段；整場比賽 `PARALLEL_ATTACHES imports=0 hooks=0 memory=0`（桌機與 Thor） | Windows 仍設主機親和性（`SFR_WORKER_AFFINITY`／`SFR_MAIN_AFFINITY`，避免主執行緒落在 E-core）；Android 已和 Unleashed 一樣不設 |
+| 子系統鎖 | import 依子系統拿鎖（`import_lock()`），hook 拿選單／輸入／圖形鎖或不拿，GPU 同步拿圖形鎖 | 同上；`SFR_SUBSYSTEM_LOCKS=0` 的舊路徑一場比賽回到許可 76k／16k／7k 次 | — |
+| 同步 | `NativeSyncObjects`、臨界區各自上鎖 | — | 刻意保留：支援任意逾時與多物件等待（Unleashed／Marathon 只支援 0 與 INFINITE） |
+| 配置器 | o1heap：遊戲的堆積（`SFR_HOST_HEAP`）與實體記憶體（`SFR_PHYSICAL_HEAP`） | 第 2 階段；桌機與 Thor 峰值 411／509 MB，24000 幀的長場次相同 | 實體堆積跑在主機影子上（見第 2 階段）；遊戲自己的池配置器 `824A3398` 拿池鎖 |
+| 改遊戲 | 重編譯期 mid-asm hook（`config/freeriders.toml`）＋函式 hook（`SFR_*_HOOK`，等同 `GUEST_FUNCTION_HOOK`） | 第 5 階段 | 間接呼叫的修補保留為函式 hook |
+| Render target／resolve | 每個 surface 一張 target，延遲／別名 resolve，深度 resolve | 第 1 階段；Thor GPU 39 → 22 ms，比賽有陰影 | Marathon 不縮放解析度，本專案保留 `SFR_RENDER_SCALE` |
+| 渲染執行緒 | 所有後端預設開（2026-10-05 起含 Windows Vulkan） | 桌機 Vulkan 整場比賽；Thor A/B/A | — |
+| 時間 | 比賽與 UI 依經過時間前進（2026-10-05 起桌機也預設開，`SFR_REALTIME_RACE=0` 關閉） | 桌機預設時鐘整場比賽；時鐘單元測試涵蓋 120／60／30／20 fps | 60 fps 以上：遊戲以約 119 fps 執行，但依幀數排程的選單腳本走錯頁，比賽中的 120 fps 尚未實機跑完 |
+
 ## 不能照搬的地方（本專案已經量過、不能退回的）
 
 1. **Reservation 要保留 stripe 版本。** Unleashed 的「只比值 CAS」在這款遊戲上已證實會讓無鎖串列接上已釋放的節點（R6025）。直接記憶體之後仍要用 `generate_diagnostic.py` 的 reservation rewrite 與 stripe hook——它們本來就不需要檢查式記憶體。
