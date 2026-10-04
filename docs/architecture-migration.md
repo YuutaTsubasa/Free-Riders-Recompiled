@@ -86,7 +86,10 @@
   - 圖形鎖（`SFR_GRAPHICS_HOOK`／`SFR_GRAPHICS_HOST_HOOK`）：開 `SFR_PARALLEL_MAIN` 時，Direct3D 的 hook 拿圖形鎖；只碰原生裝置與 guest 記憶體的不再拿全域許可。建立／重設裝置與 present 兩者都拿，順序固定「圖形→全域」；拿著全域許可卻等不到圖形鎖時，先放掉全域許可再等。renderer 的 `invalidate`（釋放記憶體的 import）也拿圖形鎖。
   - Thor 上的陷阱：只拿圖形鎖的 hook 裡等 GPU 時，原本的包裝會放掉「沒拿著的」全域許可而中止；改成只放核心。中止後拆除時又因為對已送出的指令清單再 end 一次而讓 Adreno 驅動崩潰、蓋掉原因；已修，失敗也改成當下就印出（`EXECUTION_FAILURE`）。
   - `SFR_PARALLEL_WORKER=all` 加 `SFR_PARALLEL_MAIN=1`：所有 guest 執行緒（含主執行緒與音訊泵）自由執行，全域許可只剩 import 與非圖形 hook 的鎖——即 Unleashed 的模型。桌機與 Thor 都能跑完比賽；以前 `all` 模式的 R6025 其實是執行緒啟動競爭，已由「等喚醒者阻塞」解決。已知問題：`all` 模式偶有 guest 11（worker `824395E8`）持有全域許可 100–250 ms 的長幀，原因未明。
-  - 並行執行緒每次進函式都走非內聯的觀察路徑，讓主執行緒在 Thor 上多花約 4 ms；改成「不是 hook、也不在 hook 裡」時走內聯快速路徑。
+  - 並行執行緒每次進函式都走非內聯的觀察路徑；改成「不是 hook、也不在 hook 裡」時走內聯快速路徑（Thor 上沒有可量到的差別）。
+  - `all` 模式長幀的真正原因：脫離的執行緒在 hook 入口拿了全域許可，要等之後進入一個堆疊更高的函式才放；Kinect 骨架執行緒在同一層迴圈裡呼叫 `NuiSkeletonGetNextFrame`，第一次之後就一直拿著，整個遊戲跟著它的時間片停頓。hook 現在包在 `HookScope` 裡，返回時就放掉全域許可與圖形鎖（`SFR_PERMIT_HOLD_TRACE=1` 會列出 20 ms 以上的持有）。同時：頁面保護改成連續頁一次設定、監看鎖每 64 頁放開一次；等待執行緒 handle 改由執行緒表自己的讀寫鎖查詢，不再拿全域許可。
+  - 結果（Thor，同一個 APK，A/B/A/B）：`cores` 46.3／44.4 fps、`all` 46.4／46.3 fps（之前兩者都是約 41 fps）。**`all` 已是預設**（啟動器、Android、play 腳本），每個 guest 執行緒自由執行；全域許可只剩 import 與碰到主機狀態的 hook 的鎖。
+  - 尚未做到的：把這把鎖再拆成各子系統自己的鎖（Unleashed 的做法），例如 NUI hook 仍偶有 20–30 ms 的持有。
 
 ### 第 5 階段：重編譯期的 mid-asm hook 與幀率
 
