@@ -189,7 +189,8 @@ public:
     // exactly as load and store do, and fall back to them for the rest.
     struct FastPath {
         GuestMemory* memory;
-        const uint8_t* pages;
+        // Not const: libc++ rejects atomic_ref<const T>::load (LLVM 23). It is only read.
+        uint8_t* pages;
         const std::atomic<uint16_t>* pinned;
         uint64_t owner;
     };
@@ -198,7 +199,7 @@ public:
                                                                       uint64_t address) {
         static_assert(std::is_unsigned_v<T>);
         if (address < address_space_size && address % fast_page_size <= fast_page_size - sizeof(T)) [[likely]] {
-            const uint8_t page = std::atomic_ref<const uint8_t>(fast.pages[address / fast_page_size])
+            const uint8_t page = std::atomic_ref<uint8_t>(fast.pages[address / fast_page_size])
                                      .load(std::memory_order_relaxed);
             if (page & fast_access) [[likely]]
                 return byte_swap(T(*reinterpret_cast<const volatile T*>(base + address)));
@@ -209,7 +210,7 @@ public:
                                                                           uint64_t address, T value) {
         static_assert(std::is_unsigned_v<T>);
         if (address < address_space_size && address % fast_page_size <= fast_page_size - sizeof(T)) [[likely]] {
-            const uint8_t page = std::atomic_ref<const uint8_t>(fast.pages[address / fast_page_size])
+            const uint8_t page = std::atomic_ref<uint8_t>(fast.pages[address / fast_page_size])
                                      .load(std::memory_order_relaxed);
             if ((page & fast_access) && guest_thread_state.reservation.owner != fast.owner &&
                 !fast.pinned[address / fast_page_size].load(std::memory_order_relaxed)) [[likely]] {
