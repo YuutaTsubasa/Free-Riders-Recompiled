@@ -1,4 +1,5 @@
 #include "guest_execution.h"
+#include <iostream>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -540,7 +541,14 @@ void GuestExecution::fail(std::exception_ptr failure) noexcept {
     std::stop_source stop_source(std::nostopstate);
     {
         std::lock_guard lock(state_->mutex);
-        if (!state_->failure && failure) state_->failure = failure;
+        if (!state_->failure && failure) {
+            state_->failure = failure;
+            // Said now: the teardown that reports it at the end can itself
+            // crash (a broken command list), and the reason was lost with it.
+            try { std::rethrow_exception(failure); }
+            catch (const std::exception& error) { std::cerr << "EXECUTION_FAILURE " << error.what() << std::endl; }
+            catch (...) { std::cerr << "EXECUTION_FAILURE (not a std::exception)" << std::endl; }
+        }
         state_->stopping = true;
         state_->stopping_flag.store(true, std::memory_order_relaxed);
         stop_source = state_->stop_source;

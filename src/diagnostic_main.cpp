@@ -997,7 +997,10 @@ void flush_main_wait_trace(uint32_t frame, bool force) {
 template<class Operation> static void measured_guest_wait(Operation&& operation, const WaitSite& site,
                                                          bool global = false, const uint32_t* status = nullptr) {
     auto runner = [&](auto&& callback) {
-        if (global) execution_permit->run_blocking(std::forward<decltype(callback)>(callback));
+        // A thread that does not hold the global permit (SFR_PARALLEL_MAIN: the
+        // main thread inside a graphics-only hook, waiting for the GPU) has
+        // only its core to give up.
+        if (global && !execution_permit->detached()) execution_permit->run_blocking(std::forward<decltype(callback)>(callback));
         else execution_permit->run_wait(std::forward<decltype(callback)>(callback));
     };
     if (!wait_trace_enabled || (current_id != 1 && (!wait_trace_guest || current_id != wait_trace_guest))) {
@@ -4452,7 +4455,9 @@ int main(int argc, char** argv) {
                           << " import_variables=" << variable_count << '\n';
                 std::cerr << "DIAGNOSTIC_LIMITS calls=" << sfr::call_budget << " watchdog_seconds=" << sfr::watchdog_seconds << '\n';
                 _xstart(ctx, memory.base());
+                std::cerr << "MAIN_ENTRY_RETURNED frame=" << sfr::present_count.load() << std::endl;
             } catch (const sfr::GuestExecutionCancelled&) {
+                std::cerr << "MAIN_CANCELLED frame=" << sfr::present_count.load() << std::endl;
             } catch (...) {
                 execution.fail(std::current_exception());
             }
