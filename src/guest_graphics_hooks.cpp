@@ -994,8 +994,12 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     // it into RB_COLOR_MASK (+10460) for a bound RT0; the native device binds RT0
     // without running it, so read the render state directly.
     draw.write_mask=uint8_t(memory.load<uint32_t>(uint64_t(device)+12036)&0xF);
-    draw.depth_enabled=state.depth_enable_requested.value_or(false) &&
-                       memory.load<uint32_t>(uint64_t(device)+0x3158)==sfr::GuestGraphics::depth_handle;
+    // The native depth, or (drawing into one of the title's own surfaces)
+    // that surface's depth, which stands for the depth surface it binds.
+    const uint32_t depth_binding=memory.load<uint32_t>(uint64_t(device)+0x3158);
+    const bool depth_bound=depth_binding==sfr::GuestGraphics::depth_handle ||
+                           (depth_binding && presentation.target_is_surface());
+    draw.depth_enabled=state.depth_enable_requested.value_or(false) && depth_bound;
     draw.depth_write=draw.depth_enabled && state.depth_write_enabled.value_or(false);
     draw.depth_function=state.depth_function.value_or(plume::RenderComparisonFunction::LESS_EQUAL);
     // Stencil: the setters are not bridged, so it is read from the device's
@@ -1005,8 +1009,7 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     {
         const uint32_t control=memory.load<uint32_t>(uint64_t(device)+10548);
         const uint32_t refmask=memory.load<uint32_t>(uint64_t(device)+10496);
-        const bool target=memory.load<uint32_t>(uint64_t(device)+0x3158)==sfr::GuestGraphics::depth_handle;
-        draw.stencil_enabled=target && (control&1);
+        draw.stencil_enabled=depth_bound && (control&1);
         if(draw.stencil_enabled) {
             using Compare=plume::RenderComparisonFunction;
             using Op=plume::RenderStencilOp;
@@ -1471,7 +1474,12 @@ SFR_GRAPHICS_HOOK(sub_824FAB08) {
     // drawn, so a copy of it becomes the texture at the destination address.
     // Source 4 is the depth surface (shadow maps), which the native backend
     // cannot copy out yet.
-    const bool copied=(flags&7)<4 && destination_base!=0;
+    // Source 4 (the depth surface: shadow maps, the scene's depth) is kept as
+    // a sampled depth texture; SFR_DEPTH_RESOLVE=0 leaves it uncopied, as
+    // before.
+    static const bool depth_resolves=[]{ const char* t=std::getenv("SFR_DEPTH_RESOLVE"); return !t || *t!='0'; }();
+    const bool depth=(flags&7)==4;
+    const bool copied=destination_base!=0 && ((flags&7)<4 || (depth && depth_resolves));
     // SFR_RESOLVE_STATS=1: every resolve of one race frame (present 15000),
     // with its source rectangle and destination size: how much of the
     // framebuffer each resolve really needs.
@@ -1485,7 +1493,7 @@ SFR_GRAPHICS_HOOK(sub_824FAB08) {
     }
     if(copied) {
         graphics().select_target(ctx.r3.u32);
-        graphics().renderer().adopt_resolved_target(destination_base);
+        graphics().renderer().adopt_resolved_target(destination_base,depth);
     }
     // SFR_RESOLVE_DUMP=<file.bmp>: what the framebuffer held at the first few
     // colour resolves (shows whether the scene was drawn into it).

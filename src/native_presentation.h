@@ -67,6 +67,22 @@ public:
     [[nodiscard]] bool target_is_surface() const noexcept;
     // The current target's colour texture and its size in pixels.
     plume::RenderTexture& target_color();
+    // Its depth texture (D32_FLOAT_S8_UINT, also for the framebuffer).
+    plume::RenderTexture& target_depth();
+    // The current render surface, as an identity (null for the framebuffer).
+    [[nodiscard]] const void* target_identity() const noexcept;
+    // Aliased resolves (Marathon Recompiled's): a resolve out of a render
+    // surface leaves the surface sampled where it is instead of copying it.
+    // mark_target_read records that the current surface's colour or depth is
+    // now laid out for sampling; before a draw or clear next writes to that
+    // surface, before_surface_write runs (with the surface's identity) to copy
+    // what was resolved out of it, and the surface is made writable again.
+    void mark_target_read(bool color, bool depth);
+    void set_before_surface_write(std::function<void(const void* surface)> callback);
+    // Records made between these (a resolve's own barriers and copies) do
+    // not write the current surface, so they leave its resolves aliased.
+    void begin_non_writing_records() noexcept;
+    void end_non_writing_records() noexcept;
     [[nodiscard]] std::pair<uint32_t, uint32_t> target_size() const noexcept;
     // Tightly packed BGRA at render_width() x render_height().
     [[nodiscard]] std::vector<uint8_t> readback_color();

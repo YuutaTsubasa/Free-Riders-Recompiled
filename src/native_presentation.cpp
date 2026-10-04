@@ -167,7 +167,38 @@ struct NativePresentation::Impl {
         std::unique_ptr<plume::RenderTexture> color, depth;
         std::unique_ptr<plume::RenderFramebuffer> framebuffer;
         bool prepared = false;  // recording side: its first barriers are in a list
+        // Asking side: colour (1) and depth (2) laid out for sampling.
+        uint8_t reading = 0;
     };
+    std::function<void(const void*)> before_surface_write;
+    // Asking side, before a draw or clear records into the current target:
+    // copies out what was resolved from it and makes it writable again. The
+    // copies are queued in order, ahead of the write.
+    uint32_t non_writing = 0;
+    void prepare_write() {
+        if (non_writing || !target || !target->reading) return;
+        SurfaceTarget* const surface = target;
+        const uint8_t reading = surface->reading;
+        surface->reading = 0;
+        if (before_surface_write) before_surface_write(surface);
+        struct Writable {
+            plume::RenderTexture* color; plume::RenderTexture* depth;
+            void operator()(plume::RenderCommandList& list, uint64_t) const {
+                std::array<plume::RenderTextureBarrier, 2> barriers{};
+                uint32_t count = 0;
+                if (color) barriers[count++] = plume::RenderTextureBarrier(color, plume::RenderTextureLayout::COLOR_WRITE);
+                if (depth) barriers[count++] = plume::RenderTextureBarrier(depth, plume::RenderTextureLayout::DEPTH_WRITE);
+                list.barriers(plume::RenderBarrierStage::GRAPHICS, barriers.data(), count);
+            }
+        };
+        const Writable writable{(reading & 1) ? surface->color.get() : nullptr, (reading & 2) ? surface->depth.get() : nullptr};
+        enqueue_body(writable);
+    }
+    template <class Body> void enqueue_body(const Body& body) {
+        enqueue([](const void* payload, plume::RenderCommandList& list, uint64_t generation) {
+            (*static_cast<const Body*>(payload))(list, generation);
+        }, &body, sizeof(Body));
+    }
     std::unordered_map<uint64_t, std::unique_ptr<SurfaceTarget>> surfaces;
     // Asking side: where the next draw or clear goes (null: the framebuffer),
     // and the logical size mapped onto all of it.
@@ -183,6 +214,10 @@ struct NativePresentation::Impl {
                     plume::RenderTextureBarrier(next->color.get(), plume::RenderTextureLayout::COLOR_WRITE),
                     plume::RenderTextureBarrier(next->depth.get(), plume::RenderTextureLayout::DEPTH_WRITE)};
                 command_list->barriers(plume::RenderBarrierStage::GRAPHICS, barriers.data(), uint32_t(barriers.size()));
+                command_list->setFramebuffer(next->framebuffer.get());
+                // A new surface's depth holds nothing until the title clears it;
+                // start it at the far plane rather than undefined bytes.
+                command_list->clearDepthStencil(true, true, 1.0f, 0);
                 next->prepared = true;
             }
             command_list->setFramebuffer(next->framebuffer.get());
@@ -597,6 +632,7 @@ struct NativePresentation::Impl {
         render_thread.join();
     }
     void enqueue(NativePresentation::RecordFunction function, const void* payload, size_t bytes) {
+        prepare_write();
         if (!render_thread_enabled()) {
             ensure_open();
             bind(target);
@@ -1286,6 +1322,8 @@ void NativePresentation::clear(const NativeClear& clear, std::span<const plume::
         rectangles = scaled;
     }
 
+    impl_->prepare_write();
+    impl_->drain();
     impl_->ensure_open();
     impl_->bind(impl_->target);
     impl_->apply_raster();
@@ -1305,6 +1343,7 @@ void NativePresentation::record_async_raw(RecordFunction function, const void* p
 
 void NativePresentation::record(const std::function<void(plume::RenderCommandList&)>& body) {
     impl_->refuse_during_gpu_wait();
+    impl_->prepare_write();
     impl_->drain();
     impl_->ensure_open();
     impl_->bind(impl_->target);
@@ -1387,6 +1426,23 @@ bool NativePresentation::target_is_surface() const noexcept { return impl_->targ
 
 plume::RenderTexture& NativePresentation::target_color() {
     return impl_->target ? *impl_->target->color : *impl_->color;
+}
+
+plume::RenderTexture& NativePresentation::target_depth() {
+    return impl_->target ? *impl_->target->depth : *impl_->depth;
+}
+
+const void* NativePresentation::target_identity() const noexcept { return impl_->target; }
+
+void NativePresentation::begin_non_writing_records() noexcept { ++impl_->non_writing; }
+void NativePresentation::end_non_writing_records() noexcept { --impl_->non_writing; }
+
+void NativePresentation::mark_target_read(bool color, bool depth) {
+    if (impl_->target) impl_->target->reading |= (color ? 1 : 0) | (depth ? 2 : 0);
+}
+
+void NativePresentation::set_before_surface_write(std::function<void(const void*)> callback) {
+    impl_->before_surface_write = std::move(callback);
 }
 
 std::pair<uint32_t, uint32_t> NativePresentation::target_size() const noexcept {
