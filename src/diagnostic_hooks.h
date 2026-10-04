@@ -78,9 +78,16 @@ void enter_function_observed(PPCContext&, const char*, uint32_t);
 // Every guest function entry; inline, as it runs millions of times a second.
 inline void enter_function(PPCContext& ctx, const char* name, uint32_t address) {
     GuestEntryState& entry = guest_thread_state.entry;
+    // A guest running beside the permit is observed only for hooks: an entry
+    // that is no hook, outside every hook, needs nothing more than the fast
+    // path. Taken out of line every time, these entries cost the main thread
+    // about 4 ms of an AYN Thor race frame once it ran beside the permit.
     if (entry.observed) [[unlikely]] {
-        enter_function_observed(ctx, name, address);
-        return;
+        if (!entry.parallel || entry.watched || entry.hook_stack_pointer || entry.graphics_stack_pointer ||
+            entry.detach_at_entry || is_hook(address)) {
+            enter_function_observed(ctx, name, address);
+            return;
+        }
     }
     if (entry.checkpoint_countdown) [[likely]] --entry.checkpoint_countdown;
     else guest_checkpoint_permit();
