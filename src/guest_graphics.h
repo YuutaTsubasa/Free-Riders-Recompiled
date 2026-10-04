@@ -35,7 +35,7 @@ public:
     // framebuffer: the scene is drawn into the back buffer and whatever the
     // title resolves out of its surface is not what it rendered.
     static bool foreign_render_targets;
-    // SFR_SURFACE_TARGETS=1 (with foreign_render_targets): each of the title's
+    // On unless SFR_SURFACE_TARGETS=0 (with foreign_render_targets): each of the title's
     // own surfaces is drawn into a texture of its size instead of the
     // framebuffer (NativePresentation::set_target), as Unleashed and Marathon
     // Recompiled do. A race's bloom chain then draws 110x90 instead of 1280x720.

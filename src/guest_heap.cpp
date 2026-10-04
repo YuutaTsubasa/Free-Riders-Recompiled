@@ -54,7 +54,7 @@ bool GuestHeap::in_arena(uint32_t address) {
 }
 
 bool GuestHeap::enabled() {
-    static const bool on = [] { const char* text = std::getenv("SFR_HOST_HEAP"); return text && *text == '1'; }();
+    static const bool on = [] { const char* text = std::getenv("SFR_HOST_HEAP"); return !text || *text != '0'; }();
     return on;
 }
 

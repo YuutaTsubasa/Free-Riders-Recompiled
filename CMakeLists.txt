@@ -19,7 +19,7 @@ option(SFR_BUILD_DIAGNOSTIC "Build the game CPU diagnostic (requires generated c
 # Guest memory read and written as base + address by generated code, as in
 # Unleashed and Marathon Recompiled, instead of through GuestMemory's checks
 # (docs/architecture-migration.md, phase 3).
-option(SFR_DIRECT_MEMORY "Generated code accesses guest memory directly" OFF)
+option(SFR_DIRECT_MEMORY "Generated code accesses guest memory directly" ON)
 if(SFR_DIRECT_MEMORY)
     add_compile_definitions(SFR_DIRECT_MEMORY=1)
 endif()
@@ -820,6 +820,9 @@ if(WIN32 OR UNIX)
     add_executable(sfr_guest_graphics_test tests/guest_graphics_test.cpp src/guest_memory.cpp)
     target_link_libraries(sfr_guest_graphics_test PRIVATE sfr_guest_graphics)
     add_test(NAME guest_graphics COMMAND sfr_guest_graphics_test)
+    # Its clears and draws on the title's own surfaces read the framebuffer
+    # back: the aliasing that SFR_SURFACE_TARGETS=0 keeps.
+    set_tests_properties(guest_graphics PROPERTIES ENVIRONMENT SFR_SURFACE_TARGETS=0)
     add_executable(sfr_native_formats_test tests/native_formats_test.cpp)
     target_link_libraries(sfr_native_formats_test PRIVATE sfr_guest_graphics)
     add_test(NAME native_formats COMMAND sfr_native_formats_test)

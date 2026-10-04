@@ -37,7 +37,8 @@ public:
     // Frees every block allocated from heap.
     void destroy(uint32_t heap);
 
-    // SFR_HOST_HEAP=1, read once (off by default until measured).
+    // On unless SFR_HOST_HEAP=0, read once. An AYN Thor race measured it level
+    // to slightly faster (41.1-41.8 against 41.2-41.3 fps).
     static bool enabled();
 private:
     struct Impl;

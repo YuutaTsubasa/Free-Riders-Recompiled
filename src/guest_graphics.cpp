@@ -124,7 +124,7 @@ NativeRenderer& GuestGraphics::renderer() {
 bool GuestGraphics::foreign_render_targets = false;
 bool GuestGraphics::surface_targets = [] {
     const char* text = std::getenv("SFR_SURFACE_TARGETS");
-    return text && *text == '1';
+    return !text || *text != '0';
 }();
 void GuestGraphics::select_target(uint32_t device) {
     auto& native = presentation();

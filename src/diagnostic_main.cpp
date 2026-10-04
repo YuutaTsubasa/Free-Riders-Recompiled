@@ -414,14 +414,14 @@ std::array<GuestExecution::Timing, 7> take_guest_execution_timings() {
 }
 static thread_local std::unique_ptr<GuestExecution::Lease> core_permit;
 static thread_local unsigned core_index = 0;
-// SFR_PARALLEL_MAIN=1 (with cores): processor 0 too, the main thread's, runs
+// On unless SFR_PARALLEL_MAIN=0 (with cores or all): processor 0 too, the main thread's, runs
 // detached on its core's permit, so no guest code holds the global permit
 // any more: it is taken only by hooks and imports that reach host state, as
 // a lock (docs/architecture-migration.md, phase 4). Unleashed and Marathon
 // Recompiled have no such permit at all.
 static const bool parallel_main = [] {
     const char* text = std::getenv("SFR_PARALLEL_MAIN");
-    return text && *text == '1';
+    return !text || *text != '0';
 }();
 static bool runs_on_core(unsigned processor) {
     return parallel_worker == ParallelGuests::cores && processor < guest_processors && (processor != 0 || parallel_main);

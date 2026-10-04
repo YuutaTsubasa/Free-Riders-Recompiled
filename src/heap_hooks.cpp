@@ -7,7 +7,7 @@
 // TRUE when it returns NULL); 824E0860 answers HeapSize (824DF4E8, XMemSize's
 // heap path). XAllocMem (824DAD90) and XFreeMem (824DAEB0) reach these through
 // HeapAlloc/HeapFree; their physical paths stay on MmAllocatePhysicalMemoryEx.
-// Without SFR_HOST_HEAP=1 every hook runs the original.
+// With SFR_HOST_HEAP=0 every hook runs the original.
 #include "diagnostic_hooks.h"
 #include "guest_heap.h"
 #include "ppc_recomp_shared.h"
