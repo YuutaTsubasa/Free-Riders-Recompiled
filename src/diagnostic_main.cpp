@@ -512,10 +512,53 @@ static void parallel_slow_access(uint64_t address) {
 
 static thread_local std::chrono::steady_clock::time_point hook_attached_at;
 static thread_local uint32_t hook_attached = 0;
+// One thread at a time in the native device (graphics_hook_bits); taken
+// before the global permit. A thread that holds the global permit and finds
+// it taken waits without the permit, so the holder can still get it.
+static std::mutex graphics_lock;
+static void graphics_lock_entry(const PPCContext& ctx, uint32_t address) {
+    auto& entry = guest_thread_state.entry;
+    const bool graphics = test_hook_bit(graphics_hook_bits, address);
+    if (entry.graphics_stack_pointer) {
+        if (graphics) entry.graphics_stack_pointer = (std::max)(entry.graphics_stack_pointer, ctx.r1.u32);
+        else if (ctx.r1.u32 > entry.graphics_stack_pointer) {
+            entry.graphics_stack_pointer = 0;
+            graphics_lock.unlock();
+        }
+        return;
+    }
+    if (!graphics) return;
+    if (!graphics_lock.try_lock()) {
+        const auto wait = [](std::stop_token) { graphics_lock.lock(); };
+        if (execution_permit->detached()) execution_permit->run_wait(wait);
+        else execution_permit->run_blocking(wait);
+    }
+    entry.graphics_stack_pointer = ctx.r1.u32;
+}
+// The graphics lock around host code outside the graphics hooks that changes
+// the native device (an import dropping the renderer's copies of freed memory).
+struct HostGraphicsLock {
+    bool owned = false;
+    HostGraphicsLock() {
+        if (!parallel_main || guest_thread_state.entry.graphics_stack_pointer) return;
+        if (!graphics_lock.try_lock()) {
+            const auto wait = [](std::stop_token) { graphics_lock.lock(); };
+            if (!execution_permit) graphics_lock.lock();
+            else if (execution_permit->detached()) execution_permit->run_wait(wait);
+            else execution_permit->run_blocking(wait);
+        }
+        owned = true;
+    }
+    ~HostGraphicsLock() { if (owned) graphics_lock.unlock(); }
+    HostGraphicsLock(const HostGraphicsLock&) = delete;
+    HostGraphicsLock& operator=(const HostGraphicsLock&) = delete;
+};
 static void parallel_function_entry(const PPCContext& ctx, uint32_t address) {
     static const bool hook_stats = [] { const char* t = std::getenv("SFR_PARALLEL_HOOK_STATS"); return t && *t == '1'; }();
+    if (parallel_main) graphics_lock_entry(ctx, address);
     if (execution_permit->detached()) {
         if (!is_hook(address)) return;
+        if (parallel_main && test_hook_bit(graphics_only_hook_bits, address)) return;
         execution_permit->attach();
         parallel_attached(1);
         // SFR_PARALLEL_HOOK_STATS=1: which hooks bring detached guests back
@@ -583,6 +626,14 @@ bool register_hook(const char* name) {
     return true;
 }
 bool is_hook_outside_the_image(uint32_t address) { return hooks().contains(address); }
+bool register_graphics_hook(const char* name, bool host_state) {
+    register_hook(name);
+    const uint32_t address = uint32_t(std::strtoul(name + 4, nullptr, 16));
+    const uint32_t index = (address - hook_base) / 4;
+    graphics_hook_bits[index / 64] |= uint64_t(1) << (index % 64);
+    if (!host_state) graphics_only_hook_bits[index / 64] |= uint64_t(1) << (index % 64);
+    return true;
+}
 
 // The guest call chain from a stack pointer: each frame's first word links
 // to the caller's frame, and the saved LR sits 8 bytes below that frame.
@@ -774,7 +825,10 @@ void synchronize_resource_memory(PPCContext& ctx) {
     // Virtual physical views: 0xE0000000 maps physical + 0x1000, the others mask.
     const uint32_t physical_address = request.address >= 0xE0000000u ? request.address - 0xE0000000u + 0x1000u
                                                                       : request.address & 0x1FFFFFFFu;
-    active_guest_graphics->renderer().invalidate(physical_address, request.size);
+    {
+        HostGraphicsLock graphics;
+        active_guest_graphics->renderer().invalidate(physical_address, request.size);
+    }
     if (texture_transfer.active) texture_transfer.resource = request.resource;
     if(graphics_trace()) std::cerr << "NATIVE_RESOURCE_COHERENCY resource=0x" << std::hex << request.resource
               << " address=0x" << request.address << " size=0x" << request.size
@@ -1572,8 +1626,10 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
             throw RuntimeStop("physical-memory", freed, "free of an address that is no physical allocation base");
         // The pages may come back as another resource: drop what the renderer
         // cached from them (virtual 0xE0000000 is physical 0x1000).
-        if (active_guest_graphics && active_guest_graphics->created() && freed >= 0xE0000000u)
+        if (active_guest_graphics && active_guest_graphics->created() && freed >= 0xE0000000u) {
+            HostGraphicsLock graphics;
             active_guest_graphics->renderer().invalidate(freed - 0xE0000000u + 0x1000u, freed_size);
+        }
         static uint32_t frees = 0;
         if (frees++ < 16)
             std::cerr << "RESULT MmFreePhysicalMemory type=0x" << std::hex << ctx.r3.u32 << " address=0x" << freed
@@ -4094,7 +4150,13 @@ int main(int argc, char** argv) {
                         const unsigned processor = memory.load<uint8_t>(uint64_t(state.pcr) + 0x10C);
                         const bool on_core = sfr::runs_on_core(processor);
                         const bool audio_pump = !state.startup && state.argument == sfr::system_thread_audio;
-                        if ((state.startup || (audio_pump && sfr::audio_parallel_processor && on_core)) &&
+                        // With every thread free (all + SFR_PARALLEL_MAIN) the audio
+                        // pump is too: holding the global permit through its
+                        // callback, it held up the main thread's present by up to
+                        // a quarter of a second.
+                        const bool free_audio = audio_pump && sfr::parallel_main &&
+                                                sfr::parallel_worker == sfr::ParallelGuests::all;
+                        if ((state.startup || free_audio || (audio_pump && sfr::audio_parallel_processor && on_core)) &&
                             (on_core || sfr::parallel_worker == sfr::ParallelGuests::all ||
                                 (sfr::parallel_worker == sfr::ParallelGuests::job_worker &&
                                  state.worker == sfr::parallel_worker_entry))) {
@@ -4371,6 +4433,14 @@ int main(int argc, char** argv) {
             if (sfr::runs_on_core(0) && sfr::parallel_main) {
                 std::cerr << "PARALLEL_WORKER guest_id=1 processor=0\n";
                 sfr::join_core(*permit, 0, 1);
+            } else if (sfr::parallel_worker == sfr::ParallelGuests::all && sfr::parallel_main) {
+                // Every guest thread runs freely, as in Unleashed and Marathon
+                // Recompiled; the global permit is only the hooks' lock.
+                std::cerr << "PARALLEL_WORKER guest_id=1 processor=any\n";
+                sfr::guest_thread_state.entry.parallel = true;
+                sfr::GuestMemory::concurrent_reader = true;
+                sfr::GuestMemory::slow_access_hook = sfr::parallel_slow_access;
+                permit->detach();
             }
             sfr::refresh_entry_observation();
             std::cerr << "GUEST_HOST_THREAD guest_id=1 tid=" << sfr::host_thread_id() << " worker=0x824d22f0\n";

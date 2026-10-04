@@ -39,6 +39,20 @@ inline bool is_hook(uint32_t address) {
     const uint32_t index = offset / 4;
     return (hook_bits[index / 64] >> (index % 64)) & 1;
 }
+// Hooks of the title's Direct3D (guest_graphics_hooks.cpp): with
+// SFR_PARALLEL_MAIN they take the graphics lock, which keeps one thread at a
+// time in the native device, and those that reach no other host state
+// (graphics_only) not the global permit. Unleashed and Marathon Recompiled
+// guard their device the same way, with no lock around the whole program.
+inline uint64_t graphics_hook_bits[(hook_limit - hook_base) / 4 / 64];
+inline uint64_t graphics_only_hook_bits[(hook_limit - hook_base) / 4 / 64];
+bool register_graphics_hook(const char* name, bool host_state);
+inline bool test_hook_bit(const uint64_t* bits, uint32_t address) {
+    const uint32_t offset = address - hook_base;
+    if (offset >= hook_limit - hook_base || (address & 3)) return false;
+    const uint32_t index = offset / 4;
+    return (bits[index / 64] >> (index % 64)) & 1;
+}
 // Whether a guest function entry does more than name itself and checkpoint.
 // Everything else it does is observation: the ORIGINAL_* audits, the entry
 // traces and dumps, the sampler's address for SFR_SAMPLE_PROFILE. Playing turns it
@@ -226,6 +240,10 @@ void stop_nui_skeleton_events();
 
 // Defines a replacement of original function x and records it as a hook.
 #define SFR_HOOK(x) [[maybe_unused]] static const bool x##_hook = ::sfr::register_hook(#x); PPC_FUNC(x)
+// A Direct3D replacement that touches only the native device and guest memory
+// (see graphics_hook_bits), and one that also reaches other host state.
+#define SFR_GRAPHICS_HOOK(x) [[maybe_unused]] static const bool x##_hook = ::sfr::register_graphics_hook(#x, false); PPC_FUNC(x)
+#define SFR_GRAPHICS_HOST_HOOK(x) [[maybe_unused]] static const bool x##_hook = ::sfr::register_graphics_hook(#x, true); PPC_FUNC(x)
 // A replacement that touches only guest memory, its arguments and atomics,
 // so a detached guest runs it without taking the execution permit. Hot
 // functions only: a hook called by every thread brought them all back to

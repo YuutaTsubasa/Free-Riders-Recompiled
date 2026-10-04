@@ -35,6 +35,9 @@ struct GuestEntryState {
     bool parallel = false;
     bool detach_at_entry = false;
     uint32_t hook_stack_pointer = 0;
+    // Holding the graphics lock for a graphics hook: the guest stack pointer
+    // at the outermost one's entry (released as hook_stack_pointer is).
+    uint32_t graphics_stack_pointer = 0;
 };
 
 // A function entry and its scalar stores repeatedly consult both records.

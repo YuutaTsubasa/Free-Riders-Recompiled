@@ -168,7 +168,7 @@ void set_sampler_filter(PPCContext& ctx, const char* name, uint32_t address, sfr
 
 // Strong public definitions replace only the verified weak generated aliases.
 // The original game caller, entry point and all other generated code remain.
-SFR_HOOK(sub_824F4CF0) {
+SFR_GRAPHICS_HOST_HOOK(sub_824F4CF0) {
     sfr::enter_function(ctx,"sub_824F4CF0",0x824F4CF0);
     ctx.r3.u64=graphics().create_device(ctx.r3.u32,ctx.r4.u32,ctx.r5.u32,ctx.r6.u32,ctx.r7.u32,ctx.r8.u32);
     // The original CreateDevice finishes with 82500B38: every render and
@@ -189,7 +189,7 @@ SFR_HOOK(sub_824F4CF0) {
 // device down (824F8BC0) and creates it again (82500DA0). The native device
 // stays; a reset to the parameters it was created with (stored at +0x35BC)
 // only restores the default state, as creation does with 82500B38.
-SFR_HOOK(sub_824F4858) {
+SFR_GRAPHICS_HOST_HOOK(sub_824F4858) {
     sfr::enter_function(ctx,"sub_824F4858",0x824F4858);
     auto& memory=*sfr::active_memory;
     const uint32_t device=ctx.r3.u32, parameters=ctx.r4.u32;
@@ -226,7 +226,7 @@ SFR_HOOK(sub_824F4858) {
 // The original makes room by submitting the current command segment to the
 // GPU ring. Natively nothing consumes Xenos packets: discard them and return
 // the reset write pointer, as the original returns device+48.
-SFR_HOOK(sub_824F8720) {
+SFR_GRAPHICS_HOOK(sub_824F8720) {
     sfr::enter_function(ctx,"sub_824F8720",0x824F8720);
     uint32_t discarded=0;
     ctx.r3.u64=graphics().discard_commands(ctx.r3.u32,discarded);
@@ -378,7 +378,7 @@ static const auto process_start=std::chrono::steady_clock::now();
 // GPU completion callbacks (InsertCallback) waiting for the frame's end.
 static std::vector<std::pair<uint32_t,uint32_t>> frame_callbacks;
 
-SFR_HOOK(sub_824E65A0) {
+SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
     sfr::enter_function(ctx,"sub_824E65A0",0x824E65A0);
     // Preload in the menu; actual geometry is drawn in the Avatar's pass.
     graphics().presentation().prepare_player_model();
@@ -1102,7 +1102,7 @@ static std::span<const uint8_t> guest_bytes(uint32_t address, uint64_t size) {
 }
 
 // DrawVerticesUP(device, primitive, vertex count, data, stride).
-SFR_HOOK(sub_824F5288) {
+SFR_GRAPHICS_HOOK(sub_824F5288) {
     sfr::enter_function(ctx,"sub_824F5288",0x824F5288);
     const uint32_t count=ctx.r5.u32, stride=ctx.r7.u32;
     native_draw(ctx,0x824F5288,ctx.r3.u32,ctx.r4.u32,count,guest_bytes(ctx.r6.u32,uint64_t(count)*stride),stride);
@@ -1140,7 +1140,7 @@ static Stream0 stream0(uint32_t device) {
 // device +0x778: physical address | 3, then the byte size) and its stride
 // in dwords at +12704; the draw reads the buffer through that constant
 // (word 0: byte address | type 3).
-SFR_HOOK(sub_824F52D0) {
+SFR_GRAPHICS_HOOK(sub_824F52D0) {
     sfr::enter_function(ctx,"sub_824F52D0",0x824F52D0);
     auto& memory=*sfr::active_memory;
     const uint32_t device=ctx.r3.u32, primitive=ctx.r4.u32, start=ctx.r5.u32, count=ctx.r6.u32;
@@ -1195,7 +1195,7 @@ static void gather_vertices(uint8_t* destination,const uint8_t* source,const uin
         std::memcpy(destination+i*stride,source+size_t(order[i])*stride,stride);
 }
 
-SFR_HOOK(sub_824F56E8) {
+SFR_GRAPHICS_HOOK(sub_824F56E8) {
     sfr::enter_function(ctx,"sub_824F56E8",0x824F56E8);
     if(skip_draws() || !rendering_this_frame()) return;
     auto& memory=*sfr::active_memory;
@@ -1292,7 +1292,7 @@ SFR_HOOK(sub_824F56E8) {
 // packet the GPU turns into an interrupt that runs callback(context) once the
 // preceding commands complete. Native draws are recorded (their data copied)
 // immediately and complete with the frame, so the callback runs at present.
-SFR_HOOK(sub_824F8AD8) {
+SFR_GRAPHICS_HOOK(sub_824F8AD8) {
     sfr::enter_function(ctx,"sub_824F8AD8",0x824F8AD8);
     if(ctx.r3.u32!=sfr::GuestGraphics::device_address)
         throw sfr::RuntimeStop("native-callback",ctx.r3.u32,"callback on a non-native device");
@@ -1303,7 +1303,7 @@ SFR_HOOK(sub_824F8AD8) {
     frame_callbacks.emplace_back(ctx.r5.u32,ctx.r6.u32);
 }
 
-SFR_HOOK(sub_824F6DC8) {
+SFR_GRAPHICS_HOOK(sub_824F6DC8) {
     sfr::enter_function(ctx,"sub_824F6DC8",0x824F6DC8);
     if(!rendering_this_frame()) return;
     // RT0 as SetRenderTarget left it: the native colour surface, or one of the
@@ -1323,7 +1323,7 @@ SFR_HOOK(sub_824F6DC8) {
               << " submitted=" << submitted << '\n';
 }
 
-SFR_HOOK(sub_824E96C8) {
+SFR_GRAPHICS_HOOK(sub_824E96C8) {
     sfr::enter_function(ctx,"sub_824E96C8",0x824E96C8);
     // Sample viewport requests/results without enabling per-draw graphics
     // logging. One presented frame per second retains every pass in it.
@@ -1364,19 +1364,19 @@ SFR_HOOK(sub_824E96C8) {
     std::cerr << '\n';
 }
 
-SFR_HOOK(sub_824E8C70) {
+SFR_GRAPHICS_HOOK(sub_824E8C70) {
     sfr::enter_function(ctx,"sub_824E8C70",0x824E8C70);
     graphics().set_scissor(ctx.r3.u32,ctx.r4.u32);
     std::cerr << "NATIVE_SCISSOR source=0x824e8c70 rectangle=0x" << std::hex << ctx.r4.u32 << std::dec << '\n';
 }
 
-SFR_HOOK(sub_824E96B8) {
+SFR_GRAPHICS_HOOK(sub_824E96B8) {
     sfr::enter_function(ctx,"sub_824E96B8",0x824E96B8);
     graphics().set_scissor_enabled(ctx.r3.u32,ctx.r4.u32);
     std::cerr << "NATIVE_SCISSOR_ENABLE source=0x824e96b8 value=" << ctx.r4.u32 << '\n';
 }
 
-SFR_HOOK(sub_824E9218) {
+SFR_GRAPHICS_HOOK(sub_824E9218) {
     sfr::enter_function(ctx,"sub_824E9218",0x824E9218);
     graphics().set_blend_control(ctx.r3.u32,ctx.r4.u32,ctx.r5.u32);
     // The original void setter has no return value. State is retained for
@@ -1388,7 +1388,7 @@ SFR_HOOK(sub_824E9218) {
 
 // SetTexture(device, slot, texture, dirty mask): the native setter performs the
 // original fetch-constant merge; host resources are created when a draw uses them.
-SFR_HOOK(sub_824F4220) {
+SFR_GRAPHICS_HOOK(sub_824F4220) {
     sfr::enter_function(ctx,"sub_824F4220",0x824F4220);
     graphics().set_texture(ctx.r3.u32,ctx.r4.u32,ctx.r5.u32,ctx.r6.u64);
     if(!sfr::graphics_trace()) return;
@@ -1411,7 +1411,7 @@ SFR_HOOK(sub_824F4220) {
               << " state=fetch-retained\n";
 }
 
-SFR_HOOK(sub_824E7F68) {
+SFR_GRAPHICS_HOOK(sub_824E7F68) {
     sfr::enter_function(ctx,"sub_824E7F68",0x824E7F68);
     graphics().set_primitive_restart(ctx.r3.u32,ctx.r4.u32);
     std::cerr << "NATIVE_PRIMITIVE_RESTART source=0x824e7f68 value=0x" << std::hex << ctx.r4.u32
@@ -1419,24 +1419,24 @@ SFR_HOOK(sub_824E7F68) {
               << " retained=1\n";
 }
 
-SFR_HOOK(sub_824ED770) {
+SFR_GRAPHICS_HOOK(sub_824ED770) {
     sfr::enter_function(ctx,"sub_824ED770",0x824ED770);
     create_shader(ctx,base,sfr::ShaderStage::vertex,__imp__sub_824ED770);
 }
-SFR_HOOK(sub_824E6A08) { set_render_state(ctx,"sub_824E6A08",0x824E6A08,sfr::RenderState::alpha_test_enable); }
-SFR_HOOK(sub_824E6EC8) { set_render_state(ctx,"sub_824E6EC8",0x824E6EC8,sfr::RenderState::alpha_function); }
-SFR_HOOK(sub_824E6E68) { set_render_state(ctx,"sub_824E6E68",0x824E6E68,sfr::RenderState::alpha_reference); }
-SFR_HOOK(sub_824E70D0) { set_render_state(ctx,"sub_824E70D0",0x824E70D0,sfr::RenderState::depth_enable); }
-SFR_HOOK(sub_824E7140) { set_render_state(ctx,"sub_824E7140",0x824E7140,sfr::RenderState::depth_function); }
-SFR_HOOK(sub_824E7110) { set_render_state(ctx,"sub_824E7110",0x824E7110,sfr::RenderState::depth_write); }
-SFR_HOOK(sub_824E69A8) { set_render_state(ctx,"sub_824E69A8",0x824E69A8,sfr::RenderState::cull_mode); }
-SFR_HOOK(sub_824E6A40) { set_blend_request(ctx,"sub_824E6A40",0x824E6A40,sfr::BlendRequest::enable); }
-SFR_HOOK(sub_824E6B60) { set_blend_request(ctx,"sub_824E6B60",0x824E6B60,sfr::BlendRequest::source); }
-SFR_HOOK(sub_824E6BF0) { set_blend_request(ctx,"sub_824E6BF0",0x824E6BF0,sfr::BlendRequest::destination); }
-SFR_HOOK(sub_824E6AD0) { set_blend_request(ctx,"sub_824E6AD0",0x824E6AD0,sfr::BlendRequest::operation); }
-SFR_HOOK(sub_824E8248) { set_sampler_filter(ctx,"sub_824E8248",0x824E8248,sfr::SamplerFilter::minification); }
-SFR_HOOK(sub_824E83F0) { set_sampler_filter(ctx,"sub_824E83F0",0x824E83F0,sfr::SamplerFilter::magnification); }
-SFR_HOOK(sub_824ED588) {
+SFR_GRAPHICS_HOOK(sub_824E6A08) { set_render_state(ctx,"sub_824E6A08",0x824E6A08,sfr::RenderState::alpha_test_enable); }
+SFR_GRAPHICS_HOOK(sub_824E6EC8) { set_render_state(ctx,"sub_824E6EC8",0x824E6EC8,sfr::RenderState::alpha_function); }
+SFR_GRAPHICS_HOOK(sub_824E6E68) { set_render_state(ctx,"sub_824E6E68",0x824E6E68,sfr::RenderState::alpha_reference); }
+SFR_GRAPHICS_HOOK(sub_824E70D0) { set_render_state(ctx,"sub_824E70D0",0x824E70D0,sfr::RenderState::depth_enable); }
+SFR_GRAPHICS_HOOK(sub_824E7140) { set_render_state(ctx,"sub_824E7140",0x824E7140,sfr::RenderState::depth_function); }
+SFR_GRAPHICS_HOOK(sub_824E7110) { set_render_state(ctx,"sub_824E7110",0x824E7110,sfr::RenderState::depth_write); }
+SFR_GRAPHICS_HOOK(sub_824E69A8) { set_render_state(ctx,"sub_824E69A8",0x824E69A8,sfr::RenderState::cull_mode); }
+SFR_GRAPHICS_HOOK(sub_824E6A40) { set_blend_request(ctx,"sub_824E6A40",0x824E6A40,sfr::BlendRequest::enable); }
+SFR_GRAPHICS_HOOK(sub_824E6B60) { set_blend_request(ctx,"sub_824E6B60",0x824E6B60,sfr::BlendRequest::source); }
+SFR_GRAPHICS_HOOK(sub_824E6BF0) { set_blend_request(ctx,"sub_824E6BF0",0x824E6BF0,sfr::BlendRequest::destination); }
+SFR_GRAPHICS_HOOK(sub_824E6AD0) { set_blend_request(ctx,"sub_824E6AD0",0x824E6AD0,sfr::BlendRequest::operation); }
+SFR_GRAPHICS_HOOK(sub_824E8248) { set_sampler_filter(ctx,"sub_824E8248",0x824E8248,sfr::SamplerFilter::minification); }
+SFR_GRAPHICS_HOOK(sub_824E83F0) { set_sampler_filter(ctx,"sub_824E83F0",0x824E83F0,sfr::SamplerFilter::magnification); }
+SFR_GRAPHICS_HOOK(sub_824ED588) {
     sfr::enter_function(ctx,"sub_824ED588",0x824ED588);
     create_shader(ctx,base,sfr::ShaderStage::pixel,__imp__sub_824ED588);
 }
@@ -1447,7 +1447,7 @@ SFR_HOOK(sub_824ED588) {
 // The native backend renders into its own framebuffer and has no offscreen
 // targets yet, so nothing is copied; with SFR_ALLOW_RENDER_TARGETS=1 this
 // reports what a race resolves instead of stopping.
-SFR_HOOK(sub_824FAB08) {
+SFR_GRAPHICS_HOOK(sub_824FAB08) {
     sfr::enter_function(ctx,"sub_824FAB08",0x824FAB08);
     if(!rendering_this_frame()) return;
     auto& memory=*sfr::active_memory;
