@@ -154,6 +154,10 @@ GuestThreads::GuestThreads(GuestMemory& memory, TlsTemplate tls, uint32_t stack,
     : impl_(std::make_unique<Impl>(memory, tls, stack, std::move(validator), std::move(factory))) {}
 GuestThreads::~GuestThreads() { shutdown(); }
 GuestThreads::ResumeResult GuestThreads::resume(uint32_t handle, uint32_t previous_output) {
+    // A detached guest resumes and suspends without the global permit: the
+    // registry's shared lock keeps create and close out, and each record's
+    // suspension_mutex orders its counts.
+    std::shared_lock registry(impl_->registry_mutex);
     auto* record = impl_->find_handle(handle);
     if (!record) return {0xC0000008, 0, 0};
     auto& memory = impl_->memory;
@@ -190,6 +194,10 @@ GuestThreads::ResumeResult GuestThreads::resume(uint32_t handle, uint32_t previo
     return {0, previous, record->state.id, previous == 1};
 }
 GuestThreads::ResumeResult GuestThreads::suspend(uint32_t handle, uint32_t previous_output) {
+    std::shared_lock registry(impl_->registry_mutex);
+    return suspend_unlocked(handle, previous_output);
+}
+GuestThreads::ResumeResult GuestThreads::suspend_unlocked(uint32_t handle, uint32_t previous_output) {
     auto* record = impl_->find_handle(handle);
     if (!record) return {0xC0000008, 0, 0};
     auto& memory = impl_->memory;
@@ -212,11 +220,13 @@ GuestThreads::ResumeResult GuestThreads::suspend(uint32_t handle, uint32_t previ
     return {0, previous, record->state.id};
 }
 uint32_t GuestThreads::handle_for_object(uint32_t object) const {
+    std::shared_lock registry(impl_->registry_mutex);
     for (const auto& record : impl_->records)
         if (record->owns_storage && record->handle_open && record->state.thread_object == object) return record->state.handle;
     return 0;
 }
 bool GuestThreads::owns_object(uint32_t object) const {
+    std::shared_lock registry(impl_->registry_mutex);
     for (const auto& record : impl_->records)
         if (record->owns_storage && record->state.thread_object == object) return true;
     return false;
@@ -232,15 +242,17 @@ void GuestThreads::with_host_handle(uint32_t handle, const std::function<void(vo
     use(record ? record->native->native_handle() : nullptr);
 }
 uint32_t GuestThreads::guest_suspends(uint32_t handle) const {
+    std::shared_lock registry(impl_->registry_mutex);
     auto* record = impl_->find_handle(handle);
     return record ? record->guest_suspends.load() : 0;
 }
 GuestThreads::ResumeResult GuestThreads::prepare_self_suspend(uint32_t handle) {
+    std::shared_lock registry(impl_->registry_mutex);
     auto* record = impl_->find_handle(handle);
     if (!record) return {0xC0000008, 0, 0};
     if (record->prepared_self_suspend)
         throw RuntimeStop("thread-suspend", handle, "self suspension already prepared");
-    const auto result = suspend(handle, 0);
+    const auto result = suspend_unlocked(handle, 0);
     if (!result.status) {
         record->prepared_previous = result.previous;
         record->prepared_self_suspend = true;
@@ -248,6 +260,7 @@ GuestThreads::ResumeResult GuestThreads::prepare_self_suspend(uint32_t handle) {
     return result;
 }
 GuestThreads::ResumeResult GuestThreads::suspend_self(uint32_t handle, uint32_t output) {
+    std::shared_lock registry(impl_->registry_mutex);
     auto* record = impl_->find_handle(handle);
     if (record && record->prepared_self_suspend) {
         const uint32_t count_address = record->state.thread_object + 0xBC;
@@ -261,9 +274,10 @@ GuestThreads::ResumeResult GuestThreads::suspend_self(uint32_t handle, uint32_t 
         record->prepared_self_suspend = false;
         return {0, record->prepared_previous, record->state.id};
     }
-    return suspend(handle, output);
+    return suspend_unlocked(handle, output);
 }
 std::function<void(std::stop_token)> GuestThreads::suspension_waiter(uint32_t handle) const {
+    std::shared_lock registry(impl_->registry_mutex);
     auto* record = impl_->find_handle(handle);
     if (!record) throw RuntimeStop("thread-suspend", handle, "unknown suspension waiter");
     return [record, notify = impl_->suspend_notify](std::stop_token stop) {

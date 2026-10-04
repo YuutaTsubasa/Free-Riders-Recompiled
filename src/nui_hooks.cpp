@@ -388,7 +388,7 @@ void write_kinect_body(sfr::GuestMemory& memory, uint32_t frame, const sfr::Kine
 }
 
 // NuiSkeletonGetNextFrame(timeout ms, frame): one emulated player.
-SFR_HOOK(sub_827707B0) {
+SFR_INPUT_HOOK(sub_827707B0) {
     sfr::enter_function(ctx,"sub_827707B0",0x827707B0);
     const uint32_t frame=ctx.r4.u32;
     if(!frame) { ctx.r3.u64=0x80004003u; return; }  // E_POINTER, as the original
@@ -1146,10 +1146,44 @@ PPC_FUNC_IMPL(__imp__sub_824A3398);
 // the gear parts page it comes back null, which is why that page never leaves.
 // Reports the first failures with the pool's free list head, to tell an
 // exhausted pool from a wrong argument.
-SFR_HOOK(sub_824A3398) {
+// The pools' allocation and its two frees (824A3250, 824A3598, reached
+// through the pool's table) under one lock of their own: run beside each
+// other without one, they corrupted the free lists (the pool's own lock
+// object does not exclude another thread), and under the global permit
+// they were a third of what brought free-running guests back to it.
+static std::recursive_mutex pool_lock;
+static std::atomic<uint32_t> pool_holder{0};
+struct PoolLock {
+    PoolLock() {
+        if(pool_lock.try_lock()) { pool_holder.store(sfr::current_guest_thread_id(),std::memory_order_relaxed); return; }
+        const auto started=std::chrono::steady_clock::now();
+        const uint32_t was=pool_holder.load(std::memory_order_relaxed);
+        pool_lock.lock();
+        const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
+        if(ms>=100) std::cerr<<"LOCK_LONG_WAIT lock=pool guest_id="<<sfr::current_guest_thread_id()<<" ms="<<ms<<" holder="<<was<<std::endl;
+        pool_holder.store(sfr::current_guest_thread_id(),std::memory_order_relaxed);
+    }
+    ~PoolLock() { pool_lock.unlock(); }
+};
+PPC_FUNC_IMPL(__imp__sub_824A3250);
+SFR_CONCURRENT_HOOK(sub_824A3250) {
+    sfr::enter_function(ctx,"sub_824A3250",0x824A3250);
+    PoolLock lock;
+    __imp__sub_824A3250(ctx,base);
+}
+PPC_FUNC_IMPL(__imp__sub_824A3598);
+SFR_CONCURRENT_HOOK(sub_824A3598) {
+    sfr::enter_function(ctx,"sub_824A3598",0x824A3598);
+    PoolLock lock;
+    __imp__sub_824A3598(ctx,base);
+}
+SFR_CONCURRENT_HOOK(sub_824A3398) {
     sfr::enter_function(ctx,"sub_824A3398",0x824A3398);
     const uint32_t pool=ctx.r3.u32, size=ctx.r4.u32, alignment=ctx.r5.u32;
-    __imp__sub_824A3398(ctx,base);
+    {
+        PoolLock lock;
+        __imp__sub_824A3398(ctx,base);
+    }
     if(ctx.r3.u32) return;
     static std::atomic<uint32_t> failures{0};
     if(failures++>=8) return;

@@ -327,7 +327,7 @@ const sfr::RaceBody& body() { return race[0].body(); }
 
 PPC_FUNC_IMPL(__imp__sub_822A6988);
 
-SFR_HOOK(sub_822A6988) {
+SFR_INPUT_HOOK(sub_822A6988) {
     sfr::enter_function(ctx, "sub_822A6988", 0x822A6988);
     // 822A5140 interprets controller-overwritten body fields as joint XYZ.
     // Keep authored animation and gesture handling; omit only its seven
@@ -357,7 +357,7 @@ PPC_FUNC_IMPL(__imp__sub_82438930);
 // Kinect manager update, once per frame before it handles the players: in a
 // race ([83E52F8C] nonzero) P1's body record (KinnectNuiBox+0x78) is ours,
 // refreshed from the pad; afterwards the title's record is put back.
-SFR_HOOK(sub_82438930) {
+SFR_INPUT_HOOK(sub_82438930) {
     sfr::enter_function(ctx, "sub_82438930", 0x82438930);
     auto& m = memory();
     const uint32_t box = m.load<uint32_t>(nui_box);
@@ -478,7 +478,7 @@ PPC_FUNC_IMPL(__imp__sub_82918418);
 // then reads its body through vtable[1] before calculating lean. Keep that
 // order and the title's lean calculation. Controller lean bypasses only the
 // depth-input smoothing below, after the live reader identifies its player.
-SFR_HOOK(sub_822C6200) {
+SFR_INPUT_HOOK(sub_822C6200) {
     sfr::enter_function(ctx, "sub_822C6200", 0x822C6200);
     RaceSourceScope scope(pad_racing() || sensor_steering ? ctx.r3.u32 : 0);
     __imp__sub_822C6200(ctx, base);
@@ -487,7 +487,7 @@ SFR_HOOK(sub_822C6200) {
 // 82918418 is a shared accessor, so calls outside the live race source's
 // update retain their original behavior. The scope restores on exceptions
 // and is thread-local because guest consumers can run on different threads.
-SFR_HOOK(sub_82918418) {
+SFR_INPUT_HOOK(sub_82918418) {
     sfr::enter_function(ctx, "sub_82918418", 0x82918418);
     const uint32_t object = ctx.r3.u32;
     __imp__sub_82918418(ctx, base);
@@ -511,7 +511,7 @@ SFR_HOOK(sub_82918418) {
 }
 
 PPC_FUNC_IMPL(__imp__sub_822C63E8);
-SFR_HOOK(sub_822C63E8) {
+SFR_INPUT_HOOK(sub_822C63E8) {
     sfr::enter_function(ctx, "sub_822C63E8", 0x822C63E8);
     const uint32_t filter = ctx.r3.u32;
     const float input = float(ctx.f1.f64);
@@ -561,7 +561,7 @@ static void trace_camera_detector(uint32_t address,uint32_t detector,uint32_t re
 // Opt-in numeric consumer trace: distinguish recognized crouch from title
 // restrictions (for example the opening tutorial masks other race actions).
 PPC_FUNC_IMPL(__imp__sub_822B60F8);
-SFR_HOOK(sub_822B60F8) {
+SFR_INPUT_HOOK(sub_822B60F8) {
     sfr::enter_function(ctx,"sub_822B60F8",0x822B60F8);
     const uint32_t actor=ctx.r3.u32;
     __imp__sub_822B60F8(ctx,base);
@@ -885,7 +885,7 @@ RACE_DETECTOR(822CE118, {
 // The detector at 821A2484 (original 822CB9B8) uses the one at 821A2344
 // (822C8958) while the pad drives the race.
 PPC_FUNC_IMPL(__imp__sub_822C8958);
-SFR_HOOK(sub_822C8958) {
+SFR_INPUT_HOOK(sub_822C8958) {
     sfr::enter_function(ctx, "sub_822C8958", 0x822C8958);
     const bool controller = pad_racing() && !camera_player(player_of_source(ctx, base, ctx.r4.u32));
     // After reading source+44, the title maps lean to steering strength and
@@ -895,7 +895,7 @@ SFR_HOOK(sub_822C8958) {
     __imp__sub_822C8958(ctx, base);
 }
 PPC_FUNC_IMPL(__imp__sub_822CB9B8);
-SFR_HOOK(sub_822CB9B8) {
+SFR_INPUT_HOOK(sub_822CB9B8) {
     sfr::enter_function(ctx, "sub_822CB9B8", 0x822CB9B8);
     if (pad_racing() && !camera_player(player_of_source(ctx,base,ctx.r4.u32))) sub_822C8958(ctx, base);
     else __imp__sub_822CB9B8(ctx, base);
@@ -908,7 +908,7 @@ PPC_FUNC_IMPL(__imp__sub_822B72E0);
 // step is a pose the title reads from the skeleton), 7 ends the preparation
 // and 8 races. A pad has no body to measure, so its preparation ends with
 // the measurements skipped.
-SFR_HOOK(sub_822B72E0) {
+SFR_INPUT_HOOK(sub_822B72E0) {
     sfr::enter_function(ctx, "sub_822B72E0", 0x822B72E0);
     const uint32_t race = ctx.r3.u32;
     __imp__sub_822B72E0(ctx, base);

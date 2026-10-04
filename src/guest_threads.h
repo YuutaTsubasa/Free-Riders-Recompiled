@@ -71,6 +71,7 @@ public:
     Snapshot snapshot(uint32_t handle) const;
     size_t size() const;
 private:
+    ResumeResult suspend_unlocked(uint32_t handle, uint32_t previous_output);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

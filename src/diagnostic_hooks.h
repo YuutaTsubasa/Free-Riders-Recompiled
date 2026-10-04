@@ -47,6 +47,12 @@ inline bool is_hook(uint32_t address) {
 inline uint64_t graphics_hook_bits[(hook_limit - hook_base) / 4 / 64];
 inline uint64_t graphics_only_hook_bits[(hook_limit - hook_base) / 4 / 64];
 bool register_graphics_hook(const char* name, bool host_state);
+// Hooks of the title's motion input -- its skeleton frames and the race's
+// readers of them (nui_hooks.cpp, nui_race_hooks.cpp) -- take the input lock
+// instead of the global permit: what they share is the emulated players'
+// state, not the kernel's.
+inline uint64_t input_hook_bits[(hook_limit - hook_base) / 4 / 64];
+bool register_input_hook(const char* name);
 inline bool test_hook_bit(const uint64_t* bits, uint32_t address) {
     const uint32_t offset = address - hook_base;
     if (offset >= hook_limit - hook_base || (address & 3)) return false;
@@ -81,7 +87,8 @@ struct HookScope {
     HookScope() { ++guest_thread_state.entry.hook_depth; }
     ~HookScope() {
         auto& entry = guest_thread_state.entry;
-        if (!--entry.hook_depth && (entry.hook_stack_pointer || entry.graphics_stack_pointer)) hook_scope_exit();
+        if (!--entry.hook_depth && (entry.hook_stack_pointer || entry.graphics_stack_pointer || entry.input_stack_pointer))
+            hook_scope_exit();
     }
     HookScope(const HookScope&) = delete;
     HookScope& operator=(const HookScope&) = delete;
@@ -95,6 +102,7 @@ inline void enter_function(PPCContext& ctx, const char* name, uint32_t address) 
     // about 4 ms of an AYN Thor race frame once it ran beside the permit.
     if (entry.observed) [[unlikely]] {
         if (!entry.parallel || entry.watched || entry.hook_stack_pointer || entry.graphics_stack_pointer ||
+            entry.input_stack_pointer ||
             entry.detach_at_entry || is_hook(address)) {
             enter_function_observed(ctx, name, address);
             return;
@@ -272,6 +280,7 @@ void stop_nui_skeleton_events();
 // (see graphics_hook_bits), and one that also reaches other host state.
 #define SFR_GRAPHICS_HOOK(x) SFR_SCOPED_HOOK(x, ::sfr::register_graphics_hook(#x, false))
 #define SFR_GRAPHICS_HOST_HOOK(x) SFR_SCOPED_HOOK(x, ::sfr::register_graphics_hook(#x, true))
+#define SFR_INPUT_HOOK(x) SFR_SCOPED_HOOK(x, ::sfr::register_input_hook(#x))
 // A replacement that touches only guest memory, its arguments and atomics,
 // so a detached guest runs it without taking the execution permit. Hot
 // functions only: a hook called by every thread brought them all back to
