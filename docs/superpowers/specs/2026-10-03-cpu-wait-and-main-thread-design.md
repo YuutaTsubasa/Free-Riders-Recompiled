@@ -1,6 +1,6 @@
 # CPU bottleneck follow-up after v0.4.7
 
-Status: proposed after CPU sampling; production behavior has not been changed.
+Status: user approved the proposed experiment on 2026-10-03; production behavior has not yet been changed.
 
 ## Scope and evidence
 
