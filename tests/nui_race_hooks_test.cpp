@@ -32,6 +32,9 @@ uint64_t kinect_sequence = 0;
 #undef SFR_HOOK
 #define SFR_HOOK(name) PPC_FUNC(name); \
     static const bool name##_registered = harness::register_hook(#name, name); PPC_FUNC(name)
+// The race-input hooks take the input lock in the game; here they register as above.
+#undef SFR_INPUT_HOOK
+#define SFR_INPUT_HOOK(name) SFR_HOOK(name)
 #include "../src/nui_race_hooks.cpp"
 
 namespace sfr {
