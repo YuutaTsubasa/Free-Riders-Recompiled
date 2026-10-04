@@ -23,6 +23,9 @@ IDENT = r'[A-Za-z_][A-Za-z_0-9]*'
 ALIAS = re.compile(r'__attribute__\(\(alias\("(__imp__' + IDENT +
                    r')"\)\)\) PPC_WEAK_FUNC\((' + IDENT + r')\);\r?\n'
                    r'PPC_FUNC_IMPL\((' + IDENT + r')\) \{')
+# XenonRecomp's declaration of a mid-asm hook: registers by reference only.
+MIDASM_DECLARATION = re.compile(r'extern (?:void|bool) (' + IDENT + r')\((?:PPC[A-Za-z]*Register& ' + IDENT +
+                                r'(?:, PPC[A-Za-z]*Register& ' + IDENT + r')*)?\);\s*')
 TOKENS = re.compile(r'//[^\n]*|/\*[\s\S]*?\*/|"(?:\\.|[^"\\])*"|'
                     r"'(?:\\.|[^'\\])*'|[{}]")
 DECLARATION = re.compile(r'PPC_EXTERN_FUNC\((' + IDENT + r')\);')
@@ -104,6 +107,10 @@ def parse_functions(source, filename):
         raise ValueError(f'{filename}: unexpected source preamble')
     cursor = prefix.end()
     while cursor < len(source):
+        # A mid-asm hook's declaration (config/freeriders.toml), which the
+        # emitter writes before the function that calls it; kept as it is.
+        while declaration := MIDASM_DECLARATION.match(source, cursor):
+            cursor = declaration.end()
         match = ALIAS.match(source, cursor)
         if not match or match[1] != match[3] or match[1] != '__imp__' + match[2]:
             raise ValueError(f'{filename}: malformed function/alias at offset {cursor}')

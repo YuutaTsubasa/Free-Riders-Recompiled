@@ -49,3 +49,24 @@ invalid_instructions = [
 functions = [
     { address = 0x82820BD8, size = 0x25C },
 ]
+
+# Mid-asm hooks (XenonRecomp's format, as Unleashed Recompiled patches its
+# game): the generated code calls the named function in src/ at the address,
+# with references to the registers listed. Each is verified in the disassembly.
+
+# Job 823B5D40 waits 16 ms (r6) for its helper threads with sub_824D0B10 at
+# 0x823B5E9C and goes on whatever the result; slower helpers overran it and a
+# race start then ran a reset item's callback (R6025). The wait gets
+# SFR_WORK_SHARE_WAIT_MS instead (game_patches.cpp), set before the call...
+[[midasm_hook]]
+name = "WorkShareWaitMidAsmHook"
+address = 0x823B5E98
+registers = ["r6"]
+
+# ...and after it returns (r3 = 0x102 on a timeout), the helpers still inside
+# a job are waited for before the batch is reset.
+[[midasm_hook]]
+name = "WorkShareWaitDoneMidAsmHook"
+address = 0x823B5E9C
+registers = ["r3"]
+after_instruction = true

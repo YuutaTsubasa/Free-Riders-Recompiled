@@ -79,11 +79,19 @@
 - **做法：** 先只拿掉全域許可、保留每核心許可（同一硬體執行緒不並行）；檢查點改成只負責取消／關機。
 - **效益：** 主執行緒排隊（Thor 每幀 3–7 ms）與交接空窗。
 - **風險：** 最高（R6025 類當機的歷史就在這裡）。
+- **進度（2026-10-04）：** 第一步 `SFR_PARALLEL_MAIN=1`（需要 `SFR_PARALLEL_WORKER=cores`，預設關）。
+  - 處理器 0 的執行緒（含主執行緒）也只拿核心 0 的許可跑 guest 程式碼；全域許可只在 hook 與需要主機狀態的 import 時才拿。
+  - 陷阱：開機時主執行緒用「執行一次」的執行緒函式（`824B2320`）開輔助執行緒跑 `sub_8222CD98`，在喚醒它們之後才把自己堆疊上的資料填好；以前全域許可讓它們在主執行緒阻塞前跑不起來。現在新執行緒一律等喚醒者阻塞一次（原有的 `SFR_RESUMER_WAIT_WORKERS=all` 機制），開機時間沒有變長。
+  - 比賽中圖形 hook（`824F4220` 等）只有 guest 1 呼叫；池配置器 `824A3398` 主要是 guest 16。桌機直接記憶體模式下沒有變快：主執行緒每次進圖形 hook 都要重新拿全域許可。下一步是圖形狀態用專用鎖（拿不到時先放掉全域許可再等，避免和「全域→圖形」的順序互鎖），池配置器同樣處理。
 
 ### 第 5 階段：重編譯期的 mid-asm hook 與幀率
 
 - 在 `generate_diagnostic.py`／XenonRecomp 設定支援 mid-asm hook（Unleashed 的 TOML 格式），把能在重編譯期做的修補移過去。
 - 拿掉遊戲的 vsync 等待、做 delta time 修正，支援 60 以上的幀率（與現有實時比賽時鐘整合）。
+- **進度（2026-10-04）：** `config/freeriders.toml` 的 `[[midasm_hook]]`（XenonRecomp／Unleashed 的格式）會經由 `prepare_recomp.py` 寫進 `recomp.toml`，`generate_diagnostic.py` 保留 XenonRecomp 輸出的 hook 宣告與呼叫。
+  - 重新產生可重現：沒有 hook 時輸出和目前使用的生成程式碼逐位元組相同；加入 hook 後只有對應的檔案改變。
+  - 第一組：工作分派等待（`823B5D40` 在 `0x823B5E9C` 呼叫 `sub_824D0B10`）改成 `WorkShareWaitMidAsmHook`（`0x823B5E98`，改 r6）與 `WorkShareWaitDoneMidAsmHook`（`0x823B5E9C` 之後，看 r3），取代用 LR 判斷的整函式 hook；舊的生成程式碼仍走原本的 hook。
+  - 幀率：比賽與 UI 已用實時時鐘（`race_frame_clock_hooks.cpp`），幀率上限是主機端的 `SFR_FRAME_LIMIT`。
 
 ## 不打算照搬的
 

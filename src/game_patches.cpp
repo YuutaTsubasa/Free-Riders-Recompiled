@@ -235,19 +235,17 @@ PPC_FUNC_IMPL(__imp__sub_824D0B10);
 // suspends itself only after the next frame's resume is released by the
 // next frame's wait - but gets SFR_WORK_SHARE_WAIT_MS (default 1000) instead
 // of 16. Timeouts are reported.
-SFR_CONCURRENT_HOOK(sub_824D0B10) {
-    sfr::enter_function(ctx,"sub_824D0B10",0x824D0B10);
-    const bool work_share=ctx.lr==0x823B5EA0 && ctx.r3.u32==3 && ctx.r5.u32==1 && ctx.r6.u32==16;
-    if(work_share) {
-        static const uint32_t wait_ms=[]{
-            const char* text=std::getenv("SFR_WORK_SHARE_WAIT_MS");
-            const long value=text?std::strtol(text,nullptr,10):1000;
-            return uint32_t(value>0?value:1000);
-        }();
-        ctx.r6.u64=wait_ms;
-    }
-    __imp__sub_824D0B10(ctx,base);
-    if(work_share && ctx.r3.u32==0x102) {
+namespace {
+uint32_t work_share_wait_ms() {
+    static const uint32_t wait_ms=[]{
+        const char* text=std::getenv("SFR_WORK_SHARE_WAIT_MS");
+        const long value=text?std::strtol(text,nullptr,10):1000;
+        return uint32_t(value>0?value:1000);
+    }();
+    return wait_ms;
+}
+void work_share_wait_done(uint32_t status) {
+    if(status==0x102) {
         static std::atomic<uint32_t> timeouts{0};
         if(timeouts++<16) std::cerr << "GAME_PATCH work_share_wait_timeout count=" << timeouts << '\n';
     }
@@ -255,13 +253,33 @@ SFR_CONCURRENT_HOOK(sub_824D0B10) {
     // is recorded before the helper inspects the queue, so even a helper
     // between its empty check and its callback is covered. Waits release the
     // execution permits needed by callbacks entering host hooks.
-    if(work_share && !job_lifetime.helpers_idle()) {
+    if(!job_lifetime.helpers_idle()) {
         while(!job_lifetime.helpers_idle()) lifetime_wait();
         static std::atomic<uint32_t> waits{0};
         const uint32_t count=++waits;
         if(count<=8 || count%256==0)
             std::cerr << "GAME_PATCH job_drain_wait count=" << count << " still_running=0\n";
     }
+}
+}
+
+// The same patch as mid-asm hooks (config/freeriders.toml), where the
+// generated code has them: r6 before the call at 0x823B5E9C, r3 after it.
+void WorkShareWaitMidAsmHook(PPCRegister& r6) {
+    static std::atomic<bool> reported{false};
+    if(!reported.exchange(true)) std::cerr << "GAME_PATCH work_share_wait midasm=1 ms=" << work_share_wait_ms() << char(10);
+    r6.u64=work_share_wait_ms();
+}
+void WorkShareWaitDoneMidAsmHook(PPCRegister& r3) { work_share_wait_done(r3.u32); }
+
+// Generated code without those hooks: the call is recognized by its return
+// address and arguments (with them, r6 already holds the longer wait).
+SFR_CONCURRENT_HOOK(sub_824D0B10) {
+    sfr::enter_function(ctx,"sub_824D0B10",0x824D0B10);
+    const bool work_share=ctx.lr==0x823B5EA0 && ctx.r3.u32==3 && ctx.r5.u32==1 && ctx.r6.u32==16;
+    if(work_share) ctx.r6.u64=work_share_wait_ms();
+    __imp__sub_824D0B10(ctx,base);
+    if(work_share) work_share_wait_done(ctx.r3.u32);
 }
 
 PPC_FUNC_IMPL(__imp__sub_82A53BC0);
