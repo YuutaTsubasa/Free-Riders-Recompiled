@@ -53,6 +53,23 @@ bool register_graphics_hook(const char* name, bool host_state);
 // state, not the kernel's.
 inline uint64_t input_hook_bits[(hook_limit - hook_base) / 4 / 64];
 bool register_input_hook(const char* name);
+// Hooks of the title's menus -- the pad and voice standing in for the hand
+// cursor (nui_hooks.cpp) -- take the menu lock: what they share is the menu
+// emulation's state (the buttons pressed since the last input update, the
+// manager last updated, the scripted words).
+inline uint64_t menu_hook_bits[(hook_limit - hook_base) / 4 / 64];
+bool register_menu_hook(const char* name);
+// The graphics lock around host code outside the graphics hooks that changes
+// the native device (the Avatar's model drawn from its draw hook). Taken
+// after the input and menu locks, never before them.
+struct HostGraphicsScope {
+    HostGraphicsScope();
+    ~HostGraphicsScope();
+    HostGraphicsScope(const HostGraphicsScope&) = delete;
+    HostGraphicsScope& operator=(const HostGraphicsScope&) = delete;
+private:
+    bool owned_ = false;
+};
 inline bool test_hook_bit(const uint64_t* bits, uint32_t address) {
     const uint32_t offset = address - hook_base;
     if (offset >= hook_limit - hook_base || (address & 3)) return false;
@@ -281,8 +298,8 @@ void stop_nui_skeleton_events();
 #define SFR_GRAPHICS_HOOK(x) SFR_SCOPED_HOOK(x, ::sfr::register_graphics_hook(#x, false))
 #define SFR_GRAPHICS_HOST_HOOK(x) SFR_SCOPED_HOOK(x, ::sfr::register_graphics_hook(#x, true))
 #define SFR_INPUT_HOOK(x) SFR_SCOPED_HOOK(x, ::sfr::register_input_hook(#x))
-// A replacement that touches only guest memory, its arguments and atomics,
-// so a detached guest runs it without taking the execution permit. Hot
-// functions only: a hook called by every thread brought them all back to
-// the permit (docs/performance.md).
+#define SFR_MENU_HOOK(x) SFR_SCOPED_HOOK(x, ::sfr::register_menu_hook(#x))
+// A replacement that touches only guest memory, its arguments, atomics and
+// host objects that keep their own lock, so a detached guest runs it without
+// taking any lock of the runtime's (docs/architecture-migration.md, phase 4).
 #define SFR_CONCURRENT_HOOK(x) PPC_FUNC(x)

@@ -423,6 +423,10 @@ static const bool parallel_main = [] {
     const char* text = std::getenv("SFR_PARALLEL_MAIN");
     return !text || *text != '0';
 }();
+// Imports and hooks take their subsystem's lock instead of the permit
+// (import_lock(), the hook locks below); SFR_SUBSYSTEM_LOCKS=0 goes back to
+// the permit as the lock of everything else.
+static const bool import_locks = [] { const char* text = std::getenv("SFR_SUBSYSTEM_LOCKS"); return !text || *text != '0'; }();
 static bool runs_on_core(unsigned processor) {
     return parallel_worker == ParallelGuests::cores && processor < guest_processors && (processor != 0 || parallel_main);
 }
@@ -483,7 +487,7 @@ static void parallel_attached(int reason) {
 // Called only by the completion/suspend pair in worker 824C39C8. Reserve
 // its suspension before SetEvent lets the main thread queue the next job.
 void prepare_worker_self_suspend() {
-    const bool detached = execution_permit->detached();
+    const bool detached = execution_permit->detached() && !import_locks;
     if (detached) {
         execution_permit->attach();
         parallel_attached(0);
@@ -517,10 +521,11 @@ static thread_local uint32_t hook_attached = 0;
 // it taken waits without the permit, so the holder can still get it.
 static std::mutex graphics_lock;
 static std::mutex input_lock;  // SFR_INPUT_HOOK
+static std::mutex menu_lock;   // SFR_MENU_HOOK
 // Who holds the graphics and input locks and since when, for waits of 100 ms
 // or more (reported by the waiter: LOCK_LONG_WAIT).
-static std::atomic<uint32_t> graphics_holder{0}, input_holder{0};
-static std::atomic<uint32_t> graphics_holder_function{0}, input_holder_function{0};
+static std::atomic<uint32_t> graphics_holder{0}, input_holder{0}, menu_holder{0};
+static std::atomic<uint32_t> graphics_holder_function{0}, input_holder_function{0}, menu_holder_function{0};
 static void lock_with_report(std::mutex& lock, const char* name, std::atomic<uint32_t>& holder,
                              std::atomic<uint32_t>& holder_function) {
     const auto started = std::chrono::steady_clock::now();
@@ -563,6 +568,10 @@ void hook_scope_exit() noexcept {
         entry.input_stack_pointer = 0;
         input_lock.unlock();
     }
+    if (entry.menu_stack_pointer) {
+        entry.menu_stack_pointer = 0;
+        menu_lock.unlock();
+    }
     if (entry.hook_stack_pointer) {
         entry.hook_stack_pointer = 0;
         hook_attached = 0;
@@ -572,51 +581,63 @@ void hook_scope_exit() noexcept {
 }
 // The graphics lock around host code outside the graphics hooks that changes
 // the native device (an import dropping the renderer's copies of freed memory).
-struct HostGraphicsLock {
-    bool owned = false;
-    HostGraphicsLock() {
-        if (!parallel_main || guest_thread_state.entry.graphics_stack_pointer) return;
-        if (!graphics_lock.try_lock()) {
-            const auto wait = [](std::stop_token) { graphics_lock.lock(); };
-            if (!execution_permit) graphics_lock.lock();
-            else if (execution_permit->detached()) execution_permit->run_wait(wait);
-            else execution_permit->run_blocking(wait);
-        }
-        owned = true;
+using HostGraphicsLock = HostGraphicsScope;
+HostGraphicsScope::HostGraphicsScope() {
+    if (!parallel_main || guest_thread_state.entry.graphics_stack_pointer) return;
+    if (!graphics_lock.try_lock()) {
+        const auto wait = [](std::stop_token) { graphics_lock.lock(); };
+        if (!execution_permit) graphics_lock.lock();
+        else if (execution_permit->detached()) execution_permit->run_wait(wait);
+        else execution_permit->run_blocking(wait);
     }
-    ~HostGraphicsLock() { if (owned) graphics_lock.unlock(); }
-    HostGraphicsLock(const HostGraphicsLock&) = delete;
-    HostGraphicsLock& operator=(const HostGraphicsLock&) = delete;
-};
-// The input lock (SFR_INPUT_HOOK), taken as the graphics lock is.
-static void input_lock_entry(const PPCContext& ctx, uint32_t address) {
-    auto& entry = guest_thread_state.entry;
-    const bool input = test_hook_bit(input_hook_bits, address);
-    if (entry.input_stack_pointer) {
-        if (input) entry.input_stack_pointer = (std::max)(entry.input_stack_pointer, ctx.r1.u32);
-        else if (ctx.r1.u32 > entry.input_stack_pointer) {
-            entry.input_stack_pointer = 0;
-            input_lock.unlock();
+    owned_ = true;
+}
+HostGraphicsScope::~HostGraphicsScope() { if (owned_) graphics_lock.unlock(); }
+// The input lock (SFR_INPUT_HOOK) and the menu lock (SFR_MENU_HOOK), taken as
+// the graphics lock is.
+static void hook_lock_entry(const PPCContext& ctx, uint32_t address, const uint64_t* bits, std::mutex& lock,
+                            uint32_t& stack_pointer, const char* name, std::atomic<uint32_t>& holder,
+                            std::atomic<uint32_t>& holder_function) {
+    const bool hooked = test_hook_bit(bits, address);
+    if (stack_pointer) {
+        if (hooked) stack_pointer = (std::max)(stack_pointer, ctx.r1.u32);
+        else if (ctx.r1.u32 > stack_pointer) {
+            stack_pointer = 0;
+            lock.unlock();
         }
         return;
     }
-    if (!input) return;
-    if (!input_lock.try_lock())
-        lock_with_report(input_lock, "input", input_holder, input_holder_function);
-    input_holder.store(current_id, std::memory_order_relaxed);
-    input_holder_function.store(address, std::memory_order_relaxed);
-    entry.input_stack_pointer = ctx.r1.u32;
+    if (!hooked) return;
+    if (!lock.try_lock()) lock_with_report(lock, name, holder, holder_function);
+    holder.store(current_id, std::memory_order_relaxed);
+    holder_function.store(address, std::memory_order_relaxed);
+    stack_pointer = ctx.r1.u32;
+}
+static void input_lock_entry(const PPCContext& ctx, uint32_t address) {
+    hook_lock_entry(ctx, address, input_hook_bits, input_lock, guest_thread_state.entry.input_stack_pointer,
+                    "input", input_holder, input_holder_function);
+}
+static void menu_lock_entry(const PPCContext& ctx, uint32_t address) {
+    hook_lock_entry(ctx, address, menu_hook_bits, menu_lock, guest_thread_state.entry.menu_stack_pointer,
+                    "menu", menu_holder, menu_holder_function);
 }
 static void parallel_function_entry(const PPCContext& ctx, uint32_t address) {
     static const bool hook_stats = [] { const char* t = std::getenv("SFR_PARALLEL_HOOK_STATS"); return t && *t == '1'; }();
     if (parallel_main) {
-        graphics_lock_entry(ctx, address);
+        // Menu, then input, then graphics: a menu hook's original reads the
+        // skeletons and draws, never the other way round.
+        menu_lock_entry(ctx, address);
         input_lock_entry(ctx, address);
+        graphics_lock_entry(ctx, address);
     }
     if (execution_permit->detached()) {
         if (!is_hook(address)) return;
-        if (parallel_main && (test_hook_bit(graphics_only_hook_bits, address) ||
-                              test_hook_bit(input_hook_bits, address))) return;
+        // With the subsystem locks, every hook's lock is its subsystem's: the
+        // permit is no lock at all. (A graphics hook that reaches other host
+        // state -- creating the device, presenting -- runs on the thread
+        // that owns the window, and that state is that thread's.)
+        if (parallel_main && (import_locks || test_hook_bit(graphics_only_hook_bits, address) ||
+                              test_hook_bit(input_hook_bits, address) || test_hook_bit(menu_hook_bits, address))) return;
         execution_permit->attach();
         parallel_attached(1);
         // SFR_PARALLEL_HOOK_STATS=1: which hooks bring detached guests back
@@ -689,6 +710,13 @@ bool register_input_hook(const char* name) {
     const uint32_t address = uint32_t(std::strtoul(name + 4, nullptr, 16));
     const uint32_t index = (address - hook_base) / 4;
     input_hook_bits[index / 64] |= uint64_t(1) << (index % 64);
+    return true;
+}
+bool register_menu_hook(const char* name) {
+    register_hook(name);
+    const uint32_t address = uint32_t(std::strtoul(name + 4, nullptr, 16));
+    const uint32_t index = (address - hook_base) / 4;
+    menu_hook_bits[index / 64] |= uint64_t(1) << (index % 64);
     return true;
 }
 bool register_graphics_hook(const char* name, bool host_state) {
@@ -786,7 +814,7 @@ static uint32_t start_system_thread(PPCContext& ctx, uint32_t kind) {
     guest_threads->create(request);
     const uint32_t handle = active_memory->load<uint32_t>(output);
     const auto resumed = guest_threads->resume(handle, 0);
-    if (!resumed.status && resumed.started) {
+    if (!resumed.status && resumed.started && !execution_permit->detached()) {
         execution->wait_until_ready(resumed.id);
         execution_permit->renew_quantum();
     }
@@ -872,7 +900,10 @@ void store_conditional_word(PPCContext& ctx, uint64_t address, uint32_t value) {
                   << " success=" << std::dec << success << '\n';
 }
 void synchronize_resource_memory(PPCContext& ctx) {
-    parallel_slow_access(ctx.r23.u32);
+    // The device's lock, not the permit: waiting for the GPU and dropping the
+    // renderer's copies are both the native device's business.
+    if (!import_locks) parallel_slow_access(ctx.r23.u32);
+    HostGraphicsLock device;
     check_reservation_context(ctx);
     if (active_memory->has_reservation())
         throw RuntimeStop("resource-coherency", ctx.r23.u32, "GPU synchronization during a live reservation");
@@ -890,10 +921,7 @@ void synchronize_resource_memory(PPCContext& ctx) {
     // Virtual physical views: 0xE0000000 maps physical + 0x1000, the others mask.
     const uint32_t physical_address = request.address >= 0xE0000000u ? request.address - 0xE0000000u + 0x1000u
                                                                       : request.address & 0x1FFFFFFFu;
-    {
-        HostGraphicsLock graphics;
-        active_guest_graphics->renderer().invalidate(physical_address, request.size);
-    }
+    active_guest_graphics->renderer().invalidate(physical_address, request.size);
     if (texture_transfer.active) texture_transfer.resource = request.resource;
     if(graphics_trace()) std::cerr << "NATIVE_RESOURCE_COHERENCY resource=0x" << std::hex << request.resource
               << " address=0x" << request.address << " size=0x" << request.size
@@ -1153,6 +1181,103 @@ static std::mutex thread_resumers_lock;
 static std::unordered_map<uint32_t, ThreadResumer> thread_resumers;
 
 static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t address);
+// What an import is serialized by, in place of the execution permit, as
+// Unleashed and Marathon Recompiled guard each kernel subsystem with its own
+// mutex rather than the whole program with one lock (SFR_SUBSYSTEM_LOCKS=0
+// goes back to the permit: docs/architecture-migration.md, phase 4).
+//   none    -- touches only its arguments, guest memory and objects that keep
+//              their own lock: critical sections, TLS values, sync objects and
+//              waits, the thread registry's resume/suspend, the physical heap,
+//              string and format helpers, constants.
+//   memory  -- VirtualMemory, which has no lock of its own.
+//   files   -- the file tables (GuestFiles, ContentFiles, AssetFiles) and saves.
+//   objects -- creating and ending threads, their priorities and references,
+//              TLS slots, event and semaphore creation.
+//   system  -- everything else: XAM, XMsg, Xex modules, XAudio clients,
+//              notifications' listeners, configuration.
+// No import calls guest code, so none holds its lock across a guest wait; a
+// wait inside one (an asynchronous read's submission) gives back only its core.
+enum class ImportLock : uint8_t { none, memory, files, objects, system, count };
+static ImportLock import_lock(uint32_t address) {
+    switch (address) {
+    case 0x82ACB4AC: case 0x82ACB4BC:  // Rtl{Enter,Leave}CriticalSection
+    case 0x82ACB49C: case 0x82ACC2DC:  // RtlInitializeCriticalSection(AndSpinCount)
+    case 0x82ACBCAC: case 0x82ACBCBC:  // KeTls{Get,Set}Value
+    case 0x82ACB59C:                   // KeGetCurrentProcessType
+    case 0x82ACB86C: case 0x82ACC1CC:  // KeWaitFor{Single,Multiple}Object(s)
+    case 0x82ACB78C:                   // KeDelayExecutionThread
+    case 0x82ACB87C: case 0x82ACB9DC:  // Ke{Set,Reset}Event
+    case 0x82ACC2EC:                   // KeReleaseSemaphore
+    case 0x82ACB5EC: case 0x82ACB6CC:  // Nt{Set,Clear}Event
+    case 0x82ACB63C: case 0x82ACB5DC:  // NtWaitFor{Single,Multiple}Object(s)Ex
+    case 0x82ACB54C: case 0x82ACB51C:  // Nt{Resume,Suspend}Thread
+    case 0x82ACB85C: case 0x82ACB83C:  // Ke{Enter,Leave}CriticalRegion
+    case 0x82ACC18C:                   // XAudioGetVoiceCategoryVolume
+    case 0x82ACC1DC:                   // XAudioSubmitRenderDriverFrame (the audio pump alone)
+    case 0x82ACB25C:                   // XNotifyGetNext (NativeNotifications' lock)
+    case 0x82ACC16C: case 0x82ACC46C:  // XamInputGetKeystrokeEx, HidReadKeys
+    case 0x82ACC14C: case 0x82ACC15C:  // XamInput{Get,Set}State
+    case 0x82ACBA0C: case 0x82ACBA3C:  // Mm{Allocate,Free}PhysicalMemory(Ex): the physical heap's lock
+    case 0x82ACBA1C:                   // MmQueryAllocationSize
+    case 0x82ACB57C: case 0x82ACC43C:  // RtlInit{Ansi,Unicode}String
+    case 0x82ACC42C: case 0x82ACC41C:  // RtlUnicodeStringToAnsiString, RtlFreeAnsiString (the pool's lock)
+    case 0x82ACB6BC: case 0x82ACB68C:  // RtlMultiByteToUnicodeN, RtlNtStatusToDosError
+    case 0x82ACB67C:                   // RtlImageXexHeaderField
+    case 0x82ACB69C: case 0x82ACBB7C:  // _snprintf, _vsnprintf
+    case 0x82ACBB6C: case 0x82ACB6EC:  // sprintf, vsprintf
+    case 0x82ACBAAC: case 0x82ACB94C:  // KeQueryPerformanceFrequency, KeQuerySystemTime
+    case 0x82ACB24C: case 0x82ACB35C:  // XGetGameRegion, XamGetSystemVersion
+    case 0x82ACB23C:                   // XGetVideoMode
+    case 0x82ACB5AC:                   // XexCheckExecutablePrivilege
+        return ImportLock::none;
+    case 0x82ACB99C: case 0x82ACB98C:  // Nt{Allocate,Free}VirtualMemory
+    case 0x82ACB6DC: case 0x82ACC44C:  // MmQueryAddressProtect, MmQueryStatistics
+        return ImportLock::memory;
+    case 0x82ACB58C: case 0x82ACB7BC:  // NtCreateFile, NtReadFile
+    case 0x82ACB64C: case 0x82ACB66C:  // NtWriteFile, NtQueryInformationFile
+    case 0x82ACB60C: case 0x82ACB6AC:  // NtSetInformationFile, NtQueryFullAttributesFile
+    case 0x82ACB9AC: case 0x82ACB62C:  // NtFlushBuffersFile, NtClose
+    case 0x82ACBEEC:                   // XamContentOpenFile
+    case 0x82ACB27C: case 0x82ACB28C:  // XamContent{CreateEx,Close}
+    case 0x82ACB29C: case 0x82ACB2DC:  // XamContentGet{Creator,DeviceData}
+    case 0x82ACB2CC: case 0x82ACB3EC:  // XamContentGetDeviceState, XamShowNuiDeviceSelectorUI
+        return ImportLock::files;
+    case 0x82ACB77C: case 0x82ACB7DC:  // Ex{Create,Terminate}Thread
+    case 0x82ACB4EC: case 0x82ACB50C:  // Ke{Set,Query}BasePriorityThread
+    case 0x82ACB53C:                   // KeSetAffinityThread
+    case 0x82ACB4FC: case 0x82ACB4CC:  // ObReferenceObjectByHandle, ObDereferenceObject
+    case 0x82ACBCCC: case 0x82ACBCDC:  // KeTls{Alloc,Free}
+    case 0x82ACB55C: case 0x82ACB5BC:  // Nt{CreateEvent,CreateSemaphore}
+    case 0x82ACB9EC:                   // ExRegisterTitleTerminateNotification
+        return ImportLock::objects;
+    default:
+        return ImportLock::system;
+    }
+}
+static std::recursive_mutex import_mutexes[size_t(ImportLock::count)];
+// Takes an import's lock. A guest holding the permit waits for it without the
+// permit, so a detached holder never waits behind it.
+struct ImportLockScope {
+    std::recursive_mutex* mutex = nullptr;
+    explicit ImportLockScope(ImportLock lock) {
+        if (lock == ImportLock::none) return;
+        mutex = &import_mutexes[size_t(lock)];
+        if (mutex->try_lock()) return;
+        const auto started = std::chrono::steady_clock::now();
+        const auto wait = [this](std::stop_token) { mutex->lock(); };
+        if (!execution_permit) mutex->lock();
+        else if (execution_permit->detached()) execution_permit->run_wait(wait);
+        else execution_permit->run_blocking(wait);
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+        if (ms >= 100)
+            std::cerr << "LOCK_LONG_WAIT lock=import-" << int(lock) << " guest_id=" << current_id << " ms=" << ms
+                      << " frame=" << present_count.load() << std::endl;
+    }
+    ~ImportLockScope() { if (mutex) mutex->unlock(); }
+    ImportLockScope(const ImportLockScope&) = delete;
+    ImportLockScope& operator=(const ImportLockScope&) = delete;
+};
+
 void dispatch_import(PPCContext& ctx, const char* name, uint32_t address) {
     // SFR_MAIN_IMPORT_TIME=1: every five seconds, the main thread's time in
     // each import (waits included) since the last report.
@@ -1164,7 +1289,10 @@ void dispatch_import(PPCContext& ctx, const char* name, uint32_t address) {
         static std::unordered_map<const char*, double> spent;
         static auto reported = std::chrono::steady_clock::now();
         const auto started = std::chrono::steady_clock::now();
-        dispatch_import_owned(ctx, name, address);
+        {
+            ImportLockScope lock(import_locks ? import_lock(address) : ImportLock::none);
+            dispatch_import_owned(ctx, name, address);
+        }
         const auto now = std::chrono::steady_clock::now();
         spent[name] += std::chrono::duration<double, std::milli>(now - started).count();
         if (now - reported > std::chrono::seconds(5)) {
@@ -1179,7 +1307,10 @@ void dispatch_import(PPCContext& ctx, const char* name, uint32_t address) {
         }
         return;
     }
-    if (!guest_thread_state.entry.parallel || !execution_permit->detached()) return dispatch_import_owned(ctx, name, address);
+    if (!guest_thread_state.entry.parallel || !execution_permit->detached()) {
+        ImportLockScope lock(import_locks ? import_lock(address) : ImportLock::none);
+        return dispatch_import_owned(ctx, name, address);
+    }
     // Imports a detached guest runs as it is: critical sections keep their
     // own lock (contended waits attach unless the experiment is enabled), a TLS value lives
     // in the calling thread's own bank, and the process type is a constant.
@@ -1216,7 +1347,7 @@ void dispatch_import(PPCContext& ctx, const char* name, uint32_t address) {
         address == 0x82ACB54C || address == 0x82ACB51C ||                        // Nt{Resume,Suspend}Thread
         address == 0x82ACB25C ||                                                 // XNotifyGetNext
         address == 0x82ACC1DC;                                                   // XAudioSubmitRenderDriverFrame
-    if (!permit_free) {
+    if (!permit_free && !import_locks) {
         execution_permit->attach();
         parallel_attached(0);
         // Holding the permit: which imports bring detached guests back to it.
@@ -1237,7 +1368,10 @@ void dispatch_import(PPCContext& ctx, const char* name, uint32_t address) {
     // waiting at a load (PARALLEL_LONG_HOLD).
     static const bool hold_stats = [] { const char* t = std::getenv("SFR_PARALLEL_HOOK_STATS"); return t && *t == '1'; }();
     const auto import_start = hold_stats && !permit_free ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-    dispatch_import_owned(ctx, name, address);
+    {
+        ImportLockScope lock(import_locks ? import_lock(address) : ImportLock::none);
+        dispatch_import_owned(ctx, name, address);
+    }
     if (hold_stats && !permit_free) {
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - import_start).count();
         if (ms >= 5.0)
@@ -1944,7 +2078,7 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
                 // establishes a benefit. Set 0 to try a core-only detached wait.
                 static const bool global_wait = [] {
                     const char* text = std::getenv("SFR_CRITICAL_WAIT_GLOBAL");
-                    return !text || *text != '0';
+                    return text ? *text != '0' : !import_locks;
                 }();
                 // Let both comparison runs use the same startup policy. Some
                 // existing movie waits stall before a race can be measured.
@@ -2393,7 +2527,7 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
             const auto resumed = guest_threads->resume(state.handle, 0);
             std::cerr << "RESULT ExCreateThread start=running guest_id=" << resumed.id
                       << " status=0x" << std::hex << resumed.status << std::dec << '\n';
-            if (!resumed.status && resumed.started) {
+            if (!resumed.status && resumed.started && !execution_permit->detached()) {
                 execution->wait_until_ready(resumed.id);
                 execution_permit->renew_quantum();
             }
@@ -3940,11 +4074,11 @@ int main(int argc, char** argv) {
 #if SFR_DIRECT_MEMORY
         sfr::GuestMemory::direct_guest_access = true;
 #endif
-        // The host heap's arenas (SFR_HOST_HEAP) are committed beside the
-        // title's own allocations.
-        sfr::GuestMemory memory(sfr::GuestHeap::enabled()
-                                    ? sfr::GuestMemory::default_backing_budget + 0x40000000ull
-                                    : sfr::GuestMemory::default_backing_budget);
+        // The host heap's arenas (SFR_HOST_HEAP) and the physical heap
+        // (SFR_PHYSICAL_HEAP) are committed beside the title's own allocations.
+        sfr::GuestMemory memory(sfr::GuestMemory::default_backing_budget +
+                                (sfr::GuestHeap::enabled() ? 0x40000000ull : 0) +
+                                (sfr::PhysicalMemory::heap_enabled() ? sfr::PhysicalMemory::arena_size : 0));
         sfr::VirtualMemory allocations(memory);
         // Never destroyed: detached guests may still be in a heap call when
         // the program leaves, and the arenas go with the memory.
@@ -4118,7 +4252,7 @@ int main(int argc, char** argv) {
         memory.store<uint32_t>(teb + 0x68, sfr::ThreadLocalStorage::static_address);
         memory.store<uint32_t>(teb + 0x14c, 1);
         const uint64_t tls_backing_size = (uint64_t(tls_data_size) + uint64_t(tls_slots) * 4 + 4095) & ~uint64_t(4095);
-        sfr::PhysicalMemory physical(memory);
+        sfr::PhysicalMemory physical(memory, sfr::PhysicalMemory::heap_enabled());
         sfr::physical_memory = &physical;
         sfr::GuestExecution execution;
         // Guest threads run one at a time; a 2 ms quantum keeps handoffs rare
@@ -4555,6 +4689,9 @@ int main(int argc, char** argv) {
                 execution.fail(std::current_exception());
             }
             sfr::flush_main_wait_trace(sfr::present_count.load(), true);
+            // How often a guest beside the permit came back to it, by reason.
+            std::cerr << "PARALLEL_ATTACHES imports=" << sfr::parallel_attaches[0] << " hooks=" << sfr::parallel_attaches[1]
+                      << " memory=" << sfr::parallel_attaches[2] << std::endl;
             sfr::execution_permit = nullptr;
             sfr::current_context = nullptr;
         } // Permit released, then workers stopped/joined before their dependencies.

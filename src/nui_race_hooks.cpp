@@ -630,7 +630,7 @@ void finish_sensor_detector(PPCContext& ctx,uint8_t* base,uint32_t address,uint3
 // otherwise the original detector runs.
 #define RACE_DETECTOR(address, ...)                                      \
     PPC_FUNC_IMPL(__imp__sub_##address);                                       \
-    SFR_HOOK(sub_##address) {                                                  \
+    SFR_INPUT_HOOK(sub_##address) {                                            \
         sfr::enter_function(ctx, "sub_" #address, 0x##address);               \
         if (!pad_racing()) {                                                   \
             const uint32_t detector = ctx.r3.u32, source = ctx.r4.u32, results = ctx.r5.u32; \

@@ -330,6 +330,10 @@ void GuestExecution::Lease::run_wait(std::function<void(std::stop_token)> operat
 void GuestExecution::Lease::run_blocking(std::function<void(std::stop_token)> operation,
                                         std::function<void()> before_release) {
     if (!operation) throw std::logic_error("blocking guest operation is required");
+    if (detached_) {
+        if (before_release) before_release();
+        return run_wait(std::move(operation));
+    }
     auto self = std::make_shared<State::QueuedWaiter>(guest_id_, std::this_thread::get_id());
     std::stop_token stop_token;
     {

@@ -1,6 +1,9 @@
 #include "physical_memory.h"
+#include "o1heap/o1heap.h"
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
+#include <iostream>
 
 namespace sfr {
 namespace {
@@ -11,13 +14,75 @@ constexpr uint64_t page_size = 0x1000;
 }
 }
 
-PhysicalMemory::PhysicalMemory(GuestMemory& memory) : memory_(memory) {
+PhysicalMemory::PhysicalMemory(GuestMemory& memory, bool heap) : memory_(memory) {
     // GuestMemory validates this range against the actual host page size. This
     // query intentionally has no reservation or commitment side effect.
     (void)memory_.usage(arena_base, page_size);
+    if (!heap) return;
+    memory_.reserve(arena_base, arena_size);
+    memory_.commit(arena_base, arena_size);
+    // Page n of the window is shadow bytes [n, n + 1) * shadow_page: o1heap's
+    // blocks are multiples of shadow_page from its first one, and its header
+    // is the first half of that, so a block's pointer names its first page.
+    // The instance header takes the first pages' worth of the shadow, which
+    // the window does not use.
+    const size_t bytes = size_t(arena_size / page_size * shadow_page);
+    shadow_ = std::make_unique<uint64_t[]>(bytes / sizeof(uint64_t));
+    heap_ = o1heapInit(shadow_.get(), bytes);
+    if (!heap_) unsupported(arena_base, "o1heap physical arena initialization failed");
+}
+
+PhysicalMemory::~PhysicalMemory() = default;
+
+bool PhysicalMemory::heap_enabled() {
+    static const bool on = [] { const char* text = std::getenv("SFR_PHYSICAL_HEAP"); return !text || *text != '0'; }();
+    return on;
+}
+
+PhysicalMemory::Block* PhysicalMemory::heap_block(uint64_t address, uint64_t size) {
+    auto at = blocks_.upper_bound(static_cast<uint32_t>(std::min<uint64_t>(address, 0xffffffffu)));
+    if (at == blocks_.begin()) return nullptr;
+    --at;
+    if (address - at->first > at->second.size || size > at->second.size - (address - at->first)) return nullptr;
+    return &at->second;
+}
+
+// As Marathon's Heap::AllocPhysical: over-allocate by the alignment and align
+// up, in whole pages. Blocks are page aligned at least -- a texture's base is
+// a page number -- so a free drops whole pages from the renderer's caches.
+uint32_t PhysicalMemory::heap_allocate(uint32_t size, uint32_t protect, uint32_t alignment) {
+    const uint64_t align = std::max<uint64_t>(alignment, page_size);
+    const uint64_t rounded = (uint64_t(size) + page_size - 1) & ~(page_size - 1);
+    const uint64_t pages = (rounded + align - page_size) / page_size;
+    if (pages * page_size > arena_size) return 0;
+    void* const shadow = o1heapAllocate(heap_, size_t(pages * shadow_page - O1HEAP_ALIGNMENT));
+    if (!shadow) {
+        const auto diagnostics = o1heapGetDiagnostics(heap_);
+        std::cerr << "PHYSICAL_HEAP_EXHAUSTED size=" << size << " allocated=" << diagnostics.allocated / shadow_page * page_size
+                  << " peak=" << diagnostics.peak_allocated / shadow_page * page_size << '\n';
+        return 0;
+    }
+    const uint64_t page = uint64_t(static_cast<uint8_t*>(shadow) - reinterpret_cast<uint8_t*>(shadow_.get())) / shadow_page;
+    const uint64_t first = arena_base + page * page_size;
+    const uint32_t address = static_cast<uint32_t>((first + align - 1) & ~(align - 1));
+    blocks_[address] = {shadow, static_cast<uint32_t>(rounded), protect};
+    live_bytes_ += rounded;
+    peak_live_bytes_ = std::max(peak_live_bytes_, live_bytes_);
+    // o1heap rounds every block up to a power of two pages: say how far that goes.
+    static uint64_t reported = 0;
+    if (const uint64_t peak = o1heapGetDiagnostics(heap_).peak_allocated / shadow_page * page_size;
+        peak >= reported + (32u << 20)) {
+        reported = peak;
+        std::cerr << "PHYSICAL_HEAP_PEAK bytes=" << peak << " requested=" << peak_live_bytes_ << " blocks=" << blocks_.size() << '\n';
+    }
+    // o1heap hands back used blocks: the console's allocation is zeroed.
+    memory_.check_write(address, rounded);
+    std::memset(memory_.base() + address, 0, rounded);
+    return address;
 }
 
 GuestMemory::Usage PhysicalMemory::statistics() const {
+    std::lock_guard lock(mutex_);
     return memory_.usage(arena_base, arena_size);
 }
 
@@ -29,6 +94,15 @@ bool PhysicalMemory::overlaps_arena(uint64_t address, uint64_t size) {
 }
 
 bool PhysicalMemory::free(uint32_t address) {
+    std::lock_guard lock(mutex_);
+    if (heap_) {
+        const auto found = blocks_.find(address);
+        if (found == blocks_.end()) return false;
+        o1heapFree(heap_, found->second.shadow);
+        live_bytes_ -= found->second.size;
+        blocks_.erase(found);
+        return true;
+    }
     const auto allocation = std::find_if(allocations_.begin(), allocations_.end(),
                                          [&](const Allocation& item) { return item.address == address; });
     if (allocation == allocations_.end()) return false;
@@ -54,12 +128,18 @@ bool PhysicalMemory::free(uint32_t address) {
 }
 
 uint32_t PhysicalMemory::allocation_size(uint32_t address) const {
+    std::lock_guard lock(mutex_);
+    if (heap_) {
+        const auto found = blocks_.find(address);
+        return found == blocks_.end() ? 0 : found->second.size;
+    }
     const auto allocation = std::find_if(allocations_.begin(), allocations_.end(),
                                          [&](const Allocation& item) { return item.address == address; });
     return allocation == allocations_.end() ? 0 : allocation->size;
 }
 
 uint64_t PhysicalMemory::retained_bytes() const {
+    std::lock_guard lock(mutex_);
     uint64_t total = 0;
     for (const auto& range : retained_) total += range.size;
     return total;
@@ -90,6 +170,12 @@ uint32_t PhysicalMemory::reuse(uint64_t size, uint32_t protect, uint64_t begin, 
 }
 
 uint32_t PhysicalMemory::query_address_protect(uint32_t address) const {
+    std::lock_guard lock(mutex_);
+    if (heap_) {
+        if (const Block* block = const_cast<PhysicalMemory*>(this)->heap_block(address, 1)) return block->protect;
+        if (uint64_t(address) >= arena_base && uint64_t(address) < arena_base + arena_size) return 0;
+        throw RuntimeStop("memory-protection", address, "address is outside allocator-owned physical memory");
+    }
     const auto allocation = std::find_if(allocations_.begin(), allocations_.end(), [&](const Allocation& item) {
         return address >= item.address && uint64_t(address) < uint64_t(item.address) + item.size;
     });
@@ -104,6 +190,14 @@ void PhysicalMemory::require_cpu_only_range(uint64_t address, uint64_t size) con
     if (!size || address >= GuestMemory::address_space_size ||
         size > GuestMemory::address_space_size - address)
         unsupported(address, "invalid CPU-only physical range");
+    std::lock_guard lock(mutex_);
+    if (heap_) {
+        const Block* block = const_cast<PhysicalMemory*>(this)->heap_block(address, size);
+        if (!block) unsupported(address, "CPU-only range is not contained by one owned physical allocation");
+        memory_.check_write(address, size);
+        if (block->gpu_backed) unsupported(address, "physical allocation has GPU backing");
+        return;
+    }
     const auto allocation = std::find_if(allocations_.begin(), allocations_.end(), [&](const Allocation& item) {
         return address >= item.address && address - item.address <= item.size &&
             size <= item.size - (address - item.address);
@@ -119,6 +213,14 @@ void PhysicalMemory::mark_gpu_backed(uint64_t address, uint64_t size) {
     if (!size || address >= GuestMemory::address_space_size ||
         size > GuestMemory::address_space_size - address)
         unsupported(address, "invalid GPU-backed physical range");
+    std::lock_guard lock(mutex_);
+    if (heap_) {
+        Block* block = heap_block(address, size);
+        if (!block) unsupported(address, "GPU-backed range is not contained by one owned physical allocation");
+        memory_.check_write(address, size);
+        block->gpu_backed = true;
+        return;
+    }
     const auto allocation = std::find_if(allocations_.begin(), allocations_.end(), [&](const Allocation& item) {
         return address >= item.address && address - item.address <= item.size &&
             size <= item.size - (address - item.address);
@@ -133,8 +235,10 @@ uint32_t PhysicalMemory::allocate(uint32_t flags, uint32_t size, uint32_t protec
                                   uint32_t min, uint32_t max, uint32_t alignment) {
     if (flags != 0) unsupported(flags, "unsupported physical allocation flags");
     if (protect != 4 && protect != 0x404) unsupported(protect, "unsupported physical protection");
-    if (alignment && (alignment > page_size || (alignment & (alignment - 1))))
-        unsupported(alignment, "unsupported physical alignment");
+    if (alignment & (alignment - 1)) unsupported(alignment, "unsupported physical alignment");
+    std::lock_guard lock(mutex_);
+    if (heap_) return size ? heap_allocate(size, protect, alignment) : 0;
+    if (alignment > page_size) unsupported(alignment, "unsupported physical alignment");
 
     if (!size || min > max) return 0;
     const uint64_t adjusted_size = (uint64_t(size) + page_size - 1) & ~(page_size - 1);

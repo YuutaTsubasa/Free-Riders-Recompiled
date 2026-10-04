@@ -38,8 +38,10 @@ struct GuestEntryState {
     // Holding the graphics lock for a graphics hook: the guest stack pointer
     // at the outermost one's entry (released as hook_stack_pointer is).
     uint32_t graphics_stack_pointer = 0;
-    // The same for the input lock (SFR_INPUT_HOOK).
+    // The same for the input lock (SFR_INPUT_HOOK) and the menu lock
+    // (SFR_MENU_HOOK).
     uint32_t input_stack_pointer = 0;
+    uint32_t menu_stack_pointer = 0;
     // Hooks this thread is inside (HookScope): the outermost one's return
     // gives back what its entry took.
     uint32_t hook_depth = 0;

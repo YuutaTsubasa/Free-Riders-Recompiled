@@ -147,7 +147,7 @@ bool sfr::nui_sensor_has_depth() { return sensor_depth.load(std::memory_order_re
 uint64_t sfr::kinect_frame_generation() { return kinect_generation.load(std::memory_order_relaxed); }
 
 // NuiInitialize(flags, ?)
-SFR_HOOK(sub_8276FD88) {
+SFR_INPUT_HOOK(sub_8276FD88) {
     sfr::enter_function(ctx,"sub_8276FD88",0x8276FD88);
     std::cerr << "NUI_INITIALIZE flags=0x" << std::hex << ctx.r3.u32 << " argument=0x" << ctx.r4.u32
               << std::dec << " result=0 backend=emulated-skeleton\n";
@@ -155,7 +155,7 @@ SFR_HOOK(sub_8276FD88) {
 }
 
 // NuiShutdown()
-SFR_HOOK(sub_8276DF30) {
+SFR_INPUT_HOOK(sub_8276DF30) {
     sfr::enter_function(ctx,"sub_8276DF30",0x8276DF30);
     sfr::stop_nui_skeleton_events();
     ctx.r3.u64=0;
@@ -163,7 +163,7 @@ SFR_HOOK(sub_8276DF30) {
 
 // NuiSkeletonTrackingEnable(next frame event, flags): the event is signaled
 // at the sensor's 30 Hz.
-SFR_HOOK(sub_82770668) {
+SFR_INPUT_HOOK(sub_82770668) {
     sfr::enter_function(ctx,"sub_82770668",0x82770668);
     std::cerr << "NUI_SKELETON_TRACKING_ENABLE event=0x" << std::hex << ctx.r3.u32 << " flags=0x" << ctx.r4.u32
               << std::dec << '\n';
@@ -172,7 +172,7 @@ SFR_HOOK(sub_82770668) {
 }
 
 // NuiSkeletonTrackingDisable()
-SFR_HOOK(sub_8276FEE0) {
+SFR_INPUT_HOOK(sub_8276FEE0) {
     sfr::enter_function(ctx,"sub_8276FEE0",0x8276FEE0);
     sfr::stop_nui_skeleton_events();
     ctx.r3.u64=0;
@@ -231,7 +231,7 @@ uint32_t call_guest8(PPCContext& ctx, uint8_t* base, void (*function)(PPCContext
 // NuiImageStreamOpen(image type, resolution, frame flags, frame limit, next
 // frame event, stream handle out).
 PPC_FUNC_IMPL(__imp__sub_82768C40);
-SFR_HOOK(sub_82768C40) {
+SFR_INPUT_HOOK(sub_82768C40) {
     sfr::enter_function(ctx,"sub_82768C40",0x82768C40);
     const uint32_t type=ctx.r3.u32,resolution=ctx.r4.u32,flags=ctx.r5.u32,limit=ctx.r6.u32,event=ctx.r7.u32,
                    handle=ctx.r8.u32;
@@ -275,7 +275,7 @@ SFR_HOOK(sub_82768C40) {
 // newest image, written into the stream's texture as the console's would be
 // (big-endian pixels: 16-bit depth and player index; colour as X8R8G8B8).
 PPC_FUNC_IMPL(__imp__sub_82767148);
-SFR_HOOK(sub_82767148) {
+SFR_INPUT_HOOK(sub_82767148) {
     sfr::enter_function(ctx,"sub_82767148",0x82767148);
     ImageStream* stream=image_stream(ctx.r3.u32);
     if(!stream) { __imp__sub_82767148(ctx,base); return; }
@@ -344,7 +344,7 @@ SFR_HOOK(sub_82767148) {
 // given, and its own copies (8243EF28, for the camera image) -- and nothing
 // did before its streams opened.
 PPC_FUNC_IMPL(__imp__sub_824F3CF0);
-SFR_HOOK(sub_824F3CF0) {
+SFR_CONCURRENT_HOOK(sub_824F3CF0) {
     sfr::enter_function(ctx,"sub_824F3CF0",0x824F3CF0);
     if(ctx.r7.u32&0x10) {
         static uint32_t noted=0;
@@ -357,7 +357,7 @@ SFR_HOOK(sub_824F3CF0) {
 
 // NuiImageStreamReleaseFrame(stream, frame): the stream keeps its frame.
 PPC_FUNC_IMPL(__imp__sub_82767458);
-SFR_HOOK(sub_82767458) {
+SFR_INPUT_HOOK(sub_82767458) {
     sfr::enter_function(ctx,"sub_82767458",0x82767458);
     if(!image_stream(ctx.r3.u32)) { __imp__sub_82767458(ctx,base); return; }
     ctx.r3.u64=0;
@@ -577,7 +577,7 @@ SFR_INPUT_HOOK(sub_827707B0) {
 // unenrolled guest. The completion message (id 1, result S_OK, enrollment)
 // is delivered to the callback at once and the call reports the pending
 // asynchronous operation it started.
-SFR_HOOK(sub_82764620) {
+SFR_INPUT_HOOK(sub_82764620) {
     sfr::enter_function(ctx,"sub_82764620",0x82764620);
     const uint32_t tracking_id=ctx.r3.u32, flags=ctx.r4.u32, callback=ctx.r5.u32, context=ctx.r6.u32;
     if(flags) { ctx.r3.u64=0x80070057u; return; }  // E_INVALIDARG, as the original
@@ -623,7 +623,7 @@ PPC_FUNC_IMPL(__imp__sub_82494658);
 PPC_FUNC_IMPL(__imp__sub_824920F8);
 // The title's START screen does not use every later menu-manager path.
 // Observe the completed common input update as well as the menu cursor below.
-SFR_HOOK(sub_824920F8) {
+SFR_MENU_HOOK(sub_824920F8) {
     sfr::enter_function(ctx,"sub_824920F8",0x824920F8);
     const uint32_t input=ctx.r3.u32;
     __imp__sub_824920F8(ctx,base);
@@ -669,7 +669,7 @@ SFR_HOOK(sub_824920F8) {
 // +5448 level 2). [83E52F8C] is nonzero during a race. The buttons pressed
 // since the previous update stay available to the hand-only dialogs below
 // until the next update.
-SFR_HOOK(sub_82494658) {
+SFR_MENU_HOOK(sub_82494658) {
     sfr::enter_function(ctx,"sub_82494658",0x82494658);
     const uint32_t input=ctx.r3.u32;
     auto& memory=*sfr::active_memory;
@@ -772,7 +772,7 @@ PPC_FUNC_IMPL(__imp__sub_823EF348);
 // buttons in slots 0 (yes) and 1 (no), 3 for a single button in slot 2. The
 // original only answers the hand, so a pressed A or B chooses directly, with
 // the confirm (16) or cancel (8) sound the original plays through 8222FA18.
-SFR_HOOK(sub_823EF348) {
+SFR_MENU_HOOK(sub_823EF348) {
     sfr::enter_function(ctx,"sub_823EF348",0x823EF348);
     auto& memory=*sfr::active_memory;
     const uint32_t dialog=ctx.r3.u32;
@@ -796,7 +796,7 @@ PPC_FUNC_IMPL(__imp__sub_8246A6D0);
 // Its callers (823F3148, 82454360, 824543D0) add both players' steps, so a
 // newly pressed D-pad left or right of the first player turns the ring one
 // item when the hand did not, once per press.
-SFR_HOOK(sub_8246A6D0) {
+SFR_MENU_HOOK(sub_8246A6D0) {
     sfr::enter_function(ctx,"sub_8246A6D0",0x8246A6D0);
     const uint32_t player=sfr::active_memory->load<uint32_t>(ctx.r3.u32);
     __imp__sub_8246A6D0(ctx,base);
@@ -807,7 +807,7 @@ SFR_HOOK(sub_8246A6D0) {
 }
 
 PPC_FUNC_IMPL(__imp__sub_82452F48);
-SFR_HOOK(sub_82452F48) {
+SFR_MENU_HOOK(sub_82452F48) {
     sfr::enter_function(ctx,"sub_82452F48",0x82452F48);
     const uint32_t slot=ctx.r3.u32;
     __imp__sub_82452F48(ctx,base);
@@ -815,7 +815,7 @@ SFR_HOOK(sub_82452F48) {
 }
 
 PPC_FUNC_IMPL(__imp__sub_82456700);
-SFR_HOOK(sub_82456700) {
+SFR_MENU_HOOK(sub_82456700) {
     sfr::enter_function(ctx,"sub_82456700",0x82456700);
     // This updates the cursor before checking whether a pending animation
     // blocks its delayed action, so elapsed time alone cannot prove service.
@@ -826,7 +826,7 @@ SFR_HOOK(sub_82456700) {
 PPC_FUNC_IMPL(__imp__sub_824560A8);
 // Observe the game's own hand activation result, logical-player binding and
 // cursor state together. Opt-in diagnostics only; no gesture or input changes.
-SFR_HOOK(sub_824560A8) {
+SFR_MENU_HOOK(sub_824560A8) {
     sfr::enter_function(ctx,"sub_824560A8",0x824560A8);
     const uint32_t manager=ctx.r3.u32,player=ctx.r4.u32;
     __imp__sub_824560A8(ctx,base);
@@ -872,7 +872,7 @@ PPC_FUNC_IMPL(__imp__sub_824578F0);
 // back button (type 31: 8245B130 asks whether it may leave, 824603B8 leaves)
 // and Y an enabled (+492 bit 0x01000000) shortcut button (types 33..35, the
 // parts shop: menu commands 15, 16 and 49 through 82454848, with sound 18).
-SFR_HOOK(sub_824578F0) {
+SFR_MENU_HOOK(sub_824578F0) {
     sfr::enter_function(ctx,"sub_824578F0",0x824578F0);
     auto& memory=*sfr::active_memory;
     const uint32_t manager=ctx.r3.u32-36;
@@ -1075,7 +1075,7 @@ PPC_FUNC_IMPL(__imp__sub_82439530);
 // and the resource is created on the main thread (82438CC8). Until it is
 // there the update has nothing to do; the original would read through the
 // null pointer.
-SFR_HOOK(sub_82439530) {
+SFR_CONCURRENT_HOOK(sub_82439530) {
     sfr::enter_function(ctx,"sub_82439530",0x82439530);
     if(!sfr::active_memory->load<uint32_t>(uint64_t(ctx.r3.u32)+7736)) {
         static uint32_t skipped=0;
@@ -1110,7 +1110,7 @@ PPC_FUNC_IMPL(__imp__sub_82463808);
 // After a second of nothing else happening the answer becomes "no": the
 // animation it waits for is the part flying onto the board, and whatever
 // keeps it pending here, the page it blocks is the one the player asked for.
-SFR_HOOK(sub_82463808) {
+SFR_MENU_HOOK(sub_82463808) {
     sfr::enter_function(ctx,"sub_82463808",0x82463808);
     const uint32_t manager=ctx.r3.u32;
     __imp__sub_82463808(ctx,base);
@@ -1199,7 +1199,7 @@ PPC_FUNC_IMPL(__imp__sub_8243D1B8);
 // The page transition's fade, started only when the object the manager waits
 // on exists: reporting its calls says whether that object was never created
 // or created and then lost (see docs/pad-menus.md).
-SFR_HOOK(sub_8243D1B8) {
+SFR_CONCURRENT_HOOK(sub_8243D1B8) {
     sfr::enter_function(ctx,"sub_8243D1B8",0x8243D1B8);
     static uint32_t calls=0;
     if(calls++<8)

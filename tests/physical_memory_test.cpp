@@ -1,5 +1,7 @@
 #include "physical_memory.h"
+#include <algorithm>
 #include <array>
+#include <vector>
 #include <iostream>
 #include <stdexcept>
 #ifdef _WIN32
@@ -298,8 +300,50 @@ static void retained_memory_is_reused_without_new_backing() {
     }
 }
 
+// The Marathon-style physical heap (SFR_PHYSICAL_HEAP): one o1heap arena over
+// the whole window, blocks page aligned at least and zeroed, a free giving
+// the block back for the next allocation.
+static void heap_mode_allocates_frees_and_reuses() {
+    sfr::GuestMemory memory(sfr::PhysicalMemory::arena_size + 0x100000);
+    sfr::PhysicalMemory physical(memory, true);
+    require(physical.heap(), "heap mode is on");
+    const uint32_t first = physical.allocate(0, 0x1801, 0x404, 0, 0xffffffffu, 4);
+    require(first >= sfr::PhysicalMemory::arena_base && first % 4096 == 0, "heap blocks are page aligned in the window");
+    require(physical.allocation_size(first) == 0x2000, "heap blocks are rounded to pages");
+    require(physical.query_address_protect(first + 0x1fff) == 0x404, "the protection asked for is remembered");
+    require(memory.load<uint32_t>(first + 0x1ffc) == 0, "heap blocks are zeroed");
+    memory.store<uint32_t>(first + 0x1ffc, 0x12345678);
+    const uint32_t aligned = physical.allocate(0, 0x1000, 4, 0, 0xffffffffu, 0x10000);
+    require(aligned % 0x10000 == 0 && aligned != first, "larger alignments are honoured by over-allocating");
+    physical.mark_gpu_backed(first, 0x2000);
+    stops([&] { physical.require_cpu_only_range(first, 1); });
+    physical.require_cpu_only_range(aligned, 0x1000);
+    stops([&] { physical.require_cpu_only_range(first + 0x1000, 0x2000); });
+    require(physical.free(first) && !physical.free(first), "a block frees once");
+    require(physical.allocation_size(first) == 0, "a freed block has no size");
+    require(physical.query_address_protect(first) == 0, "a freed block reads as free");
+    const uint32_t again = physical.allocate(0, 0x1801, 4, 0, 0xffffffffu, 0);
+    require(memory.load<uint32_t>(again + 0x1ffc) == 0, "a reused block is zeroed again");
+    require(physical.free(again) && physical.free(aligned), "every block frees");
+    require(physical.allocate(0, 0x40000000, 4, 0, 0xffffffffu, 0) == 0, "an allocation larger than the arena fails");
+    // Power-of-two blocks, what the title asks for most, take their own size:
+    // 6000 of 64 KiB (375 MiB) fit the 509 MiB window, distinct and in it.
+    std::vector<uint32_t> blocks;
+    for (int i = 0; i < 6000; ++i) {
+        const uint32_t block = physical.allocate(0, 0x10000, 0x404, 0, 0xffffffffu, 0x1000);
+        require(block >= sfr::PhysicalMemory::arena_base &&
+                    uint64_t(block) + 0x10000 <= sfr::PhysicalMemory::arena_base + sfr::PhysicalMemory::arena_size,
+                "a power-of-two block fits the window");
+        blocks.push_back(block);
+    }
+    std::sort(blocks.begin(), blocks.end());
+    for (size_t i = 1; i < blocks.size(); ++i) require(blocks[i] - blocks[i - 1] >= 0x10000, "blocks do not overlap");
+    for (const uint32_t block : blocks) require(physical.free(block), "every block frees");
+}
+
 int main() {
     try {
+        heap_mode_allocates_frees_and_reuses();
         freeing_releases_cpu_memory_and_keeps_gpu_memory();
         retained_memory_is_reused_without_new_backing();
         real_backing_rounding_and_top_down_order();

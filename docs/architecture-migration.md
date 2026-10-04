@@ -9,7 +9,7 @@
 | --- | --- | --- |
 | 記憶體 | 4 GB 一次 commit 在固定位址，`PPC_LOAD_*`／`PPC_STORE_*` 直接 `base + x`，只有第一頁不可存取 | 4 GB placeholder、逐段 commit；每次存取都經過 `GuestMemory` 的頁面檢查、reservation、寫入監看、特殊字 |
 | lwarx／stwcx. | 比值的 CAS（容許 ABA） | 1024 個帶版本的 stripe + CAS（`docs/reservations.md`：只比值曾讓 Grand Prix 載入 R6025） |
-| 執行緒 | 每個 guest 執行緒一個 `std::thread`，完全並行，沒有全域鎖；不設主機親和性 | 全域許可 + 每核心許可（`guest_execution.*`），檢查點、hook／import 回到許可 |
+| 執行緒 | 每個 guest 執行緒一個 `std::thread`，完全並行，沒有全域鎖；不設主機親和性 | 全域許可 + 每核心許可（`guest_execution.*`），檢查點、hook／import 回到許可（遷移前；第 4 階段後 import 與 hook 各拿子系統鎖） |
 | 同步 | 事件、號誌用 `std::atomic::wait`；臨界區用 `atomic_ref` 直接在 guest 記憶體上 CAS | `NativeSyncObjects` 自己上鎖；臨界區自己上鎖；等待時放掉許可 |
 | 配置器 | o1heap + mutex 取代遊戲的 `RtlAllocateHeap`、`XAllocMem` 等 | 遊戲自己的堆積（靜態連結）跑在 `NtAllocateVirtualMemory` 上；池配置器 `824A3398` 靠全域許可序列化 |
 | 改遊戲 | 重編譯時的 mid-asm hook（Unleashed 191 個，含高幀率修正）、`GUEST_FUNCTION_HOOK`、`__imp__` 包裝 | 執行期 `SFR_HOOK`（70 個要拿許可）／`SFR_CONCURRENT_HOOK`（54 個） |
@@ -57,6 +57,8 @@
   - o1heap 兩個 arena：`0x20400000–0x40000000`、`0x50000000–0x70000000`（約 1 GB），一把 mutex；hook 是 `SFR_CONCURRENT_HOOK`，不拿許可。
   - 與 Marathon 的差異：每個區塊記住它的 heap handle，`RtlDestroyHeap` 會一起釋放（遊戲有 6 處 HeapDestroy，Marathon 的做法會洩漏）。
   - 桌機整場比賽（三圈到結算）正常。池配置器 `824A3398` 尚未處理。
+  - 實體記憶體（`SFR_PHYSICAL_HEAP=0` 關閉，`src/physical_memory.cpp`）：照 Marathon 的 `Heap::AllocPhysical`，`MmAllocatePhysicalMemoryEx`／`MmFreePhysicalMemory`／`MmQueryAllocationSize` 由 o1heap 配置：整個實體視窗（`0xE0000000–0xFFD00000`）開機時一次 commit，配置依對齊多配再對齊（至少一頁：貼圖的基底是頁號），釋放直接還給 o1heap（renderer 照舊丟掉它快取的內容）。每一頁都是一般的讀寫記憶體，和 Marathon、Unleashed 相同；要求的保護（`0x404` 寫入合併）只記下來給 `MmQueryAddressProtect`。呼叫由實體堆積自己的 mutex 序列化，不拿全域許可。
+  - 與 Marathon 的差異：o1heap 跑在視窗的主機端影子上（每頁一個 o1heap 最小區塊，64 位元主機上 64 bytes），不是視窗本身。o1heap 的 32 bytes 區塊標頭會讓每個 2 的次方大小的區塊（遊戲要的大多是）變成兩倍大；而視窗不能像 Marathon 的 1.5 GB 一樣加大：遊戲的 GPU 位址就是虛擬位址減 `0xE0000000`，放到別處的區塊會和其他區塊的實體頁重疊。桌機一場比賽遊戲要求的峰值 360 MB，o1heap 佔用 411 MB（2 的次方進位多 14%），視窗 509 MB。
 
 ### 第 3 階段：直接記憶體存取
 
@@ -90,7 +92,12 @@
   - 並行執行緒每次進函式都走非內聯的觀察路徑；改成「不是 hook、也不在 hook 裡」時走內聯快速路徑（Thor 上沒有可量到的差別）。
   - `all` 模式長幀的真正原因：脫離的執行緒在 hook 入口拿了全域許可，要等之後進入一個堆疊更高的函式才放；Kinect 骨架執行緒在同一層迴圈裡呼叫 `NuiSkeletonGetNextFrame`，第一次之後就一直拿著，整個遊戲跟著它的時間片停頓。hook 現在包在 `HookScope` 裡，返回時就放掉全域許可與圖形鎖（`SFR_PERMIT_HOLD_TRACE=1` 會列出 20 ms 以上的持有）。同時：頁面保護改成連續頁一次設定、監看鎖每 64 頁放開一次；等待執行緒 handle 改由執行緒表自己的讀寫鎖查詢，不再拿全域許可。
   - 結果（Thor，同一個 APK，A/B/A/B）：`cores` 46.3／44.4 fps、`all` 46.4／46.3 fps（之前兩者都是約 41 fps）。**`all` 已是預設**（啟動器、Android、play 腳本），每個 guest 執行緒自由執行；全域許可只剩 import 與碰到主機狀態的 hook 的鎖。
-  - 子系統各自的鎖（Unleashed 的做法）：NUI 骨架與比賽輸入的 hook 拿輸入鎖（`SFR_INPUT_HOOK`）；池配置器的配置與兩個釋放（`824A3398`、`824A3250`、`824A3598`）拿池鎖；執行緒的 resume／suspend、多物件等待在執行緒表自己的讀寫鎖下查表；`XNotifyGetNext`（通知佇列有自己的鎖）與 `XAudioSubmitRenderDriverFrame`（只有音訊泵呼叫）不拿全域許可。一場比賽中 hook 回到全域許可的次數 560 萬 → 43 萬，import 52 萬 → 14 萬。全域許可剩下的角色就是 Unleashed 的 `g_kernelLock`：其餘少數核心 import 的鎖。鎖等待 100 ms 以上會印 `LOCK_LONG_WAIT`。
+  - 子系統各自的鎖（Unleashed 的做法）：NUI 骨架與比賽輸入的 hook 拿輸入鎖（`SFR_INPUT_HOOK`）；池配置器的配置與兩個釋放（`824A3398`、`824A3250`、`824A3598`）拿池鎖；執行緒的 resume／suspend、多物件等待在執行緒表自己的讀寫鎖下查表；`XNotifyGetNext`（通知佇列有自己的鎖）與 `XAudioSubmitRenderDriverFrame`（只有音訊泵呼叫）不拿全域許可。一場比賽中 hook 回到全域許可的次數 560 萬 → 43 萬，import 52 萬 → 14 萬。鎖等待 100 ms 以上會印 `LOCK_LONG_WAIT`。
+  - 全域許可不再是任何東西的鎖（`SFR_SUBSYSTEM_LOCKS=0` 回到舊做法）：
+    - import：每個 import 依它碰到的主機狀態拿一把子系統鎖（`diagnostic_main.cpp` 的 `import_lock()`）——`none`（只碰參數、guest 記憶體與自己有鎖的物件：臨界區、TLS 值、同步物件與等待、執行緒表的 resume／suspend、實體堆積、字串與格式化、常數）、`memory`（`VirtualMemory`）、`files`（檔案表與存檔）、`objects`（建立／結束執行緒、優先權與參照、TLS 槽、事件與號誌的建立）、`system`（其餘：XAM、XMsg、Xex 模組、XAudio client、通知 listener、設定）。import 不呼叫 guest 程式碼，所以沒有一把鎖會在 guest 等待時被拿著；非同步讀檔送出時的等待只放掉核心。拿著許可的執行緒等子系統鎖時先放掉許可。
+    - hook：其餘 30 個 `SFR_HOOK` 都改掉了。NUI 裝置（初始化、骨架追蹤、影像串流、身分辨識）拿輸入鎖；選單的 hook（按鈕、語音、轉盤、對話框、選單管理）拿新的選單鎖（`SFR_MENU_HOOK`），順序固定「選單→輸入→圖形」；只碰 guest 記憶體、參數與 atomic 的（相機影像槽、純虛函式工作、Avatar 零件、深度檢視、淡出、`LockRect` 唯讀旗標）不拿鎖；影片進度表、Avatar 動作片段各有自己的鎖，Avatar 模型的繪製拿圖形鎖。建立／重設裝置與 present 只拿圖形鎖：它們碰到的其他主機狀態（視窗、計時）屬於擁有視窗的那個執行緒。
+    - GPU 資源同步（`synchronize_resource_memory`：等 GPU 閒置、丟掉 renderer 的副本）拿圖形鎖，不再拿全域許可（原本等閒置時對 queue 送出也沒有和 render thread 互斥）。
+    - 結果：`all` 模式的整場比賽裡，沒有任何執行緒回到全域許可（`SFR_PARALLEL_HOOK_STATS=1` 的 import／hook 統計一次都沒有印出）。全域許可只剩給非 `all` 模式的排程用。
 
 ### 第 5 階段：重編譯期的 mid-asm hook 與幀率
 
