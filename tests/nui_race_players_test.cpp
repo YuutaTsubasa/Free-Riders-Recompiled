@@ -475,13 +475,28 @@ void independent_actions() {
     second->buttons = 0; frame();
     reset_results(); require(invoke("sub_822C9050", 1) == 1, "P2 release must jump independently");
     reset_results(); require(invoke("sub_822C9050", 0) == 2, "P2 release must not jump P1");
+    // The trick detector keeps its turn at +72..+80 of its own object; the
+    // other detectors here share these test objects, so start them clean.
+    for (const uint32_t instance : {detector, detector + 128})
+        for (uint32_t off = 72; off <= 80; off += 4) mem().store<uint32_t>(instance + off, 0);
     first.thumb_lx = 32767; second->thumb_lx = 32767; frame();
     reset_results(); invoke("sub_822C9938", 0, 0); invoke("sub_822C9938", 1, 1);
     first.thumb_lx = 0; first.thumb_ly = 32767; frame();
     reset_results(); invoke("sub_822C9938", 0, 0);
-    require(std::fabs(f(selected + 56) - 0.5f) < 0.001f, "P1 trick must use P1 stick");
+    require(std::fabs(f(selected + 56) - 90.0f) < 0.01f, "P1 trick must use P1 stick, in degrees as the original");
     reset_results(); invoke("sub_822C9938", 1, 1);
     require(f(selected + 56) == 0, "P1 trick must not move P2 trick");
+    // On round to where it began: a whole turn is 360 degrees, as the
+    // original reports the body's turn, not two half turns.
+    for (const auto [x, y] : {std::pair{-32767, 0}, std::pair{0, -32767}, std::pair{32767, 0}}) {
+        first.thumb_lx = int16_t(x); first.thumb_ly = int16_t(y); frame();
+        reset_results(); invoke("sub_822C9938", 0, 0);
+    }
+    require(std::fabs(f(selected + 56) - 360.0f) < 0.01f, "a whole stick turn must report 360 degrees");
+    require(mem().load<uint32_t>(selected + 4) & 0x800, "the trick detector must report its bit");
+    first.thumb_lx = 0; first.thumb_ly = 0; frame();
+    reset_results(); invoke("sub_822C9938", 0, 0);
+    require(std::fabs(f(selected + 56) - 360.0f) < 0.01f, "releasing the stick must keep the turn so far");
 }
 void lifecycle() {
     require(braking(0) && !braking(1), "establish both mappings");
