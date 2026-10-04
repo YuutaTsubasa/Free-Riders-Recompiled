@@ -2107,3 +2107,68 @@ The pre-integration current-host checks covered both graphics backends. That
 test build retained default 32 pending the later Windows decision; a slower Windows
 host would strengthen coverage. Android evidence remains inconclusive;
 Issue #31 and GP mission 3 remain separate work.
+
+## Post-v0.4.7 CPU experiments (not integrated)
+
+A 35-second Windows CPU sample, resolved against its exact executable map,
+recorded 68,680 samples with no lost ETW events. Of the process samples, about
+35% belonged to the guest main thread and 31% to the D3D12 recording worker.
+Most worker stacks passed through its empty-queue `SwitchToThread` loop.
+These are sampled attribution figures, including some kernel/interrupt
+activity, not percentages of removable work.
+
+An isolated candidate reduces only that worker's yield budget from 2,000 to
+32 before using its existing condition-variable handshake. Producer waiting,
+queue ordering, drawing and game time are unchanged. The candidate-linked
+presentation oracle passes for D3D12 and Vulkan, including queue wrap, drain,
+shutdown and failure cases. Independent scope and synchronization reviews
+found no change-induced correctness defect.
+
+The following sequential Ally X D3D12 tests use an independent save per run,
+the same stationary Dolphin Resort scene, AC power and the Turbo power plan.
+Menus are capped; the private harness then runs an uncapped, normal-time race
+for 120 seconds. Frame metrics use the middle 100 seconds; process/thread CPU
+deltas cover approximately 85 seconds inside that window. Diagnostic logging
+is identical across these cases. CPU ms/frame is summed across process
+threads; it is not elapsed frame time.
+
+| Run / worker budget | FPS | Process CPU ms/frame | Main CPU ms/frame | P95 / P99 frame ms | Frames >50 / >100 ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| A / 2000 | 70.87 | 29.72 | 9.70 | 16.09 / 18.91 | 3 / 0 |
+| B / 32 | 73.73 | 24.26 | 9.72 | 15.11 / 16.61 | 5 / 1 |
+| C / 2000 | 74.70 | 28.63 | 9.47 | 14.96 / 16.30 | 0 / 0 |
+| D / 32 | 72.53 | 24.80 | 9.82 | 15.43 / 17.12 | 5 / 1 |
+| E / 2000 | 74.51 | 28.44 | 9.44 | 15.09 / 16.62 | 1 / 0 |
+
+The experiment remains **on hold**. Process CPU/frame falls about 13–18%,
+but main-thread CPU does not improve and FPS gains are not established against
+baseline drift. Recording/draw cost also increases slightly. Both candidate
+windows include a frame above 100 ms, versus none in the baseline windows;
+baseline A and E still have substantial shorter stalls. This does not prove
+that the wait budget causes the long frames. Their extra wall time appears
+mostly under main-thread execution ownership, which can include host
+descheduling. Matched scheduler traces are needed to distinguish running,
+runnable and blocked time before accepting this change. Production retains
+the original budget.
+
+Screenshots in D show the race clock advancing about 66.08 seconds while
+logged elapsed time advances 66.0768 seconds between presents 14400 and 19200.
+They confirm the full stationary scene and normal race-clock progression;
+they do not validate every animation or course. Neither reduced CPU cost nor
+passing correctness tests establishes a handheld FPS or battery-life gain.
+Default Vulkan and Android do not use this D3D12 worker.
+
+Local evidence is under `out/cpu-profile-v047/`: exact source/object/executable
+hashes, five completed case logs, frame and CPU summaries, screenshots, and
+review records. The original `baseline-a` menu-only attempt is rejected;
+table A is the corrected `baseline-profile-a`. `SFR_PROFILE=1` enables the
+local player profile and is not a performance-logging switch. Raw system
+traces remain private and are not release assets.
+
+A separate four-line ordinary-page memory-preflight experiment has passed
+1,208 baseline/candidate state comparisons and the existing guest-memory,
+pending-write and vector-memory suites. It retains all slow paths, write
+watches, reservations and pending-output semantics. The linked diagnostic
+keeps the original worker budget so its effect can be measured independently.
+It has not yet demonstrated gameplay performance improvement and is not
+integrated. See the dated CPU plans for its acceptance gate.
