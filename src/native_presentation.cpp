@@ -511,20 +511,18 @@ struct NativePresentation::Impl {
     // thread of its own (NativePresentation::record_async), so the guest's
     // thread only queues them. One producer, one consumer; the producer
     // empties the queue (drain) before it touches the list itself.
-    // SFR_RENDER_THREAD=1 forces it on, =0 off. Unset, it is on for D3D12, where
-    // it was measured, and on Android. An AYN Thor race (Vulkan, frames
-    // 15000-20500, A/B/A) took the main thread from 26.7 to 23.0 ms of CPU a
-    // frame and frames of 50 ms or more from 113 to 1. Windows Vulkan stays off:
-    // on a ROG Xbox Ally X at its 60 fps cap it changed nothing but the tail.
+    // On unless SFR_RENDER_THREAD=0, on every backend: Unleashed and Marathon
+    // Recompiled record every draw on their render thread. An AYN Thor race
+    // (Vulkan, frames 15000-20500, A/B/A) took the main thread from 26.7 to
+    // 23.0 ms of CPU a frame and frames of 50 ms or more from 113 to 1; on a
+    // ROG Xbox Ally X (Windows Vulkan) at its 60 fps cap it changed only the
+    // tail.
     bool render_thread_enabled() const {
-        static const int choice = [] {
+        static const bool enabled = [] {
             const char* const text = std::getenv("SFR_RENDER_THREAD");
-            return text && *text ? (*text != '0' ? 1 : 0) : -1;
+            return !(text && *text == '0');
         }();
-#ifdef __ANDROID__
-        if (choice < 0) return true;
-#endif
-        return choice < 0 ? graphics->backend() == sfr::GraphicsBackend::d3d12 : choice == 1;
+        return enabled;
     }
     static constexpr uint64_t queue_capacity = 4096;
     struct RecordSlot {

@@ -24,11 +24,12 @@ its own.
 
 ## Switch
 
-`SFR_RENDER_THREAD=0` records on the calling thread as before, `=1` forces the
-thread. Unset, it is on for D3D12 and off for every other backend: gameplay
-performance comparisons target D3D12. Forced-on Vulkan recording is covered by
-the ordering and lifetime tests on the local RTX 4090 and by software Vulkan
-in CI; this does not establish a Vulkan gameplay performance benefit.
+`SFR_RENDER_THREAD=0` records on the calling thread as before. Unset, the
+thread is on for every backend, as Unleashed and Marathon Recompiled record
+every draw on their render thread (docs/architecture-migration.md). Android
+Vulkan has had it on since an AYN Thor A/B/A (main thread 26.7 to 23.0 ms of
+CPU a frame); Windows Vulkan since 2026-10-05, after a desktop race to the
+results screen.
 
 ## Measurements (v0.4.5, D3D12, six interleaved rounds each)
 
