@@ -535,6 +535,19 @@ static void graphics_lock_entry(const PPCContext& ctx, uint32_t address) {
     }
     entry.graphics_stack_pointer = ctx.r1.u32;
 }
+void hook_scope_exit() noexcept {
+    auto& entry = guest_thread_state.entry;
+    if (entry.graphics_stack_pointer) {
+        entry.graphics_stack_pointer = 0;
+        graphics_lock.unlock();
+    }
+    if (entry.hook_stack_pointer) {
+        entry.hook_stack_pointer = 0;
+        hook_attached = 0;
+        // A stopping guest's detach throws; it is leaving anyway.
+        try { if (execution_permit && !execution_permit->detached()) execution_permit->detach(); } catch (...) {}
+    }
+}
 // The graphics lock around host code outside the graphics hooks that changes
 // the native device (an import dropping the renderer's copies of freed memory).
 struct HostGraphicsLock {
@@ -1122,8 +1135,8 @@ void dispatch_import(PPCContext& ctx, const char* name, uint32_t address) {
     // four hundred thousand times in a race's first minute.
     // Waits, event signals and sleeps too: the sync objects keep their own
     // lock (and dispatcher_mutex the guest-side state), and a wait releases
-    // only the core (block_guest). A thread handle's wait reads the thread
-    // registry, so it still takes the permit.
+    // only the core (block_guest). A thread handle's wait finds the host
+    // thread under the registry's own lock (GuestThreads::host_handle).
     const bool permit_free = address == 0x82ACB4AC || address == 0x82ACB4BC ||  // Rtl{Enter,Leave}CriticalSection
         address == 0x82ACBCAC || address == 0x82ACBCBC ||                        // KeTls{Get,Set}Value
         address == 0x82ACB59C ||                                                 // KeGetCurrentProcessType
@@ -1142,7 +1155,7 @@ void dispatch_import(PPCContext& ctx, const char* name, uint32_t address) {
         // lock, and writes only the caller's sixteen bytes.
         address == 0x82ACC16C || address == 0x82ACC46C ||                        // XamInputGetKeystrokeEx, HidReadKeys
         address == 0x82ACC14C ||                                                 // XamInputGetState
-        (address == 0x82ACB63C && !GuestThreads::is_handle_range(ctx.r3.u32));  // NtWaitForSingleObjectEx
+        address == 0x82ACB63C;                                                   // NtWaitForSingleObjectEx
     if (!permit_free) {
         execution_permit->attach();
         parallel_attached(0);
@@ -2077,8 +2090,12 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         // A thread handle is signaled when its thread exits.
         auto prepared = GuestWait::prepare(*active_memory, *native_sync_objects,
             handle, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, [](uint32_t other) {
-                void* host = guest_threads && GuestThreads::is_handle_range(other) ? guest_threads->host_handle(other) : nullptr;
-                return host ? NativeSyncObjects::wait_on_host(host, other) : nullptr;
+                std::unique_ptr<NativeSyncObjects::WaitHandle> wait;
+                if (guest_threads && GuestThreads::is_handle_range(other))
+                    guest_threads->with_host_handle(other, [&](void* host) {
+                        if (host) wait = NativeSyncObjects::wait_on_host(host, other);
+                    });
+                return wait;
             });
         NativeSyncObjects::WaitResult result{prepared.status, false};
         if (!prepared.status) {
@@ -2107,8 +2124,12 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
             prepared.push_back(GuestWait::prepare(*active_memory, *native_sync_objects,
                 active_memory->load<uint32_t>(uint64_t(handles) + i * 4), ctx.r6.u32, ctx.r7.u32, ctx.r8.u32,
                 [](uint32_t other) {
-                    void* host = guest_threads && GuestThreads::is_handle_range(other) ? guest_threads->host_handle(other) : nullptr;
-                    return host ? NativeSyncObjects::wait_on_host(host, other) : nullptr;
+                    std::unique_ptr<NativeSyncObjects::WaitHandle> wait;
+                    if (guest_threads && GuestThreads::is_handle_range(other))
+                        guest_threads->with_host_handle(other, [&](void* host) {
+                            if (host) wait = NativeSyncObjects::wait_on_host(host, other);
+                        });
+                    return wait;
                 }));
             if (prepared.back().status) {
                 ctx.r3.u64 = prepared.back().status;
@@ -4041,6 +4062,16 @@ int main(int argc, char** argv) {
         // Guest threads run one at a time; a 2 ms quantum keeps handoffs rare
         // enough for the title to run at speed while others still progress.
         execution.set_scheduling_quantum(std::chrono::microseconds(2000));
+        // SFR_PERMIT_HOLD_TRACE=1: every hold of the global permit of 20 ms or
+        // more, with the guest function its holder was in when it let go.
+        if (const char* trace = std::getenv("SFR_PERMIT_HOLD_TRACE"); trace && *trace == '1')
+            execution.set_long_hold([](uint64_t guest, double ms) {
+                std::cerr << "PERMIT_LONG_HOLD guest_id=" << guest << " ms=" << ms
+                          << " function=" << sfr::guest_thread_state.entry.current_function
+                          << " address=0x" << std::hex << sfr::guest_thread_state.entry.current_address
+                          << " lr=0x" << (sfr::current_context ? uint32_t(sfr::current_context->lr) : 0u) << std::dec
+                          << " frame=" << sfr::present_count.load() << std::endl;
+            });
         for (auto& core : sfr::core_executions) {
             core = std::make_unique<sfr::GuestExecution>();
             core->set_scheduling_quantum(std::chrono::microseconds(2000));

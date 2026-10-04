@@ -22,6 +22,7 @@ GuestExecutionCancelled::GuestExecutionCancelled()
     : std::runtime_error("guest execution cancelled") {}
 
 struct GuestExecution::State {
+    void (*long_hold)(uint64_t guest_id, double milliseconds) = nullptr;
     struct Waiter {
         uint64_t guest_id;
         std::thread::id host_thread;
@@ -193,11 +194,16 @@ GuestExecution::Lease::~Lease() noexcept {
 
 void GuestExecution::Lease::released() {
     state_->account();
+    if (state_->long_hold) {
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - owned_since_).count();
+        if (ms >= 20.0) state_->long_hold(guest_id_, ms);
+    }
 }
 
 void GuestExecution::Lease::acquired() {
     owner_thread_.store(std::this_thread::get_id(), std::memory_order_relaxed);
     acquired_at_ = std::chrono::steady_clock::now();
+    owned_since_ = acquired_at_;
     state_->accounted_at = acquired_at_;
     checkpoints_ = 0;
     urgent_owner_ = state_->urgent_ids.contains(guest_id_);  // callers hold the mutex
@@ -467,6 +473,8 @@ void GuestExecution::set_urgent(uint32_t guest_id, bool urgent) {
     if (urgent) state_->urgent_ids.insert(guest_id);
     else state_->urgent_ids.erase(guest_id);
 }
+
+void GuestExecution::set_long_hold(void (*report)(uint64_t, double)) { state_->long_hold = report; }
 
 void GuestExecution::set_scheduling_quantum(std::chrono::microseconds quantum) {
     state_->quantum_us.store(quantum.count(), std::memory_order_relaxed);

@@ -75,6 +75,17 @@ inline void guest_checkpoint() {
     guest_checkpoint_permit();
 }
 void enter_function_observed(PPCContext&, const char*, uint32_t);
+// Gives back the permit and graphics lock the outermost hook's entry took.
+void hook_scope_exit() noexcept;
+struct HookScope {
+    HookScope() { ++guest_thread_state.entry.hook_depth; }
+    ~HookScope() {
+        auto& entry = guest_thread_state.entry;
+        if (!--entry.hook_depth && (entry.hook_stack_pointer || entry.graphics_stack_pointer)) hook_scope_exit();
+    }
+    HookScope(const HookScope&) = delete;
+    HookScope& operator=(const HookScope&) = delete;
+};
 // Every guest function entry; inline, as it runs millions of times a second.
 inline void enter_function(PPCContext& ctx, const char* name, uint32_t address) {
     GuestEntryState& entry = guest_thread_state.entry;
@@ -246,11 +257,21 @@ void stop_nui_skeleton_events();
 #define PPC_CALL_INDIRECT_FUNC(x) sfr::call_indirect(ctx, base, uint32_t(x))
 
 // Defines a replacement of original function x and records it as a hook.
-#define SFR_HOOK(x) [[maybe_unused]] static const bool x##_hook = ::sfr::register_hook(#x); PPC_FUNC(x)
+// The replacement runs inside a HookScope, so the permit and graphics lock a
+// parallel guest took at the hook's entry are given back as it returns.
+// (Inferring the return from the stack pointer of a later entry missed a
+// thread that calls the hook from a loop in the same frame: the Kinect
+// skeleton thread then held the global permit for good after its first
+// NuiSkeletonGetNextFrame, stalling the whole game for its time slices.)
+#define SFR_SCOPED_HOOK(x, registration) [[maybe_unused]] static const bool x##_hook = registration; \
+    static void x##_hooked(PPCContext& __restrict ctx, uint8_t* base); \
+    PPC_FUNC(x) { ::sfr::HookScope scope; x##_hooked(ctx, base); } \
+    static void x##_hooked(PPCContext& __restrict ctx, uint8_t* base)
+#define SFR_HOOK(x) SFR_SCOPED_HOOK(x, ::sfr::register_hook(#x))
 // A Direct3D replacement that touches only the native device and guest memory
 // (see graphics_hook_bits), and one that also reaches other host state.
-#define SFR_GRAPHICS_HOOK(x) [[maybe_unused]] static const bool x##_hook = ::sfr::register_graphics_hook(#x, false); PPC_FUNC(x)
-#define SFR_GRAPHICS_HOST_HOOK(x) [[maybe_unused]] static const bool x##_hook = ::sfr::register_graphics_hook(#x, true); PPC_FUNC(x)
+#define SFR_GRAPHICS_HOOK(x) SFR_SCOPED_HOOK(x, ::sfr::register_graphics_hook(#x, false))
+#define SFR_GRAPHICS_HOST_HOOK(x) SFR_SCOPED_HOOK(x, ::sfr::register_graphics_hook(#x, true))
 // A replacement that touches only guest memory, its arguments and atomics,
 // so a detached guest runs it without taking the execution permit. Hot
 // functions only: a hook called by every thread brought them all back to

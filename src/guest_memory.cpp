@@ -1048,24 +1048,50 @@ void GuestMemory::arm_watch(uint64_t first_page, uint64_t last_page) {
     install_watch_handler(this);
     // Protection works in host pages, which may hold several 4 KiB guest pages.
     const uint64_t per_host = page_size_ / fast_page_size;
-    WatchLock lock;
-    if (!fault_epochs_) {
-        fault_epochs_ = std::make_unique<uint32_t[]>(address_space_size / fast_page_size);
-        fault_streaks_ = std::make_unique<uint8_t[]>(address_space_size / fast_page_size);
+    {
+        WatchLock lock;
+        if (!fault_epochs_) {
+            fault_epochs_ = std::make_unique<uint32_t[]>(address_space_size / fast_page_size);
+            fault_streaks_ = std::make_unique<uint8_t[]>(address_space_size / fast_page_size);
+        }
     }
     const uint32_t epoch = write_epoch_.load(std::memory_order_relaxed);
-    for (uint64_t host = first_page / per_host; host <= last_page / per_host; ++host) {
+    // Consecutive host pages are protected with one call: page by page, a
+    // vertex buffer of a few megabytes took a thousand system calls while
+    // this lock (which the fault handler needs) was held.
+    const auto mark = [&](uint64_t begin, uint64_t end) {
+        for (uint64_t page = begin * per_host; page < end * per_host; ++page)
+            std::atomic_ref<uint8_t>(watched_pages_[page]).fetch_or(watch_armed, std::memory_order_relaxed);
+    };
+    const auto protect_run = [&](uint64_t begin, uint64_t end) {
+        if (begin == end) return;
+        if (protect_pages(base_ + begin * page_size_, (end - begin) * page_size_, true)) { mark(begin, end); return; }
+        // A run across two allocations: each host page on its own.
+        for (uint64_t host = begin; host < end; ++host)
+            if (protect_pages(base_ + host * page_size_, page_size_, true)) mark(host, host + 1);
+    };
+    // The lock is taken for at most 64 host pages at a time: a thread whose
+    // write faults on any watched page waits for it, and a Kinect thread
+    // holding the global permit waited a third of a second behind one arm.
+    constexpr uint64_t chunk = 64;
+    const uint64_t last_host = last_page / per_host;
+    for (uint64_t chunk_begin = first_page / per_host; chunk_begin <= last_host; chunk_begin += chunk) {
+    const uint64_t chunk_end = (std::min)(last_host + 1, chunk_begin + chunk);
+    WatchLock lock;
+    uint64_t run = UINT64_MAX;
+    for (uint64_t host = chunk_begin; host < chunk_end; ++host) {
         const uint64_t first = host * per_host;
         bool committed = true, armed = true;
         for (uint64_t page = first; page < first + per_host; ++page) {
             committed &= fast_pages_[page] != 0 || (partial_page_ends_[page] != 0);
             armed &= (watched_pages_[page] & watch_armed) != 0;
         }
-        if (armed || !committed) continue;
-        if (fault_streaks_[first] >= 2 && epoch - fault_epochs_[first] < 300) continue;
-        if (!protect_pages(base_ + first * fast_page_size, page_size_, true)) continue;
-        for (uint64_t page = first; page < first + per_host; ++page)
-            std::atomic_ref<uint8_t>(watched_pages_[page]).fetch_or(watch_armed, std::memory_order_relaxed);
+        const bool wanted = !armed && committed &&
+                            !(fault_streaks_[first] >= 2 && epoch - fault_epochs_[first] < 300);
+        if (wanted && run == UINT64_MAX) run = host;
+        if (!wanted && run != UINT64_MAX) { protect_run(run, host); run = UINT64_MAX; }
+    }
+    if (run != UINT64_MAX) protect_run(run, chunk_end);
     }
 }
 
