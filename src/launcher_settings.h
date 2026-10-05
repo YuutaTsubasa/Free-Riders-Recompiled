@@ -64,6 +64,12 @@ struct LauncherSettings {
     std::string language = "auto";   // the launcher's: "auto" (the system's), "en" or "zh-TW"
     std::string game_language = "auto"; // independent disc language; game_language.h
     std::filesystem::path image_directory, asset_directory;
+    // Online play through this project's own server (live_service.h): this
+    // device hosts it (SFR_LIVE_HOST) or connects to online_server
+    // (SFR_LIVE_SERVER, host[:port]); online_name is the gamertag shown
+    // (SFR_LIVE_NAME), which leaves the profile's saves where they are.
+    bool online = false, online_host = false;
+    std::string online_server, online_name;
 };
 
 // Unknown keys and malformed values are ignored (the default stays), so an

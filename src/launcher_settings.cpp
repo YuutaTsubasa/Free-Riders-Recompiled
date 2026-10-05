@@ -91,6 +91,10 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         else if (key == "game_language") settings.game_language = validated_game_language(value);
         else if (key == "image_directory") settings.image_directory = utf8_path(value);
         else if (key == "asset_directory") settings.asset_directory = utf8_path(value);
+        else if (key == "online") read_flag(value, settings.online);
+        else if (key == "online_host") read_flag(value, settings.online_host);
+        else if (key == "online_server" && value.size() <= 127) settings.online_server = value;
+        else if (key == "online_name" && value.size() <= 15) settings.online_name = value;
     }
     return settings;
 }
@@ -128,6 +132,10 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "player1_pad=" << s.player1_pad << '\n'
         << "player2_keys=" << s.player2_keys << '\n'
         << "player2_pad=" << s.player2_pad << '\n'
+        << "online=" << s.online << '\n'
+        << "online_host=" << s.online_host << '\n'
+        << "online_server=" << s.online_server << '\n'
+        << "online_name=" << s.online_name << '\n'
         << "language=" << s.language << '\n'
         << "game_language=" << validated_game_language(s.game_language) << '\n'
         << "image_directory=" << path_utf8(s.image_directory) << '\n'
@@ -219,6 +227,10 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         {"SFR_PLAYER1_PAD", s.player1_pad},
         {"SFR_PLAYER2_KEYS", s.player2_keys},
         {"SFR_PLAYER2_PAD", s.player2_pad},
+        // Online play (live_client.h, live_service.h).
+        {"SFR_LIVE_HOST", s.online && s.online_host ? "1" : ""},
+        {"SFR_LIVE_SERVER", s.online && !s.online_host ? s.online_server : ""},
+        {"SFR_LIVE_NAME", s.online ? s.online_name : ""},
 #ifdef __ANDROID__
         {"SFR_TOUCH_CONTROLS", s.touch_controls ? "1" : "0"},
         {"SFR_TILT", s.tilt ? "1" : "0"},

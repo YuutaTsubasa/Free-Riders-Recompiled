@@ -146,6 +146,20 @@ std::atomic<int64_t> ring_asked_ms{-1000000};
 int64_t now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
+// A hand-only button (no voice word: its state at +308 lacks 0x800000, like
+// the Quick Match lobby entry, type 204) takes A by steering the emulated
+// right hand onto it: the hand sweeps the screen until the right cursor's
+// object (+8 of the cursor at [owner+112]+116) is that button, then holds
+// still so the title's own hover selection presses it.
+struct HandSeek {
+    uint32_t button=0, manager=0, step=0, held=0;
+    // After the sweep crossed the button: points around where it did, each
+    // given time for the cursor (which lags the hand) to settle.
+    bool refining=false;
+    float x=0, y=0;
+    uint32_t candidate=0, settle=0;
+} hand_seek;
+constexpr uint32_t hand_seek_columns=19, hand_seek_rows=21;
 // The hand-pointer dialog (823EF348) last asked at this input update, and
 // its layout: while one is up, the buttons it answers to are its alone.
 uint64_t dialog_frame=0;
@@ -523,6 +537,51 @@ SFR_INPUT_HOOK(sub_827707B0) {
     const bool was_reversed=player_routing.reversed();
     player_routing.update(*sfr::active_memory,skeleton,second_skeleton,
                           first,second,racing,use_camera,was_camera && !use_camera);
+    if(hand_seek.button && !racing) {
+        // A list entry (kind 2) is pressed by pushing the hand towards the
+        // sensor. Each candidate place on the page (screen pixels of 1280x720;
+        // measured on this page with the hand raised: px = 312 + 1762 x,
+        // py = 685 - 1376 y) gets a glide, a 0.35 m push and a release.
+        auto& seek_memory=*sfr::active_memory;
+        const auto word=[&](uint64_t at) { return seek_memory.readable(at,4) ? seek_memory.load<uint32_t>(at) : 0u; };
+        static constexpr float targets[][2]={{1008,608},{975,600},{1040,615},{1008,580},{1008,635}};
+        constexpr uint32_t per_target=105, raise=45;
+        // The title tracks a menu cursor only once the hand has been raised
+        // above the shoulder (nui_skeleton.cpp); after a page change it has
+        // usually dropped, so raise it first and give the cursor time to wake.
+        if(hand_seek.held<raise) {
+            skeleton.place_right(0.175f,0.45f);
+            if(++hand_seek.held==raise) {
+                const uint32_t owner=word(uint64_t(hand_seek.manager)+96);
+                const uint32_t hands=owner ? word(uint64_t(owner)+112) : 0;
+                std::cerr << "NUI_HAND_SEEK raised cursor_state=" << (hands ? word(uint64_t(hands)+116+100) : ~0u) << '\n';
+            }
+        }
+        const uint32_t target=hand_seek.step/per_target, at=hand_seek.step%per_target;
+        if(hand_seek.held<raise) {
+        } else if(target>=sizeof(targets)/sizeof(targets[0])) {
+            std::cerr << "NUI_HAND_SEEK done button=0x" << std::hex << hand_seek.button << std::dec << '\n';
+            hand_seek={};
+        } else {
+            const float x=(targets[target][0]-312.0f)/1762.0f, y=(685.0f-targets[target][1])/1376.0f;
+            const auto hand=skeleton.hand(true);
+            if(at<30) {
+                const float t=float(at+1)/30.0f;
+                skeleton.place_right(hand[0]+(x-hand[0])*t,hand[1]+(y-hand[1])*t);
+            } else if(at<90) {
+                if(at==30) {
+                    const uint32_t owner=word(uint64_t(hand_seek.manager)+96);
+                    const uint32_t hands=owner ? word(uint64_t(owner)+112) : 0;
+                    std::cerr << "NUI_HAND_SEEK push px=" << targets[target][0] << ',' << targets[target][1]
+                              << " cursor_state=" << (hands ? word(uint64_t(hands)+116+100) : ~0u) << '\n';
+                }
+                skeleton.place_right(x,y,2.25f-0.35f*float(at-30)/60.0f);
+            } else {
+                skeleton.place_right(x,y);
+            }
+            ++hand_seek.step;
+        }
+    }
     if(was_reversed!=player_routing.reversed())
         std::cerr << "NUI_PLAYER_ROUTING first_tracking_id=" << (player_routing.reversed()?2:1)
                   << " second_tracking_id=" << (player_routing.reversed()?1:2) << '\n';
@@ -1029,6 +1088,31 @@ SFR_MENU_HOOK(sub_824578F0) {
             std::cerr << '\n';
         } catch(const std::exception& error) {
             std::cerr << "NUI_MENU_LEAVE unreadable: " << error.what() << '\n';
+        }
+    }
+    // SFR_HAND_SEEK=1 (experimental, docs/xbox-live.md): A on a page whose
+    // only button takes the hand (the Quick Match lobby entry) sends the
+    // emulated hand to it with a push. Not yet known to press it.
+    static const bool hand_seek_enabled=[] { const char* t=std::getenv("SFR_HAND_SEEK"); return t && *t=='1'; }();
+    if(hand_seek_enabled && (pressed & button::a) && !hand_seek.button) {
+        // The player's page: does it have a button A can say "ok" to?
+        const uint32_t page=call_guest(ctx,base,sub_82457348,manager,0);
+        uint32_t hand_only=0;
+        bool spoken=false;
+        if(page) {
+            const uint32_t b0=memory.load<uint32_t>(page+300), b1=memory.load<uint32_t>(page+304);
+            for(uint32_t slot=b0; slot<b1 && slot-b0<8*64; slot+=8) {
+                const uint32_t b=memory.load<uint32_t>(slot);
+                if(!b) continue;
+                const uint32_t state=memory.load<uint32_t>(b+308);
+                if(state & 0x800000) spoken=true;
+                else if(memory.load<uint32_t>(b+312)==2 && !hand_only) hand_only=b;
+            }
+        }
+        if(hand_only && !spoken) {
+            hand_seek={hand_only,manager,0,0};
+            std::cerr << "NUI_HAND_SEEK start button=0x" << std::hex << hand_only << std::dec
+                      << " type=" << memory.load<uint32_t>(hand_only+288) << '\n';
         }
     }
     if(pressed & button::y) {

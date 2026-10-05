@@ -63,6 +63,8 @@ public:
     uint32_t reference(uint32_t handle, uint32_t type, uint32_t output);
     void dereference(uint32_t object);
     uint32_t references(uint32_t object) const;
+    // NtDuplicateObject: a further handle to the same thread (status).
+    uint32_t duplicate(uint32_t handle, uint32_t& duplicate);
     uint32_t close(uint32_t handle);
     int32_t set_priority(uint32_t object, int32_t increment);
     int32_t priority(uint32_t object) const;
