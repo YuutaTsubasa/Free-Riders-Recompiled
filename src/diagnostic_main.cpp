@@ -4576,6 +4576,61 @@ int main(int argc, char** argv) {
                     std::cerr << "HOST_PROFILE rva=0x" << std::hex << offset << std::dec << ' ' << count << '\n';
             });
 #endif
+#ifdef _WIN32
+            // SFR_STALL_MS=N: when no frame has been presented for N ms, every
+            // 100 ms each guest thread's host stack (return addresses as
+            // offsets into the executable; a /MAP link names them), to find
+            // what holds a frame for seconds without any lock or wait
+            // showing it.
+            std::jthread stall_sampler([](std::stop_token stop) {
+                const uint64_t stall_ms = sfr::limit_from_environment("SFR_STALL_MS", 0);
+                if (!stall_ms) return;
+                const auto module = uint64_t(GetModuleHandleW(nullptr));
+                uint32_t seen = sfr::present_count.load();
+                auto moved = std::chrono::steady_clock::now();
+                while (!stop.stop_requested()) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    const uint32_t now_count = sfr::present_count.load();
+                    const auto now = std::chrono::steady_clock::now();
+                    if (now_count != seen) { seen = now_count; moved = now; continue; }
+                    const auto stalled = std::chrono::duration_cast<std::chrono::milliseconds>(now - moved).count();
+                    if (uint64_t(stalled) < stall_ms) continue;
+                    for (unsigned id = 1; id < 64; ++id) {
+                        const HANDLE thread = sfr::guest_host_threads[id].load(std::memory_order_relaxed);
+                        if (!thread || SuspendThread(thread) == DWORD(-1)) continue;
+                        // Nothing that allocates or prints while it is suspended.
+                        std::array<uint64_t, 16> frames{};
+                        size_t depth = 0;
+                        CONTEXT context{};
+                        context.ContextFlags = CONTEXT_FULL;
+                        if (GetThreadContext(thread, &context)) {
+                            for (; depth < frames.size() && context.Rip; ++depth) {
+                                frames[depth] = context.Rip;
+                                DWORD64 image = 0;
+                                PRUNTIME_FUNCTION entry = RtlLookupFunctionEntry(context.Rip, &image, nullptr);
+                                if (!entry) {
+                                    context.Rip = *reinterpret_cast<DWORD64*>(context.Rsp);
+                                    context.Rsp += 8;
+                                    continue;
+                                }
+                                void* handler = nullptr;
+                                DWORD64 establisher = 0;
+                                RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, context.Rip, entry, &context, &handler,
+                                                 &establisher, nullptr);
+                            }
+                        }
+                        ResumeThread(thread);
+                        std::ostringstream line;
+                        line << "STALL_STACK ms=" << stalled << " presents=" << seen << " guest=" << id << std::hex;
+                        for (size_t i = 0; i < depth; ++i) {
+                            if (frames[i] >= module && frames[i] - module < 0x40000000) line << " exe+0x" << frames[i] - module;
+                            else line << " 0x" << frames[i];
+                        }
+                        std::cerr << line.str() << std::endl;
+                    }
+                }
+            });
+#endif
             std::jthread profiler([](std::stop_token stop) {
                 if (!std::getenv("SFR_SAMPLE_PROFILE")) return;
                 std::unordered_map<uint64_t, uint64_t> samples;

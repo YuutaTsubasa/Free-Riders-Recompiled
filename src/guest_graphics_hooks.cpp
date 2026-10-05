@@ -88,6 +88,32 @@ void write_framebuffer(const char* path) {
     out.write(reinterpret_cast<const char*>(rows),std::streamsize(size));
 }
 
+// SFR_WHITE_FRAME_TRACE=<file%d.bmp>: read every presented frame back and,
+// when nearly all of it is white (mean of a sample of pixels above 240),
+// write it and say so with the frame before's mean. Diagnostic only: the
+// readback each frame costs a few milliseconds.
+void trace_white_frames() {
+    static const char* path=std::getenv("SFR_WHITE_FRAME_TRACE");
+    if(!path || !*path) return;
+    static uint32_t presents=0, written=0;
+    static double previous=-1;
+    ++presents;
+    const auto pixels=graphics().presentation().readback_color();
+    if(pixels.empty()) return;
+    uint64_t sum=0, count=0;
+    for(size_t i=0;i+2<pixels.size();i+=4*97) { sum+=pixels[i]+pixels[i+1]+pixels[i+2]; count+=3; }
+    const double mean=count ? double(sum)/double(count) : 0;
+    if(mean>240 && previous>=0 && previous<200 && written<20) {
+        char numbered[1024];
+        std::snprintf(numbered,sizeof numbered,path,int(presents));
+        write_framebuffer(numbered);
+        ++written;
+        std::cerr << "WHITE_FRAME present=" << presents << " frame=" << sfr::present_count.load() << " mean=" << mean
+                  << " previous=" << previous << '\n';
+    }
+    previous=mean;
+}
+
 // SFR_SCREENSHOT=<file.bmp>: write every 60th presented frame (a GPU readback
 // each frame would dominate the frame time); the last one written remains.
 void save_screenshot() {
@@ -383,6 +409,7 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
     // Preload in the menu; actual geometry is drawn in the Avatar's pass.
     graphics().presentation().prepare_player_model();
     save_screenshot();
+    trace_white_frames();
     // Submitting the frame and waiting for it: what the CPU spends beyond
     // recording, which is where a GPU-bound frame shows up.
     const auto present_start=std::chrono::steady_clock::now();
