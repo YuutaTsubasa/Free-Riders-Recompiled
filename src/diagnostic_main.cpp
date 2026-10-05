@@ -4578,14 +4578,17 @@ int main(int argc, char** argv) {
 #endif
 #ifdef _WIN32
             // SFR_STALL_MS=N: when no frame has been presented for N ms, every
-            // 100 ms each guest thread's host stack (return addresses as
-            // offsets into the executable; a /MAP link names them), to find
-            // what holds a frame for seconds without any lock or wait
-            // showing it.
+            // 100 ms each guest thread's instruction pointer and the code
+            // addresses on its stack (offsets into the executable; a /MAP
+            // link names them), to find what holds a frame for seconds
+            // without any lock or wait showing it.
             std::jthread stall_sampler([](std::stop_token stop) {
                 const uint64_t stall_ms = sfr::limit_from_environment("SFR_STALL_MS", 0);
                 if (!stall_ms) return;
                 const auto module = uint64_t(GetModuleHandleW(nullptr));
+                const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(module);
+                const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(module + dos->e_lfanew);
+                const uint64_t image_begin = module, image_end = module + nt->OptionalHeader.SizeOfImage;
                 uint32_t seen = sfr::present_count.load();
                 auto moved = std::chrono::steady_clock::now();
                 while (!stop.stop_requested()) {
@@ -4598,25 +4601,26 @@ int main(int argc, char** argv) {
                     for (unsigned id = 1; id < 64; ++id) {
                         const HANDLE thread = sfr::guest_host_threads[id].load(std::memory_order_relaxed);
                         if (!thread || SuspendThread(thread) == DWORD(-1)) continue;
-                        // Nothing that allocates or prints while it is suspended.
+                        // Nothing that allocates, prints or takes a lock while it
+                        // is suspended (unwinding through RtlLookupFunctionEntry
+                        // could wait on a lock the thread holds): the
+                        // instruction pointer, then the words on its stack that
+                        // point into the executable, nearest first.
                         std::array<uint64_t, 16> frames{};
                         size_t depth = 0;
                         CONTEXT context{};
-                        context.ContextFlags = CONTEXT_FULL;
+                        context.ContextFlags = CONTEXT_CONTROL;
                         if (GetThreadContext(thread, &context)) {
-                            for (; depth < frames.size() && context.Rip; ++depth) {
-                                frames[depth] = context.Rip;
-                                DWORD64 image = 0;
-                                PRUNTIME_FUNCTION entry = RtlLookupFunctionEntry(context.Rip, &image, nullptr);
-                                if (!entry) {
-                                    context.Rip = *reinterpret_cast<DWORD64*>(context.Rsp);
-                                    context.Rsp += 8;
-                                    continue;
-                                }
-                                void* handler = nullptr;
-                                DWORD64 establisher = 0;
-                                RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, context.Rip, entry, &context, &handler,
-                                                 &establisher, nullptr);
+                            frames[depth++] = context.Rip;
+                            const auto* stack = reinterpret_cast<const uint64_t*>(context.Rsp);
+                            // Only as far as the stack's committed region goes.
+                            MEMORY_BASIC_INFORMATION region{};
+                            size_t words = 0;
+                            if (VirtualQuery(stack, &region, sizeof region) && region.State == MEM_COMMIT)
+                                words = (uint64_t(region.BaseAddress) + region.RegionSize - context.Rsp) / 8;
+                            for (size_t i = 0; i < 2048 && i < words && depth < frames.size(); ++i) {
+                                const uint64_t word = stack[i];
+                                if (word > image_begin && word < image_end) frames[depth++] = word;
                             }
                         }
                         ResumeThread(thread);
