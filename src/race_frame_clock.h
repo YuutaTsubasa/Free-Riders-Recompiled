@@ -37,19 +37,30 @@ public:
         const uint64_t elapsed_ns = first ? 0 : now_ns - previous_ns_;
         scene_ = scene;
         previous_ns_ = now_ns;
-        if (first) return RaceFrameStep{1.0 / 60.0, 1.0f, false};
+        if (first) {
+            carry_ = 0;
+            return RaceFrameStep{1.0 / 60.0, 1.0f, false};
+        }
 
         // A stopped application must not simulate seconds in one collision
         // update. Report the omitted time so a test cannot hide that drift.
         // Keep the lower bound positive: zero selects the title's unrelated
         // integer-quantized fallback when used as an original forced step.
         const uint64_t bounded_ns = std::clamp<uint64_t>(elapsed_ns, 1'000, 250'000'000);
-        return RaceFrameStep{double(elapsed_ns) * 1e-9,
-                             float(double(bounded_ns) * 60e-9),
-                             bounded_ns != elapsed_ns};
+        // A step within a tenth of one original frame is exactly one frame,
+        // the rest carried into the next steps (so elapsed time is kept).
+        // At the 60 fps the title was made for, the race then steps exactly
+        // as on the console: some of its physics scale an impulse by the
+        // step, and a takeoff on a frame a little longer than 1/60 s threw
+        // a charged jump off the side of Rocky Ridge.
+        const double wanted = double(bounded_ns) * 60e-9 + carry_;
+        const double frames = std::fabs(wanted - 1.0) <= 0.1 ? 1.0 : wanted;
+        carry_ = wanted - frames;
+        return RaceFrameStep{double(elapsed_ns) * 1e-9, float(frames), bounded_ns != elapsed_ns};
     }
 private:
     uint64_t scene_ = 0;
     uint64_t previous_ns_ = 0;
+    double carry_ = 0;  // time owed to (or ahead of) the steps given so far, in frames
 };
 }

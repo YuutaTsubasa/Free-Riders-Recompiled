@@ -139,6 +139,11 @@ template<class F> void for_each_menu_button(sfr::GuestMemory& memory, uint32_t m
 uint32_t menu_manager=0;        // last manager whose update ran
 uint64_t menu_manager_frame=0;  // input update count at that time
 uint64_t input_frames=0;
+// The hand-pointer dialog (823EF348) last asked at this input update, and
+// its layout: while one is up, the buttons it answers to are its alone.
+uint64_t dialog_frame=0;
+uint32_t dialog_layout=0;
+bool dialog_seen=false;
 }
 
 
@@ -678,6 +683,12 @@ SFR_MENU_HOOK(sub_82494658) {
     pressed=edges.update(sfr::nui_gamepad().buttons);
     ++input_frames;
     uint16_t spoken=pressed;
+    // A (and B for a yes/no dialog) of an open hand-pointer dialog are the
+    // dialog's (823EF348 below). Spoken as well, one press both answered the
+    // pause menu's Retry confirmation by voice and chose "yes" again: the
+    // confirmation came back during the restart and stayed on screen.
+    if(dialog_seen && input_frames-dialog_frame<=2)
+        spoken&=uint16_t(~(sfr::gamepad_button::a | (dialog_layout==4 ? sfr::gamepad_button::b : 0)));
     // B of a menu with a back button is that button's (824578F0 below).
     if((pressed & sfr::gamepad_button::b) && menu_manager && input_frames-menu_manager_frame<=2) {
         bool back=false;
@@ -776,7 +787,9 @@ SFR_MENU_HOOK(sub_823EF348) {
     sfr::enter_function(ctx,"sub_823EF348",0x823EF348);
     auto& memory=*sfr::active_memory;
     const uint32_t dialog=ctx.r3.u32;
-    const int slot=ctx.r4.u32 ? sfr::dialog_choice(pressed,memory.load<uint32_t>(uint64_t(dialog)+124)) : -1;
+    const uint32_t layout=memory.load<uint32_t>(uint64_t(dialog)+124);
+    if(ctx.r4.u32) { dialog_frame=input_frames; dialog_layout=layout; dialog_seen=true; }
+    const int slot=ctx.r4.u32 ? sfr::dialog_choice(pressed,layout) : -1;
     if(slot<0) { __imp__sub_823EF348(ctx,base); return; }
     pressed=0;  // one choice per press
     PPCContext saved=ctx;

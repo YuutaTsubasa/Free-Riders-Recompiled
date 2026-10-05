@@ -33,7 +33,7 @@
 | 改遊戲 | 重編譯期 mid-asm hook（`config/freeriders.toml`）＋函式 hook（`SFR_*_HOOK`，等同 `GUEST_FUNCTION_HOOK`） | 第 5 階段 | 間接呼叫的修補保留為函式 hook |
 | Render target／resolve | 每個 surface 一張 target，延遲／別名 resolve，深度 resolve | 第 1 階段；Thor GPU 39 → 22 ms，比賽有陰影 | Marathon 不縮放解析度，本專案保留 `SFR_RENDER_SCALE` |
 | 渲染執行緒 | 所有後端預設開（2026-10-05 起含 Windows Vulkan） | 桌機 Vulkan 整場比賽；Thor A/B/A | — |
-| 時間 | 比賽與 UI 依經過時間前進（2026-10-05 起桌機也預設開，`SFR_REALTIME_RACE=0` 關閉） | 桌機預設時鐘整場比賽；時鐘單元測試涵蓋 120／60／30／20 fps | — （120 fps 上限的桌機比賽：開賽 84 秒時 HUD 1:07.06，60 fps 時 74.5 秒 0:56.69，兩者都只差開賽前的倒數） |
+| 時間 | Android 的比賽依經過時間前進；桌機（啟動器固定 60 fps）回到每格一個原始幀（`SFR_REALTIME_RACE=1` 可開） | 實際時間模式下，離 1 不到一成的步長當成剛好 1，差額帶到之後（`race_frame_clock_test`） | 與 Unleashed 不同：v0.5.0 起桌機預設依經過時間，Rocky Ridge 兩旁集氣起跳會飛出場外，關掉就正常（v0.5.3 改回） |
 
 ## 不能照搬的地方（本專案已經量過、不能退回的）
 

@@ -125,6 +125,8 @@ with [docs/progress.md](docs/progress.md).
   Fixed air tricks with a controller: turning the left stick in the air now raises a jump's rating, as turning the body does with Kinect. Also integrates a faster guest-memory path for the checked (debugging) build.
 - [v0.5.2 — Air trick landing fix](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.5.2)
   Spinning the left stick for an air trick no longer leans or accelerates the board, which had carried trick jumps off the side of Rocky Ridge out of the course.
+- [v0.5.3 — Jump physics and Retry fix](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.5.3)
+  Desktop races step one original frame at a time again, so charged jumps off the side of Rocky Ridge land back on the course. Retrying a race from the pause menu no longer brings the confirmation back and leaves it stuck on screen.
 
 ## System Requirements
 
