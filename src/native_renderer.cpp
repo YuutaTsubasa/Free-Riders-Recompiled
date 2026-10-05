@@ -43,7 +43,7 @@ namespace sfr {
 namespace {
 // Same binding model as Marathon Recompiled's D3D12 backend for XenosRecomp
 // shaders: one bindless texture set bound as spaces 0..2 (2D, 2D array, cube),
-// samplers in space 3, the survey UAV in space 4, and b0..b2 in space 4.
+// samplers in space 3, the survey UAV in space 4 (D3D12 only), and b0..b2 in space 4.
 constexpr uint32_t texture_capacity = 4096, sampler_capacity = 256;
 constexpr uint32_t null_2d = 0, null_2d_array = 1, null_cube = 2, first_texture = 3;
 constexpr uint32_t zero_slot = 15;
@@ -598,12 +598,19 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
     samplers.end(true, sampler_capacity);
     impl_->samplers = samplers.create(&device);
     layout.addDescriptorSet(samplers);
-    plume::RenderDescriptorSetBuilder survey;
-    survey.begin();
-    survey.addReadWriteStructuredBuffer(0);
-    survey.end();
-    impl_->survey = survey.create(&device);
-    layout.addDescriptorSet(survey);
+    // The survey UAV (space 4) is a fifth set, and Vulkan allows as few as
+    // four: Mali-G57 reports maxBoundDescriptorSets=4, and its driver crashed
+    // making this layout (Issue #1). No SPIR-V in the pack uses a set past 3,
+    // so Vulkan leaves it out; D3D12 has no such limit and keeps it.
+    const bool survey_set = graphics.backend() != GraphicsBackend::vulkan;
+    if (survey_set) {
+        plume::RenderDescriptorSetBuilder survey;
+        survey.begin();
+        survey.addReadWriteStructuredBuffer(0);
+        survey.end();
+        impl_->survey = survey.create(&device);
+        layout.addDescriptorSet(survey);
+    }
     if (graphics.backend() == GraphicsBackend::vulkan) {
         // XenosRecomp's SPIR-V reads its constants through buffer addresses
         // in push constants: vertex, pixel and shared, and the two this
@@ -621,13 +628,15 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
     }
     layout.end();
     impl_->layout = layout.create(&device);
-    if (!impl_->layout || !impl_->textures || !impl_->samplers || !impl_->survey)
+    if (!impl_->layout || !impl_->textures || !impl_->samplers || (survey_set && !impl_->survey))
         unsupported(0, "native draw pipeline layout creation failed");
 
-    impl_->survey_buffer = device.createBuffer(plume::RenderBufferDesc::DefaultBuffer(
-        1024 * sizeof(uint32_t), plume::RenderBufferFlag::STORAGE | plume::RenderBufferFlag::UNORDERED_ACCESS));
-    const plume::RenderBufferStructuredView survey_view(sizeof(uint32_t));
-    impl_->survey->setBuffer(0, impl_->survey_buffer.get(), 0, &survey_view);
+    if (survey_set) {
+        impl_->survey_buffer = device.createBuffer(plume::RenderBufferDesc::DefaultBuffer(
+            1024 * sizeof(uint32_t), plume::RenderBufferFlag::STORAGE | plume::RenderBufferFlag::UNORDERED_ACCESS));
+        const plume::RenderBufferStructuredView survey_view(sizeof(uint32_t));
+        impl_->survey->setBuffer(0, impl_->survey_buffer.get(), 0, &survey_view);
+    }
 
     // Null descriptors 0..2 read as zero, like Marathon's blank textures.
     for (uint32_t i = 0; i < 3; ++i) {
@@ -1420,7 +1429,7 @@ void NativeRenderer::draw(const NativeDraw& draw) {
             list.setGraphicsPipelineLayout(impl->layout.get());
             for (uint32_t space = 0; space < 3; ++space) list.setGraphicsDescriptorSet(impl->textures.get(), space);
             list.setGraphicsDescriptorSet(impl->samplers.get(), 3);
-            list.setGraphicsDescriptorSet(impl->survey.get(), 4);
+            if (impl->survey) list.setGraphicsDescriptorSet(impl->survey.get(), 4);
             const plume::RenderVertexBufferView zeros(plume::RenderBufferReference(impl->zero_buffer.get(), 0), 256);
             list.setVertexBuffers(zero_slot, &zeros, 1, &slots[1]);
             impl->bound_pipeline = nullptr;

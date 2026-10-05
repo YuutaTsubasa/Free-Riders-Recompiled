@@ -129,6 +129,8 @@ with [docs/progress.md](docs/progress.md).
   Desktop races step one original frame at a time again, so charged jumps off the side of Rocky Ridge land back on the course. Retrying a race from the pause menu no longer brings the confirmation back and leaves it stuck on screen.
 - [v0.5.4 — Grey flash fix](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.5.4)
   Removed the single frames of flat grey that flashed now and then during races: a HUD sprite the game parks far off screen was sometimes drawn across the whole screen. Added diagnostics for stalls and single-colour frames.
+- [v0.5.5 — Mali GPU start-up fix](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.5.5)
+  Android phones and tablets with a Mali-G57 GPU (Helio G99, such as the Galaxy Tab A9) no longer crash at start-up: the renderer asked for one more descriptor set than these GPUs allow. The log now names each graphics start-up step.
 
 ## System Requirements
 

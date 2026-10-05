@@ -15,6 +15,7 @@
 #include <string>
 
 int sfr_game_main(int argc, char** argv);
+int sfr_graphics_selftest();
 
 extern "C" int SDL_main(int, char**) {
     const char* root = SDL_AndroidGetExternalStoragePath();
@@ -34,7 +35,10 @@ extern "C" int SDL_main(int, char**) {
     char program[] = "FreeRiders", image[] = "game/image", assets[] = "game/assets";
     char* arguments[] = {program, image, assets, region_argument.data(), nullptr};
     __android_log_print(ANDROID_LOG_INFO, "FreeRiders", "starting in %s", root);
-    const int code = sfr_game_main(4, arguments);
+    // GraphicsTestActivity (a Firebase Test Lab game loop) asks for the
+    // graphics start-up alone (graphics_selftest.cpp), which needs no game.
+    const char* selftest = std::getenv("SFR_GRAPHICS_SELFTEST");
+    const int code = selftest && *selftest == '1' ? sfr_graphics_selftest() : sfr_game_main(4, arguments);
     std::fflush(stderr);
     __android_log_print(ANDROID_LOG_INFO, "FreeRiders", "game exited with %d (see game.log)", code);
     // End the game's process (android:process=":game"): the next run needs

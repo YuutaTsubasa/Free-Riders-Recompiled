@@ -1161,7 +1161,12 @@ NativePresentation::NativePresentation(NativeGraphics& graphics, uint32_t width,
             throw std::runtime_error("native graphics has unavailable D3D12 handles");
     }
 #endif
+    // Each step is named before it runs: a driver that dies inside one
+    // leaves the log at its name (Issue #1, a Mali-G57 that stops silently here).
+    const auto step = [](const char* name) { std::cerr << "NATIVE_PRESENTATION step=" << name << '\n'; };
+    step("raster_state");
     implementation->raster_state = std::make_unique<NativeRasterState>(graphics, width, height);
+    step("window");
 
 #ifdef _WIN32
     ensure_window_class();
@@ -1210,6 +1215,7 @@ NativePresentation::NativePresentation(NativeGraphics& graphics, uint32_t width,
 #else
     plume::RenderWindow render_window = implementation->window;
 #endif
+    step("swap_chain");
     implementation->swap_chain = graphics.queue().createSwapChain(
         render_window, 3, swap_chain_format, 2);
     if (!implementation->swap_chain) unavailable("swap chain wrapper");
@@ -1227,6 +1233,7 @@ NativePresentation::NativePresentation(NativeGraphics& graphics, uint32_t width,
 #endif
     if (!d3d12) {
         // Plume's Vulkan swap chain makes its images at the first resize.
+        step("swap_chain_images");
         if (!implementation->swap_chain->resize()) unavailable("Vulkan swap chain images");
         implementation->rebuild_swap_chain_sync();
     }
@@ -1238,6 +1245,7 @@ NativePresentation::NativePresentation(NativeGraphics& graphics, uint32_t width,
     if (const char* fullscreen = std::getenv("SFR_FULLSCREEN"); fullscreen && *fullscreen == '1')
         implementation->start_fullscreen = true;
 
+    step("targets");
     implementation->color = graphics.device().createTexture(
         plume::RenderTextureDesc::ColorTarget(implementation->render_width, implementation->render_height, plume::RenderFormat::B8G8R8A8_UNORM));
     implementation->depth = graphics.device().createTexture(
@@ -1252,6 +1260,7 @@ NativePresentation::NativePresentation(NativeGraphics& graphics, uint32_t width,
 
     const plume::RenderTexture* color_attachment = implementation->color.get();
     plume::RenderFramebufferDesc framebuffer_desc(&color_attachment, 1, implementation->depth.get());
+    step("framebuffer");
     implementation->framebuffer = graphics.device().createFramebuffer(framebuffer_desc);
     implementation->command_list = graphics.queue().createCommandList();
     implementation->fence = graphics.device().createCommandFence();
@@ -1275,6 +1284,7 @@ NativePresentation::NativePresentation(NativeGraphics& graphics, uint32_t width,
         if (!native_fence->d3d || !native_fence->fenceEvent) unavailable("command fence");
     }
 #endif
+    step("ready");
     implementation->ready = true;
     impl_ = std::move(implementation);
 }
