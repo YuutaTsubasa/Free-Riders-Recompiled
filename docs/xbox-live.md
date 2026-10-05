@@ -19,10 +19,34 @@ In the game, open **Main Menu → Xbox LIVE**:
 
 - **Create Match** opens a lobby.
 - **Quick Match** on another device finds that lobby.
-- The found lobby is a **hand-only** button. It has no voice word, so A (or
-  "ok") cannot press it. With a pad, press **A** on that page and the hand
-  cursor moves onto the lobby and holds there until the game selects it
-  (`NUI_HAND_SEEK` in the log). The right stick moves the cursor by hand.
+- The found lobby is pressed by the **hand cursor**, not a voice word, so A
+  (or "ok") does nothing there.
+  - With a pad: raise the cursor with the right stick, then move it onto the
+    → arrow.
+  - Scripted runs use `SFR_HAND_SEEK=1`: A then raises the hand, glides the
+    cursor onto the arrow and pushes (`NUI_HAND_SEEK` in the log).
+
+## Status (2026-10-06 morning)
+
+**Works:**
+- Create Match opens a lobby.
+- Quick Match on another game finds it, with the host's name, course,
+  players, laps and a 3-bar signal.
+- Moving the cursor onto the → arrow joins:
+  1. the guest creates its session and sends its 114-byte join request over
+     the relay;
+  2. the host adds it as a remote member;
+  3. the host reads its profile settings.
+
+**Not yet:** right after that read, the host leaves its own lobby (back to
+the Xbox LIVE menu, with no dialog) and deletes the session. The guest then
+gives up as well. The host never sends a reply.
+
+Candidates:
+- a profile setting the host checks, such as avatar info 0x63E80044 (now
+  answered as 1000 zero bytes);
+- a reply path that fails silently;
+- a session call the host makes after the join and does not like.
 
 A standalone server for a machine that does not play is in
 `scripts/live_server.py`:
