@@ -104,9 +104,34 @@ void ui_timelines_keep_time_and_events() {
     }
 }
 }
+// At about 60 fps a frame's step is exactly one original frame: a little
+// jitter (15.2 to 18.2 ms) never reaches the physics, and the time it owes is
+// carried, not lost. Rates far from 60 keep their fractional steps.
+void sixty_fps_steps_whole_frames() {
+    constexpr std::array<uint64_t,6> jitter{15'200'000,18'200'000,16'000'000,17'400'000,16'900'000,16'300'000};
+    sfr::RaceFrameClock clock;
+    uint64_t now=0; double simulation=0; unsigned whole=0;
+    clock.update(now,3);
+    for (int i=0;i<6000;++i) {
+        now+=jitter[i%jitter.size()];
+        const float frames=clock.update(now,3)->frames;
+        whole+=frames==1.0f;
+        simulation+=frames/60.0;
+    }
+    require(whole==6000,"every step near 60 fps is exactly one frame");
+    near(simulation,double(now)*1e-9,0.002,"whole frames keep the race on real time");
+    sfr::RaceFrameClock fast;
+    fast.update(0,4);
+    near(fast.update(8'333'333,4)->frames,0.5,1e-4,"120 fps keeps half steps");
+    sfr::RaceFrameClock slow;
+    slow.update(0,5);
+    near(slow.update(25'000'000,5)->frames,1.5,1e-4,"40 fps keeps its longer steps");
+}
+
 int main() {
     try {
         transitions(); elapsed_time_is_preserved(); discontinuities_are_bounded_and_observable();
+        sixty_fps_steps_whole_frames();
         ui_timelines_keep_time_and_events();
         std::cout << "Race frame clock checks passed\n";
     } catch(const std::exception& error) {

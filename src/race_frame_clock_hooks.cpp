@@ -13,14 +13,19 @@ namespace {
 std::atomic<float> race_ui_frames{1.0f};
 thread_local bool updating_race_ui = false;
 
-// On unless SFR_REALTIME_RACE=0, on every platform: the race steps by the
-// time that passed, as Unleashed and Marathon Recompiled step theirs by delta
-// time, so a frame rate under 60 no longer slows the race and one above it
-// no longer speeds it up.
+// Android steps the race by the time that passed (SFR_REALTIME_RACE=0 turns
+// it off), so a frame rate under 60 does not slow the race. Desktops, held
+// at the launcher's 60 fps, step one original frame at a time unless
+// SFR_REALTIME_RACE=1: v0.5.0 made elapsed time the default there too, and
+// a charged jump off the side of Rocky Ridge then flew out of the course.
 bool realtime_races() {
     static const bool enabled = [] {
-        const char* value = std::getenv("SFR_REALTIME_RACE");
-        return !value || (*value && *value != '0');
+        if (const char* value = std::getenv("SFR_REALTIME_RACE")) return *value && *value != '0';
+#ifdef __ANDROID__
+        return true;
+#else
+        return false;
+#endif
     }();
     return enabled;
 }
