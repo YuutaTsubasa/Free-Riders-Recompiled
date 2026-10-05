@@ -865,7 +865,7 @@ if(SFR_BUILD_DIAGNOSTIC)
     if(ANDROID)
         # The game is libmain.so; SDL's activity calls its SDL_main
         # (src/android_main.cpp), which sets up and calls the usual main.
-        add_library(sfr_cpu_diagnostic SHARED src/android_main.cpp)
+        add_library(sfr_cpu_diagnostic SHARED src/android_main.cpp src/graphics_selftest.cpp)
         set_target_properties(sfr_cpu_diagnostic PROPERTIES OUTPUT_NAME main)
         set_source_files_properties(src/diagnostic_main.cpp PROPERTIES COMPILE_DEFINITIONS main=sfr_game_main)
         target_link_libraries(sfr_cpu_diagnostic PRIVATE android log ${SFR_CAMERA_LIBRARIES})

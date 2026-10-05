@@ -47,6 +47,9 @@ public class GameActivity extends SDLActivity {
             for (String name : new String[] { "settings.env", "debug.env" }) readEnvironment(new File(directory, name));
         }
         for (String[] setting : DEFAULTS) setenv(setting[0], setting[1], false);
+        // GraphicsTestActivity: the graphics start-up alone (graphics_selftest.cpp).
+        if (getIntent() != null && getIntent().getBooleanExtra(GraphicsTestActivity.EXTRA, false))
+            setenv("SFR_GRAPHICS_SELFTEST", "1", true);
         super.loadLibraries();
     }
 

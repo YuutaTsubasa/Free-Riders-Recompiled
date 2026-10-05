@@ -46,5 +46,16 @@
                 <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
             </intent-filter>
         </activity>
+        <!-- The graphics start-up without the game, for Firebase Test Lab's
+             game-loop tests (GraphicsTestActivity). -->
+        <activity android:name=".GraphicsTestActivity"
+            android:screenOrientation="sensorLandscape"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.google.intent.action.TEST_LOOP" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/javascript" />
+            </intent-filter>
+        </activity>
     </application>
 </manifest>
