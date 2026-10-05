@@ -88,6 +88,83 @@ void write_framebuffer(const char* path) {
     out.write(reinterpret_cast<const char*>(rows),std::streamsize(size));
 }
 
+// SFR_FLAT_FRAME_TRACE=<file%d.bmp>: read every presented frame back and,
+// when it is nearly one colour (the spread of a sample of pixels' brightness
+// under 8, any colour: white, beige, black) right after a frame that was not
+// (spread over 25), write it and say so with its colour and the frames
+// around it. Diagnostic only: the readback each frame costs a few ms.
+// What each draw of the last two frames was, for SFR_FLAT_FRAME_TRACE to
+// print when a frame comes out one colour.
+struct FlatDraw {
+    uint32_t lr, vs, ps, t0, t1, t2, t3, target, count; bool blend; uint8_t mask;
+    // The first texture as the title fetches it, the first vertex's words and
+    // the first pixel constant (draws only).
+    uint32_t base=0, width=0, height=0, format=0;
+    std::array<uint32_t,6> vertex{};
+    std::array<float,4> constant{};
+};
+std::vector<FlatDraw> flat_current, flat_previous;
+bool flat_trace_enabled() {
+    static const bool on=[]{ const char* t=std::getenv("SFR_FLAT_FRAME_TRACE"); return t && *t; }();
+    return on;
+}
+void print_flat_draws(const char* which, const std::vector<FlatDraw>& draws) {
+    const size_t first=0;
+    for(size_t i=first;i<draws.size();++i) {
+        const auto& d=draws[i];
+        std::cerr << "FLAT_DRAW " << which << " index=" << i << " of=" << draws.size() << std::hex << " lr=0x" << d.lr
+                  << " vs=0x" << d.vs << " ps=0x" << d.ps << " target=0x" << d.target << std::dec
+                  << " t=" << d.t0 << ',' << d.t1 << ',' << d.t2 << ',' << d.t3 << " count=" << d.count
+                  << " blend=" << d.blend << " mask=0x" << std::hex << int(d.mask)
+                  << " base=0x" << d.base << std::dec << " size=" << d.width << 'x' << d.height << " format=" << d.format
+                  << std::hex << " vertex=" << d.vertex[0] << ',' << d.vertex[1] << ',' << d.vertex[2] << ',' << d.vertex[3]
+                  << ',' << d.vertex[4] << ',' << d.vertex[5] << std::dec << " c0=" << d.constant[0] << ',' << d.constant[1]
+                  << ',' << d.constant[2] << ',' << d.constant[3] << char(10);
+    }
+}
+
+void trace_flat_frames() {
+    static const char* path=std::getenv("SFR_FLAT_FRAME_TRACE");
+    if(!path || !*path) return;
+    static uint32_t presents=0, written=0;
+    static double previous_spread=-1;
+    static bool report_next=false;
+    ++presents;
+    const auto pixels=graphics().presentation().readback_color();
+    if(pixels.empty()) return;
+    double sum=0, square=0, channel[3]{};
+    uint64_t count=0;
+    for(size_t i=0;i+2<pixels.size();i+=4*97) {
+        const double luma=0.114*pixels[i]+0.587*pixels[i+1]+0.299*pixels[i+2];  // B, G, R
+        sum+=luma; square+=luma*luma;
+        for(int c=0;c<3;++c) channel[c]+=pixels[i+c];
+        ++count;
+    }
+    if(!count) return;
+    const double mean=sum/double(count);
+    const double spread=std::sqrt((std::max)(0.0,square/double(count)-mean*mean));
+    if(report_next) {
+        std::cerr << "FLAT_FRAME_AFTER present=" << presents << " mean=" << mean << " spread=" << spread << char(10);
+        report_next=false;
+    }
+    if(spread<8 && previous_spread>25 && written<40) {
+        char numbered[1024];
+        std::snprintf(numbered,sizeof numbered,path,int(presents));
+        write_framebuffer(numbered);
+        ++written;
+        report_next=true;
+        print_flat_draws("previous",flat_previous);
+        print_flat_draws("flat",flat_current);
+        std::cerr << "FLAT_FRAME present=" << presents << " frame=" << sfr::present_count.load() << " mean=" << mean
+                  << " spread=" << spread << " previous_spread=" << previous_spread << " rgb="
+                  << int(channel[2]/double(count)) << ',' << int(channel[1]/double(count)) << ',' << int(channel[0]/double(count))
+                  << " racing=" << (sfr::active_memory && sfr::active_memory->load<uint32_t>(0x83E52F8C) ? 1 : 0) << char(10);
+    }
+    previous_spread=spread;
+    flat_previous.swap(flat_current);
+    flat_current.clear();
+}
+
 // SFR_SCREENSHOT=<file.bmp>: write every 60th presented frame (a GPU readback
 // each frame would dominate the frame time); the last one written remains.
 void save_screenshot() {
@@ -383,6 +460,7 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
     // Preload in the menu; actual geometry is drawn in the Avatar's pass.
     graphics().presentation().prepare_player_model();
     save_screenshot();
+    trace_flat_frames();
     // Submitting the frame and waiting for it: what the CPU spends beyond
     // recording, which is where a GPU-bound frame shows up.
     const auto present_start=std::chrono::steady_clock::now();
@@ -1084,6 +1162,19 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
                   << " t0=" << draw.shared.texture_2d[0] << " count=" << count << " blend=" << draw.blend.blendEnabled
                   << " mask=" << int(draw.write_mask) << '\n';
     if(draw.shared.texture_2d[0]) ++frame_textured_draws;
+    if(flat_trace_enabled()) {
+        FlatDraw record{uint32_t(ctx.lr),vs_object,ps_object,draw.shared.texture_2d[0],draw.shared.texture_2d[1],
+                        draw.shared.texture_2d[2],draw.shared.texture_2d[3],memory.load<uint32_t>(uint64_t(device)+0x3148),
+                        count,bool(draw.blend.blendEnabled),uint8_t(draw.write_mask)};
+        try {
+            const auto fetch=sfr::decode_texture_fetch(graphics().texture_fetch(0));
+            record.base=fetch.base_address; record.width=fetch.width; record.height=fetch.height; record.format=fetch.format;
+        } catch(...) {}
+        for(size_t i=0;i<record.vertex.size() && i*4+4<=draw.vertices.size();++i)
+            record.vertex[i]=uint32_t(draw.vertices[i*4])|draw.vertices[i*4+1]<<8|draw.vertices[i*4+2]<<16|uint32_t(draw.vertices[i*4+3])<<24;
+        for(size_t i=0;i<4;++i) record.constant[i]=std::bit_cast<float>(draw.pixel_constants[i]);
+        flat_current.push_back(record);
+    }
     static std::set<std::array<uint32_t,4>> seen;
     if(seen.insert({vs_object,ps_object,draw.shared.texture_2d[0],primitive}).second)
         std::cerr << "NATIVE_DRAW source=0x" << std::hex << source << std::dec << " primitive=" << primitive
@@ -1105,10 +1196,52 @@ static std::span<const uint8_t> guest_bytes(uint32_t address, uint64_t size) {
 }
 
 // DrawVerticesUP(device, primitive, vertex count, data, stride).
+// Whether a few vertices drawn from the CPU put a position out of all reach:
+// not finite, or beyond 1e15 in any component. A HUD sprite of the race
+// (texture 0x1393D000, drawn through 824C08A4) parks itself out of sight that
+// way, at about 1e9 most frames and about 1e25 now and then, both x and y
+// alike. The console's GPU drops such a primitive. Here a frame now and then
+// rasterized it across the whole screen, a frame of flat grey with only the
+// Kinect icon drawn after it.
+static bool position_out_of_reach(uint32_t device, std::span<const uint8_t> vertices, uint32_t count, uint32_t stride) {
+    if(count>64) return false;
+    auto& memory=*sfr::active_memory;
+    const uint32_t declaration=memory.load<uint32_t>(uint64_t(device)+11992);
+    if(!declaration) return false;
+    const uint32_t elements=memory.load<uint32_t>(uint64_t(declaration)+24);
+    for(uint32_t i=0;i<elements && i<16;++i) {
+        const uint64_t e=uint64_t(declaration)+52+12*i;
+        if(memory.load<uint16_t>(e)!=0 || memory.load<uint8_t>(e+9)!=0 || memory.load<uint8_t>(e+10)!=0) continue;  // stream 0 POSITION0
+        const uint32_t offset=memory.load<uint16_t>(e+2);
+        const auto format=sfr::declaration_format(memory.load<uint32_t>(e+4));
+        if(!format) return false;
+        const uint32_t components=format->format==plume::RenderFormat::R32G32_FLOAT ? 2
+            : format->format==plume::RenderFormat::R32G32B32_FLOAT ? 3
+            : format->format==plume::RenderFormat::R32G32B32A32_FLOAT ? 4 : 0;
+        if(!components || offset+components*4>stride) return false;
+        for(uint32_t v=0;v<count;++v)
+            for(uint32_t c=0;c<components;++c) {
+                const uint8_t* at=vertices.data()+size_t(v)*stride+offset+c*4;
+                const float value=std::bit_cast<float>(uint32_t(at[0])<<24|uint32_t(at[1])<<16|uint32_t(at[2])<<8|at[3]);
+                if(!std::isfinite(value) || std::fabs(value)>1e15f) return true;
+            }
+        return false;
+    }
+    return false;
+}
+
 SFR_GRAPHICS_HOOK(sub_824F5288) {
     sfr::enter_function(ctx,"sub_824F5288",0x824F5288);
     const uint32_t count=ctx.r5.u32, stride=ctx.r7.u32;
-    native_draw(ctx,0x824F5288,ctx.r3.u32,ctx.r4.u32,count,guest_bytes(ctx.r6.u32,uint64_t(count)*stride),stride);
+    const auto vertices=guest_bytes(ctx.r6.u32,uint64_t(count)*stride);
+    if(position_out_of_reach(ctx.r3.u32,vertices,count,stride)) {
+        static std::atomic<uint64_t> dropped{0};
+        const uint64_t n=dropped.fetch_add(1,std::memory_order_relaxed)+1;
+        if((n&(n-1))==0)
+            std::cerr << "NATIVE_DRAW_OUT_OF_REACH lr=0x" << std::hex << ctx.lr << std::dec << " count=" << n << char(10);
+        return;
+    }
+    native_draw(ctx,0x824F5288,ctx.r3.u32,ctx.r4.u32,count,vertices,stride);
 }
 
 // Stream 0 as SetStreamSource stored it: vertex fetch constant in slot 95
@@ -1318,6 +1451,9 @@ SFR_GRAPHICS_HOOK(sub_824F6DC8) {
     const bool submitted=foreign && sfr::GuestGraphics::foreign_render_targets && skip_foreign ? false
         : graphics().clear(ctx.r3.u32,ctx.r4.u32,ctx.r5.u32,ctx.r6.u32,
                            ctx.r7.u32,float(ctx.f1.f64),ctx.r9.u32);
+    // A clear in the flat-frame record: vs 0xC1EA, ps its colour, t0 its flags.
+    if(flat_trace_enabled())
+        flat_current.push_back({uint32_t(ctx.lr),0xC1EA,ctx.r7.u32,ctx.r6.u32,ctx.r4.u32,0,0,target,0,false,0});
     static const bool clear_log=[] {const char* t=std::getenv("SFR_VIEWPORT_LOG");return t && *t=='1';}();
     if(sfr::graphics_trace() || (clear_log && sfr::present_count%60==0)) std::cerr << "NATIVE_CLEAR source=0x824f6dc8 device=0x" << std::hex << ctx.r3.u32
               << " flags=0x" << ctx.r6.u32 << " argb=0x" << ctx.r7.u32
@@ -1510,6 +1646,11 @@ SFR_GRAPHICS_HOOK(sub_824FAB08) {
                       << std::dec << '\n';
         }
     }
+    // A resolve in the flat-frame record: vs 0x4E50, ps its flags, t0 its
+    // destination's base, t1 x t2 its size, t3 whether it was copied.
+    if(flat_trace_enabled())
+        flat_current.push_back({uint32_t(ctx.lr),0x4E50,flags,destination_base,width,height,uint32_t(copied),
+                                memory.load<uint32_t>(uint64_t(ctx.r3.u32)+0x3148),0,false,0});
     static std::set<uint64_t> reported;
     const uint64_t key=uint64_t(flags)<<32 | destination_base;
     if(reported.size()<64 && reported.insert(key).second)

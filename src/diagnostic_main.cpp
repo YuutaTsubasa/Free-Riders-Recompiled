@@ -4576,6 +4576,65 @@ int main(int argc, char** argv) {
                     std::cerr << "HOST_PROFILE rva=0x" << std::hex << offset << std::dec << ' ' << count << '\n';
             });
 #endif
+#ifdef _WIN32
+            // SFR_STALL_MS=N: when no frame has been presented for N ms, every
+            // 100 ms each guest thread's instruction pointer and the code
+            // addresses on its stack (offsets into the executable; a /MAP
+            // link names them), to find what holds a frame for seconds
+            // without any lock or wait showing it.
+            std::jthread stall_sampler([](std::stop_token stop) {
+                const uint64_t stall_ms = sfr::limit_from_environment("SFR_STALL_MS", 0);
+                if (!stall_ms) return;
+                const auto module = uint64_t(GetModuleHandleW(nullptr));
+                const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(module);
+                const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(module + dos->e_lfanew);
+                const uint64_t image_begin = module, image_end = module + nt->OptionalHeader.SizeOfImage;
+                uint32_t seen = sfr::present_count.load();
+                auto moved = std::chrono::steady_clock::now();
+                while (!stop.stop_requested()) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    const uint32_t now_count = sfr::present_count.load();
+                    const auto now = std::chrono::steady_clock::now();
+                    if (now_count != seen) { seen = now_count; moved = now; continue; }
+                    const auto stalled = std::chrono::duration_cast<std::chrono::milliseconds>(now - moved).count();
+                    if (uint64_t(stalled) < stall_ms) continue;
+                    for (unsigned id = 1; id < 64; ++id) {
+                        const HANDLE thread = sfr::guest_host_threads[id].load(std::memory_order_relaxed);
+                        if (!thread || SuspendThread(thread) == DWORD(-1)) continue;
+                        // Nothing that allocates, prints or takes a lock while it
+                        // is suspended (unwinding through RtlLookupFunctionEntry
+                        // could wait on a lock the thread holds): the
+                        // instruction pointer, then the words on its stack that
+                        // point into the executable, nearest first.
+                        std::array<uint64_t, 16> frames{};
+                        size_t depth = 0;
+                        CONTEXT context{};
+                        context.ContextFlags = CONTEXT_CONTROL;
+                        if (GetThreadContext(thread, &context)) {
+                            frames[depth++] = context.Rip;
+                            const auto* stack = reinterpret_cast<const uint64_t*>(context.Rsp);
+                            // Only as far as the stack's committed region goes.
+                            MEMORY_BASIC_INFORMATION region{};
+                            size_t words = 0;
+                            if (VirtualQuery(stack, &region, sizeof region) && region.State == MEM_COMMIT)
+                                words = (uint64_t(region.BaseAddress) + region.RegionSize - context.Rsp) / 8;
+                            for (size_t i = 0; i < 2048 && i < words && depth < frames.size(); ++i) {
+                                const uint64_t word = stack[i];
+                                if (word > image_begin && word < image_end) frames[depth++] = word;
+                            }
+                        }
+                        ResumeThread(thread);
+                        std::ostringstream line;
+                        line << "STALL_STACK ms=" << stalled << " presents=" << seen << " guest=" << id << std::hex;
+                        for (size_t i = 0; i < depth; ++i) {
+                            if (frames[i] >= module && frames[i] - module < 0x40000000) line << " exe+0x" << frames[i] - module;
+                            else line << " 0x" << frames[i];
+                        }
+                        std::cerr << line.str() << std::endl;
+                    }
+                }
+            });
+#endif
             std::jthread profiler([](std::stop_token stop) {
                 if (!std::getenv("SFR_SAMPLE_PROFILE")) return;
                 std::unordered_map<uint64_t, uint64_t> samples;
