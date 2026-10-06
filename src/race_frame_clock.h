@@ -11,9 +11,9 @@ void for_each_race_ui_step(float frames, Update&& update) {
     // one timeline frame. Replay intermediate updates instead of skipping
     // their actions. The callback stops on the original completion signal.
     if (!std::isfinite(frames) || frames<=0) frames=1;
-    frames=std::min(frames,15.0f);
+    frames=(std::min)(frames,15.0f);
     while(frames>0) {
-        const float step=std::min(frames,1.0f);
+        const float step=(std::min)(frames,1.0f);
         if(!update(step)) break;
         frames-=step;
     }
@@ -62,5 +62,25 @@ private:
     uint64_t scene_ = 0;
     uint64_t previous_ns_ = 0;
     double carry_ = 0;  // time owed to (or ahead of) the steps given so far, in frames
+};
+
+// SFR_PRESENT_LIMIT_RACING=N (guest_graphics_hooks.cpp): the run ends at the
+// Nth present with the title's race flag set, so the menus and the loading
+// screen, however long they take on a PC, are not counted. A limit counted
+// from the last SFR_SAY word includes the loading screen, which presents
+// hundreds of times a second on a fast PC and a few dozen on a slow one.
+class RacePresentLimit {
+public:
+    explicit RacePresentLimit(uint32_t limit) : limit_(limit) {}
+    // Counts this present; true once the limit is reached (never with 0).
+    bool reached(bool racing) {
+        if (!limit_) return false;
+        if (racing) ++counted_;
+        return counted_ >= limit_;
+    }
+    uint32_t counted() const { return counted_; }
+private:
+    uint32_t limit_;
+    uint32_t counted_ = 0;
 };
 }
