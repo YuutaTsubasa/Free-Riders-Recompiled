@@ -131,6 +131,8 @@ with [docs/progress.md](docs/progress.md).
   Removed the single frames of flat grey that flashed now and then during races: a HUD sprite the game parks far off screen was sometimes drawn across the whole screen. Added diagnostics for stalls and single-colour frames.
 - [v0.5.5 — Mali GPU start-up fix](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.5.5)
   Android phones and tablets with a Mali-G57 GPU (Helio G99, such as the Galaxy Tab A9) no longer crash at start-up: the renderer asked for one more descriptor set than these GPUs allow. The log now names each graphics start-up step.
+- [v0.5.6 — Air tricks on side jumps, touch pause menu](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.5.6)
+  Spinning the stick in the air raises a side jump's rating again. On touch screens the on-screen stick turns the pause menu's wheel.
 
 ## System Requirements
 

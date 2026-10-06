@@ -45,12 +45,12 @@ struct RaceBody {
     float lean_right = 1.0f;    // +640
     float lean_left = 1.0f;     // +644
     uint32_t hands = 0;         // +740 / +756 tracking state of both hands (2 = tracked)
-    // The left stick as the player holds it, for the trick turn (822C9938).
-    // While the stick goes round in circles (spinning), left_x, left_y and
-    // the lean read as a centred stick: a Kinect player twisting for a trick
-    // does not also lean or bend forward, and a spun stick passing its top
-    // every turn accelerated the board in the air, carrying side jumps (Rocky
-    // Ridge) off the course.
+    // The left stick as the player holds it, for the trick turn (822C9938),
+    // and whether it is going round in circles (a spin: 270 degrees one way).
+    // A spin still leans and steers as the stick does. v0.5.2 centred the
+    // stick during a spin, thinking it carried side jumps (Rocky Ridge) off
+    // the course; that was the realtime race clock (v0.5.3), and the centred
+    // stick kept a spin in the air from raising a side jump's rating.
     float stick_x = 0, stick_y = 0;
     bool spinning = false;
 };
