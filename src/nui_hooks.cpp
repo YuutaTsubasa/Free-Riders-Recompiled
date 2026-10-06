@@ -76,6 +76,8 @@ sfr::NuiPlayerRouting player_routing;
 bool second_present = false;
 sfr::NuiPadEdges edges;
 uint16_t pressed=0;  // buttons newly pressed at the last input update
+sfr::NuiPadEdges second_edges;
+uint16_t second_pressed=0;  // the same for the second player's pad
 uint32_t frame_number = 0;
 const auto started = std::chrono::steady_clock::now();
 
@@ -688,6 +690,8 @@ SFR_MENU_HOOK(sub_82494658) {
     __imp__sub_82494658(ctx,base);
     const bool racing=memory.load<uint32_t>(0x83E52F8C)!=0;
     pressed=edges.update(sfr::nui_gamepad().buttons);
+    const auto second_pad=sfr::second_player_pad();
+    second_pressed=second_edges.update(second_pad ? second_pad->buttons : 0);
     ++input_frames;
     uint16_t spoken=pressed;
     // A (and B for a yes/no dialog) of an open hand-pointer dialog are the
@@ -824,19 +828,31 @@ PPC_FUNC_IMPL(__imp__sub_8246A6D0);
 // Ring menu step for one player (the object's first word is the player,
 // 1-based, 0 for the first): the hand swipe as a signed number of items.
 // Its callers (823F3148, 82454360, 824543D0) add both players' steps, so a
-// newly pressed D-pad left or right of the first player turns the ring one
-// item when the hand did not, once per press.
+// newly pressed D-pad left or right of a player's pad turns that player's
+// ring one item when the hand did not, once per press: the first pad's for
+// player 0 or 1, the second pad's for player 2. SFR_NUI_RING_TRACE=1 logs
+// every step, the hand's and the pad's.
 SFR_MENU_HOOK(sub_8246A6D0) {
     sfr::enter_function(ctx,"sub_8246A6D0",0x8246A6D0);
-    const uint32_t player=sfr::active_memory->load<uint32_t>(ctx.r3.u32);
+    const uint32_t ring=ctx.r3.u32;
+    const uint32_t player=sfr::active_memory->load<uint32_t>(ring);
     const int64_t now=now_ms();
     if(now-ring_asked_ms.exchange(now,std::memory_order_relaxed)>1000)
         std::cerr << "NUI_RING_ACTIVE racing=" << (sfr::active_memory->load<uint32_t>(0x83E52F8C)!=0) << '\n';
     __imp__sub_8246A6D0(ctx,base);
-    const int step=sfr::ring_step(pressed);
-    if(player>1 || ctx.r3.u32 || !step) return;
-    pressed&=~(sfr::gamepad_button::dpad_left|sfr::gamepad_button::dpad_right);
+    static const bool trace=[] {const char* text=std::getenv("SFR_NUI_RING_TRACE");return text && *text=='1';}();
+    if(trace && ctx.r3.u32)
+        std::cerr << "NUI_RING_STEP ring=0x" << std::hex << ring << std::dec << " player=" << player
+                  << " hand=" << ctx.r3.s32 << '\n';
+    if(player>2 || ctx.r3.u32) return;
+    uint16_t& buttons=player==2 ? second_pressed : pressed;
+    const int step=sfr::ring_step(buttons);
+    if(!step) return;
+    buttons&=~(sfr::gamepad_button::dpad_left|sfr::gamepad_button::dpad_right);
     ctx.r3.s64=step;
+    if(trace)
+        std::cerr << "NUI_RING_STEP ring=0x" << std::hex << ring << std::dec << " player=" << player
+                  << " pad=" << step << '\n';
 }
 
 PPC_FUNC_IMPL(__imp__sub_82452F48);
