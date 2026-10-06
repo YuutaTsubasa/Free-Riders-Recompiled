@@ -65,6 +65,8 @@ What works today:
   joints, controller handoff and a separate skeleton debug window.
 - Experimental custom VRM Avatar models, selected in the launcher, with
   game-driven animation and hand-held items.
+- File-replacement mods in HedgeModManager's format, managed in the
+  launcher's Mods tab ([Mods](docs/mods.md)).
 
 Known limits:
 
@@ -133,6 +135,8 @@ with [docs/progress.md](docs/progress.md).
   Android phones and tablets with a Mali-G57 GPU (Helio G99, such as the Galaxy Tab A9) no longer crash at start-up: the renderer asked for one more descriptor set than these GPUs allow. The log now names each graphics start-up step.
 - [v0.5.6 — Air tricks on side jumps, touch pause menu](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.5.6)
   Spinning the stick in the air raises a side jump's rating again. On touch screens the on-screen stick turns the pause menu's wheel.
+- [v0.6.0 — Mod support](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.6.0)
+  The game loads file-replacement mods in HedgeModManager's format, the one Unleashed and Marathon Recompiled use. The launcher's new Mods tab switches them on and off and sets their order.
 
 ## System Requirements
 
@@ -172,6 +176,7 @@ The launcher groups settings by what you want to change:
 | Controls | Each player's input source and controller, button/key bindings, Android touch and tilt |
 | Motion input | Kinect/webcam mode, device and preview, mirror, skeleton debug, voice commands |
 | Avatar models | Select or clear a custom VRM/GLB model |
+| Mods | Switch file-replacement mods on and off and set their order ([Mods](docs/mods.md)) |
 | Game files | Installation, data locations and shader pack |
 
 Window and rendering resolutions sit together under **Graphics > Resolution**:

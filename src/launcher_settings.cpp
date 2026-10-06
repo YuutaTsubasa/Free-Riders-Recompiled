@@ -202,6 +202,8 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         {"SFR_VOICE", s.voice ? "1" : ""},
         {"SFR_AVATAR", s.avatar_model.empty() ? "0" : "1"},
         {"SFR_AVATAR_MODEL", path_utf8(resolved_avatar_model(s, directory))},
+        // Mods (mod_loader.h): HedgeModManager's or the launcher's cpkredir.ini.
+        {"SFR_MODS_INI", path_utf8(directory / "cpkredir.ini")},
 #ifdef _WIN32
         {"SFR_CAMERA_DEBUG", s.camera == "motion" && s.camera_debug ? "1" : "0"},
 #else

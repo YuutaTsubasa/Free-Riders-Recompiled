@@ -4,6 +4,7 @@
 // links are refused and every path stays under the mounted root.
 // Asynchronous reads complete when submitted.
 #include "asset_files.h"
+#include "mod_loader.h"
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -129,6 +130,15 @@ struct AssetFiles::Impl {
     std::pair<uint32_t, std::string> resolve(std::string_view guest_path) const {
         const auto components = checked_components(guest_path);
         std::string relative;
+        // A mod's file replaces (or adds) the game's (mod_loader.h).
+        {
+            std::string wanted;
+            for (const auto& component : components) wanted += (wanted.empty() ? "" : "/") + std::string(component);
+            if (const auto replaced = mod_file(wanted)) {
+                const auto text = replaced->u8string();
+                return {status_success, std::string(text.begin(), text.end())};
+            }
+        }
         for (size_t i = 0; i < components.size(); ++i) {
             const auto& names = listing(relative);
             const auto found = names.find(lower(components[i]));

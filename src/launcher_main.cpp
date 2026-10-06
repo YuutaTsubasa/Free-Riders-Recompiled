@@ -36,6 +36,7 @@
 #include "text_wrap.h"
 #include "voice_commands.h"
 #include "launcher_settings.h"
+#include "mod_loader.h"
 #include "game_language.h"
 #include "input_bindings.h"
 #include "pad_devices.h"
@@ -109,6 +110,7 @@ enum Text {
     SectionLanguage, SectionPlayback, SectionReset, SectionWindow, SectionRendering, SectionPerformance,
     SectionGameAudio, SectionLauncherAudio, SectionPlayer1, SectionPlayer2, SectionBindings, SectionTouch, SectionVoice,
     SectionResolution, WindowResolutionHint, SectionDiagnostics, ExportDiagnostics, ExportDiagnosticsHint,
+    TabMods, SectionMods, ModsHint, ModsEmpty, ModsExternal, ModsRefresh, ModsOpenFolder, MoveUp, MoveDown,
     TextCount
 };
 
@@ -348,6 +350,17 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Export diagnostic ZIP", "匯出診斷 ZIP"},
     {"After playing, save the latest game log, performance settings and device information. Export before starting another game. Logs may contain local file paths.",
      "遊玩後儲存最近一次的遊戲紀錄、效能設定與裝置資訊。請在下次啟動遊戲前匯出；紀錄可能包含本機檔案路徑。"},
+    {"Mods", "模組"},
+    {"Mods", "模組"},
+    {"Put each mod in its own folder in the mods folder below, with a mod.ini (HedgeModManager's format). Files in a mod replace the game's files at the same paths. Mods higher in the list win.",
+     "把每個模組放在下方 mods 資料夾裡各自的資料夾，並附上 mod.ini（HedgeModManager 的格式）。模組裡的檔案會取代遊戲中相同路徑的檔案；清單中越上面的模組優先。"},
+    {"No mods found yet.", "目前還沒有模組。"},
+    {"HedgeModManager (or another tool) manages the mods: its cpkredir.ini is beside the launcher. Use that tool, or delete cpkredir.ini to manage them here.",
+     "模組由 HedgeModManager（或其他工具）管理：啟動器旁有它的 cpkredir.ini。請用該工具，或刪除 cpkredir.ini 改在這裡管理。"},
+    {"Refresh", "重新整理"},
+    {"Open mods folder", "開啟 mods 資料夾"},
+    {"Up", "上移"},
+    {"Down", "下移"},
 }};
 
 int language = 0;
@@ -987,7 +1000,7 @@ float draw_prompt(ImDrawList* draw, ImVec2 at, float size, InputKind kind, Promp
 
 // ---------------------------------------------------------------- app
 enum class Page { Settings, Stopped, Install, Installing, Installed };
-enum Tab { GeneralTab, DisplayTab, SoundTab, ControlsTab, MotionTab, AvatarTab, FilesTab, TabCount };
+enum Tab { GeneralTab, DisplayTab, SoundTab, ControlsTab, MotionTab, AvatarTab, ModsTab, FilesTab, TabCount };
 enum class Question { none, quit, cancel_install, quit_during_install };
 
 // An installation running on its own thread; the page reads its progress.
@@ -1441,7 +1454,7 @@ struct Launcher {
     void tab_list(ImVec2 size) {
         const float left = ImGui::GetCursorPosX();
         ImGui::PushFont(fonts.heading);
-        constexpr Text names[TabCount] = {TabGeneral, TabDisplay, TabSound, TabControls, TabMotion, TabAvatar, TabFiles};
+        constexpr Text names[TabCount] = {TabGeneral, TabDisplay, TabSound, TabControls, TabMotion, TabAvatar, TabMods, TabFiles};
         for (int i = 0; i < TabCount; ++i) {
             ImGui::SetCursorPosX(left);
             const ImVec2 at = ImGui::GetCursorScreenPos();
@@ -1818,6 +1831,66 @@ struct Launcher {
         write_bindings();
     }
 
+    // ------------------------------------------------ mods (mod_loader.h)
+    sfr::ModList mod_list;
+    bool mods_read = false;
+
+    void mods_settings() {
+        if (!mods_read) {
+            std::error_code error;
+            fs::create_directories(directory / "mods", error);
+            mod_list = sfr::scan_mods(directory);
+            mods_read = true;
+        }
+        settings_section(SectionMods);
+        ImGui::PushStyleColor(ImGuiCol_Text, dim_text);
+        ImGui::TextWrapped("%s", wrapped(tr(ModsHint), room()).c_str());
+        ImGui::TextWrapped("%s", utf8(mod_list.folder).c_str());
+        ImGui::PopStyleColor();
+        if (small_button(tr(ModsRefresh), scale)) mods_read = false;
+#ifndef __ANDROID__
+        ImGui::SameLine();
+        if (small_button(tr(ModsOpenFolder), scale)) sfr::launcher::open_url(utf8(mod_list.folder).c_str());
+#endif
+        if (mod_list.external) {
+            ImGui::TextWrapped("%s", wrapped(tr(ModsExternal), room()).c_str());
+            ImGui::TextWrapped("%s", utf8(mod_list.external_db).c_str());
+            return;
+        }
+        if (mod_list.mods.empty()) {
+            ImGui::TextWrapped("%s", tr(ModsEmpty));
+            return;
+        }
+        bool changed = false;
+        const float switch_width = ImGui::GetFrameHeight() * 1.9f;
+        for (size_t i = 0; i < mod_list.mods.size(); ++i) {
+            auto& mod = mod_list.mods[i];
+            std::string hint = mod.author;
+            if (!mod.version.empty()) hint += (hint.empty() ? "" : "  ") + std::string("v") + mod.version;
+            if (!mod.description.empty()) hint += (hint.empty() ? "" : "\n") + mod.description;
+            ImGui::PushID(int(i));
+            setting_row(mod.title.c_str(), hint.c_str(), switch_width + 150 * scale, scale, [&] {
+                if (toggle("##enabled", &mod.enabled)) changed = true;
+                ImGui::SameLine();
+                ImGui::BeginDisabled(i == 0);
+                if (small_button(tr(MoveUp), scale)) {
+                    std::swap(mod_list.mods[i], mod_list.mods[i - 1]);
+                    changed = true;
+                }
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                ImGui::BeginDisabled(i + 1 == mod_list.mods.size());
+                if (small_button(tr(MoveDown), scale)) {
+                    std::swap(mod_list.mods[i], mod_list.mods[i + 1]);
+                    changed = true;
+                }
+                ImGui::EndDisabled();
+            });
+            ImGui::PopID();
+        }
+        if (changed) sfr::save_mods(directory, mod_list);
+    }
+
     void avatar_model_settings() {
         ImGui::PushID("avatar_model");
         ImGui::PushFont(fonts.heading);
@@ -2145,6 +2218,7 @@ struct Launcher {
         case ControlsTab: controls_settings(); break;
         case MotionTab: motion_settings(); break;
         case AvatarTab: avatar_model_settings(); break;
+        case ModsTab: mods_settings(); break;
         case FilesTab: file_settings(); break;
         }
         ImGui::PopTextWrapPos();
