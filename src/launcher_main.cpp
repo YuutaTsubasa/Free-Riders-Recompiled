@@ -427,6 +427,55 @@ bool create_device(HWND window) {
     return true;
 }
 
+// The back buffer as a 32-bit BMP (SFR_LAUNCHER_SHOTS, a test aid).
+void save_back_buffer(const std::string& file) {
+    ID3D11Texture2D* back = nullptr;
+    if (FAILED(swap_chain->GetBuffer(0, IID_PPV_ARGS(&back)))) return;
+    D3D11_TEXTURE2D_DESC desc{};
+    back->GetDesc(&desc);
+    desc.Usage = D3D11_USAGE_STAGING;
+    desc.BindFlags = 0;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    desc.MiscFlags = 0;
+    ID3D11Texture2D* staging = nullptr;
+    if (SUCCEEDED(device->CreateTexture2D(&desc, nullptr, &staging))) {
+        context->CopyResource(staging, back);
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (SUCCEEDED(context->Map(staging, 0, D3D11_MAP_READ, 0, &mapped))) {
+            const uint32_t width = desc.Width, height = desc.Height, row = width * 4;
+            BITMAPFILEHEADER head{};
+            BITMAPINFOHEADER info{};
+            info.biSize = sizeof(info);
+            info.biWidth = LONG(width);
+            info.biHeight = -LONG(height);  // top row first
+            info.biPlanes = 1;
+            info.biBitCount = 32;
+            head.bfType = 0x4D42;
+            head.bfOffBits = sizeof(head) + sizeof(info);
+            head.bfSize = head.bfOffBits + row * height;
+            if (FILE* out = std::fopen(file.c_str(), "wb")) {
+                std::fwrite(&head, sizeof(head), 1, out);
+                std::fwrite(&info, sizeof(info), 1, out);
+                std::vector<uint8_t> line(row);
+                for (uint32_t y = 0; y < height; ++y) {
+                    const auto* source = static_cast<const uint8_t*>(mapped.pData) + size_t(y) * mapped.RowPitch;
+                    for (uint32_t x = 0; x < width; ++x) {  // RGBA to BGRA
+                        line[x * 4] = source[x * 4 + 2];
+                        line[x * 4 + 1] = source[x * 4 + 1];
+                        line[x * 4 + 2] = source[x * 4];
+                        line[x * 4 + 3] = 255;
+                    }
+                    std::fwrite(line.data(), 1, row, out);
+                }
+                std::fclose(out);
+            }
+            context->Unmap(staging, 0);
+        }
+        staging->Release();
+    }
+    back->Release();
+}
+
 void destroy_device() {
     if (target) target->Release();
     if (swap_chain) swap_chain->Release();
@@ -744,6 +793,19 @@ bool toggle(const char* id, bool* value) {
     return pressed;
 }
 
+// A focused slider moves with left and right (pad or keyboard), a step at
+// a time, without first being activated with A as ImGui otherwise asks.
+bool slider_steps(int* value, int low, int high, int step) {
+    if (!ImGui::IsItemFocused() || ImGui::IsItemActive()) return false;
+    int delta = 0;
+    if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft, true) || ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true)) delta -= step;
+    if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight, true) || ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) delta += step;
+    const int next = std::clamp(*value + delta, low, high);
+    if (next == *value) return false;
+    *value = next;
+    return true;
+}
+
 // One setting: its name on the left, the control on the right, an
 // explanation under it. The row lights up while its control has focus.
 template<class Control>
@@ -829,15 +891,79 @@ bool small_button(const char* label, float scale) {
 // ---------------------------------------------------------------- pad
 bool sony_in_use = false;
 
+void feed_pad(const sfr::GamepadState* pad);
+
+// SFR_LAUNCHER_NAV_TRACE=1: which item has the keyboard and pad focus, its
+// window and screen rectangle, and whether the cursor shows, on stderr each
+// time one changes (with SFR_LAUNCHER_INPUT_SCRIPT, to test navigation).
+void trace_navigation() {
+    static const bool trace = std::getenv("SFR_LAUNCHER_NAV_TRACE") != nullptr;
+    if (!trace) return;
+    static ImGuiID last = 0;
+    static bool last_visible = false;
+    ImGuiContext& g = *GImGui;
+    if (g.NavId == last && g.NavCursorVisible == last_visible) return;
+    last = g.NavId;
+    last_visible = g.NavCursorVisible;
+    ImRect r;
+    if (g.NavWindow) {
+        const ImVec2 o(g.NavWindow->Pos.x - g.NavWindow->Scroll.x, g.NavWindow->Pos.y - g.NavWindow->Scroll.y);
+        r = ImRect(g.NavWindow->NavRectRel[0].Min.x + o.x, g.NavWindow->NavRectRel[0].Min.y + o.y,
+                   g.NavWindow->NavRectRel[0].Max.x + o.x, g.NavWindow->NavRectRel[0].Max.y + o.y);
+    }
+    std::fprintf(stderr, "NAV frame=%d id=%08x visible=%d window=%s rect=%.0f,%.0f-%.0f,%.0f\n", ImGui::GetFrameCount(), last,
+                 int(last_visible), g.NavWindow ? g.NavWindow->Name : "-", r.Min.x, r.Min.y, r.Max.x, r.Max.y);
+}
+
+// SFR_LAUNCHER_INPUT_SCRIPT="a@2+0.2,down@3,..." drives the launcher with a
+// scripted controller for unattended tests, in place of any real one:
+// button@seconds[+duration] (0.25 s by default), seconds counted as 60
+// frames. Buttons: a b x y start back up down left right lb rb lt rt.
+bool feed_script_pad() {
+    static const char* script = std::getenv("SFR_LAUNCHER_INPUT_SCRIPT");
+    if (!script || !*script) return false;
+    namespace b = sfr::gamepad_button;
+    static const std::pair<const char*, uint16_t> names[] = {
+        {"a", b::a}, {"b", b::b}, {"x", b::x}, {"y", b::y}, {"start", b::start}, {"back", b::back},
+        {"up", b::dpad_up}, {"down", b::dpad_down}, {"left", b::dpad_left}, {"right", b::dpad_right},
+        {"lb", b::left_shoulder}, {"rb", b::right_shoulder}};
+    const double seconds = ImGui::GetFrameCount() / 60.0;
+    sfr::GamepadState pad{};
+    for (std::string_view rest = script; !rest.empty();) {
+        const size_t comma = rest.find(',');
+        const std::string entry(rest.substr(0, comma));
+        rest = comma == std::string_view::npos ? std::string_view{} : rest.substr(comma + 1);
+        const size_t at = entry.find('@');
+        if (at == std::string::npos) continue;
+        const std::string name = entry.substr(0, at);
+        const size_t plus = entry.find('+', at);
+        const double start = std::atof(entry.substr(at + 1, plus == std::string::npos ? std::string::npos : plus - at - 1).c_str());
+        const double duration = plus == std::string::npos ? 0.25 : std::atof(entry.substr(plus + 1).c_str());
+        if (seconds < start || seconds >= start + duration) continue;
+        if (name == "lt") pad.left_trigger = 255;
+        else if (name == "rt") pad.right_trigger = 255;
+        else for (const auto& [n, mask] : names) if (name == n) pad.buttons |= mask;
+    }
+    ImGui::GetIO().BackendFlags |= ImGuiBackendFlags_HasGamepad;
+    feed_pad(&pad);
+    return true;
+}
+
 // PlayStation controllers are not XInput devices: feed them to ImGui's
 // gamepad navigation ourselves when no XInput pad is connected.
 void feed_sony_pad() {
+    if (feed_script_pad()) return;
     ImGuiIO& io = ImGui::GetIO();
     if (io.BackendFlags & ImGuiBackendFlags_HasGamepad) return;
     const auto pad = sfr::sony::latest();
     if (!pad) return;
     io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
     sony_in_use = true;
+    feed_pad(&*pad);
+}
+
+void feed_pad(const sfr::GamepadState* pad) {
+    ImGuiIO& io = ImGui::GetIO();
     namespace b = sfr::gamepad_button;
     const auto button = [&](ImGuiKey key, uint16_t mask) { io.AddKeyEvent(key, (pad->buttons & mask) != 0); };
     button(ImGuiKey_GamepadStart, b::start);
@@ -1595,7 +1721,9 @@ struct Launcher {
         setting_row(tr(Volume), nullptr, slider_width, scale, [&] {
             int volume = int(settings.volume);
             ImGui::SetNextItemWidth(slider_width);
-            if (ImGui::SliderInt("##volume", &volume, 0, 100, "%d%%")) settings.volume = uint32_t(volume);
+            bool moved = ImGui::SliderInt("##volume", &volume, 0, 100, "%d%%");
+            moved |= slider_steps(&volume, 0, 100, 5);
+            if (moved) settings.volume = uint32_t(volume);
         });
         ImGui::EndDisabled();
         settings_section(SectionLauncherAudio);
@@ -2074,7 +2202,9 @@ struct Launcher {
         setting_row(tr(RaceEvery), tr(RaceEveryHint), slider_width, scale, [&] {
             int every = int(settings.race_render_every);
             ImGui::SetNextItemWidth(slider_width);
-            if (ImGui::SliderInt("##every", &every, 1, 4)) settings.race_render_every = uint32_t(every);
+            bool moved = ImGui::SliderInt("##every", &every, 1, 4);
+            moved |= slider_steps(&every, 1, 4, 1);
+            if (moved) settings.race_render_every = uint32_t(every);
         });
     }
 
@@ -2207,7 +2337,10 @@ struct Launcher {
         const ImGuiWindowFlags panel_flags = ImGuiWindowFlags_NoBackground |
             (tab == ControlsTab ? ImGuiWindowFlags_AlwaysVerticalScrollbar : ImGuiWindowFlags_None);
         ImGui::PushID(tab); // Each category retains its own scroll and widget state.
-        ImGui::BeginChild("settings", inside, ImGuiChildFlags_None, panel_flags);
+        // Flattened: the pad and the keyboard move between the rows and the
+        // buttons around them as one page. A plain child is a single item to
+        // them, entered only with A, and lit by no control while focused.
+        ImGui::BeginChild("settings", inside, ImGuiChildFlags_NavFlattened, panel_flags);
         // Account for the scrollbar before laying out the rows.
         content_width = ImGui::GetContentRegionAvail().x;
         ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + content_width);
@@ -2741,11 +2874,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
         launcher.configure_navigation();
         ImGui::NewFrame();
         launcher.frame();
+        trace_navigation();
         ImGui::Render();
         constexpr float clear[4] = {0, 0, 0, 1};
         context->OMSetRenderTargets(1, &target, nullptr);
         context->ClearRenderTargetView(target, clear);
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+        // SFR_LAUNCHER_SHOTS=<directory> and SFR_LAUNCHER_SHOT_EVERY=<frames>:
+        // the window every so many frames, as shot-<frame>.bmp (for unattended
+        // tests, with SFR_LAUNCHER_INPUT_SCRIPT).
+        if (static const char* shots = std::getenv("SFR_LAUNCHER_SHOTS"); shots && *shots) {
+            static const int every = [] { const char* t = std::getenv("SFR_LAUNCHER_SHOT_EVERY"); return t ? std::max(1, std::atoi(t)) : 60; }();
+            if (ImGui::GetFrameCount() % every == 0) save_back_buffer(std::string(shots) + "/shot-" + std::to_string(ImGui::GetFrameCount()) + ".bmp");
+        }
         swap_chain->Present(1, 0);
         if (launcher.quit_now) {
             launcher.quit_now = false;
@@ -2910,6 +3051,7 @@ int main(int argc, char** argv) {
         launcher.configure_navigation();
         ImGui::NewFrame();
         launcher.frame();
+        trace_navigation();
         ImGui::Render();
         SDL_RenderSetScale(renderer, io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y);
         SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
