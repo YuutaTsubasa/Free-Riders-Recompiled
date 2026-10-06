@@ -139,6 +139,13 @@ template<class F> void for_each_menu_button(sfr::GuestMemory& memory, uint32_t m
 uint32_t menu_manager=0;        // last manager whose update ran
 uint64_t menu_manager_frame=0;  // input update count at that time
 uint64_t input_frames=0;
+// When a ring menu last asked for its step (8246A6D0): the pause menu's wheel
+// runs while the race flag is still set, and the touch stick must then turn
+// it (the D-pad) instead of leaning (Issue #6).
+std::atomic<int64_t> ring_asked_ms{-1000000};
+int64_t now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 // The hand-pointer dialog (823EF348) last asked at this input update, and
 // its layout: while one is up, the buttons it answers to are its alone.
 uint64_t dialog_frame=0;
@@ -399,7 +406,7 @@ SFR_INPUT_HOOK(sub_827707B0) {
     if(!frame) { ctx.r3.u64=0x80004003u; return; }  // E_POINTER, as the original
     // [83E52F8C] is the race flag: the hands leave the menu cursor pose.
     const bool racing=sfr::active_memory->load<uint32_t>(0x83E52F8C) != 0;
-    sfr::set_touch_racing(racing);
+    sfr::set_touch_racing(racing && now_ms()-ring_asked_ms.load(std::memory_order_relaxed)>150);
     const char* const choice=std::getenv("SFR_CAMERA");
     if(choice && std::string_view(choice)=="kinect") {
         // Every Kinect caller waits for initialization, including one that
@@ -812,6 +819,9 @@ PPC_FUNC_IMPL(__imp__sub_8246A6D0);
 SFR_MENU_HOOK(sub_8246A6D0) {
     sfr::enter_function(ctx,"sub_8246A6D0",0x8246A6D0);
     const uint32_t player=sfr::active_memory->load<uint32_t>(ctx.r3.u32);
+    const int64_t now=now_ms();
+    if(now-ring_asked_ms.exchange(now,std::memory_order_relaxed)>1000)
+        std::cerr << "NUI_RING_ACTIVE racing=" << (sfr::active_memory->load<uint32_t>(0x83E52F8C)!=0) << '\n';
     __imp__sub_8246A6D0(ctx,base);
     const int step=sfr::ring_step(pressed);
     if(player>1 || ctx.r3.u32 || !step) return;
