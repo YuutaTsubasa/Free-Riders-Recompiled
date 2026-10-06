@@ -323,7 +323,18 @@ void GuestExecution::Lease::run_wait(std::function<void(std::stop_token)> operat
         if (state_->stopping) throw GuestExecutionCancelled();
         token = state_->stop_source.get_token();
     }
-    operation(token);
+    // A detached main thread (SFR_PARALLEL_WORKER=all, the default) waits here
+    // rather than in run_blocking: count its wait the same way, or the frame
+    // metrics' main_blocked_ms reads 0 however long it waits.
+    const auto blocked_at = std::chrono::steady_clock::now();
+    const auto count_wait = [&] {
+        if (guest_id_ == 1)
+            main_thread_blocked_ns.fetch_add(uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - blocked_at).count()), std::memory_order_relaxed);
+    };
+    try { operation(token); }
+    catch (...) { count_wait(); throw; }
+    count_wait();
     if (token.stop_requested()) throw GuestExecutionCancelled();
 }
 
