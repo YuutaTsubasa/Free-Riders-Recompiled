@@ -1003,6 +1003,23 @@ SFR_MENU_HOOK(sub_824578F0) {
                       << " chosen=0x" << std::hex << memory.load<uint32_t>(manager+136+4*player) << std::dec << '\n';
         }
     }
+    // B of a player's pad on a two-player page is that player's back
+    // button (82456700, type 31: 8245B130 asks, 824603B8 leaves for the
+    // player), the first pad for player 0 and the second for 1. As with the
+    // arrow, the page goes back for both players, even after a choice.
+    if(sfr::second_player_pad().has_value() && memory.load<uint8_t>(0x83E515FB)) {
+        for(uint32_t player=0; player<2; ++player) {
+            uint16_t& buttons=player ? second_pressed : pressed;
+            if(!(buttons & button::b)) continue;
+            const uint32_t page=call_guest(ctx,base,sub_82457348,manager,player);
+            if(!page || ((memory.load<uint32_t>(page+320)>>4)&1)!=player) continue;
+            buttons&=~button::b;
+            if(call_guest(ctx,base,sub_8245B130,manager)&0xFF) {
+                call_guest(ctx,base,sub_824603B8,manager,player);
+                std::cerr << "NUI_MENU_BACK player=" << player << '\n';
+            }
+        }
+    }
     if(pressed & button::b) {
         uint32_t back=0;
         for_each_menu_button(memory,manager,[&](uint32_t b) {
