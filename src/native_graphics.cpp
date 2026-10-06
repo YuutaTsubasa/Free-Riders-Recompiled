@@ -134,6 +134,19 @@ const char* graphics_backend_name(GraphicsBackend backend) {
     return backend == GraphicsBackend::vulkan ? "Vulkan" : "D3D12";
 }
 
+std::string graphics_driver_version(GraphicsBackend backend, uint32_t vendor_id, uint64_t packed) {
+    if (!packed) return "unknown";
+    std::ostringstream text;
+    if (backend == GraphicsBackend::d3d12)
+        text << ((packed >> 48) & 0xFFFF) << '.' << ((packed >> 32) & 0xFFFF) << '.' << ((packed >> 16) & 0xFFFF)
+             << '.' << (packed & 0xFFFF);
+    else if (vendor_id == 0x10DE)
+        text << ((packed >> 22) & 0x3FF) << '.' << ((packed >> 14) & 0xFF) << '.' << ((packed >> 6) & 0xFF);
+    else
+        text << ((packed >> 22) & 0x3FF) << '.' << ((packed >> 12) & 0x3FF) << '.' << (packed & 0xFFF);
+    return text.str();
+}
+
 struct NativeGraphics::Impl {
     GraphicsBackend backend = GraphicsBackend::d3d12;
     std::unique_ptr<plume::RenderInterface> render_interface;
@@ -196,8 +209,23 @@ void NativeGraphics::initialize() {
     auto render_device = render_interface->createDevice();
     if (!render_device)
         throw std::runtime_error(std::string("failed to create a ") + name + " render device");
-    std::cerr << "NATIVE_GRAPHICS backend=" << name << " adapter="
-              << render_device->getDescription().name << '\n';
+    // Which adapter the game runs on, for a performance report (scripts/
+    // benchmark_summary.py reads this line): a laptop with two GPUs, or an
+    // external one, can land on the wrong one. The type is Vulkan's; D3D12
+    // does not say. The memory is the adapter's own, so an integrated GPU's
+    // is small, and it shares the system's.
+    {
+        const auto& description = render_device->getDescription();
+        const char* type = description.type == plume::RenderDeviceType::INTEGRATED ? "integrated" :
+                           description.type == plume::RenderDeviceType::DISCRETE ? "discrete" :
+                           description.type == plume::RenderDeviceType::VIRTUAL ? "virtual" :
+                           description.type == plume::RenderDeviceType::CPU ? "cpu" : "unknown";
+        std::cerr << "NATIVE_GRAPHICS backend=" << name << " adapter=" << description.name
+                  << " vendor=0x" << std::hex << uint32_t(description.vendor) << std::dec << " type=" << type
+                  << " vram_mb=" << description.dedicatedVideoMemory / (1024 * 1024)
+                  << " driver=" << graphics_driver_version(backend, uint32_t(description.vendor), description.driverVersion)
+                  << '\n';
+    }
 
     auto render_queue = render_device->createCommandQueue(plume::RenderCommandListType::DIRECT);
     if (!render_queue)

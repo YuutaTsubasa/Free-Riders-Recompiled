@@ -97,11 +97,25 @@ void copies_repeatedly_on_the_real_gpu_and_initializes_idempotently() {
         readback->unmap();
     }
 }
+
+void prints_driver_versions_as_their_vendors_do() {
+    // The adapter line of a performance report: D3D12's four 16-bit parts,
+    // Vulkan's packed version, NVIDIA's own packing, and nothing reported.
+    require(sfr::graphics_driver_version(sfr::GraphicsBackend::d3d12, 0x1002, (31ull << 48) | (21912ull << 16) | 14) == "31.0.21912.14",
+            "a D3D12 user-mode driver version prints as four parts");
+    require(sfr::graphics_driver_version(sfr::GraphicsBackend::vulkan, 0x1002, (2u << 22) | (0u << 12) | 302u) == "2.0.302",
+            "a Vulkan driver version prints as major.minor.patch");
+    require(sfr::graphics_driver_version(sfr::GraphicsBackend::vulkan, 0x10DE, (576u << 22) | (52u << 14)) == "576.52.0",
+            "an NVIDIA Vulkan driver version uses its 10.8.8 packing");
+    require(sfr::graphics_driver_version(sfr::GraphicsBackend::vulkan, 0x10DE, 0) == "unknown",
+            "a version of 0 was not reported");
+}
 }
 
 int main() {
     try {
         starts_uninitialized_and_guards_access();
+        prints_driver_versions_as_their_vendors_do();
         copies_repeatedly_on_the_real_gpu_and_initializes_idempotently();
         std::cout << "Native graphics checks passed\n";
         return 0;
