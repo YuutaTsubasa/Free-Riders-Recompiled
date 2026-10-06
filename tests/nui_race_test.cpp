@@ -98,16 +98,11 @@ void spins() {
             "steering across the top is not a spin");
     // Round and round (24 degrees a frame, about four turns a second).
     sfr::RaceInput spin;
-    bool accelerated_while_spinning = false;
-    for (int i = 0; i < 60; ++i) {
-        spin.update(stick_at(-24.0f * i), frame);
-        if (spin.body().spinning && spin.body().left_y >= 0.65f) accelerated_while_spinning = true;
-    }
+    for (int i = 0; i < 60; ++i) spin.update(stick_at(-24.0f * i), frame);
     require(spin.body().spinning, "circling the stick is a spin");
-    require(!accelerated_while_spinning, "a spin never pushes the board forward");
-    require(spin.body().left_x == 0 && spin.body().left_y == 0 && spin.body().lean_right == 1.0f &&
-            spin.body().lean_left == 1.0f && spin.body().lean == 0, "a spin neither leans nor steers");
-    require(spin.body().stick_x != 0 || spin.body().stick_y != 0, "the trick still sees the stick");
+    require(near(spin.body().left_x, spin.body().stick_x) && near(spin.body().left_y, spin.body().stick_y) &&
+            near(spin.body().lean, -spin.body().left_x), "a spin still leans and steers with the stick");
+    require(spin.body().stick_x != 0 || spin.body().stick_y != 0, "the trick sees the stick");
     // Held still, the spin ends after a fifth of a second and steering returns.
     for (int i = 0; i < 6; ++i) spin.update(stick_at(0), frame);
     require(spin.body().spinning, "a pause shorter than a fifth of a second keeps the spin");

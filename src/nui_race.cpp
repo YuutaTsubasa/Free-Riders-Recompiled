@@ -47,7 +47,6 @@ void RaceInput::update(const GamepadState& pad, float seconds) {
         still_seconds_ += seconds;
         if (still_seconds_ >= still_end) { b.spinning = false; sweep_ = 0; }
     }
-    if (b.spinning) b.left_x = b.left_y = 0.0f;
     b.right_x = race_axis(pad.thumb_rx, 8689);
     b.right_y = race_axis(pad.thumb_ry, 8689);
     // 0 - x rather than -x: negating a neutral stick gives negative zero,
