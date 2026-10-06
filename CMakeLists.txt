@@ -440,6 +440,9 @@ else()
     target_link_libraries(sfr_native_audio_test PRIVATE SDL2::SDL2)
 endif()
 add_test(NAME native_audio COMMAND sfr_native_audio_test)
+add_executable(sfr_mod_loader_test tests/mod_loader_test.cpp src/mod_loader.cpp)
+target_include_directories(sfr_mod_loader_test PRIVATE src)
+add_test(NAME mod_loader COMMAND sfr_mod_loader_test)
 add_executable(sfr_launcher_settings_test tests/launcher_settings_test.cpp src/launcher_settings.cpp)
 target_include_directories(sfr_launcher_settings_test PRIVATE src)
 add_test(NAME launcher_settings COMMAND sfr_launcher_settings_test)
@@ -478,7 +481,7 @@ add_test(NAME installer COMMAND sfr_installer_test)
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui/imgui.cpp")
     set(SFR_IMGUI "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui")
     # The launcher lists the host cameras and controllers.
-    set(SFR_LAUNCHER_SOURCES src/launcher_main.cpp src/launcher_settings.cpp src/input_bindings.cpp src/pad_devices.cpp src/pad_assignment.cpp src/launcher_sound.cpp src/launcher_art.cpp src/sony_gamepad.cpp
+    set(SFR_LAUNCHER_SOURCES src/launcher_main.cpp src/launcher_settings.cpp src/mod_loader.cpp src/input_bindings.cpp src/pad_devices.cpp src/pad_assignment.cpp src/launcher_sound.cpp src/launcher_art.cpp src/sony_gamepad.cpp
         ${SFR_CAMERA_CAPTURE} src/kinect_sensor.cpp ${SFR_KINECT_SENSOR} ${SFR_VOICE}
         src/kinect_preview.cpp src/kinect_preview_window.cpp src/camera_debug.cpp src/text_wrap.cpp
         ${SFR_IMGUI}/imgui.cpp ${SFR_IMGUI}/imgui_draw.cpp ${SFR_IMGUI}/imgui_tables.cpp ${SFR_IMGUI}/imgui_widgets.cpp)
@@ -603,7 +606,7 @@ if(WIN32 OR UNIX)
     target_link_libraries(sfr_guest_wait_test PRIVATE sfr_native_sync_objects)
     add_test(NAME guest_wait COMMAND sfr_guest_wait_test)
     set_tests_properties(guest_wait PROPERTIES TIMEOUT 10)
-    add_library(sfr_asset_files STATIC ${SFR_ASSET_FILES} src/guest_files.cpp)
+    add_library(sfr_asset_files STATIC ${SFR_ASSET_FILES} src/guest_files.cpp src/mod_loader.cpp)
     target_include_directories(sfr_asset_files PUBLIC src)
     if(WIN32)  # checks Windows kernel/file behaviour directly
         add_executable(sfr_asset_files_test tests/asset_files_test.cpp)

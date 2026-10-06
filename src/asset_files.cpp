@@ -1,4 +1,5 @@
 #include "asset_files.h"
+#include "mod_loader.h"
 
 #define NOMINMAX
 #include <windows.h>
@@ -62,6 +63,13 @@ uint64_t native_size(HANDLE handle) {
     if (!GetFileSizeEx(handle, &length)) native_error("query native file size", GetLastError());
     if (length.QuadPart < 0) throw std::runtime_error("asset files: native file size is negative");
     return static_cast<uint64_t>(length.QuadPart);
+}
+
+// A mod's file for this relative game path (mod_loader.h), or empty.
+std::wstring mod_replacement(const std::wstring& relative) {
+    std::string narrow(relative.begin(), relative.end());  // game paths are ASCII
+    const auto replaced = mod_file(narrow);
+    return replaced ? replaced->wstring() : std::wstring();
 }
 
 std::wstring checked_relative_path(std::string_view path) {
@@ -300,7 +308,8 @@ AssetFiles::OpenResult AssetFiles::open(std::string_view guest_path, uint32_t sh
     if (share_access & 2) sharing |= FILE_SHARE_WRITE;
     if (share_access & 4) sharing |= FILE_SHARE_DELETE;
 
-    const auto path = directory_prefix(final_path(impl_->root.value)) + relative;
+    const auto replacement = mod_replacement(relative);
+    const auto path = replacement.empty() ? directory_prefix(final_path(impl_->root.value)) + relative : replacement;
     const DWORD open_flags = mode == OpenMode::synchronous ? FILE_FLAG_BACKUP_SEMANTICS
         : mode == OpenMode::asynchronous_buffered ? FILE_FLAG_OVERLAPPED
         : FILE_FLAG_OVERLAPPED | FILE_FLAG_NO_BUFFERING;
@@ -313,7 +322,7 @@ AssetFiles::OpenResult AssetFiles::open(std::string_view guest_path, uint32_t sh
     // Compare the actual retained objects after following reparse points, including a component boundary.
     const auto opened_path = final_path(file.value);
     const auto mounted_prefix = directory_prefix(final_path(impl_->root.value));
-    if (!contained_by(opened_path, mounted_prefix))
+    if (replacement.empty() && !contained_by(opened_path, mounted_prefix))
         throw std::runtime_error("asset files: opened native file escapes the mounted root");
     if (attributes(file.value) & FILE_ATTRIBUTE_DIRECTORY) return {0xc00000ba, 0xffffffff, 0};
 
@@ -327,7 +336,8 @@ AssetFiles::OpenResult AssetFiles::open(std::string_view guest_path, uint32_t sh
 
 AssetFiles::PathInformation AssetFiles::query_path(std::string_view guest_path) const {
     const auto relative = checked_relative_path(guest_path);
-    const auto path = directory_prefix(final_path(impl_->root.value)) + relative;
+    const auto replacement = mod_replacement(relative);
+    const auto path = replacement.empty() ? directory_prefix(final_path(impl_->root.value)) + relative : replacement;
     // BACKUP_SEMANTICS opens directories too; attributes only, no data access.
     NativeHandle file(CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
                                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
@@ -336,7 +346,7 @@ AssetFiles::PathInformation AssetFiles::query_path(std::string_view guest_path) 
     if (!is_disk(file.value)) throw std::runtime_error("asset files: only disk files are supported");
     const auto opened_path = final_path(file.value);
     const auto mounted_prefix = directory_prefix(final_path(impl_->root.value));
-    if (!contained_by(opened_path, mounted_prefix))
+    if (replacement.empty() && !contained_by(opened_path, mounted_prefix))
         throw std::runtime_error("asset files: queried native path escapes the mounted root");
     FILE_BASIC_INFO basic{};
     if (!GetFileInformationByHandleEx(file.value, FileBasicInfo, &basic, sizeof(basic)))

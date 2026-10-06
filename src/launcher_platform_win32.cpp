@@ -151,7 +151,13 @@ std::unique_ptr<GameProcess> start_game(const LauncherSettings& settings, const 
 bool can_open_log() { return true; }
 
 void open_log(const fs::path& log) { ShellExecuteW(owner_window, L"open", log.c_str(), nullptr, nullptr, SW_SHOWNORMAL); }
-void open_url(const char* url) { ShellExecuteA(owner_window, "open", url, nullptr, nullptr, SW_SHOWNORMAL); }
+void open_url(const char* url) {
+    // UTF-8, so a folder with non-ASCII letters (the mods folder) opens too.
+    const int length = MultiByteToWideChar(CP_UTF8, 0, url, -1, nullptr, 0);
+    std::wstring wide(length > 0 ? size_t(length) : 1, L'\0');
+    if (length > 0) MultiByteToWideChar(CP_UTF8, 0, url, -1, wide.data(), length);
+    ShellExecuteW(owner_window, L"open", wide.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
 
 FontFiles font_files() {
     wchar_t windows[MAX_PATH]{};
