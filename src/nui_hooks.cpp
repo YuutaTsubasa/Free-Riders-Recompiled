@@ -694,6 +694,11 @@ SFR_MENU_HOOK(sub_82494658) {
     second_pressed=second_edges.update(second_pad ? second_pad->buttons : 0);
     ++input_frames;
     uint16_t spoken=pressed;
+    // The recognizer hears one word a frame, from nobody in particular: in a
+    // race the second pad's START pauses as the first's does, and its words
+    // run the pause menu (the first pad's are heard the whole race as well).
+    namespace pad=sfr::gamepad_button;
+    if(racing) spoken|=uint16_t(second_pressed & (pad::start|pad::a|pad::b|pad::x|pad::dpad_up|pad::dpad_down));
     // A (and B for a yes/no dialog) of an open hand-pointer dialog are the
     // dialog's (823EF348 below). Spoken as well, one press both answered the
     // pause menu's Retry confirmation by voice and chose "yes" again: the
@@ -845,10 +850,15 @@ SFR_MENU_HOOK(sub_8246A6D0) {
         std::cerr << "NUI_RING_STEP ring=0x" << std::hex << ring << std::dec << " player=" << player
                   << " hand=" << ctx.r3.s32 << '\n';
     if(player>2 || ctx.r3.u32) return;
-    uint16_t& buttons=player==2 ? second_pressed : pressed;
-    const int step=sfr::ring_step(buttons);
+    // In a race (the pause menu) the first player's ring takes either pad.
+    uint16_t* buttons=player==2 ? &second_pressed : &pressed;
+    int step=sfr::ring_step(*buttons);
+    if(!step && player<2 && sfr::active_memory->load<uint32_t>(0x83E52F8C)!=0) {
+        buttons=&second_pressed;
+        step=sfr::ring_step(*buttons);
+    }
     if(!step) return;
-    buttons&=~(sfr::gamepad_button::dpad_left|sfr::gamepad_button::dpad_right);
+    *buttons&=~(sfr::gamepad_button::dpad_left|sfr::gamepad_button::dpad_right);
     ctx.r3.s64=step;
     if(trace)
         std::cerr << "NUI_RING_STEP ring=0x" << std::hex << ring << std::dec << " player=" << player
