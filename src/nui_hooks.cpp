@@ -584,6 +584,33 @@ SFR_INPUT_HOOK(sub_827707B0) {
     ctx.r3.u64=0;
 }
 
+PPC_FUNC_IMPL(__imp__sub_82764728);
+
+// The Kinect library's identity of an enrollment (enrollment, out): out[0]
+// the user index that enrollment signed in as, out[1] nonzero when it has
+// one; an enrollment of 8 or more is E_INVALIDARG. With a second player the
+// title loads each player's profile (82491458, a request the title screen
+// and the menus wait for) and asks this with the player's enrollment until
+// the player is a signed-in user. A guest's enrollment (0xFFFFFFFE) is
+// refused, and the title retries until a 10-second timer gives up -- the
+// pause after the second player's figure walks across the title. An
+// enrollment without a user gives up the same request at once, the same
+// way, so that is the answer a guest gets from this one caller.
+SFR_INPUT_HOOK(sub_82764728) {
+    sfr::enter_function(ctx,"sub_82764728",0x82764728);
+    const uint32_t enrollment=ctx.r3.u32, out=ctx.r4.u32, caller=uint32_t(ctx.lr);
+    if(enrollment>=8 && out && caller>=0x82491458 && caller<0x82491C78) {
+        auto& memory=*sfr::active_memory;
+        memory.store<uint32_t>(out,254);
+        memory.store<uint32_t>(out+4,0);
+        ctx.r3.u64=0;
+        static uint32_t told=0;
+        if(told++<4) std::cerr << "NUI_GUEST_PROFILE enrollment=0x" << std::hex << enrollment << std::dec << " answer=none\n";
+        return;
+    }
+    __imp__sub_82764728(ctx,base);
+}
+
 // NuiIdentityIdentify(tracking id, flags, callback, context): the title
 // identifies each new skeleton before it joins as a player (82437E48). The
 // emulated player is the local profile (enrollment 0) when one is signed in,
