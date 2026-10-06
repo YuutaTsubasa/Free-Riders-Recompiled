@@ -6,6 +6,13 @@
 #
 #   scripts\benchmark.ps1                      # the default comparison
 #   scripts\benchmark.ps1 -Configs baseline -Repeats 1
+#   scripts\benchmark.ps1 -Scenario solo -FixedStep   # whether a change helps: no rivals, the same frames every run
+#
+# -Scenario race (the default) is a Free Race with rivals and items: the frame rate a
+# player gets. -Scenario solo is a Time Attack, the player alone on the course, so no
+# rival or item makes one run heavier than another. -FixedStep steps the race one
+# original frame (1/60 s) per present, as the desktop launcher does (SFR_REALTIME_RACE=0),
+# so every run draws the same race frames whatever the PC's speed (docs/benchmark.md).
 #
 # Build first: scripts\build_tools.ps1 -Diagnostic. The game runs with the
 # explicit elapsed-time defaults: no Kinect, normal sound,
@@ -17,11 +24,17 @@ param(
     # one turn of the ring (the ring wraps: Free Race is left of World Grand Prix;
     # if `left` does nothing, five `right` do it), then rules, course, character and
     # gear. By present 12000 the race is running.
+    # -Scenario solo turns `right` to Time Attack instead (docs/race-controls.md: the ring
+    # is World Grand Prix, Time Attack, ...), then course, character and gear: it has no rules page.
     [string]$Say = 'ok@580,ok@930,ok@1280,start@1630,ok@1830,left@2030,ok@2230,ok@2530,ok@2830,ok@3130,right@3430,ok@3730',
+    [ValidateSet('race', 'solo')][string]$Scenario = 'race',
+    [switch]$FixedStep,               # one original frame per present (SFR_REALTIME_RACE=0): every run the same race frames
+    [ValidateRange(0, 10000000)][int]$RaceFrames = 0,  # race presents a run (SFR_PRESENT_LIMIT_RACING); 0: from -RaceSeconds
     [int]$PresentLimit = 15600,
     [switch]$NoStretch,               # the words by presents alone and the run ends at -PresentLimit (it cannot finish on a PC that presents fast)
     [ValidateRange(1.0, 10000.0)][double]$ReferenceFps = 100,
     [ValidateRange(1, 10000000)][int]$AfterSay = 4200,
+    [ValidateRange(0, 3600)][int]$RaceSeconds = 90,   # every counted run races at least this long, judged from the warm-up (0: -AfterSay as given)
     [ValidateRange(0, 10000000)][int]$Skip = 600,
     [ValidateRange(1, 120)][int]$TimeoutMinutes = 25,
     [ValidateSet('d3d12', 'vulkan')][string]$Backend = 'd3d12',
@@ -33,6 +46,7 @@ param(
     [switch]$SkipBuildCheck,          # a copied folder (no git): its files' times say nothing about the build
     [switch]$Capped,                  # 60 fps as when playing, not as fast as it goes
     [switch]$ColdPipelines,           # every run starts without pipeline-cache: a new player's first race
+    [switch]$KeepSaves,               # keep each run's copy of the save (save-<run>; 23 MB each), to see what the game wrote
     [string]$ImageDirectory = '',     # the game folders, when they are not where this checkout keeps them
     [string]$AssetDirectory = '',
     [string]$SaveDirectory = '',
@@ -53,6 +67,8 @@ Get-ChildItem Env:SFR_* | ForEach-Object { $originalEnvironment[$_.Name] = $_.Va
 $process = $null
 try {
 $Stretch = -not $NoStretch
+$SoloSay = 'ok@580,ok@930,ok@1280,start@1630,ok@1830,right@2030,ok@2230,ok@2530,ok@2830,right@3130,ok@3430'
+if ($Scenario -eq 'solo' -and -not $PSBoundParameters.ContainsKey('Say')) { $Say = $SoloSay }
 $root = Split-Path -Parent $PSScriptRoot
 # A kit keeps its own DXC next to the scripts (run_benchmark.bat sets this too); without it nothing is drawn
 if (-not $env:SFR_DXC_LIBRARY -and (Test-Path -LiteralPath (Join-Path $root 'dxc\dxcompiler.dll'))) { $env:SFR_DXC_LIBRARY = Join-Path $root 'dxc' }
@@ -61,6 +77,9 @@ $exe = Join-Path $host_dir 'sfr_cpu_diagnostic.exe'
 if (-not (Test-Path -LiteralPath $exe)) { throw "Build first: scripts\build_tools.ps1 -Diagnostic (missing $exe)" }
 if ($Stretch -and -not [System.Text.Encoding]::GetEncoding(28591).GetString([System.IO.File]::ReadAllBytes($exe)).Contains('SFR_PRESENT_LIMIT_AFTER_SAY')) {
     throw "$exe is older than -Stretch (no SFR_PRESENT_LIMIT_AFTER_SAY): build again, or take the program from a new kit"
+}
+function Test-ProgramText([string]$Path, [string]$Text) {
+    return [System.Text.Encoding]::GetEncoding(28591).GetString([System.IO.File]::ReadAllBytes($Path)).Contains($Text)
 }
 # A build that failed leaves the last good executable behind, and a benchmark of
 # it would be taken for one of the sources checked out now.
@@ -100,8 +119,13 @@ $settings = @{
     'all'          = @{ SFR_PARALLEL_WORKER = 'all' }          # every guest thread in parallel (experimental)
     'skip-draws'   = @{ SFR_SKIP_DRAWS = '1' }                 # the game without its drawing: the ceiling
     'render-every-2' = @{ SFR_RENDER_EVERY = '2' }             # a race drawn every other frame
+    'render-50'    = @{ SFR_RENDER_SCALE = '50' }              # half the rendering resolution: how much is the GPU's (run_benchmark.bat report)
     'no-vertex-cache' = @{ SFR_VERTEX_CACHE = '0' }
     'no-gpu-pipeline' = @{ SFR_GPU_PIPELINE = '0' }
+    'no-audio'     = @{ SFR_AUDIO = '0' }                      # no sound sent to the PC's output (the game still mixes it): what the output costs
+    # the main thread left to Windows instead of pinned to the first core: on a PC with fewer than six
+    # logical processors guest processor 4 shares that core with it (native_thread.cpp, guest_cpu % count)
+    'main-unpinned' = @{ SFR_MAIN_AFFINITY = '0' }
     # a self-suspended guest is woken by polling every 1 ms again, as before
     # (baseline wakes it by notification: GuestThreads::suspension_waiter)
     'no-suspend-notify' = @{ SFR_SUSPEND_NOTIFY = '0' }
@@ -164,8 +188,11 @@ $base = [ordered]@{
     SFR_FRAME_LIMIT = $(if ($Capped) { '60' } else { '0' })
     SFR_RENDER_EVERY = '1'; SFR_PARALLEL_WORKER = 'all'; SFR_VERTEX_CACHE = '1'; SFR_GPU_PIPELINE = '1'
     SFR_AUDIO = $(if ($NoAudio) { '0' } else { '1' }); SFR_PROFILE = '1'; SFR_SKIP_MOVIES = '1'
-    SFR_REALTIME_RACE = '1'; SFR_REALTIME_UI = '1'; SFR_GRAPHICS = $Backend
-    SFR_GAME_LANGUAGE = 'en'; SFR_PLAYER1_INPUT = 'none'; SFR_PLAYER2_INPUT = 'none'
+    SFR_REALTIME_RACE = $(if ($FixedStep) { '0' } else { '1' }); SFR_REALTIME_UI = '1'; SFR_GRAPHICS = $Backend
+    # No controller may take the run over: player 1 is the keyboard nobody touches and player 2 is off
+    # (native_input.cpp knows both/gamepad/keyboard/off; 'none' fell back to both, so a pad that was
+    # switched on took player 1 and the Kinect hand, and the menu words went unheard).
+    SFR_GAME_LANGUAGE = 'en'; SFR_PLAYER1_INPUT = 'keyboard'; SFR_PLAYER2_INPUT = 'off'
     # Since v0.4.3 the per-frame NATIVE_PRESENT line is only written when asked for (tracing is off here)
     SFR_FRAME_METRICS = '1'
     SFR_WINDOW_WIDTH = '1280'; SFR_WINDOW_HEIGHT = '720'; SFR_FULLSCREEN = '0'; SFR_VSYNC = '0'
@@ -177,11 +204,18 @@ $base = [ordered]@{
 if ($Stretch) {
     # Loading takes seconds, not presents (a PC presents hundreds of frames a second while the title
     # loads), so a word keyed by presents may be said before the menu listens, and a limit by presents
-    # may come before the race. Each word waits for P/ReferenceFps seconds; the run ends AfterSay
-    # presents after the last word, with the present limit left as a backstop.
+    # may come before the race. Each word waits for P/ReferenceFps seconds (and the title asks for
+    # none while it loads); the run ends AfterSay presents after the last word, so it is counted
+    # from the race. No limit counts from the start: a slow load presents its loading screen over
+    # a thousand times a second, and on an i5-3470 one build used up 60000 presents before the
+    # race in 2 of 6 runs. The backstop is the wall clock instead (10 minutes unless
+    # -TimeoutMinutes says otherwise; a run takes 3 or 4). A fast PC plays AfterSay presents
+    # in a short race, so after the warm-up the counted runs get as many presents as
+    # -RaceSeconds of its race, when that is more (below).
     $base['SFR_SAY_REFERENCE_FPS'] = "$ReferenceFps"
     $base['SFR_PRESENT_LIMIT_AFTER_SAY'] = "$AfterSay"
-    if (-not $PSBoundParameters.ContainsKey('PresentLimit')) { $base['SFR_PRESENT_LIMIT'] = '60000' }
+    if (-not $PSBoundParameters.ContainsKey('PresentLimit')) { $base['SFR_PRESENT_LIMIT'] = '0' }
+    if (-not $PSBoundParameters.ContainsKey('TimeoutMinutes')) { $TimeoutMinutes = 10 }
 }
 if (-not $Out) { $Out = Join-Path $root ('out/bench/' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff')) }
 $Out = [IO.Path]::GetFullPath($Out)
@@ -194,10 +228,33 @@ if ($Out.Equals($save_source, [StringComparison]::OrdinalIgnoreCase) -or $Out.St
 New-Item -ItemType Directory -Path $Out | Out-Null
 $fixture = Join-Path $Out 'fixture'
 if (Test-Path -LiteralPath $save_source) { Copy-Item -Recurse -LiteralPath $save_source -Destination $fixture }
-else { New-Item -ItemType Directory -Path $fixture | Out-Null }
+else {
+    # A new player is asked at the title whether Omochao should teach them, a dialog only the
+    # hand answers (docs/pad-menus.md): the menu words go unheard and no run reaches the race.
+    Write-Warning "No save in $save_source`: the game will ask a new player about its tutorial, which the menu words cannot answer. Give -SaveDirectory a save that has been past the title once."
+    New-Item -ItemType Directory -Path $fixture | Out-Null
+}
 Get-ChildItem -LiteralPath $fixture -Recurse -File | ForEach-Object {
     [ordered]@{ path = $_.FullName.Substring($fixture.Length); sha256 = (Get-BenchmarkSha256 $_.FullName) }
 } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Out 'fixture-hashes.json') -Encoding UTF8
+
+# A build that counts the race's own presents (SFR_PRESENT_LIMIT_RACING) ends every run after
+# as many of them, the loading screen not counted (the limit after the last word counts it,
+# and it presents hundreds of times a second on a fast PC). Every program of the comparison
+# must know it, or a run would never end; -AfterSay given keeps the old limit.
+$programs = @($exe) + @($Configs | Where-Object { $settings.Contains($_) -and $settings[$_].ContainsKey('SFR_EXE') } |
+    ForEach-Object { Join-Path $host_dir $settings[$_]['SFR_EXE'] } | Where-Object { Test-Path -LiteralPath $_ })
+$RacingLimit = $Stretch -and -not $PSBoundParameters.ContainsKey('AfterSay') -and
+    -not @($programs | Where-Object { -not (Test-ProgramText $_ 'SFR_PRESENT_LIMIT_RACING') }).Count
+if ($RacingLimit) {
+    # With -FixedStep a race second is 60 presents on any PC; otherwise the warm-up says how many
+    # presents -RaceSeconds are on this one (below), and it runs 60 a second until then.
+    $frames = if ($RaceFrames -gt 0) { $RaceFrames } else { [math]::Max(1, $RaceSeconds) * 60 }
+    $base.Remove('SFR_PRESENT_LIMIT_AFTER_SAY')
+    $base['SFR_PRESENT_LIMIT_RACING'] = "$frames"
+} elseif ($RaceFrames -gt 0) {
+    Write-Warning '-RaceFrames needs a build with SFR_PRESENT_LIMIT_RACING (and no -AfterSay): the runs end -AfterSay presents after the last word instead.'
+}
 
 # What the numbers belong to.
 $cpu = try { (Get-CimInstance Win32_Processor | Select-Object -First 1).Name } catch { 'unknown' }
@@ -219,7 +276,15 @@ if (Test-Path -LiteralPath $cache) {
 # and whether something else is busy before the first run starts.
 $model = try { $system = Get-CimInstance Win32_ComputerSystem; "$($system.Manufacturer) $($system.Model)" } catch { 'unknown' }
 $driver = try { (Get-CimInstance Win32_VideoController | ForEach-Object { "$($_.Name) $($_.DriverVersion)" }) -join '; ' } catch { 'unknown' }
-$plan = try { ((powercfg /getactivescheme) -join ' ') -replace '^.*\(([^)]*)\).*$', '$1' } catch { 'unknown' }
+# Windows' own plans by GUID, so info.txt reads the same in every language (hardware_probe.ps1 does
+# the same); a maker's or a user's plan keeps the name Windows gives it.
+$plan = try {
+    $scheme = (powercfg /getactivescheme) -join ' '
+    $known = @{ '381b4222-f694-41f0-9685-ff5bb260df2e' = 'Balanced'; '8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c' = 'High performance'
+                'a1841308-3541-4fab-bc81-f71556f20b4a' = 'Power saver'; 'e9a42b02-d5df-448d-aa00-03f14749eb61' = 'Ultimate Performance' }
+    $guid = if ($scheme -match '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})') { $Matches[1].ToLower() } else { '' }
+    if ($known.ContainsKey($guid)) { $known[$guid] } else { $scheme -replace '^.*\(([^)]*)\).*$', '$1' }
+} catch { 'unknown' }
 $battery = try { Get-CimInstance Win32_Battery -ErrorAction Stop } catch { $null }
 $power = if (-not $battery) { 'no battery (desktop)' } elseif ($battery.BatteryStatus -in 2, 6, 7, 8, 9) { 'on mains' } else { 'ON BATTERY' }
 $samples = @(1..5 | ForEach-Object { Start-Sleep -Seconds 1; try { (Get-CimInstance Win32_Processor | Measure-Object LoadPercentage -Average).Average } catch { 0 } })
@@ -229,8 +294,8 @@ if ($power -eq 'ON BATTERY') { Write-Warning 'On battery: plug in, or the CPU an
 Write-Output "PC: $power, power plan '$plan', $idle% busy before the start"
 @("commit=$commit", "generated=$generated", "model=$model", "cpu=$cpu", "gpu=$gpu", "driver=$driver", "power=$power plan=$plan idle_cpu_percent=$idle",
   "cold_pipelines=$([bool]$ColdPipelines)", "os=$([Environment]::OSVersion.VersionString)",
-  "configs=$($Configs -join ',') repeats=$Repeats present_limit=$($base.SFR_PRESENT_LIMIT) after_say=$($base.SFR_PRESENT_LIMIT_AFTER_SAY) reference_fps=$($base.SFR_SAY_REFERENCE_FPS) stretch=$([bool]$Stretch) capped=$([bool]$Capped)",
-  "say=$Say", "order=$(if ($FixedOrder) { 'fixed' } else { 'turning' })", "realtime_race=1", "realtime_ui=1",
+  "configs=$($Configs -join ',') repeats=$Repeats present_limit=$($base.SFR_PRESENT_LIMIT) after_say=$($base.SFR_PRESENT_LIMIT_AFTER_SAY) race_frames=$($base.SFR_PRESENT_LIMIT_RACING) scenario=$Scenario fixed_step=$([bool]$FixedStep) reference_fps=$($base.SFR_SAY_REFERENCE_FPS) stretch=$([bool]$Stretch) capped=$([bool]$Capped)",
+  "say=$Say", "order=$(if ($FixedOrder) { 'fixed' } else { 'turning' })", "realtime_race=$($base.SFR_REALTIME_RACE)", "realtime_ui=1",
   "audio=$($base.SFR_AUDIO)", "backend=$Backend", "diagnostic_rendering=$([bool]$AllowDiagnosticRendering)") | Set-Content -LiteralPath (Join-Path $Out 'info.txt') -Encoding UTF8
 # The executables an exe-a / exe-b comparison ran: which file, how big, when it was built.
 foreach ($name in $Configs) {
@@ -238,6 +303,14 @@ foreach ($name in $Configs) {
         $file = Get-Item -LiteralPath (Join-Path $host_dir $settings[$name]['SFR_EXE'])
         Add-Content -LiteralPath (Join-Path $Out 'info.txt') -Encoding UTF8 -Value "$name=$($file.Name) bytes=$($file.Length) built=$($file.LastWriteTime.ToString('s')) sha256=$(Get-BenchmarkSha256 $file.FullName)"
     }
+}
+# What else about this PC can change the numbers, and what its drivers support
+# (scripts\hardware_probe.ps1, which prints the same block by itself; the summary
+# puts it first). A probe that fails says "unknown"; an older kit has none.
+$probe = Join-Path $PSScriptRoot 'hardware_probe.ps1'
+if (Test-Path -LiteralPath $probe) {
+    $probed = try { . $probe; @(Get-HardwareProbe -HostDirectory $host_dir) } catch { @("probe=failed ($($_.Exception.Message))") }
+    Add-Content -LiteralPath (Join-Path $Out 'info.txt') -Encoding UTF8 -Value $probed
 }
 
 
@@ -307,20 +380,89 @@ function Start-Run([string]$name, [int]$repeat) {
         -RedirectStandardError $log -RedirectStandardOutput (Join-Path $Out "$label.out")
 }
 
+function Get-RaceFps([string]$logPath) {
+    # A run's race frames a second: its racing=1 presents, first to last, by their seconds= clock.
+    if (-not (Test-Path -LiteralPath $logPath)) { return $null }
+    $reader = New-Object System.IO.StreamReader($logPath)
+    try {
+        $first = $null; $last = $null; $count = 0
+        while ($null -ne ($line = $reader.ReadLine())) {
+            if (-not $line.StartsWith('NATIVE_PRESENT ') -or -not $line.Contains(' racing=1 ')) { continue }
+            if ($line -match ' seconds=([0-9.]+)') {
+                $seconds = [double]$Matches[1]
+                if ($null -eq $first) { $first = $seconds }
+                $last = $seconds
+                ++$count
+            }
+        }
+        if ($count -lt 60 -or $last -le $first) { return $null }
+        return ($count - 1) / ($last - $first)
+    } finally { $reader.Dispose() }
+}
+
     $started = Get-Date
     $index = 0
+    $dead = @{}
     foreach ($run in $runs) {
         ++$index
         $name, $repeat = $run
+        if ($dead.ContainsKey($name)) {
+            # Its first run never reached the race: the others would sit there as long.
+            Write-Output ("[{0}/{1}] {2}, run {3}: skipped ({4} never reached the race in run {5})" -f $index, $runs.Count, $name, $repeat, $name, $dead[$name])
+            Set-Content -LiteralPath (Join-Path $Out "$name-$repeat.log") -Encoding ASCII -Value "STOP skipped: $name never reached the race in run $($dead[$name])"
+            continue
+        }
         $elapsed = (Get-Date) - $started
         $eta = if ($index -gt 1) { ' (left: about ' + [int](($elapsed.TotalMinutes / ($index - 1)) * ($runs.Count - $index + 1)) + ' min)' } else { '' }
         Write-Output ("[{0}/{1}] {2}, run {3}{4}" -f $index, $runs.Count, $name, $repeat, $eta)
         $process = Start-Run $name $repeat
-        if (-not $process.WaitForExit($TimeoutMinutes * 60 * 1000)) {
+        if ($index -eq 1) { Write-Output '  (the game runs hidden; Ctrl+C here stops it and the benchmark)' }
+        # A second at a time: one long WaitForExit holds Ctrl+C until it returns.
+        $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
+        while (-not $process.WaitForExit(1000) -and (Get-Date) -lt $deadline) { }
+        if (-not $process.HasExited) {
             Write-Output "  took over $TimeoutMinutes minutes: stopped"
             Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
             $process.WaitForExit()
             Add-Content -LiteralPath (Join-Path $Out "$name-$repeat.log") -Value 'STOP benchmark-timeout: host deadline reached'
+        }
+        # The run's own copy of the save has done its job (the next run starts from the
+        # fixture again); 25 of them would be 600 MB. fixture\ keeps what every run started from.
+        if (-not $KeepSaves) {
+            $used = Join-Path $Out "save-$name-$repeat"
+            try { if (Test-Path -LiteralPath $used) { Remove-Item -Recurse -Force -LiteralPath $used } }
+            catch { Write-Warning "Could not remove ${used}: $($_.Exception.Message)" }
+        }
+        $raced = Select-String -LiteralPath (Join-Path $Out "$name-$repeat.log") -SimpleMatch ' racing=1 ' -Quiet
+        if ($name -ne 'warmup' -and -not $raced) {
+            Write-Warning "$name never reached the race in run $repeat (the log is $name-$repeat.log): its other runs are skipped."
+            $dead[$name] = $repeat
+        }
+        if ($name -eq 'warmup' -and -not $raced) {
+            # Every other run would sit on the same page until its timeout.
+            throw ("The warm-up never reached a race, so the benchmark stops here: the warmup-*.bmp screenshots in $Out show where the menus stopped. " +
+                "Omochao asking to teach you how to play means the save is a new player's: give -SaveDirectory a save that has been past the title once.")
+        }
+        if ($name -eq 'warmup' -and $RacingLimit -and -not $FixedStep -and $RaceFrames -eq 0 -and $RaceSeconds -gt 0) {
+            # Racing by the clock, -RaceSeconds of race are as many presents as this PC draws in them.
+            $fps = Get-RaceFps (Join-Path $Out 'warmup-1.log')
+            if ($fps) {
+                $needed = [int][math]::Ceiling($fps * $RaceSeconds)
+                $base['SFR_PRESENT_LIMIT_RACING'] = "$needed"
+                Write-Output ("  the warm-up raced at {0:0.#} fps: every run gets {1} race presents ({2} seconds)" -f $fps, $needed, $RaceSeconds)
+                Add-Content -LiteralPath (Join-Path $Out 'info.txt') -Encoding UTF8 -Value "race_frames_from_warmup=$needed warmup_fps=$([math]::Round($fps, 1))"
+            }
+        } elseif ($name -eq 'warmup' -and -not $RacingLimit -and $Stretch -and $RaceSeconds -gt 0 -and -not $PSBoundParameters.ContainsKey('AfterSay')) {
+            # A fast PC plays -AfterSay presents in a short race (4200 at 300 fps are 14 seconds), too
+            # short for the summary's common stretch of race (docs/benchmark.md): the counted runs get
+            # as many presents as -RaceSeconds of the warm-up's race, when that is more.
+            $fps = Get-RaceFps (Join-Path $Out 'warmup-1.log')
+            $needed = if ($fps) { [int][math]::Ceiling($fps * $RaceSeconds) } else { 0 }
+            if ($needed -gt $AfterSay) {
+                $base['SFR_PRESENT_LIMIT_AFTER_SAY'] = "$needed"
+                Write-Output ("  the warm-up raced at {0:0.#} fps: every run gets {1} race presents ({2} seconds)" -f $fps, $needed, $RaceSeconds)
+                Add-Content -LiteralPath (Join-Path $Out 'info.txt') -Encoding UTF8 -Value "after_say_from_warmup=$needed warmup_fps=$([math]::Round($fps, 1))"
+            }
         }
     }
 
