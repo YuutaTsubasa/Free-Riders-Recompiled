@@ -1405,6 +1405,16 @@ static void live_probe_words(uint32_t buffer, uint32_t length) {
     for (uint32_t i = 0; i < (std::min)(length ? (length + 3) / 4 : 8u, 24u) && active_memory->readable(uint64_t(buffer) + 4 * i, 4); ++i)
         std::cerr << (i ? "," : "") << std::hex << active_memory->load<uint32_t>(uint64_t(buffer) + 4 * i) << std::dec;
 }
+// The guest thread's last error (GetLastError reads [[r13+256]+352]). XAM's
+// XMsgStartIORequest clears it when a message succeeds or goes pending, and
+// the title's XSession wrappers called without an overlapped block return
+// GetLastError() as their result: a stale error there made a successful
+// XSessionJoin of a remote player fail (the host then left its lobby).
+static void set_guest_last_error(PPCContext& ctx, uint32_t error) {
+    if (!active_memory) return;
+    const uint32_t thread = active_memory->readable(ctx.r13.u32 + 256, 4) ? active_memory->load<uint32_t>(ctx.r13.u32 + 256) : 0;
+    if (thread && active_memory->readable(thread + 352, 4)) active_memory->store<uint32_t>(thread + 352, error);
+}
 // Completes an XOVERLAPPED at once: InternalLow = result, InternalHigh =
 // length, extended error 0, then its event (if any) is set. Returns
 // ERROR_IO_PENDING, what the asynchronous XAM call reports.
@@ -3086,6 +3096,20 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         const uint32_t app = ctx.r3.u32, message = ctx.r4.u32, overlapped = ctx.r5.u32;
         if (app == 0xFB && message != 0x000B0008)
             if (const auto result = live_message(message, ctx.r6.u32, ctx.r7.u32, *active_memory)) {
+                set_guest_last_error(ctx, overlapped ? 0 : *result);
+                static const bool trace = [] { const char* t = std::getenv("SFR_LIVE_TRACE"); return t && *t == '1'; }();
+                if (trace && message != 0x000B0006 && message != 0x000B0007)
+                    std::cerr << "LIVE_MESSAGE message=0x" << std::hex << message << " result=0x" << *result
+                              << " overlapped=0x" << overlapped << " lr=0x" << ctx.lr << std::dec << '\n';
+                if (trace && message == 0x000B0011) {
+                    // Who deletes the session: return addresses on the guest stack.
+                    std::cerr << "LIVE_DELETE_STACK";
+                    for (uint32_t at = ctx.r1.u32, n = 0; n < 512 && active_memory->readable(at, 4); at += 4, ++n) {
+                        const uint32_t word = active_memory->load<uint32_t>(at);
+                        if (word >= 0x82180000 && word < 0x82B00000 && (word & 3) == 0) std::cerr << " 0x" << std::hex << word << std::dec;
+                    }
+                    std::cerr << '\n';
+                }
                 ctx.r3.u64 = overlapped ? complete_overlapped(overlapped, *result) : *result;
                 return;
             }
@@ -3269,6 +3293,12 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         call.sp = ctx.r1.u32;
         call.lr = static_cast<uint32_t>(ctx.lr);
         if (sfr::live_import(name, call, *active_memory, [](uint32_t event) { native_sync_objects->set_event(event); })) {
+            // SFR_LIVE_TRACE=1: every LIVE and network call with its result.
+            static const bool trace = [] { const char* t = std::getenv("SFR_LIVE_TRACE"); return t && *t == '1'; }();
+            if (trace && std::string_view(name) != "__imp__NetDll_recvfrom")
+                std::cerr << "LIVE_CALL " << std::string_view(name).substr(7) << " r3=0x" << std::hex << call.r[3]
+                          << " r4=0x" << call.r[4] << " r5=0x" << call.r[5] << " r6=0x" << call.r[6]
+                          << " result=0x" << call.result << " lr=0x" << call.lr << std::dec << '\n';
             ctx.r3.u64 = call.result;
             return;
         }

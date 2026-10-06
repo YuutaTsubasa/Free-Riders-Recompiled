@@ -41,6 +41,10 @@ VECTOR_MEMORY = re.compile(r'^\t// (?P<op>lvx128|stvx128|lvx|stvx) v(?P<reg>[0-9
                            r'(?P<ra>0|r' + REGISTER + r'),r(?P<rb>' + REGISTER + r')\r?\n', re.MULTILINE)
 VECTOR_WORD_STORE = re.compile(r'^\t// (?P<op>stvewx128|stvewx) v(?P<reg>[0-9]+),'
                                r'(?P<ra>0|r' + REGISTER + r'),r(?P<rb>' + REGISTER + r')\r?\n', re.MULTILINE)
+# stvehx stores one halfword element; XenonRecomp's emission (an aligned EA,
+# then PPC_STORE_U16 of the element the address selects) is already correct.
+VECTOR_HALF_STORE = re.compile(r'^\t// stvehx v(?P<reg>[0-9]+),'
+                               r'(?P<ra>0|r' + REGISTER + r'),r(?P<rb>' + REGISTER + r')\r?\n', re.MULTILINE)
 LOG_PATTERNS = (
     ('unrecognized', re.compile(r'Unrecognized instruction at 0x([0-9A-Fa-f]+): (\S+)')),
     ('decode', re.compile(r'Unable to decode instruction [0-9A-Fa-f]+ at (?:0x)?([0-9A-Fa-f]+)')),
@@ -225,6 +229,32 @@ def rewrite_vector_compare_bounds(body):
     return ''.join(chunks), count
 
 
+def rewrite_vector_unpack_half(body):
+    """Give vupkd3d128 of half floats a body; the upstream emits a debug trap.
+
+    XenonRecomp unpacks D3DCOLOR (type 0) and two shorts (type 1) and traps
+    on the rest. This game also unpacks half floats: two (immediate 12, type
+    3: X, Y, then 0 and 1) and four (immediate 20, type 5: X, Y, Z, W), from
+    the last word or two of the source, which src/vector_unpack.h does.
+    """
+    pattern = re.compile(
+        r'\t// vupkd3d128 v(?P<d>\d{1,3}),v(?P<b>\d{1,3}),(?P<imm>12|20)(?P<end>\r?\n)'
+        r'\t__builtin_debugtrap\(\);\r?\n')
+    chunks, cursor, count = [], 0, 0
+    for instruction in pattern.finditer(body):
+        newline = instruction['end']
+        destination, source_register, immediate = instruction['d'], instruction['b'], instruction['imm']
+        halves = 4 if immediate == '20' else 2
+        chunks.append(body[cursor:instruction.start()])
+        chunks.append('\t// vupkd3d128 v%s,v%s,%s%s' % (destination, source_register, immediate, newline))
+        chunks.append('\tsfr::vector_unpack_half(ctx.v%s.u16, ctx.v%s.f32, %d);%s'
+                      % (source_register, destination, halves, newline))
+        cursor = instruction.end()
+        count += 1
+    chunks.append(body[cursor:])
+    return ''.join(chunks), count
+
+
 def rewrite_vector_memory(body):
     chunks, cursor, loads, stores = [], 0, 0, 0
     for instruction in VECTOR_MEMORY.finditer(body):
@@ -249,6 +279,21 @@ def rewrite_vector_memory(body):
         stores += not is_load
     chunks.append(body[cursor:])
     return ''.join(chunks), loads, stores
+
+
+def count_vector_half_stores(body):
+    stores = 0
+    for instruction in VECTOR_HALF_STORE.finditer(body):
+        reg, ra, rb = instruction['reg'], instruction['ra'], instruction['rb']
+        if str(int(reg)) != reg or int(reg) > 31:
+            continue
+        ea = ('' if ra in ('0', 'r0') else f'ctx.{ra}.u32 + ') + f'ctx.r{rb}.u32'
+        newline = '\r\n' if instruction[0].endswith('\r\n') else '\n'
+        expected = (f'\tea = ({ea}) & ~0x1;' + newline +
+                    f'\tPPC_STORE_U16(ea, ctx.v{reg}.u16[7 - ((ea & 0xF) >> 1)]);' + newline)
+        if body.startswith(expected, instruction.end()):
+            stores += 1
+    return stores
 
 
 def rewrite_vector_word_stores(body):
@@ -1332,6 +1377,9 @@ def inspect_body(body, address, symbols, events, jump_tables=None):
     rewritten, reservation_loads, conditional_stores = rewrite_reservations(clock_body)
     rewritten, barriers = rewrite_barriers(rewritten)
     rewritten, compare_bounds = rewrite_vector_compare_bounds(rewritten)
+    rewritten, unpack_halves = rewrite_vector_unpack_half(rewritten)
+    if unpack_halves:
+        details['vector_unpack_halves'] = unpack_halves
     rewritten, vector_loads, vector_stores = rewrite_vector_memory(rewritten)
     rewritten, vector_word_stores = rewrite_vector_word_stores(rewritten)
     rewritten, vector_partial_loads, invalid_partial_loads = rewrite_vector_partial_loads(rewritten, address)
@@ -1354,7 +1402,11 @@ def inspect_body(body, address, symbols, events, jump_tables=None):
         details['cache_line_zero_addresses'] = [f'0x{item:08X}' for item in cache_lines]
     vector_instructions = sum(bool(re.match(r'(?:lv(?!sl(?:128)?\b|sr(?:128)?\b)|stv)\S*(?:\s|$)',
                                             item[1].strip())) for item in instructions)
-    if vector_instructions != vector_loads + vector_stores + vector_word_stores + vector_partial_stores + vector_partial_loads:
+    vector_half_stores = count_vector_half_stores(rewritten)
+    if vector_half_stores:
+        details['vector_half_stores'] = vector_half_stores
+    if vector_instructions != (vector_loads + vector_stores + vector_word_stores + vector_half_stores +
+                               vector_partial_stores + vector_partial_loads):
         reasons.append('unsupported_vector_memory')
     if vector_loads:
         details['vector_loads'] = vector_loads
@@ -1627,6 +1679,7 @@ def generate(input_dir, log_path, output_dir, jump_table_path=None):
                     rewritten_body = rewrite_supplemental(rewritten_body, addresses[name], events)[0]
                     retained_supplemental += details.get('retained_supplemental', 0)
                     rewritten_body = rewrite_vector_compare_bounds(rewritten_body)[0]
+                    rewritten_body = rewrite_vector_unpack_half(rewritten_body)[0]
                     rewritten_body = rewrite_barriers(
                         rewrite_vector_memory(rewrite_reservations(rewrite_time_base(rewritten_body)[0])[0])[0])[0]
                     rewritten_body = rewrite_vector_word_stores(rewritten_body)[0]

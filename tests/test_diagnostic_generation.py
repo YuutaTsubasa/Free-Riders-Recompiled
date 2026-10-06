@@ -848,6 +848,31 @@ class DiagnosticGenerationTests(unittest.TestCase):
         self.assertEqual(report['counts']['retained_functions'], 0)
         self.assertEqual(len(report['rejected_functions']), 2)
 
+    def test_half_float_unpacks_emit_the_runtime_conversion_instead_of_a_trap(self):
+        body = ('\t// vupkd3d128 v63,v13,20\n\t__builtin_debugtrap();\n'
+                '\t// vupkd3d128 v62,v62,12\n\t__builtin_debugtrap();\n'
+                '\t// blr \n\treturn;')
+        self.prepare([('unpack', 0x1000, body)])
+        output, report = self.run_generation()
+        self.assertEqual(report['counts']['retained_functions'], 1)
+        self.assertIn('sfr::vector_unpack_half(ctx.v13.u16, ctx.v63.f32, 4);', output)
+        self.assertIn('sfr::vector_unpack_half(ctx.v62.u16, ctx.v62.f32, 2);', output)
+        self.assertNotIn('__builtin_debugtrap', output)
+
+    def test_other_unpack_types_keep_their_trap(self):
+        body = '\t// vupkd3d128 v63,v13,8\n\t__builtin_debugtrap();\n\t// blr \n\treturn;'
+        self.prepare([('unpack', 0x1000, body)])
+        _, report = self.run_generation()
+        self.assertEqual(report['counts']['retained_functions'], 0)
+
+    def test_vector_half_stores_are_accepted_as_emitted(self):
+        body = ('\tuint32_t ea{};\n\t// stvehx v0,r11,r10\n\tea = (ctx.r11.u32 + ctx.r10.u32) & ~0x1;\n'
+                '\tPPC_STORE_U16(ea, ctx.v0.u16[7 - ((ea & 0xF) >> 1)]);\n\t// blr \n\treturn;')
+        self.prepare([('halfstore', 0x1000, body)])
+        output, report = self.run_generation()
+        self.assertEqual(report['counts']['retained_functions'], 1)
+        self.assertIn('PPC_STORE_U16(ea, ctx.v0.u16[7 - ((ea & 0xF) >> 1)]);', output)
+
     def test_vector_word_store_hooks_keep_effective_address_and_source(self):
         self.prepare([('wordstores', 0x1000, '\tuint32_t ea{};\n' +
             vector_word_store() + vector_word_store('stvewx', 31, 'r7', 0) +

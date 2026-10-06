@@ -26,27 +26,38 @@ In the game, open **Main Menu → Xbox LIVE**:
   - Scripted runs use `SFR_HAND_SEEK=1`: A then raises the hand, glides the
     cursor onto the arrow and pushes (`NUI_HAND_SEEK` in the log).
 
-## Status (2026-10-06 morning)
+## Status (2026-10-06 afternoon)
 
-**Works:**
+**Works, on two games on one PC:**
 - Create Match opens a lobby.
 - Quick Match on another game finds it, with the host's name, course,
   players, laps and a 3-bar signal.
-- Moving the cursor onto the → arrow joins:
-  1. the guest creates its session and sends its 114-byte join request over
-     the relay;
-  2. the host adds it as a remote member;
-  3. the host reads its profile settings.
+- Moving the cursor onto the → arrow joins. Both lobbies then show 2/8 with
+  both players ready.
+- The host starts the race, and both games race it together, each seeing
+  the other rider.
+- After the race both games go back to the same lobby.
 
-**Not yet:** right after that read, the host leaves its own lobby (back to
-the Xbox LIVE menu, with no dialog) and deletes the session. The guest then
-gives up as well. The host never sends a reply.
+**What was wrong:**
+- **The host left its lobby right after a guest joined.** The title's
+  XSession wrappers, called without an overlapped block, return
+  `GetLastError()` as their result. The guest thread's last error was
+  stale, so a successful XSessionJoin of the remote player read as a
+  failure (lobby object reason 8, from 8248DCA8). The message dispatch now
+  sets the last error, as XAM does: 0 on success or pending.
+- **The race stopped at load.** Two recompiled functions were missing:
+  - `stvehx` (sub_82263DB0): XenonRecomp's emission was already right, and
+    the generator now accepts it;
+  - `vupkd3d128` of half floats (sub_822A7400 and four others): XenonRecomp
+    emits a debug trap for types 3 and 5, and the generator now emits
+    `sfr::vector_unpack_half` (`src/vector_unpack.h`) instead.
 
-Candidates:
-- a profile setting the host checks, such as avatar info 0x63E80044 (now
-  answered as 1000 zero bytes);
-- a reply path that fails silently;
-- a session call the host makes after the join and does not like.
+**Not yet tested:** two separate devices, more than two players, a guest
+leaving mid-race.
+
+`SFR_LIVE_TRACE=1` logs every LIVE call and message (`LIVE_CALL`,
+`LIVE_MESSAGE`) and the lobby's state machine (`LIVE_LOBBY_STATE`,
+`LIVE_LOBBY_MESSAGE`, `src/live_hooks.cpp`).
 
 A standalone server for a machine that does not play is in
 `scripts/live_server.py`:
