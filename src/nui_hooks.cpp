@@ -1090,11 +1090,12 @@ SFR_MENU_HOOK(sub_824578F0) {
             std::cerr << "NUI_MENU_LEAVE unreadable: " << error.what() << '\n';
         }
     }
-    // SFR_HAND_SEEK=1 (experimental, docs/xbox-live.md): A on a page whose
-    // only button takes the hand (the Quick Match lobby entry) sends the
-    // emulated hand to it with a push. Not yet known to press it.
+    // A on a page whose only button takes the hand (no voice word: the Quick
+    // Match lobby entry, kind 2) presses it the way the title's own press
+    // does (pending slot, then 82460668), like A on a two-player page.
+    // SFR_HAND_SEEK=1 sends the emulated hand to it instead (the older way).
     static const bool hand_seek_enabled=[] { const char* t=std::getenv("SFR_HAND_SEEK"); return t && *t=='1'; }();
-    if(hand_seek_enabled && (pressed & button::a) && !hand_seek.button) {
+    if((pressed & button::a) && !hand_seek.button) {
         // The player's page: does it have a button A can say "ok" to?
         const uint32_t page=call_guest(ctx,base,sub_82457348,manager,0);
         uint32_t hand_only=0;
@@ -1109,7 +1110,13 @@ SFR_MENU_HOOK(sub_824578F0) {
                 else if(memory.load<uint32_t>(b+312)==2 && !hand_only) hand_only=b;
             }
         }
-        if(hand_only && !spoken) {
+        if(hand_only && !spoken && !hand_seek_enabled) {
+            pressed&=~button::a;
+            memory.store<uint32_t>(manager+128,hand_only);
+            call_guest(ctx,base,sub_82460668,manager,hand_only,0);
+            std::cerr << "NUI_MENU_PRESS button=0x" << std::hex << hand_only << std::dec
+                      << " type=" << memory.load<uint32_t>(hand_only+288) << '\n';
+        } else if(hand_only && !spoken) {
             hand_seek={hand_only,manager,0,0};
             std::cerr << "NUI_HAND_SEEK start button=0x" << std::hex << hand_only << std::dec
                       << " type=" << memory.load<uint32_t>(hand_only+288) << '\n';
