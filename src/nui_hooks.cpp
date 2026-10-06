@@ -978,6 +978,31 @@ SFR_MENU_HOOK(sub_824578F0) {
         if(line!=last) { last=line; std::cerr << "MENU_BUTTONS manager=0x" << std::hex << manager << std::dec << line << '\n'; }
     }
     namespace button=sfr::gamepad_button;
+    // A two-player page hears no voice words. A of a player's pad confirms
+    // the front item of that player's ring (+308 bit 0x8000) the way the
+    // title's own confirm does (voice: 82464F34; the hand's arrow: 82456700):
+    // the item goes into the player's pending slot (manager+128+4*player),
+    // then 82460668(manager, item, player) takes it, which records it in
+    // manager+136+4*player. Once a player has chosen, A does nothing more.
+    if(sfr::second_player_pad().has_value() && memory.load<uint8_t>(0x83E515FB)) {
+        for(uint32_t player=0; player<2; ++player) {
+            uint16_t& buttons=player ? second_pressed : pressed;
+            if(!(buttons & button::a)) continue;
+            if(memory.load<uint32_t>(manager+136+4*player)) continue;
+            const uint32_t page=call_guest(ctx,base,sub_82457348,manager,player);
+            if(!page || ((memory.load<uint32_t>(page+320)>>4)&1)!=player) continue;
+            uint32_t front=0;
+            const uint32_t b0=memory.load<uint32_t>(page+300), b1=memory.load<uint32_t>(page+304);
+            for(uint32_t slot=b0; slot<b1 && slot-b0<8*64 && !front; slot+=8)
+                if(const uint32_t b=memory.load<uint32_t>(slot); b && (memory.load<uint32_t>(b+308)&0x8000)) front=b;
+            if(!front) continue;
+            buttons&=~button::a;
+            memory.store<uint32_t>(manager+128+4*player,front);
+            call_guest(ctx,base,sub_82460668,manager,front,player);
+            std::cerr << "NUI_MENU_CONFIRM player=" << player << " type=" << memory.load<uint32_t>(front+288)
+                      << " chosen=0x" << std::hex << memory.load<uint32_t>(manager+136+4*player) << std::dec << '\n';
+        }
+    }
     if(pressed & button::b) {
         uint32_t back=0;
         for_each_menu_button(memory,manager,[&](uint32_t b) {
