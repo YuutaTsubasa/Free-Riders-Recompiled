@@ -821,8 +821,19 @@ static uint32_t start_system_thread(PPCContext& ctx, uint32_t kind) {
     return handle;
 }
 
+// Relay Race: the controller whose racer is up (0 is the first player's,
+// keyboard included). Every other mode leaves it at 0.
+namespace { std::atomic<uint32_t> relay_controller{0}; }
+void set_relay_pad(uint32_t user) { relay_controller.store(user < 4 ? user : 0, std::memory_order_relaxed); }
+uint32_t relay_pad() { return relay_controller.load(std::memory_order_relaxed); }
+
+std::optional<GamepadState> nui_pad(uint32_t user) {
+    return user == 0 ? input().current(0) : input().controller(user);
+}
+
 GamepadState nui_gamepad() {
-    return input().current(0).value_or(GamepadState{});
+    const uint32_t user = relay_pad();
+    return (user ? input().controller(user) : input().current(0)).value_or(GamepadState{});
 }
 
 // SFR_TWO_PLAYERS=0 keeps the title to one Kinect player whatever is plugged

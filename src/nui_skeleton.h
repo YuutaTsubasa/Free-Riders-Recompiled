@@ -80,6 +80,12 @@ public:
         enrollment_ = enrollment;
         if (engage_ == 0) { engage_ = 1; park_ = !hand_starts_centred(); }
     }
+    // Somebody else steps in (a relay's next racer): not yet identified, the
+    // hands at rest.
+    void forget() {
+        enrollment_ = unidentified;
+        rearm_menu();
+    }
     // SFR_NUI_HAND_CENTRED=1 raises the hand to the middle of the screen
     // instead of parking it in the corner. A player wants it parked -- a
     // cursor sitting on a button presses it by waiting -- but an unattended
