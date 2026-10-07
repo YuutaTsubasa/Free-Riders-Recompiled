@@ -76,6 +76,8 @@ sfr::NuiPlayerRouting player_routing;
 bool second_present = false;
 sfr::NuiPadEdges edges;
 uint16_t pressed=0;  // buttons newly pressed at the last input update
+sfr::NuiPadEdges second_edges;
+uint16_t second_pressed=0;  // the same for the second player's pad
 uint32_t frame_number = 0;
 const auto started = std::chrono::steady_clock::now();
 
@@ -582,6 +584,33 @@ SFR_INPUT_HOOK(sub_827707B0) {
     ctx.r3.u64=0;
 }
 
+PPC_FUNC_IMPL(__imp__sub_82764728);
+
+// The Kinect library's identity of an enrollment (enrollment, out): out[0]
+// the user index that enrollment signed in as, out[1] nonzero when it has
+// one; an enrollment of 8 or more is E_INVALIDARG. With a second player the
+// title loads each player's profile (82491458, a request the title screen
+// and the menus wait for) and asks this with the player's enrollment until
+// the player is a signed-in user. A guest's enrollment (0xFFFFFFFE) is
+// refused, and the title retries until a 10-second timer gives up -- the
+// pause after the second player's figure walks across the title. An
+// enrollment without a user gives up the same request at once, the same
+// way, so that is the answer a guest gets from this one caller.
+SFR_INPUT_HOOK(sub_82764728) {
+    sfr::enter_function(ctx,"sub_82764728",0x82764728);
+    const uint32_t enrollment=ctx.r3.u32, out=ctx.r4.u32, caller=uint32_t(ctx.lr);
+    if(enrollment>=8 && out && caller>=0x82491458 && caller<0x82491C78) {
+        auto& memory=*sfr::active_memory;
+        memory.store<uint32_t>(out,254);
+        memory.store<uint32_t>(out+4,0);
+        ctx.r3.u64=0;
+        static uint32_t told=0;
+        if(told++<4) std::cerr << "NUI_GUEST_PROFILE enrollment=0x" << std::hex << enrollment << std::dec << " answer=none\n";
+        return;
+    }
+    __imp__sub_82764728(ctx,base);
+}
+
 // NuiIdentityIdentify(tracking id, flags, callback, context): the title
 // identifies each new skeleton before it joins as a player (82437E48). The
 // emulated player is the local profile (enrollment 0) when one is signed in,
@@ -688,8 +717,15 @@ SFR_MENU_HOOK(sub_82494658) {
     __imp__sub_82494658(ctx,base);
     const bool racing=memory.load<uint32_t>(0x83E52F8C)!=0;
     pressed=edges.update(sfr::nui_gamepad().buttons);
+    const auto second_pad=sfr::second_player_pad();
+    second_pressed=second_edges.update(second_pad ? second_pad->buttons : 0);
     ++input_frames;
     uint16_t spoken=pressed;
+    // The recognizer hears one word a frame, from nobody in particular: in a
+    // race the second pad's START pauses as the first's does, and its words
+    // run the pause menu (the first pad's are heard the whole race as well).
+    namespace pad=sfr::gamepad_button;
+    if(racing) spoken|=uint16_t(second_pressed & (pad::start|pad::a|pad::b|pad::x|pad::dpad_up|pad::dpad_down));
     // A (and B for a yes/no dialog) of an open hand-pointer dialog are the
     // dialog's (823EF348 below). Spoken as well, one press both answered the
     // pause menu's Retry confirmation by voice and chose "yes" again: the
@@ -824,19 +860,36 @@ PPC_FUNC_IMPL(__imp__sub_8246A6D0);
 // Ring menu step for one player (the object's first word is the player,
 // 1-based, 0 for the first): the hand swipe as a signed number of items.
 // Its callers (823F3148, 82454360, 824543D0) add both players' steps, so a
-// newly pressed D-pad left or right of the first player turns the ring one
-// item when the hand did not, once per press.
+// newly pressed D-pad left or right of a player's pad turns that player's
+// ring one item when the hand did not, once per press: the first pad's for
+// player 0 or 1, the second pad's for player 2. SFR_NUI_RING_TRACE=1 logs
+// every step, the hand's and the pad's.
 SFR_MENU_HOOK(sub_8246A6D0) {
     sfr::enter_function(ctx,"sub_8246A6D0",0x8246A6D0);
-    const uint32_t player=sfr::active_memory->load<uint32_t>(ctx.r3.u32);
+    const uint32_t ring=ctx.r3.u32;
+    const uint32_t player=sfr::active_memory->load<uint32_t>(ring);
     const int64_t now=now_ms();
     if(now-ring_asked_ms.exchange(now,std::memory_order_relaxed)>1000)
         std::cerr << "NUI_RING_ACTIVE racing=" << (sfr::active_memory->load<uint32_t>(0x83E52F8C)!=0) << '\n';
     __imp__sub_8246A6D0(ctx,base);
-    const int step=sfr::ring_step(pressed);
-    if(player>1 || ctx.r3.u32 || !step) return;
-    pressed&=~(sfr::gamepad_button::dpad_left|sfr::gamepad_button::dpad_right);
+    static const bool trace=[] {const char* text=std::getenv("SFR_NUI_RING_TRACE");return text && *text=='1';}();
+    if(trace && ctx.r3.u32)
+        std::cerr << "NUI_RING_STEP ring=0x" << std::hex << ring << std::dec << " player=" << player
+                  << " hand=" << ctx.r3.s32 << '\n';
+    if(player>2 || ctx.r3.u32) return;
+    // In a race (the pause menu) the first player's ring takes either pad.
+    uint16_t* buttons=player==2 ? &second_pressed : &pressed;
+    int step=sfr::ring_step(*buttons);
+    if(!step && player<2 && sfr::active_memory->load<uint32_t>(0x83E52F8C)!=0) {
+        buttons=&second_pressed;
+        step=sfr::ring_step(*buttons);
+    }
+    if(!step) return;
+    *buttons&=~(sfr::gamepad_button::dpad_left|sfr::gamepad_button::dpad_right);
     ctx.r3.s64=step;
+    if(trace)
+        std::cerr << "NUI_RING_STEP ring=0x" << std::hex << ring << std::dec << " player=" << player
+                  << " pad=" << step << '\n';
 }
 
 PPC_FUNC_IMPL(__imp__sub_82452F48);
@@ -962,6 +1015,48 @@ SFR_MENU_HOOK(sub_824578F0) {
         if(line!=last) { last=line; std::cerr << "MENU_BUTTONS manager=0x" << std::hex << manager << std::dec << line << '\n'; }
     }
     namespace button=sfr::gamepad_button;
+    // A two-player page hears no voice words. A of a player's pad confirms
+    // the front item of that player's ring (+308 bit 0x8000) the way the
+    // title's own confirm does (voice: 82464F34; the hand's arrow: 82456700):
+    // the item goes into the player's pending slot (manager+128+4*player),
+    // then 82460668(manager, item, player) takes it, which records it in
+    // manager+136+4*player. Once a player has chosen, A does nothing more.
+    if(sfr::second_player_pad().has_value() && memory.load<uint8_t>(0x83E515FB)) {
+        for(uint32_t player=0; player<2; ++player) {
+            uint16_t& buttons=player ? second_pressed : pressed;
+            if(!(buttons & button::a)) continue;
+            if(memory.load<uint32_t>(manager+136+4*player)) continue;
+            const uint32_t page=call_guest(ctx,base,sub_82457348,manager,player);
+            if(!page || ((memory.load<uint32_t>(page+320)>>4)&1)!=player) continue;
+            uint32_t front=0;
+            const uint32_t b0=memory.load<uint32_t>(page+300), b1=memory.load<uint32_t>(page+304);
+            for(uint32_t slot=b0; slot<b1 && slot-b0<8*64 && !front; slot+=8)
+                if(const uint32_t b=memory.load<uint32_t>(slot); b && (memory.load<uint32_t>(b+308)&0x8000)) front=b;
+            if(!front) continue;
+            buttons&=~button::a;
+            memory.store<uint32_t>(manager+128+4*player,front);
+            call_guest(ctx,base,sub_82460668,manager,front,player);
+            std::cerr << "NUI_MENU_CONFIRM player=" << player << " type=" << memory.load<uint32_t>(front+288)
+                      << " chosen=0x" << std::hex << memory.load<uint32_t>(manager+136+4*player) << std::dec << '\n';
+        }
+    }
+    // B of a player's pad on a two-player page is that player's back
+    // button (82456700, type 31: 8245B130 asks, 824603B8 leaves for the
+    // player), the first pad for player 0 and the second for 1. As with the
+    // arrow, the page goes back for both players, even after a choice.
+    if(sfr::second_player_pad().has_value() && memory.load<uint8_t>(0x83E515FB)) {
+        for(uint32_t player=0; player<2; ++player) {
+            uint16_t& buttons=player ? second_pressed : pressed;
+            if(!(buttons & button::b)) continue;
+            const uint32_t page=call_guest(ctx,base,sub_82457348,manager,player);
+            if(!page || ((memory.load<uint32_t>(page+320)>>4)&1)!=player) continue;
+            buttons&=~button::b;
+            if(call_guest(ctx,base,sub_8245B130,manager)&0xFF) {
+                call_guest(ctx,base,sub_824603B8,manager,player);
+                std::cerr << "NUI_MENU_BACK player=" << player << '\n';
+            }
+        }
+    }
     if(pressed & button::b) {
         uint32_t back=0;
         for_each_menu_button(memory,manager,[&](uint32_t b) {
