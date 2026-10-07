@@ -14,9 +14,10 @@
 | `gxfr?` | 劇情相關 | 58 |
 | `pauseF?` | 暫停選單 | 39 |
 | `resiF?` | 結果畫面 | 8 |
-| `FNT_S?` | 其他 | 41 |
+| `FNT_S?` | 系統訊息 | 41 |
+| `s08tf?` | 教學 | 397 |
 
-`l01?`、`FL_?` 等檔沒有字型，畫面上的字是圖片，之後另外處理。
+`l01?`、`FL_?` 等檔沒有字型；畫在圖片上的字見下面「圖片上的字」。
 
 光碟上的檔案都壓縮過（開頭 `0F F5 12 ED`，遊戲用靜態連結的 LZX 解碼器 `824E2B10` 串流解開）。
 **MOD 可以直接放解壓後的檔案**：遊戲也接受沒壓縮的 pack（已用日文 `gxfJ` 驗證），不需要壓縮器。
@@ -70,7 +71,11 @@ python scripts/sfr_font_text.py check <檔案>                     # 解析後�
 這些都是一般的 DDS（多為 DXT5、沒有 mipmap），`scripts/sfr_texture.py` 可列出、匯出 PNG，並把新圖編碼成
 同格式同大小後原地寫回，檔案其他部分不動（DXT 編碼用主軸端點加最小平方修正，重新編碼原圖約 50 dB）。
 
-## 還沒做
+## 繁體中文化 MOD
 
-- 選了日文後語音也是日文；文字與語音要不要分開選，之後再看。
-- 翻譯本身（約 2,600 句）。譯文是遊戲文字的衍生物，不放進這個 repo。
+譯文與建置腳本在另一個 repo：
+[Free-Riders-Recompiled-Traditional-Chinese-Mod](https://github.com/YuutaTsubasa/Free-Riders-Recompiled-Traditional-Chinese-Mod)。
+那裡只放譯文與工具，原文由 `tools/prepare.py` 從玩家自己的遊戲檔產生；建置用到這裡的
+`sfr_font_text.py`、`sfr_texture.py` 與 `unpack_assets.py`。
+
+選了日文後語音也是日文；文字與語音要不要能分開選，之後再看。
