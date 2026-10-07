@@ -1,5 +1,6 @@
 #include "asset_files.h"
 #include "mod_loader.h"
+#include "voice_language.h"
 
 #define NOMINMAX
 #include <windows.h>
@@ -294,7 +295,7 @@ AssetFiles::~AssetFiles() = default;
 
 AssetFiles::OpenResult AssetFiles::open(std::string_view guest_path, uint32_t share_access,
                                         OpenMode mode) {
-    const auto relative = checked_relative_path(guest_path);
+    const auto relative = checked_relative_path(voice_redirected(guest_path));
     if (share_access & ~uint32_t(7))
         throw std::runtime_error("asset files: unsupported native sharing bits");
     if (mode != OpenMode::synchronous && mode != OpenMode::asynchronous_unbuffered &&
@@ -335,7 +336,7 @@ AssetFiles::OpenResult AssetFiles::open(std::string_view guest_path, uint32_t sh
 }
 
 AssetFiles::PathInformation AssetFiles::query_path(std::string_view guest_path) const {
-    const auto relative = checked_relative_path(guest_path);
+    const auto relative = checked_relative_path(voice_redirected(guest_path));
     const auto replacement = mod_replacement(relative);
     const auto path = replacement.empty() ? directory_prefix(final_path(impl_->root.value)) + relative : replacement;
     // BACKUP_SEMANTICS opens directories too; attributes only, no data access.

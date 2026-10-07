@@ -5,6 +5,7 @@
 // Asynchronous reads complete when submitted.
 #include "asset_files.h"
 #include "mod_loader.h"
+#include "voice_language.h"
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -127,7 +128,8 @@ struct AssetFiles::Impl {
     }
 
     // The host path of a guest path, or the NT status of the failed lookup.
-    std::pair<uint32_t, std::string> resolve(std::string_view guest_path) const {
+    std::pair<uint32_t, std::string> resolve(std::string_view requested) const {
+        const std::string guest_path = voice_redirected(requested);  // voice_language.h
         const auto components = checked_components(guest_path);
         std::string relative;
         // A mod's file replaces (or adds) the game's (mod_loader.h).

@@ -63,6 +63,7 @@ struct LauncherSettings {
     std::string player1_gamepad, player2_gamepad;
     std::string language = "auto";   // the launcher's: "auto" (the system's), "en" or "zh-TW"
     std::string game_language = "auto"; // independent disc language; game_language.h
+    std::string voice_language = "auto"; // "en" or "ja" voices apart from the text; voice_language.h
     std::filesystem::path image_directory, asset_directory;
 };
 

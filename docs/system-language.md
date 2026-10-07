@@ -40,6 +40,20 @@ value or an invalid value uses host detection and the boundary fallback above.
 The game still selects its original language assets; this adds no translations.
 Startup logs identify the source as `system` or `SFR_GAME_LANGUAGE`.
 
+## Voice language
+
+The launcher's **Voice language** (`SFR_VOICE_LANGUAGE=auto|en|ja`) chooses the
+recorded voices apart from the text, for example Japanese text (or a translation
+mod that replaces the Japanese files) with English voices. The disc has two voice
+sets: the characters' lines in `sound/SRN_Eact_*.csb` and `SRN_Jact_*.csb`, and the
+story, announcer and Omochao in `sound/SRN_stream_voice_e` and `_j` (`.csb` and
+`.cpk`). The game picks a set by its language and plays cues by number, so the
+asset layer (`voice_language.h`, both platforms, before mods are looked up) opens
+the other set's file instead. The act sheets number their 19 characters' cues
+alike; the stream sheets share 1,836 cues, and the 67 English-only avatar lines
+and 10 Japanese-only announcements stay silent in the other set. The log shows
+the first redirects as `VOICE_LANGUAGE voice=en game=… opened=…`.
+
 ## Historical bring-up evidence and limits
 
 The following logs describe the initial implementation, before later startup,

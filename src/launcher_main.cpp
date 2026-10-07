@@ -106,7 +106,7 @@ enum Text {
     PressKey, PressButton, Unbound, ResetBindings, BindingsHint, SticksFixed,
     PlayerOneGamepad, PlayerTwoGamepad, GamepadHint, GamepadAutomatic, GamepadMissing,
     AvatarModel, AvatarModelHint, AvatarModelNone, AvatarModelMissing, AvatarModelImportFailed, Clear,
-    GameLanguageLabel, GameLanguageHint, TabAvatar,
+    GameLanguageLabel, GameLanguageHint, VoiceLanguageLabel, VoiceLanguageHint, VoiceFollowsGame, TabAvatar,
     SectionLanguage, SectionPlayback, SectionReset, SectionWindow, SectionRendering, SectionPerformance,
     SectionGameAudio, SectionLauncherAudio, SectionPlayer1, SectionPlayer2, SectionBindings, SectionTouch, SectionVoice,
     SectionResolution, WindowResolutionHint, SectionDiagnostics, ExportDiagnostics, ExportDiagnosticsHint,
@@ -329,6 +329,10 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Game language", "遊戲語言"},
     {"Choose the game's language independently of the launcher. System language follows your OS; unsupported languages use English. Applies when the game starts.",
      "獨立選擇遊戲語言。「系統語言」依照作業系統設定，不支援時使用英文。於下次啟動遊戲時套用。"},
+    {"Voice language", "語音語言"},
+    {"The recorded voices, apart from the text: for example Japanese text (or a translation mod that replaces it) with English voices. The disc has English and Japanese voices; the few lines only one of them has stay silent in the other. Applies when the game starts.",
+     "與文字分開選擇角色語音：例如日文文字（或取代日文的翻譯 MOD）配英文語音。光碟只有英文與日文語音，少數只有其中一種才有的台詞，在另一種語言下不會發聲。於下次啟動遊戲時套用。"},
+    {"Same as the game", "跟隨遊戲語言"},
     {"Avatar models", "Avatar 模型"},
     {"Languages", "語言"},
     {"Movies", "影片"},
@@ -1749,6 +1753,24 @@ struct Launcher {
                 for (const auto& item : sfr::game_languages) {
                     const bool selected = item.code == settings.game_language;
                     if (ImGui::Selectable(item.name, selected)) settings.game_language = item.code;
+                    if (selected) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+        });
+        setting_row(tr(VoiceLanguageLabel), tr(VoiceLanguageHint), 220 * scale, scale, [&] {
+            static constexpr std::array<std::pair<const char*, const char*>, 2> voices{{
+                {"en", "English"}, {"ja", "日本語"}}};
+            const char* current = tr(VoiceFollowsGame);
+            for (const auto& [code, name] : voices)
+                if (settings.voice_language == code) current = name;
+            ImGui::SetNextItemWidth(220 * scale);
+            if (ImGui::BeginCombo("##voice_language", current)) {
+                if (ImGui::Selectable(tr(VoiceFollowsGame), settings.voice_language == "auto"))
+                    settings.voice_language = "auto";
+                for (const auto& [code, name] : voices) {
+                    const bool selected = settings.voice_language == code;
+                    if (ImGui::Selectable(name, selected)) settings.voice_language = code;
                     if (selected) ImGui::SetItemDefaultFocus();
                 }
                 ImGui::EndCombo();
