@@ -96,3 +96,19 @@ player2_pad=...
 
 實作在 [`input_bindings.h`](../src/input_bindings.h)；遊戲端在
 `NativeInput::set_player`，啟動器端在 `launcher_main.cpp` 的 `controls_settings`。
+
+## 用手把操作啟動器
+
+整個啟動器都能只用手把操作：
+
+- **LB／RB** 切換設定分頁，切過去時第一個選項會亮起。
+- **十字鍵／左類比** 在選項之間移動；設定面板和下方的按鈕是同一頁，往上往下就能進出面板。
+- **A** 按下按鈕、切換開關、打開下拉選單（選單裡用十字鍵選，A 確定）。
+- **滑桿**（音量、比賽畫面更新間隔）選到後直接用 **左右** 調整，不必先按 A。
+- **B** 離開，**START（☰）** 開始遊戲。
+
+例外：「瀏覽…」會打開 Windows 的檔案對話框，那個視窗無法用手把操作；路徑也可以直接打字。
+
+測試用（`launcher_main.cpp`）：`SFR_LAUNCHER_INPUT_SCRIPT="rb@3,down@4,a@5"` 以腳本手把操作
+（`按鍵@秒[+持續秒數]`，秒數以 60 格計），`SFR_LAUNCHER_SHOTS=<資料夾>` 與 `SFR_LAUNCHER_SHOT_EVERY=<格數>`（Windows）
+定期存截圖，`SFR_LAUNCHER_NAV_TRACE=1` 在 stderr 記錄焦點落在哪個項目。
