@@ -4589,13 +4589,16 @@ int main(int argc, char** argv) {
 #endif
 #ifdef _WIN32
             // SFR_STALL_MS=N: when no frame has been presented for N ms, every
-            // 100 ms each guest thread's instruction pointer and the code
-            // addresses on its stack (offsets into the executable; a /MAP
-            // link names them), to find what holds a frame for seconds
-            // without any lock or wait showing it.
+            // 100 ms (SFR_STALL_EVERY_MS) each guest thread's instruction
+            // pointer and the code addresses on its stack (offsets into the
+            // executable; a /MAP link names them), to find what holds a frame
+            // for seconds without any lock or wait showing it.
             std::jthread stall_sampler([](std::stop_token stop) {
                 const uint64_t stall_ms = sfr::limit_from_environment("SFR_STALL_MS", 0);
                 if (!stall_ms) return;
+                // SFR_STALL_EVERY_MS: a shorter interval, for stalls of a few
+                // hundred milliseconds that 100 ms samples barely see.
+                const uint64_t every_ms = std::max<uint64_t>(5, sfr::limit_from_environment("SFR_STALL_EVERY_MS", 100));
                 const auto module = uint64_t(GetModuleHandleW(nullptr));
                 const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(module);
                 const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(module + dos->e_lfanew);
@@ -4603,7 +4606,7 @@ int main(int argc, char** argv) {
                 uint32_t seen = sfr::present_count.load();
                 auto moved = std::chrono::steady_clock::now();
                 while (!stop.stop_requested()) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    std::this_thread::sleep_for(std::chrono::milliseconds(every_ms));
                     const uint32_t now_count = sfr::present_count.load();
                     const auto now = std::chrono::steady_clock::now();
                     if (now_count != seen) { seen = now_count; moved = now; continue; }
@@ -4617,7 +4620,9 @@ int main(int argc, char** argv) {
                         // could wait on a lock the thread holds): the
                         // instruction pointer, then the words on its stack that
                         // point into the executable, nearest first.
-                        std::array<uint64_t, 16> frames{};
+                        // Deep enough to reach the game's own callers above the
+                        // renderer and runtime helpers the stall is sampled in.
+                        std::array<uint64_t, 64> frames{};
                         size_t depth = 0;
                         CONTEXT context{};
                         context.ContextFlags = CONTEXT_CONTROL;
@@ -4629,7 +4634,7 @@ int main(int argc, char** argv) {
                             size_t words = 0;
                             if (VirtualQuery(stack, &region, sizeof region) && region.State == MEM_COMMIT)
                                 words = (uint64_t(region.BaseAddress) + region.RegionSize - context.Rsp) / 8;
-                            for (size_t i = 0; i < 2048 && i < words && depth < frames.size(); ++i) {
+                            for (size_t i = 0; i < 8192 && i < words && depth < frames.size(); ++i) {
                                 const uint64_t word = stack[i];
                                 if (word > image_begin && word < image_end) frames[depth++] = word;
                             }

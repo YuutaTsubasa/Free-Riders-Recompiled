@@ -3,6 +3,7 @@
 #include <array>
 #include <atomic>
 #include <mutex>
+#include <thread>
 #include <cstdlib>
 #include <utility>
 #ifdef _WIN32
@@ -965,8 +966,14 @@ std::atomic<GuestMemory*> watched_memory{nullptr};
 // mutex. Nothing holding it writes guest memory, so a fault never waits on
 // its own thread.
 std::atomic_flag watch_lock = ATOMIC_FLAG_INIT;
+// Holders make system calls (VirtualProtect), so a waiter must not keep its
+// core: spinning without yielding kept a descheduled holder from finishing
+// and stalled the main thread for hundreds of milliseconds on four cores.
 struct WatchLock {
-    WatchLock() { while (watch_lock.test_and_set(std::memory_order_acquire)) {} }
+    WatchLock() {
+        for (uint32_t spins = 0; watch_lock.test_and_set(std::memory_order_acquire); ++spins)
+            if (spins >= 64) std::this_thread::yield();
+    }
     ~WatchLock() { watch_lock.clear(std::memory_order_release); }
 };
 bool protect_pages(uint8_t* at, uint64_t size, bool read_only) {
@@ -1098,6 +1105,16 @@ void GuestMemory::arm_watch(uint64_t first_page, uint64_t last_page) {
 void GuestMemory::disarm_watch(uint64_t address, uint64_t size) const {
     if (!direct_guest_access || !size) return;
     const uint64_t per_host = page_size_ / fast_page_size;
+    const uint64_t first = address / fast_page_size / per_host * per_host;
+    const uint64_t last = (std::min)((address + size - 1) / fast_page_size, address_space_size / fast_page_size - 1);
+    // Every checked store comes here: without an armed page there is nothing
+    // to clear, and the lock is left to those protecting pages. An arm that
+    // lands after this look protects the page first, so the store faults and
+    // the handler disarms it, as when it lands after the lock.
+    bool armed = false;
+    for (uint64_t page = first; page <= last && !armed; ++page)
+        armed = (std::atomic_ref<uint8_t>(watched_pages_[page]).load(std::memory_order_relaxed) & watch_armed) != 0;
+    if (!armed) return;
     WatchLock lock;
     for (uint64_t page = address / fast_page_size / per_host * per_host;
          page <= (address + size - 1) / fast_page_size && page < address_space_size / fast_page_size; ++page)
