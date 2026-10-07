@@ -13,6 +13,16 @@ namespace fs = std::filesystem;
 namespace {
 HWND owner_window = nullptr;
 
+fs::path program_path() {
+    std::wstring path(MAX_PATH, L'\0');
+    for (;;) {
+        const DWORD length = GetModuleFileNameW(nullptr, path.data(), DWORD(path.size()));
+        if (length < path.size()) { path.resize(length); break; }
+        path.resize(path.size() * 2);
+    }
+    return path;
+}
+
 std::wstring quoted(const std::wstring& argument) {
     std::wstring text = L"\"" + argument;
     if (!argument.empty() && argument.back() == L'\\') text += L'\\';  // keep the closing quote
@@ -39,14 +49,20 @@ void set_owner_window(void* window) { owner_window = static_cast<HWND>(window); 
 
 void* wait_handle(GameProcess& game) { return static_cast<Win32Game&>(game).handle(); }
 
-fs::path launcher_directory() {
-    std::wstring path(MAX_PATH, L'\0');
-    for (;;) {
-        const DWORD length = GetModuleFileNameW(nullptr, path.data(), DWORD(path.size()));
-        if (length < path.size()) { path.resize(length); break; }
-        path.resize(path.size() * 2);
-    }
-    return fs::path(path).parent_path();
+fs::path launcher_directory() { return program_path().parent_path(); }
+
+void register_install(const fs::path& directory) {
+    HKEY key = nullptr;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, L"SOFTWARE\\FreeRidersRecompiled", 0, nullptr, 0, KEY_SET_VALUE, nullptr,
+                        &key, nullptr) != ERROR_SUCCESS)
+        return;
+    auto set = [key](const wchar_t* name, const std::wstring& value) {
+        RegSetValueExW(key, name, 0, REG_SZ, reinterpret_cast<const BYTE*>(value.c_str()),
+                       DWORD((value.size() + 1) * sizeof(wchar_t)));
+    };
+    set(L"ExecutableFilePath", program_path().wstring());
+    set(L"RootDirectoryPath", directory.wstring());
+    RegCloseKey(key);
 }
 
 bool can_pick_folders() { return true; }

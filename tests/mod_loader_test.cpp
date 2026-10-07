@@ -68,6 +68,15 @@ int main() {
         write(launcher / "cpkredir.ini", "[CPKREDIR]\nEnabled=1\nModsDbIni=\"C:/elsewhere/ModsDB.ini\"\n");
         const auto external = sfr::scan_mods(launcher);
         require(external.external && !sfr::save_mods(launcher, external), "HedgeModManager's configuration is kept");
+        // HedgeModManager's own file: mods\ModsDB.ini relative to the game's
+        // folder, ids that are not folder names. Still HedgeModManager's.
+        write(launcher / "cpkredir.ini",
+              "[CPKREDIR]\nEnabled=true\nModsDbIni=mods\\ModsDB.ini\n[HedgeModManager]\nModProfile=Default\n");
+        const auto managed = sfr::scan_mods(launcher);
+        std::error_code error;
+        require(managed.external && fs::equivalent(managed.external_db, launcher / "mods/ModsDB.ini", error) &&
+                !sfr::save_mods(launcher, managed),
+                "HedgeModManager's relative ModsDbIni is the launcher's folder, and it stays in charge");
         fs::remove_all(root);
         std::cout << "mod loader tests passed\n";
         return 0;
