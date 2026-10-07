@@ -3,7 +3,7 @@
 
     python scripts/sfr_font_text.py export <file> <strings.json>
     python scripts/sfr_font_text.py build <file> <strings.json> <font> <output> [--size N]
-    python scripts/sfr_font_text.py check <file>
+    python scripts/sfr_font_text.py check <file>   (rewrites the file unchanged: must be identical)
 
 The files are the decompressed ones (scripts/unpack_assets.py); a mod can ship
 them uncompressed. Each holds its own font: a "pack" whose entries are
@@ -20,8 +20,8 @@ them uncompressed. Each holds its own font: a "pack" whose entries are
   in 0x01000000 (0x01000002 is a line break, 0x01000013 / 0x01000014 open and
   close a reading shown above the text).
 
-adv files nest these entries in a second-level pack; they are read (export)
-but not rebuilt yet.
+adv files are a version-2 pack: two u16 counts that add up, offsets from +20,
+and pictures and layouts before the three font entries, which build keeps.
 
 In strings.json a string is text with "\\n" for a line break and
 "[base|reading]" for a reading. build keeps the glyphs the file already has
@@ -42,21 +42,41 @@ def u32(d, at):
     return struct.unpack('>I', d[at:at + 4])[0]
 
 
-def pack_entries(d):
+def pack_layout(d):
+    """(offset table position, entries) of a pack. Version 1 counts its entries
+    in the u16 at +8 and lists the offsets from +16; version 2 (adv) has two
+    u16 counts that add up, and lists them from +20."""
     if d[:4] != b'pack':
         raise ValueError('not a pack')
-    n = struct.unpack('>H', d[8:10])[0]
-    offsets = struct.unpack('>%dI' % (n + 1), d[16:16 + 4 * (n + 1)])
-    return [(offsets[i], offsets[i + 1]) for i in range(n)]
+    if d[5] == 1:
+        n, table = struct.unpack('>H', d[8:10])[0], 16
+    elif d[5] == 2:
+        n, table = sum(struct.unpack('>HH', d[8:12])), 20
+    else:
+        raise ValueError('pack version %d' % d[5])
+    offsets = struct.unpack('>%dI' % (n + 1), d[table:table + 4 * (n + 1)])
+    return table, [(offsets[i], offsets[i + 1]) for i in range(n)]
+
+
+def pack_entries(d):
+    return pack_layout(d)[1]
 
 
 class FontFile:
     def __init__(self, data):
         self.data = data
-        entries = pack_entries(data)
-        if len(entries) != 3 or data[entries[0][0]:entries[0][0] + 8] != b'FONTDATF':
-            raise ValueError('not a font pack (adv files are read with find_chunks)')
-        (fa, fb), (ta, tb), (sa, sb) = entries
+        table, entries = pack_layout(data)
+        tags = [data[a:a + 8] for a, _ in entries]
+        if b'FONTDATF' not in tags:
+            raise ValueError('no font in this pack')
+        # FONTDATF, the glyph pages and FONTSTLB follow each other; other
+        # entries (adv's pictures and layouts) are kept as they are.
+        self.font_at = tags.index(b'FONTDATF')
+        if tags[self.font_at + 2] != b'FONTSTLB':
+            raise ValueError('unexpected font entries')
+        self.table = table
+        self.entries = [data[a:b] for a, b in entries]
+        (fa, fb), (ta, tb), (sa, sb) = entries[self.font_at:self.font_at + 3]
         self.font_header = data[fa:fa + 60]
         count = u32(data, fa + 16)
         self.glyphs = [dict(zip(('width', 'left', 'code', 'number', 'right'),
@@ -66,7 +86,7 @@ class FontFile:
         self.texture = data[ta:tb]
         self.strings_header = data[sa + 8:sa + 16]
         self.strings = read_strings(data, sa, sb)
-        self.pack_header = data[:16]
+        self.pack_header = data[:table]
 
     def pages(self):
         """The glyph pages as (name, height, 512 x height x 4 bytes)."""
@@ -162,24 +182,27 @@ def parse_text(text):
     return out
 
 
-def serialize(font, glyphs, pages, strings, page_names):
-    """The pack from glyph records, page pixels (height, bytes) and value lists."""
-    rows_per_page = [h // CELL_H for h, _ in pages]
+def serialize(font, glyphs, pages, strings, page_names, same_pages=False):
+    """The pack from glyph records, page pixels (height, bytes) and value
+    lists. same_pages keeps the font header's page fields (advE carries an
+    empty page its font does not count)."""
     full_h = pages[0][0] if len(pages) > 1 else pages[-1][0]
     header = bytearray(font.font_header)
-    struct.pack_into('>II', header, 16, len(glyphs), (full_h // CELL_H) * PER_ROW)
-    struct.pack_into('>5H', header, 24, len(pages), PAGE_W, full_h, PAGE_W, pages[-1][0])
-    struct.pack_into('>H', header, 36, full_h // CELL_H)
+    struct.pack_into('>I', header, 16, len(glyphs))
+    if not same_pages:
+        struct.pack_into('>I', header, 20, (full_h // CELL_H) * PER_ROW)
+        struct.pack_into('>5H', header, 24, len(pages), PAGE_W, full_h, PAGE_W, pages[-1][0])
+        struct.pack_into('>H', header, 36, full_h // CELL_H)
     fontdat = bytearray(header)
     for g in glyphs:
         fontdat += struct.pack('>iiHHi', g['width'], g['left'], g['code'], g['number'], g['right'])
     fontdat += font.font_trailer
-    del rows_per_page
 
     count = len(pages)
     names = b''.join(n.encode() + b'\0' for n in page_names)
     head_size = 4 + 8 * count + count + len(names)
-    first = max(64 * count, (head_size + 63) // 64 * 64)  # 64 bytes a page, as the originals
+    # Where the originals put the first page (the game reads the offsets).
+    first = 64 if head_size <= 64 else (head_size + 63) // 64 * 64 + 64
     dds_blobs = []
     template = font.pages()[0][3]
     for height, pixels in pages:
@@ -207,21 +230,22 @@ def serialize(font, glyphs, pages, strings, page_names):
     stlb = b'FONTSTLB' + font.strings_header + struct.pack('>I', len(strings))
     stlb += struct.pack('>%dI' % len(strings), *offsets) + body
 
-    pack = bytearray(font.pack_header)
-    start = 16 + 4 * 4
-    o1 = start
-    o2 = o1 + len(fontdat)
-    o3 = o2 + len(texture)
-    stlb += bytes(-(o3 + len(stlb)) % 16)  # the file ends on 16 bytes
-    o4 = o3 + len(stlb)
-    pack += struct.pack('>4I', o1, o2, o3, o4)
-    return bytes(pack + fontdat + texture + stlb)
+    entries = list(font.entries)
+    entries[font.font_at:font.font_at + 3] = [bytes(fontdat), bytes(texture), bytes(stlb)]
+    if font.font_at + 3 == len(entries):
+        entries[-1] += bytes(-(font.table + 4 * (len(entries) + 1) + sum(map(len, entries))) % 16)
+    offsets, at = [], font.table + 4 * (len(entries) + 1)
+    for entry in entries:
+        offsets.append(at)
+        at += len(entry)
+    offsets.append(at)
+    return bytes(font.pack_header) + struct.pack('>%dI' % len(offsets), *offsets) + b''.join(entries)
 
 
 def original_layout(font):
     """The file's own glyphs, pages and strings, serialized again (for check)."""
     pages = [(h, px) for _, h, px, _ in font.pages()]
-    return serialize(font, font.glyphs, pages, font.strings, [n for n, _, _, _ in font.pages()])
+    return serialize(font, font.glyphs, pages, font.strings, [n for n, _, _, _ in font.pages()], same_pages=True)
 
 
 def page_heights(cells):

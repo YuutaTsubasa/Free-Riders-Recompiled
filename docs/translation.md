@@ -10,7 +10,7 @@
 | 檔案 | 內容 | 字串數 |
 | --- | --- | --- |
 | `gxf?` | World Grand Prix 劇情字幕 | 1585 |
-| `adv?` | 選單、說明文字（外層還包一層 pack） | 901 |
+| `adv?` | 選單、說明文字（version 2 的 pack，前面另有圖片與版面） | 901 |
 | `gxfr?` | 劇情相關 | 58 |
 | `pauseF?` | 暫停選單 | 39 |
 | `resiF?` | 結果畫面 | 8 |
@@ -57,14 +57,14 @@ python scripts/sfr_font_text.py check <檔案>                     # 解析後�
 
 `build` 依新字串重排字號、重畫字頁、重寫三段：原檔已有的非漢字（英數、假名、標點）沿用原字形，
 漢字用給的字型重畫（字型沒有的字沿用原字形）。字型用 Noto Sans TC（`NotoSansTC-VF.ttf`，粗細 700，
-20 px，基線 y=27）與原字形粗細相近。`check` 對 E／J 的 gxf、gxfr、pauseF、resiF、FNT_S 都重寫出
+20 px，基線 y=27）與原字形粗細相近。`check` 對 E／J 的 gxf、gxfr、pauseF、resiF、FNT_S、adv 都重寫出
 完全相同的檔案。
 
-驗證：新存檔進 World Grand Prix 的開場劇情，`gxfJ` 前 22 句換成中文，字幕正確顯示。
+驗證：新存檔進 World Grand Prix 的開場劇情，`gxfJ` 前 22 句換成中文，字幕正確顯示；`advJ` 換上中文
+選單文字後，主選單與 Offline Mode 的說明框和圓環項目名稱顯示中文（頁面標題與 Omochao 對話框在別的檔）。
 
 ## 還沒做
 
-- `adv`（選單文字）外面多一層 pack，`build` 還不支援。
 - 圖片上的字（`FL_?`、`l01?` 等）。
 - 選了日文後語音也是日文；文字與語音要不要分開選，之後再看。
 - 翻譯本身（約 2,600 句）。譯文是遊戲文字的衍生物，不放進這個 repo。
