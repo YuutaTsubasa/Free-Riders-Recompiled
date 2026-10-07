@@ -465,6 +465,24 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
     // Submitting the frame and waiting for it: what the CPU spends beyond
     // recording, which is where a GPU-bound frame shows up.
     const auto present_start=std::chrono::steady_clock::now();
+    {
+        // A frame of more than a quarter of a second, always: a player who
+        // saw the game stall has where and when in game.log without having
+        // turned detailed metrics on (SFR_FRAME_METRICS). At most 200 lines.
+        static std::chrono::steady_clock::time_point previous{};
+        static uint32_t told=0;
+        if(previous!=std::chrono::steady_clock::time_point{} && told<200) {
+            const double ms=std::chrono::duration<double,std::milli>(present_start-previous).count();
+            if(ms>250.0) {
+                ++told;
+                const bool racing=sfr::active_memory && sfr::active_memory->readable(0x83E52F8C,4) &&
+                                  sfr::active_memory->load<uint32_t>(0x83E52F8C)!=0;
+                std::cerr << "NATIVE_SLOW_FRAME present=" << sfr::present_count.load() << " ms=" << ms
+                          << " racing=" << racing << '\n';
+            }
+        }
+        previous=present_start;
+    }
     if(rendering_this_frame()) graphics().present_front_buffer(ctx.r3.u32);
     const double present_ms=
         std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-present_start).count();
