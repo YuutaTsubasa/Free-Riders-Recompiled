@@ -1711,6 +1711,26 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         ctx.r3.u64 = 0;
         return;
     }
+    if (std::string_view(name) == "__imp__XamShowNuiGuideUI" || std::string_view(name) == "__imp__XamShowNuiFriendsUI" ||
+        std::string_view(name) == "__imp__XamShowNuiPartyUI" ||
+        std::string_view(name) == "__imp__XamShowNuiGamerCardUIForXUID") {
+        // The Kinect Guide and the other system panels a page can open (the
+        // results screen's Guide button is the Kinect Guide). There is no
+        // system UI here; unimplemented, they stopped the game. Like the
+        // sign-in panel below, the system UI opens and closes (XN_SYS_UI 1,
+        // then 0 once the title has read the open), and the call succeeds.
+        static uint32_t shown = 0;
+        if (shown++ < 8)
+            std::cerr << "NUI_SYSTEM_UI " << std::string_view(name).substr(7) << " r3=0x" << std::hex << ctx.r3.u32
+                      << " r4=0x" << ctx.r4.u32 << " lr=0x" << ctx.lr << std::dec << " result=0 backend=closed\n";
+        if (native_notifications) {
+            constexpr uint32_t xn_sys_ui = 0x00000009;
+            native_notifications->publish(xn_sys_ui, 1);
+            native_notifications->publish_when_drained(xn_sys_ui, 0);
+        }
+        ctx.r3.u64 = 0;
+        return;
+    }
     if (std::string_view(name) == "__imp__XamShowNuiControllerRequiredUI") {
         // The system's "pick up a controller" notice, which a Kinect race
         // asked for on its worker thread after a pad button (seen with a real
