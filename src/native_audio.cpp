@@ -4,6 +4,7 @@
 #include <bit>
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
 #include <vector>
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -34,6 +35,35 @@ void downmix_audio_frame(const uint8_t* frame, float* stereo) {
     }
 }
 
+uint32_t AudioCushion::configured() {
+    const char* text = std::getenv("SFR_AUDIO_CUSHION");
+    if (!text || !*text) return 12;
+    return uint32_t(std::clamp(std::atoi(text), 0, int(limit) - 2));
+}
+
+AudioCushion::Step AudioCushion::next(uint32_t queued) {
+    Step step;
+    if (queued >= limit) {
+        if (dropped_++ % 100 == 0) std::cerr << "NATIVE_AUDIO_DROPPED count=" << dropped_ << '\n';
+        return step;
+    }
+    if (playing_ && queued == 0) {
+        // Ran dry before this frame came: the device was silent meanwhile.
+        if (underruns_++ < 20 || underruns_ % 100 == 0)
+            std::cerr << "NATIVE_AUDIO_UNDERRUN count=" << underruns_ << " cushion=" << frames_ << '\n';
+        if (frames_ > 1) {
+            playing_ = false;
+            step.pause = true;
+        }
+    }
+    step.submit = true;
+    if (!playing_ && queued + 1 >= std::max<uint32_t>(frames_, 1)) {
+        playing_ = true;
+        step.start = true;
+    }
+    return step;
+}
+
 #ifdef _WIN32
 namespace {
 class XAudio2Output final : public NativeAudio {
@@ -58,16 +88,16 @@ public:
         format.wBitsPerSample = 32;
         format.nBlockAlign = format.nChannels * format.wBitsPerSample / 8;
         format.nAvgBytesPerSec = format.nSamplesPerSec * format.nBlockAlign;
-        if (FAILED(engine_->CreateSourceVoice(&voice_, &format))) return false;
-        return SUCCEEDED(voice_->Start());
+        // Started by the cushion, once it is full.
+        return SUCCEEDED(engine_->CreateSourceVoice(&voice_, &format));
     }
     void submit(const uint8_t* frame) override {
         XAUDIO2_VOICE_STATE state{};
         voice_->GetState(&state, XAUDIO2_VOICE_NOSAMPLESPLAYED);
-        // At most 46 frames (about a quarter second) queued: more means the
-        // device plays slower than the game produces, so drop this one. It
-        // also keeps the buffer reused below out of the queue.
-        if (state.BuffersQueued >= ring_.size() - 2) return;
+        // The cushion's limit also keeps the buffer reused below out of the queue.
+        const auto step = cushion_.next(state.BuffersQueued);
+        if (step.pause) voice_->Stop();
+        if (!step.submit) return;
         auto& buffer = ring_[next_];
         next_ = (next_ + 1) % ring_.size();
         downmix_audio_frame(frame, buffer.data());
@@ -75,14 +105,16 @@ public:
         submission.AudioBytes = UINT32(buffer.size() * sizeof(float));
         submission.pAudioData = reinterpret_cast<const BYTE*>(buffer.data());
         voice_->SubmitSourceBuffer(&submission);
+        if (step.start) voice_->Start();
     }
 private:
+    AudioCushion cushion_{AudioCushion::configured()};
     bool com_ = false;
     IXAudio2* engine_ = nullptr;
     IXAudio2MasteringVoice* master_ = nullptr;
     IXAudio2SourceVoice* voice_ = nullptr;
     // Buffers must outlive their playback: a ring larger than the queue.
-    std::array<std::array<float, audio_frame_samples * 2>, 48> ring_{};
+    std::array<std::array<float, audio_frame_samples * 2>, AudioCushion::limit + 2> ring_{};
     size_t next_ = 0;
 };
 }
@@ -113,17 +145,21 @@ public:
         if (!device_) return false;
         // SFR_VOLUME: percent (the launcher's volume slider).
         if (const char* volume = std::getenv("SFR_VOLUME")) volume_ = float(std::clamp(std::atoi(volume), 0, 100)) / 100.0f;
-        SDL_PauseAudioDevice(device_, 0);
-        return true;
+        return true;  // unpaused by the cushion, once it is full
     }
     void submit(const uint8_t* frame) override {
-        // At most 46 frames (about a quarter second) queued, as with XAudio2.
-        if (SDL_GetQueuedAudioSize(device_) >= 46 * sizeof(buffer_)) return;
+        // Whole frames: a partly played one counts as still queued.
+        const uint32_t queued = uint32_t((SDL_GetQueuedAudioSize(device_) + sizeof(buffer_) - 1) / sizeof(buffer_));
+        const auto step = cushion_.next(queued);
+        if (step.pause) SDL_PauseAudioDevice(device_, 1);
+        if (!step.submit) return;
         downmix_audio_frame(frame, buffer_.data());
         if (volume_ != 1.0f) for (float& sample : buffer_) sample *= volume_;
         SDL_QueueAudio(device_, buffer_.data(), Uint32(sizeof(buffer_)));
+        if (step.start) SDL_PauseAudioDevice(device_, 0);
     }
 private:
+    AudioCushion cushion_{AudioCushion::configured()};
     bool initialized_ = false;
     SDL_AudioDeviceID device_ = 0;
     float volume_ = 1.0f;
