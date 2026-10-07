@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -8,9 +9,21 @@
 
 namespace sfr {
 
+// Which of count host processors (in host_processor_order) guest processor
+// guest_cpu takes. With six or more, its own. With fewer, guest processor 0
+// keeps the first and 1-5 share the others: the main thread is pinned to the
+// first (guest processor 0), and guest processor 4 landed there as well
+// (4 % 4): on a 4-core, 4-thread i5-3470 the game ran 44% faster with the
+// main thread unpinned (Issue #52). One host processor serves them all.
+inline uint32_t host_processor_slot(uint32_t guest_cpu, size_t count) {
+    if (count >= 6) return uint32_t(guest_cpu % count);
+    if (guest_cpu == 0 || count <= 1) return 0;
+    return 1 + (guest_cpu - 1) % uint32_t(count - 1);
+}
+
 #ifdef _WIN32
 // The allowed logical processors of one group in the order guest processors
-// take them (guest processor n gets entry n modulo the count): the first
+// take them (guest processor n gets entry host_processor_slot(n, count)): the first
 // hardware thread of every physical core, fastest cores first, then the
 // second threads. SFR_HOST_PROCESSORS=sequential gives plain bit order.
 std::vector<uint32_t> host_processor_order(uint64_t allowed, uint16_t group);

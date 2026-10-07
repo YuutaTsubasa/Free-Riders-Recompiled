@@ -258,7 +258,7 @@ uint64_t pin_current_guest_processor(uint32_t guest_cpu) {
     if (has_cpu_set_assignment(GetCurrentThread())) return current.Mask;
     const auto order = host_processor_order(current.Mask, current.Group);
     if (order.empty()) throw RuntimeStop("thread-host", 0, "calling thread has no allowed processors");
-    const uint64_t selected = uint64_t{1} << order[guest_cpu % order.size()];
+    const uint64_t selected = uint64_t{1} << order[host_processor_slot(guest_cpu, order.size())];
     if (!SetThreadAffinityMask(GetCurrentThread(), static_cast<DWORD_PTR>(selected)))
         throw_host_error("SetThreadAffinityMask", GetLastError());
     return selected;
@@ -293,7 +293,7 @@ uint64_t NativeThread::set_guest_processor(uint32_t guest_cpu, bool allow_migrat
     }
     if (processors.empty())
         throw RuntimeStop("thread-host", 0, "cached process affinity mask is empty");
-    const uint64_t selected_mask = uint64_t{1} << processors[guest_cpu % processors.size()];
+    const uint64_t selected_mask = uint64_t{1} << processors[host_processor_slot(guest_cpu, processors.size())];
     if (selected_mask == 0)
         throw RuntimeStop("thread-host", guest_cpu, "could not select an allowed host processor");
     uint64_t host_mask = selected_mask;
@@ -309,7 +309,7 @@ uint64_t NativeThread::set_guest_processor(uint32_t guest_cpu, bool allow_migrat
     if (SetThreadAffinityMask(impl_->handle, static_cast<DWORD_PTR>(host_mask)) == 0)
         throw_host_error("SetThreadAffinityMask", GetLastError());
     if (allow_migration) {
-        PROCESSOR_NUMBER ideal{impl_->processor_group, BYTE(processors[guest_cpu % processors.size()]), 0};
+        PROCESSOR_NUMBER ideal{impl_->processor_group, BYTE(processors[host_processor_slot(guest_cpu, processors.size())]), 0};
         if (!SetThreadIdealProcessorEx(impl_->handle, &ideal, nullptr)) {
             const DWORD error = GetLastError();
             if (!SetThreadAffinityMask(impl_->handle, static_cast<DWORD_PTR>(previous_mask))) std::terminate();

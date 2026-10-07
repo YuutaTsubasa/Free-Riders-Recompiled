@@ -275,7 +275,7 @@ uint64_t NativeThread::set_guest_processor(uint32_t guest_cpu) {
         }
         processors = ordered;
     }
-    const int selected = processors.empty() ? -1 : processors[guest_cpu % processors.size()];
+    const int selected = processors.empty() ? -1 : processors[host_processor_slot(guest_cpu, processors.size())];
     if (selected < 0) throw RuntimeStop("thread-host", guest_cpu, "could not select an allowed host processor");
     cpu_set_t set;
     CPU_ZERO(&set);
