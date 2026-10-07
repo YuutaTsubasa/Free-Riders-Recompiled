@@ -40,6 +40,20 @@ updated; shader identities, pipeline state records and coverage are unchanged
 byte with the ABI 9 manifests and validated with the runtime decoder. This
 migration does not add coverage or imply new target-device performance results.
 
+2026-10-07 (v0.6.1): both lists were extended with what play since then recorded,
+for the modes the first capture left out: two-player Free Race and Tag Race,
+Relay Race (2, 3 and 2P vs 2P teams, Dolphin Resort and stage 4), World Grand
+Prix, Time Attack, a mission race and Xbox LIVE races. D3D12 grew from 280 to
+465 recipes (137 recorded lists from scripted runs) and Vulkan from 336 to 455
+(the maintainer's own Relay and two-player play, plus scripted Relay runs).
+Every earlier recipe was kept in its place. Courses, characters and items those
+runs did not reach still compile on first use.
+
+To join several recorded lists, use `sfr_pipeline_manifest_merge <d3d12|vulkan>
+<output> <input>...` (tools/pipeline_manifest_merge.cpp). It decodes each input
+with the runtime's own validation, drops duplicates and keeps the first-seen
+order, so give the current list first.
+
 To update a list, use the matching backend and release shader pack, play the
 scenes to include, exit normally, then copy `pipeline-cache/<backend>.manifest`
 to `pipelines-<backend>.manifest` here. Validate a clean application-cache start
