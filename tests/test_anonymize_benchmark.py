@@ -82,9 +82,39 @@ class AnonymizeTest(unittest.TestCase):
         destination, _ = self.run_it()
         self.assertFalse((destination / 'shot.bmp').exists())
 
+    def test_the_map_and_the_profile_function_table_are_withheld(self):
+        # They name the generated code's functions; the summary and the logs still go.
+        root = Path(tempfile.mkdtemp())
+        source = root / 'run'
+        source.mkdir()
+        (source / 'sfr_cpu_diagnostic.map').write_text(' 0001:00000000 sub_82000000 0000000140001000 f ppc_recomp.0.obj\n', encoding='utf-8')
+        (source / 'profile.md').write_text('| sub_82000000 | 12% |\n', encoding='utf-8')
+        (source / 'summary.md').write_text('| baseline | 27.3 |\n', encoding='utf-8')
+        (source / 'profile-1.log').write_text('HOST_PROFILE rva=0x1000 42\n', encoding='utf-8')
+        copied, _, left_out = anon.anonymize(source, root / 'out')
+        self.assertEqual(sorted(p.name for p in (root / 'out').iterdir()), ['profile-1.log', 'summary.md'])
+        self.assertEqual((copied, left_out), (2, 2))
+
     def test_unknown_binary_files_are_excluded(self):
         destination, _ = self.run_it()
         self.assertFalse((destination / 'tool.exe').exists())
+
+    def test_the_hardware_probe_lines_carry_nothing_to_remove_and_stay_whole(self):
+        # scripts/hardware_probe.ps1 records no name, serial, address or path:
+        # every line of its block comes through as it is, and a computer name
+        # given with --also still goes.
+        probe = ('cpu_cores=24 cores, 32 threads, max 3200 MHz (hybrid: about 8 P-cores and 16 E-cores, read from the counts)\n'
+                 'cpu_features=avx=yes avx2=yes avx512f=no (the game needs AVX; "no" on Windows before 10 2004 says nothing)\n'
+                 'memory=32 GB, 2 modules at 6000 MT/s\n'
+                 'gpu0=NVIDIA GeForce RTX 4090 driver=32.0.15.6094 (2024-05-12) vram_mb=24564 display=3840x2160@120\n'
+                 'chassis=desktop (type 3)\npower_mode=mains=best performance\ngpu_scheduling=on\ngame_mode=default (on)\n'
+                 'vbs=running memory_integrity=on\nos_build=Windows 11 Pro 24H2 build 26100.2894\n'
+                 'd3d12_runtime=system d3d12.dll 10.0.26100.1, Agility SDK beside the program 1.619.6\n'
+                 'vulkan_loader=vulkan-1.dll 1.3.290.0, drivers: nv-vk64.json\n')
+        data, count = anon.scrub(probe.encode(), anon.patterns([]))
+        self.assertEqual((data, count), (probe.encode(), 0))
+        data, _ = anon.scrub((probe + 'model=DESKTOP-ABC123 custom build\n').encode(), anon.patterns(['DESKTOP-ABC123']))
+        self.assertNotIn(b'DESKTOP-ABC123', data)
 
 
 class ArchiveLimitTest(unittest.TestCase):

@@ -20,7 +20,11 @@ A single file that is itself over the limit goes in pieces, name.001, name.002,
   E000XXXXXXXXXXXX;
 - anything you name with --also (a computer name, your own name): XXXX;
 - screenshots (*.bmp): left out unless --keep-screenshots, as they show whatever
-  was on the screen.
+  was on the screen;
+- the linker map (*.map) and the profile's function table (profile.md): left
+  out, as they list the generated code's functions by name and address. The
+  logs' HOST_PROFILE lines stay: offsets in the program, which name nothing
+  without the map of the same build.
 
 Kept, because a comparison needs it: the commit, the CPU and GPU names, the
 Windows version and every timing. Read the result before sending it: this
@@ -37,7 +41,9 @@ from pathlib import Path
 LIMIT_MB = 29
 # What a zip entry and its record in the directory cost beyond the data, with room to spare.
 ENTRY_OVERHEAD = 400
-TEXT = {'.log', '.txt', '.md', '.json', '.out', '.csv', '.map'}
+TEXT = {'.log', '.txt', '.md', '.json', '.out', '.csv'}
+# Text that names the generated code's functions: never shared (see above).
+WITHHELD = {'profile.md'}
 
 
 def patterns(also):
@@ -75,7 +81,8 @@ def anonymize(source, destination, also=(), keep_screenshots=False):
         relative = path.relative_to(source)
         # Export only evidence at the run root, never save fixtures, caches,
         # binaries or files reached through symlinks.
-        if path.is_symlink() or len(relative.parts) != 1 or not (suffix in TEXT or (suffix == '.bmp' and keep_screenshots)):
+        if (path.is_symlink() or len(relative.parts) != 1 or path.name.lower() in WITHHELD
+                or not (suffix in TEXT or (suffix == '.bmp' and keep_screenshots))):
             left_out += 1
             continue
         target.parent.mkdir(parents=True, exist_ok=True)

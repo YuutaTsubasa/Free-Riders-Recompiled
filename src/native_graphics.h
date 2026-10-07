@@ -1,7 +1,9 @@
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <memory>
+#include <string>
 
 namespace plume {
 struct RenderCommandQueue;
@@ -16,6 +18,11 @@ namespace sfr {
 enum class GraphicsBackend { d3d12, vulkan };
 GraphicsBackend selected_graphics_backend();
 const char* graphics_backend_name(GraphicsBackend backend);
+// The driver version a backend reports, the way its vendor prints it: D3D12's
+// user-mode driver version is four 16-bit parts (31.0.21912.14); Vulkan packs
+// major.minor.patch in 10, 10 and 12 bits, except NVIDIA, whose major takes
+// 10 bits and minor 8 (576.52.0). 0 (not reported) is "unknown".
+std::string graphics_driver_version(GraphicsBackend backend, uint32_t vendor_id, uint64_t packed);
 
 class NativeGraphics {
 public:

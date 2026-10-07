@@ -14,6 +14,7 @@
 #include "native_vertex_layout.h"
 #include "guest_execution.h"
 #include "wait_trace.h"
+#include "race_frame_clock.h"
 #include <map>
 #include <plume_render_interface.h>
 #include <algorithm>
@@ -670,6 +671,13 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
     const uint32_t said_at=sfr::say_done_present.load();
     if(after_say && said_at && uint32_t(sfr::present_count.load()-said_at)>=after_say)
         throw sfr::RuntimeStop("present-limit",after_say,"SFR_PRESENT_LIMIT_AFTER_SAY reached");
+    // SFR_PRESENT_LIMIT_RACING=N ends the run at the Nth present of a race (the
+    // title's race flag, as racing= above): unlike a limit after the last word,
+    // the loading screen is not counted, so every run races as many frames.
+    static sfr::RacePresentLimit racing_limit([]{ const char* t=std::getenv("SFR_PRESENT_LIMIT_RACING"); return t?uint32_t(std::strtoul(t,nullptr,10)):0u; }());
+    if(racing_limit.reached(sfr::active_memory && sfr::active_memory->readable(0x83E52F8C,4) &&
+                            sfr::active_memory->load<uint32_t>(0x83E52F8C)!=0))
+        throw sfr::RuntimeStop("present-limit",racing_limit.counted(),"SFR_PRESENT_LIMIT_RACING reached");
 }
 
 // DrawVerticesUP(device, primitive, vertex count, data, stride). The original

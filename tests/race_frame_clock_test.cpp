@@ -127,12 +127,23 @@ void sixty_fps_steps_whole_frames() {
     slow.update(0,5);
     near(slow.update(25'000'000,5)->frames,1.5,1e-4,"40 fps keeps its longer steps");
 }
+void race_present_limit_counts_only_the_race() {
+    sfr::RacePresentLimit off(0);
+    for (int i=0;i<1000;++i) require(!off.reached(true),"no limit never ends the run");
+    sfr::RacePresentLimit limit(3);
+    for (int i=0;i<500;++i) require(!limit.reached(false),"menus and loading are not counted");
+    require(!limit.reached(true) && !limit.reached(true),"the first race presents count");
+    require(!limit.reached(false),"a present without the race flag is not counted");
+    require(limit.reached(true),"the third race present ends the run");
+    require(limit.counted()==3,"three race presents were counted");
+}
 
 int main() {
     try {
         transitions(); elapsed_time_is_preserved(); discontinuities_are_bounded_and_observable();
         sixty_fps_steps_whole_frames();
         ui_timelines_keep_time_and_events();
+        race_present_limit_counts_only_the_race();
         std::cout << "Race frame clock checks passed\n";
     } catch(const std::exception& error) {
         std::cerr << error.what() << '\n'; return 1;

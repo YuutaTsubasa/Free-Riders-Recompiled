@@ -8,6 +8,11 @@
 #       # earlier run of this made (the shader pack, the DXC, the game and the results
 #       # there are left alone, nothing is deleted, no zip)
 #   scripts\make_benchmark_kit.ps1 -DxcDirectory D:\dxc   # use this folder's dxcompiler.dll and dxil.dll
+#   scripts\make_benchmark_kit.ps1 -SaveDirectory D:\old-kit\out\build\host\save
+#       # the save the runs start from (also with -UpdateOnly). It must have been past the title
+#       # once: a new player is asked about the tutorial, which the menu words cannot answer.
+#       # Without it the kit takes this checkout's out\build\host\save, if any.
+#       # A save carries your profile: keep such a kit on your own PCs.
 #
 # On the other PC, unzip it and double-click run_benchmark.bat. Without -IncludeGame
 # the other PC needs the game's image and asset folders of its own, and the
@@ -18,6 +23,7 @@ param(
     [switch]$IncludeGame,
     [switch]$UpdateOnly,
     [string]$DxcDirectory = '',
+    [string]$SaveDirectory = '',
     [switch]$NoZip
 )
 $ErrorActionPreference = 'Stop'
@@ -75,7 +81,7 @@ function Copy-Into([string]$relative, [string[]]$exclude = @()) {
 
 Copy-Into 'run_benchmark.bat' | Out-Null
 try { (& git -C $root rev-parse --short HEAD 2>$null) | Set-Content -LiteralPath (Join-Path $Destination 'commit.txt') -Encoding ASCII } catch { }
-foreach ($file in 'benchmark.ps1', 'benchmark_summary.py', 'profile_summary.py', 'anonymize_benchmark.py', 'benchmark_report.py', 'play.ps1') {
+foreach ($file in 'benchmark.ps1', 'benchmark_all.ps1', 'hardware_probe.ps1', 'benchmark_summary.py', 'profile_summary.py', 'anonymize_benchmark.py', 'benchmark_report.py', 'play.ps1') {
     Copy-Into "scripts/$file" | Out-Null
 }
 Copy-Into 'out/build/host' @('*.pdb', '*.ilk', '*.obj', '*.map', 'settings.ini') | Out-Null
@@ -127,6 +133,17 @@ if ($IncludeGame -and -not $UpdateOnly) {
     }
 }
 
+if ($SaveDirectory) {
+    $save = (Resolve-Path -LiteralPath $SaveDirectory).Path
+    if (-not (Get-ChildItem -LiteralPath $save -Recurse -File -ErrorAction SilentlyContinue)) { throw "$SaveDirectory holds no save." }
+    $to = Join-Path $Destination 'out/build/host/save'
+    if (Test-Path -LiteralPath $to) { Remove-Item -Recurse -Force -LiteralPath $to }
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $to) | Out-Null
+    Copy-Item -Recurse -Force -LiteralPath $save -Destination $to
+    $updated.Add('out/build/host/save')
+    Write-Output "Save from $save"
+}
+
 # What the kit needs to run on another PC, and which of it this one has.
 $needs = @(
     @('the program', 'out/build/host/sfr_cpu_diagnostic.exe', $true),
@@ -134,6 +151,7 @@ $needs = @(
     @('benchmark script', 'scripts/benchmark.ps1', $true),
     @('DXC (dxcompiler.dll)', 'dxc/dxcompiler.dll', -not $UpdateOnly),
     @('shader pack', 'out/shaders/shaders.pack', $false),
+    @('save (past the title once)', 'out/build/host/save', $false),
     @('game image', 'out/recomp/image-loader', $false),
     @('game assets', 'private/assets', $false))
 foreach ($need in $needs) {

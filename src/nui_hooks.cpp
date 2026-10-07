@@ -733,7 +733,17 @@ SFR_MENU_HOOK(sub_82494658) {
     static const double reference_fps=[]{ const char* t=std::getenv("SFR_SAY_REFERENCE_FPS"); return t?std::strtod(t,nullptr):0.0; }();
     static const auto started=std::chrono::steady_clock::now();
     static auto last_said=started;
+    static auto last_input=started;
     static size_t said_index=0;
+    // A stall (a load with no frames) does not count toward min_seconds: the
+    // menu was not answering during it. Counted on the wall clock alone, two
+    // words came one present apart after a load and the second was lost
+    // (skip-draws, where the menus run at hundreds of frames a second).
+    if(said_index<script.size() && min_seconds>0.0) {
+        const auto now=std::chrono::steady_clock::now();
+        if(now-last_input>std::chrono::milliseconds(250)) last_said+=now-last_input;
+        last_input=now;
+    }
     // Ordinary play has no pending script: do not query the host clock there.
     if(said_index<script.size() && sfr::present_count>=script[said_index].first &&
        std::chrono::duration<double>(std::chrono::steady_clock::now()-last_said).count()>=min_seconds &&

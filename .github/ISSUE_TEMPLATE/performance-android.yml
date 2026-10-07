@@ -1,0 +1,64 @@
+name: Performance report (Android)
+description: How fast the game runs on your phone or handheld
+labels: [performance, android]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for measuring. A phone or handheld is measured with the game's
+        own diagnostic ZIP (docs/android-phone-diagnostics.md):
+
+        1. Play the same course for 30 to 60 seconds with **Rendering resolution**
+           at 720p, close the game, and **Settings → Game files → Export diagnostic ZIP**.
+        2. The same at 360p, exported before the next game starts (it replaces the log).
+        3. Attach both ZIPs below and say which is which. If the device got hot,
+           let it cool between the two.
+
+        The ZIP holds the app version, the device's model and SoC, the settings of
+        the last launch and the game log; no saves, game data or camera images. The
+        log can name local paths: look through it before you attach it.
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      placeholder: v0.5.4
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device
+      description: Make and model, and the chip if you know it; the ZIP has them too.
+      placeholder: AYN Thor (Snapdragon 8 Gen 2)
+    validations:
+      required: true
+  - type: dropdown
+    id: faster
+    attributes:
+      label: Did 360p feel faster than 720p?
+      options:
+        - Yes, clearly
+        - A little
+        - No difference
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: zips
+    attributes:
+      label: Diagnostic ZIPs
+      description: Attach the 720p and the 360p ZIP and say which is which. Add the course and how long you played.
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: Performance mode or cooling, a controller or touch, what you noticed, other settings you changed.
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Before you submit
+      options:
+        - label: I attached only the diagnostic ZIPs (no game files, assets or saves) and looked through their logs.
+          required: true

@@ -61,13 +61,21 @@ Environment.Exit(3); } }''')
             self.assertIn(setting, output)
         self.assertEqual((self.root / 'pipeline-cache/keep').read_text(), 'keep-cache')
         self.assertEqual((self.root / 'out/build/host/save/progress').read_text(), 'keep-save')
-        self.assertTrue((self.root / 'result/save-baseline-1/progress').exists())
+        # The run had a copy of its own, removed once it ended; the fixture stays.
+        self.assertIn('save-baseline-1', output)
+        self.assertFalse((self.root / 'result/save-baseline-1').exists())
+        self.assertTrue((self.root / 'result/fixture/progress').exists())
         metadata = json.loads((self.root / 'result/baseline-1.json').read_text(encoding='utf-8-sig'))
         self.assertEqual(metadata['sha256'].lower(), hashlib.sha256(self.exe.read_bytes()).hexdigest())
         fixture = json.loads((self.root / 'result/fixture-hashes.json').read_text(encoding='utf-8-sig'))
         if isinstance(fixture, dict):
             fixture = [fixture]
         self.assertEqual(fixture[0]['sha256'].lower(), hashlib.sha256(b'keep-save').hexdigest())
+
+    def test_keep_saves_keeps_each_runs_copy(self):
+        p = self.run_harness('-KeepSaves')
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertTrue((self.root / 'result/save-baseline-1/progress').exists())
 
     def test_existing_output_is_rejected_without_modification(self):
         (self.root / 'result').mkdir()
@@ -86,6 +94,30 @@ Environment.Exit(3); } }''')
                           ('after_say', 'SFR_PRESENT_LIMIT_AFTER_SAY'),
                           ('reference_fps', 'SFR_SAY_REFERENCE_FPS')]:
             self.assertIn(f'{name}={metadata["settings"][key]}', info)
+
+    def test_race_limit_solo_and_fixed_step(self):
+        # A build that counts the race's own presents gets that limit instead of the one after the last word.
+        host = self.root / 'out/build/host/sfr_cpu_diagnostic.exe'
+        with host.open('ab') as executable:
+            executable.write(b'SFR_PRESENT_LIMIT_RACING')
+        p = self.run_harness('-Scenario', 'solo', '-FixedStep', stretch=True)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        output = (self.root / 'result/baseline-1.out').read_text(encoding='utf-8-sig')
+        self.assertIn('SFR_PRESENT_LIMIT_RACING=5400', output)
+        self.assertNotIn('SFR_PRESENT_LIMIT_AFTER_SAY=', output)
+        self.assertIn('SFR_REALTIME_RACE=0', output)
+        self.assertIn('SFR_SAY=ok@580,ok@930,ok@1280,start@1630,ok@1830,right@2030,', output)
+        info = (self.root / 'result/info.txt').read_text(encoding='utf-8-sig')
+        self.assertIn('race_frames=5400 scenario=solo fixed_step=True', info)
+        self.assertIn('realtime_race=0', info)
+
+    def test_old_build_keeps_the_limit_after_the_last_word(self):
+        p = self.run_harness('-RaceFrames', '3000', stretch=True)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        output = (self.root / 'result/baseline-1.out').read_text(encoding='utf-8-sig')
+        self.assertIn('SFR_PRESENT_LIMIT_AFTER_SAY=4200', output)
+        self.assertNotIn('SFR_PRESENT_LIMIT_RACING=', output)
+        self.assertIn('scenario=race fixed_step=False', (self.root / 'result/info.txt').read_text(encoding='utf-8-sig'))
 
     def test_kit_preserves_existing_archive(self):
         archive = self.root / 'kit.zip'

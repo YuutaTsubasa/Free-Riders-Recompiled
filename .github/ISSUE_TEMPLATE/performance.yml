@@ -1,0 +1,78 @@
+name: Performance report (PC)
+description: How fast the game runs on your PC, and what limits it
+labels: [performance]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for measuring. A report that follows the same method as the others
+        can be compared with them, so please run the benchmark rather than describe
+        the frame rate (a phone or handheld: use the *Performance report (Android)* form).
+
+        1. `run_benchmark.bat report` in a benchmark kit, or in a checkout
+           `scripts\benchmark.ps1 -Configs baseline,skip-draws,render-50 -AllowDiagnosticRendering -Repeats 4`
+           (docs/benchmark.md, *Reporting performance*). It plays a Free Race by itself,
+           about 45 minutes; do not use the PC meanwhile. Plug a laptop in and put it in
+           its fastest power mode.
+        2. It writes `summary.md` (the PC, its drivers, the comparison, where the frame
+           goes, what limits it) and a `-shareable` zip. Paste `summary.md` whole below
+           and attach the zip.
+
+        Do not attach game files, extracted assets, generated code, save files or raw
+        logs. The shareable zip has had the user and computer names and paths removed;
+        look through its `info.txt` before you attach it.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Release tag, or the commit you built (`commit` in summary.md's first table)
+      placeholder: v0.5.4, or 5caf920
+    validations:
+      required: true
+  - type: dropdown
+    id: build
+    attributes:
+      label: Build
+      options:
+        - Release package
+        - Built from source
+    validations:
+      required: true
+  - type: dropdown
+    id: method
+    attributes:
+      label: How it was measured
+      options:
+        - run_benchmark.bat full (paste report.md)
+        - run_benchmark.bat report (or the same configs with benchmark.ps1)
+        - A change compared with -Scenario solo -FixedStep (run_benchmark.bat exe 6 solo)
+        - Another benchmark.ps1 comparison (say which configs below)
+        - Played by hand (capture_benchmark.ps1, at the 60 fps cap)
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: summary.md
+      description: |
+        Paste the whole file: it starts with the hardware and driver table (from
+        `scripts\hardware_probe.ps1`; run it by itself to get the table alone) and
+        ends with "What limits this PC". Nothing in it needs typing by hand.
+        Paste it as it is (not in a code block), so its tables show as tables.
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: |
+        What the probe cannot see: a maker's own power mode (Turbo, Silent, Armoury
+        Crate), an external GPU over Thunderbolt, a game-mode or overlay program running,
+        settings you changed, what you noticed while it ran, a second PC.
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Before you submit
+      options:
+        - label: I attached no game files, assets, generated code, saves or raw logs, and I looked through the zip's info.txt.
+          required: true

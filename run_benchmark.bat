@@ -3,10 +3,14 @@ rem Runs the benchmark on this PC and leaves a copy that is safe to send to othe
 rem   run_benchmark.bat speed        baseline against the polling it replaced for suspended guests, 6 rounds
 rem   run_benchmark.bat pipelines    a new player first race, with and without the prepared pipelines
 rem   run_benchmark.bat exe          two builds, sfr_cpu_diagnostic_a.exe against _b.exe, in the same rounds
+rem   run_benchmark.bat report       what limits this PC: as it is, without drawing, at half resolution, 4 rounds; send the -shareable zip
+rem   run_benchmark.bat full         the whole report, unattended (about 45 minutes): what each part costs and the limit (Time Attack), then a race's frame rate; one zip to send
+rem   run_benchmark.bat parts        what each part costs a frame: no drawing, half resolution, no sound output, main thread unpinned, 4 rounds (add solo)
 rem   run_benchmark.bat ctrl         a control: the same build twice, to see what the method says about no difference
 rem   run_benchmark.bat speed 8      the same with 8 rounds
 rem   run_benchmark.bat author       the original's own unconfirmed switches: constant upload reuse, priority, host timing
 rem   run_benchmark.bat speed 2 nostretch   the menu words by presents alone (cannot finish on a fast PC)
+rem   run_benchmark.bat exe 6 solo  whether a change helps: a Time Attack (no rivals) stepped 1/60 s a frame, the same race frames every run
 setlocal
 cd /d "%~dp0"
 rem An empty src folder lets an older benchmark.ps1 skip its check of the sources
@@ -20,12 +24,24 @@ if "%REPEATS%"=="" set REPEATS=6
 if /i "%MODE%"=="author" set CONFIGS=baseline,constant-reuse,priority,no-host-timing
 if /i "%MODE%"=="exe" set CONFIGS=exe-a,exe-b
 if /i "%MODE%"=="ctrl" set CONFIGS=exe-b,exe-b-again
+if /i "%MODE%"=="report" (
+    set CONFIGS=baseline,skip-draws,render-50
+    set EXTRA=-AllowDiagnosticRendering
+    if "%2"=="" set REPEATS=4
+)
+if /i "%MODE%"=="parts" (
+    set CONFIGS=baseline,skip-draws,render-50,no-audio,main-unpinned
+    set EXTRA=-AllowDiagnosticRendering
+    if "%2"=="" set REPEATS=4
+)
+if /i "%MODE%"=="full" if "%2"=="" set REPEATS=4
 if /i "%MODE%"=="pipelines" (
     set CONFIGS=baseline,no-prewarm
     set EXTRA=-ColdPipelines
     if "%2"=="" set REPEATS=4
 )
 if /i "%3"=="nostretch" set EXTRA=%EXTRA% -NoStretch
+if /i "%3"=="solo" set EXTRA=%EXTRA% -Scenario solo -FixedStep
 if not exist "out\build\host\sfr_cpu_diagnostic.exe" goto noexe
 set GAMEARGS=
 rem The DXC the renderer links pixel shaders with, when the kit carries one
@@ -41,7 +57,12 @@ echo.
 echo The benchmark plays the game by itself. Do not use this PC and close other programs
 echo until it says it is done. Mode %MODE%, %REPEATS% rounds.
 echo.
+if /i "%MODE%"=="full" (
+    powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\benchmark_all.ps1" -Repeats %REPEATS% %GAMEARGS%
+    goto after
+)
 powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\benchmark.ps1" -SkipBuildCheck -Configs %CONFIGS% -Repeats %REPEATS% %EXTRA% %GAMEARGS%
+:after
 echo.
 set LATEST=
 for /f "delims=" %%Z in ('dir /b /o-d "out\bench\*-shareable*.zip" 2^>nul') do (

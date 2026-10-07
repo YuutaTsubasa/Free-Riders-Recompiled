@@ -109,6 +109,24 @@ void detached_wait_does_not_queue_for_global() {
     require(global.standing().owner == 1, "global ownership is undisturbed");
 }
 
+void detached_main_wait_counts_as_blocked() {
+    // The default runtime detaches the main thread: its waits go through
+    // run_wait, and the frame metrics must still see them.
+    sfr::GuestExecution gate;
+    auto main_thread = gate.enter(1);
+    main_thread->detach();
+    sfr::GuestExecution::main_thread_blocked_ns.exchange(0);
+    main_thread->run_wait([](std::stop_token) { std::this_thread::sleep_for(std::chrono::milliseconds(20)); });
+    const auto blocked = sfr::GuestExecution::main_thread_blocked_ns.exchange(0);
+    require(blocked >= 15'000'000, "a detached main thread's wait is counted as blocked");
+    std::async(std::launch::async, [&] {
+        auto worker = gate.enter(29);
+        worker->detach();
+        worker->run_wait([](std::stop_token) { std::this_thread::sleep_for(std::chrono::milliseconds(5)); });
+    }).get();
+    require(sfr::GuestExecution::main_thread_blocked_ns.exchange(0) == 0, "another guest's wait is not the main thread's");
+}
+
 void detached_wait_observes_cancellation() {
     sfr::GuestExecution global, core;
     global.add_follower(core);
@@ -668,6 +686,7 @@ int main() {
                       {"main-ready attribution", timing_attributes_only_holds_overlapping_main_ready},
                       {"detached wait", detached_wait_does_not_queue_for_global},
                       {"detached wait cancellation", detached_wait_observes_cancellation},
+                      {"detached main wait", detached_main_wait_counts_as_blocked},
                       {"initial owner", acquires_initial_owner},
                       {"blocking operation ownership", blocking_operation_returns_with_ownership},
                       {"blocking operation permit release", blocking_operation_releases_permit_for_peer},
