@@ -39,7 +39,7 @@ uint64_t allowed_process_mask() {
 uint64_t selected_mask(uint64_t allowed, uint32_t guest_cpu) {
     const std::vector<uint32_t> order = sfr::host_processor_order(allowed, 0);
     require(!order.empty());
-    return uint64_t{1} << order[guest_cpu % order.size()];
+    return uint64_t{1} << order[sfr::host_processor_slot(guest_cpu, order.size())];
 }
 
 // The physical core of each logical processor of group 0.
@@ -232,7 +232,7 @@ void calling_guest_thread_uses_allowed_core_mapping() {
     require(!order.empty());
     for (uint32_t cpu = 0; cpu < 6; ++cpu) {
         require(SetThreadGroupAffinity(GetCurrentThread(), &original, nullptr) != FALSE);
-        const uint64_t expected = uint64_t{1} << order[cpu % order.size()];
+        const uint64_t expected = uint64_t{1} << order[sfr::host_processor_slot(cpu, order.size())];
         require(sfr::pin_current_guest_processor(cpu) == expected);
         require(queried_thread_affinity(GetCurrentThreadId()) == expected);
     }
@@ -341,7 +341,7 @@ void migrating_workers_keep_their_guest_processor_preference() {
         require(worker.affinity_mask() == pool);
         PROCESSOR_NUMBER ideal{};
         require(GetThreadIdealProcessorEx(worker.native_handle(), &ideal) != FALSE);
-        require(ideal.Group == 0 && ideal.Number == order[cpu % order.size()]);
+        require(ideal.Group == 0 && ideal.Number == order[sfr::host_processor_slot(cpu, order.size())]);
         require(worker.suspended() && !worker.entry_started());
     }
     bool rejected = false;
@@ -381,6 +381,58 @@ void migrating_workers_respect_small_process_cpu_masks() {
         limited |= uint64_t{1} << order[i];
         require(SetProcessAffinityMask(GetCurrentProcess(), DWORD_PTR(limited)) != FALSE);
         migrating_workers_keep_their_guest_processor_preference();
+    }
+}
+
+// Fewer host processors than guest processors: guest processor 0 (the main
+// thread's) keeps the first one to itself, and 1-5 take turns on the others
+// (Issue #52: 4 % 4 put guest processor 4 on the main thread's core).
+void host_processor_slots_leave_the_first_to_guest_processor_zero() {
+    for (size_t count = 6; count <= 8; ++count)
+        for (uint32_t cpu = 0; cpu < 6; ++cpu) require(sfr::host_processor_slot(cpu, count) == cpu);
+    for (uint32_t cpu = 0; cpu < 6; ++cpu) require(sfr::host_processor_slot(cpu, 1) == 0);
+    const uint32_t two[6] = {0, 1, 1, 1, 1, 1}, four[6] = {0, 1, 2, 3, 1, 2}, five[6] = {0, 1, 2, 3, 4, 1};
+    for (uint32_t cpu = 0; cpu < 6; ++cpu) {
+        require(sfr::host_processor_slot(cpu, 2) == two[cpu]);
+        require(sfr::host_processor_slot(cpu, 4) == four[cpu]);
+        require(sfr::host_processor_slot(cpu, 5) == five[cpu]);
+    }
+}
+
+// The same through the threads themselves, with the process held to four
+// processors as on an i5-3470: the main thread's pin and the workers' preferred
+// processors never meet, while the workers may still run anywhere allowed.
+void four_host_processors_keep_the_main_threads_core_apart() {
+    const auto allowed = allowed_process_mask();
+    const auto full = sfr::host_processor_order(allowed, 0);
+    if (full.size() < 4) return;
+    GROUP_AFFINITY original{};
+    require(GetThreadGroupAffinity(GetCurrentThread(), &original) != FALSE);
+    struct Restore {
+        uint64_t process;
+        GROUP_AFFINITY thread;
+        ~Restore() {
+            if (!SetProcessAffinityMask(GetCurrentProcess(), DWORD_PTR(process)) ||
+                !SetThreadGroupAffinity(GetCurrentThread(), &thread, nullptr)) std::terminate();
+        }
+    } restore{allowed, original};
+    uint64_t limited = 0;
+    for (size_t i = 0; i < 4; ++i) limited |= uint64_t{1} << full[i];
+    require(SetProcessAffinityMask(GetCurrentProcess(), DWORD_PTR(limited)) != FALSE);
+    auto thread_mask = original;
+    thread_mask.Mask = limited;
+    require(SetThreadGroupAffinity(GetCurrentThread(), &thread_mask, nullptr) != FALSE);
+    const auto order = sfr::host_processor_order(limited, 0);
+    require(order.size() == 4);
+    const uint64_t main_core = sfr::pin_current_guest_processor(0);
+    require(main_core == uint64_t{1} << order[0]);
+    sfr::NativeThread worker([](std::stop_token) { return 0; });
+    for (uint32_t cpu = 1; cpu < 6; ++cpu) {
+        require(worker.set_guest_processor(cpu, true) == limited);
+        PROCESSOR_NUMBER ideal{};
+        require(GetThreadIdealProcessorEx(worker.native_handle(), &ideal) != FALSE);
+        require(ideal.Number != order[0]);
+        require(worker.set_guest_processor(cpu) != main_core);
     }
 }
 
@@ -458,6 +510,8 @@ int main() {
         six_guest_processors_map_to_allowed_native_processors();
         migrating_workers_keep_their_guest_processor_preference();
         migrating_workers_respect_small_process_cpu_masks();
+        host_processor_slots_leave_the_first_to_guest_processor_zero();
+        four_host_processors_keep_the_main_threads_core_apart();
         invalid_guest_processor_is_rejected_without_mutation();
         parked_cancel_joins_without_running_entry_and_keeps_handle_open();
         active_cancel_waits_for_cooperative_entry_completion();
