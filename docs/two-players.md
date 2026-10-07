@@ -34,3 +34,5 @@ Windows 支援 XInput 和 PlayStation HID 輸入，Linux 使用 SDL 的裝置身
 `NUI_PLAYER_ROUTING`。回歸測試涵蓋游標分工、換頁、斷線、Loading 物件替換、比賽操作及 viewport 尺寸。
 
 實驗版本已實測雙人流程與比賽；整理後的 main 版本另經實機確認 Gear 游標啟用與 1P 確認後的 2P 操作。
+
+接力賽（Relay Race）是輪流上場，另見 [Relay Race](relay-race.md)。

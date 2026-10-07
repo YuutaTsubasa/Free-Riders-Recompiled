@@ -227,6 +227,11 @@ struct GamepadState;
 // Kinect emulation (nui_hooks.cpp): user 0's pad drives the skeleton, and a
 // host thread signals the title's next-frame event at 30 Hz.
 GamepadState nui_gamepad();
+// Controller `user` (0 is the first player's, keyboard included), or none.
+std::optional<GamepadState> nui_pad(uint32_t user);
+// Relay Race: which controller drives the racer who is up (0..3).
+void set_relay_pad(uint32_t user);
+uint32_t relay_pad();
 // Source selected for logical P1's latest submitted skeleton. P1's pad
 // remains available while Camera is enabled; race consumers follow this.
 bool camera_motion_active();

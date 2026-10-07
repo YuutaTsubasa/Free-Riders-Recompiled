@@ -78,6 +78,10 @@ sfr::NuiPadEdges edges;
 uint16_t pressed=0;  // buttons newly pressed at the last input update
 sfr::NuiPadEdges second_edges;
 uint16_t second_pressed=0;  // the same for the second player's pad
+// Relay Race: frames the racer is still out of view during a swap, the
+// tracking id of the one in view (0: the usual 1), and the controller the
+// next racer holds. Written by the input update, read by the skeleton hook.
+std::atomic<uint32_t> relay_out{0}, relay_tracking_id{0}, relay_next_pad{0};
 uint32_t frame_number = 0;
 const auto started = std::chrono::steady_clock::now();
 
@@ -521,7 +525,11 @@ SFR_INPUT_HOOK(sub_827707B0) {
                  <<" pose_age_ms="<<camera_status.pose_age_ms<<'\n';
     // Camera supplements P1. Each configured controller keeps its player,
     // including while the camera opens, loses tracking, or is overridden.
-    const auto second=sfr::nui_second_gamepad(1u, racing);
+    // Relay Race (team mode 3 at 83E515E7) is one person in front of the
+    // sensor at a time, so a second controller is not a second person there:
+    // it takes its turn through relay_swap below.
+    const bool relay=sfr::active_memory->load<uint8_t>(0x83E515E7)==3;
+    const auto second=relay ? std::optional<sfr::GamepadState>{} : sfr::nui_second_gamepad(1u, racing);
     const bool was_reversed=player_routing.reversed();
     player_routing.update(*sfr::active_memory,skeleton,second_skeleton,
                           first,second,racing,use_camera,was_camera && !use_camera);
@@ -534,6 +542,22 @@ SFR_INPUT_HOOK(sub_827707B0) {
     const auto elapsed=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-started);
     auto& memory=*sfr::active_memory;
     sfr::NuiSkeletonEmulation::write_header(memory,frame,++frame_number,uint64_t(elapsed.count()));
+    auto& relay_body=player_routing.reversed()?second_skeleton:skeleton;
+    if(const uint32_t out=relay_out.load(std::memory_order_relaxed)) {
+        // A relay swap: nobody in view for a moment, then the next racer, a
+        // new person (tracking id 3, 4, ...) the title identifies again.
+        if(out==1) {
+            const uint32_t id=relay_tracking_id.load(std::memory_order_relaxed);
+            relay_tracking_id.store(id<3?3:id+1,std::memory_order_relaxed);
+            relay_body.forget();
+            sfr::set_relay_pad(relay_next_pad.load(std::memory_order_relaxed));
+            std::cerr << "NUI_RELAY_SWAP in tracking_id=" << relay_tracking_id.load(std::memory_order_relaxed)
+                      << " controller=" << sfr::relay_pad() << '\n';
+        }
+        relay_out.store(out-1,std::memory_order_relaxed);
+    } else if(relay && relay_tracking_id.load(std::memory_order_relaxed)) {
+        relay_body.write_slot(memory,frame,0,relay_tracking_id.load(std::memory_order_relaxed));
+    } else
     // Submit exactly one source for logical P1; never change slot identities.
     player_routing.write_slots(memory,frame,skeleton,second_skeleton,second.has_value(),
                                use_camera?&camera_joints:nullptr);
@@ -642,7 +666,9 @@ SFR_INPUT_HOOK(sub_82764620) {
         kinect_identities[tracking_id]=profile?0u:sfr::NuiSkeletonEmulation::guest;
     } else {
         profile=tracking_id<=1 && sfr::profile_for(0)!=nullptr;
-        (tracking_id>=2?second_skeleton:skeleton).identify(profile?0u:sfr::NuiSkeletonEmulation::guest);
+        // A relay's next racer (3, 4, ...) is the one person in view.
+        (tracking_id==2 || (tracking_id>=3 && player_routing.reversed()) ? second_skeleton : skeleton)
+            .identify(profile?0u:sfr::NuiSkeletonEmulation::guest);
     }
     const uint32_t enrollment=profile?0u:sfr::NuiSkeletonEmulation::guest;
     memory.store<uint32_t>(uint64_t(message)+12,enrollment);
@@ -720,6 +746,54 @@ SFR_MENU_HOOK(sub_82494658) {
     const auto second_pad=sfr::second_player_pad();
     second_pressed=second_edges.update(second_pad ? second_pad->buttons : 0);
     ++input_frames;
+    // Relay Race: "Swap out with the next player" (the menu manager's +0x68
+    // bit 0x8) waits for the racer to leave the sensor and somebody new to
+    // step in. A on any controller is that swap, and the controller that
+    // pressed it drives the next racer.
+    {
+        static sfr::NuiPadEdges relay_edges[4];
+        uint16_t relay_pressed[4]{};
+        for(uint32_t user=0; user<4; ++user) {
+            const auto pad=sfr::nui_pad(user);
+            relay_pressed[user]=relay_edges[user].update(pad ? pad->buttons : 0);
+        }
+        const bool relay=memory.load<uint8_t>(0x83E515E7)==3;
+        // In a race the racer stops at a gate at the end of their leg: the
+        // racer's state ([83E53160]+0x1C4) is 5 while racing, 3 at the gate,
+        // 4 while the next one comes in. One swap per arrival at the gate, as
+        // the state reads 3 again for a moment after the swap.
+        const uint32_t racer=memory.load<uint32_t>(0x83E53160);
+        const uint32_t racer_state=racer && memory.readable(uint64_t(racer)+0x1C4,4) ?
+                                   memory.load<uint32_t>(uint64_t(racer)+0x1C4) : ~0u;
+        static uint32_t last_racer_state=~0u;
+        static bool gate_armed=false;
+        if(racer_state!=last_racer_state) {
+            if(relay && racing && racer_state==3 && last_racer_state==5) {
+                gate_armed=true;
+                std::cerr << "NUI_RELAY_GATE waiting\n";
+            }
+            last_racer_state=racer_state;
+        }
+        if(racer_state!=3) gate_armed=false;
+        const bool wants_swap=relay && ((racing && gate_armed) ||
+            (menu_manager && input_frames-menu_manager_frame<=2 && (memory.load<uint32_t>(menu_manager+0x68)&8)));
+        if(wants_swap && !relay_out.load(std::memory_order_relaxed)) {
+            for(uint32_t user=0; user<4; ++user) {
+                if(!(relay_pressed[user] & sfr::gamepad_button::a)) continue;
+                relay_next_pad.store(user,std::memory_order_relaxed);
+                relay_out.store(45,std::memory_order_relaxed);
+                gate_armed=false;
+                pressed&=~sfr::gamepad_button::a;  // the swap, not an "ok"
+                std::cerr << "NUI_RELAY_SWAP out controller=" << user << '\n';
+                break;
+            }
+        }
+        // Leaving Relay Race hands the first controller back to player 1.
+        if(!relay && (sfr::relay_pad() || relay_tracking_id.load(std::memory_order_relaxed))) {
+            sfr::set_relay_pad(0);
+            relay_tracking_id.store(0,std::memory_order_relaxed);
+        }
+    }
     uint16_t spoken=pressed;
     // The recognizer hears one word a frame, from nobody in particular: in a
     // race the second pad's START pauses as the first's does, and its words
