@@ -16,6 +16,7 @@
 #include <iostream>
 #include <optional>
 #include <sstream>
+#include <string>
 #include <thread>
 #include <unordered_map>
 
@@ -625,4 +626,54 @@ SFR_CONCURRENT_HOOK(sub_823B97A8) {
         }
     }
     __imp__sub_823B97A8(ctx, base);
+}
+
+// SFR_AUDIO_CUES=1: every cue the CRI sound library looks up, by name
+// (827BCD18), by name in a given sheet (827BCE00) or by ID (827BCFA8), with
+// the caller and the present it was asked on. A voice line that does not fit
+// the race (a winning line after a loss) shows here as the cue the game asked
+// for, which tells the game's choice apart from the wrong sound being played.
+static bool audio_cue_trace() {
+    static const bool on=[]{ const char* t=std::getenv("SFR_AUDIO_CUES"); return t && *t && *t!='0'; }();
+    return on;
+}
+static std::string guest_cue_name(uint32_t address) {
+    std::string name;
+    if(address<0x40000000u) return name;
+    try {
+        for(uint32_t i=0;i<64;++i) {
+            const char c=char(sfr::active_memory->load<uint8_t>(uint64_t(address)+i));
+            if(!c) break;
+            if(c<0x20 || c>0x7E) return {};
+            name+=c;
+        }
+    } catch(...) { return {}; }
+    return name;
+}
+static void report_cue(const char* how, PPCContext& ctx, uint32_t key, bool named) {
+    std::ostringstream line;
+    line << "AUDIO_CUE " << how << " present=" << sfr::present_count.load(std::memory_order_relaxed);
+    if(named) line << " name=" << guest_cue_name(key);
+    line << " key=0x" << std::hex << key << " r3=0x" << ctx.r3.u32 << " r5=0x" << ctx.r5.u32
+         << " lr=0x" << uint32_t(ctx.lr);
+    std::cerr << line.str() << '\n';
+}
+
+PPC_FUNC_IMPL(__imp__sub_827BCD18);
+SFR_CONCURRENT_HOOK(sub_827BCD18) {
+    sfr::enter_function(ctx,"sub_827BCD18",0x827BCD18);
+    if(audio_cue_trace()) report_cue("by_name",ctx,ctx.r4.u32,true);
+    __imp__sub_827BCD18(ctx,base);
+}
+PPC_FUNC_IMPL(__imp__sub_827BCE00);
+SFR_CONCURRENT_HOOK(sub_827BCE00) {
+    sfr::enter_function(ctx,"sub_827BCE00",0x827BCE00);
+    if(audio_cue_trace()) report_cue("in_sheet",ctx,ctx.r4.u32,true);
+    __imp__sub_827BCE00(ctx,base);
+}
+PPC_FUNC_IMPL(__imp__sub_827BCFA8);
+SFR_CONCURRENT_HOOK(sub_827BCFA8) {
+    sfr::enter_function(ctx,"sub_827BCFA8",0x827BCFA8);
+    if(audio_cue_trace()) report_cue("by_id",ctx,ctx.r4.u32,false);
+    __imp__sub_827BCFA8(ctx,base);
 }
