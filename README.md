@@ -139,6 +139,8 @@ with [docs/progress.md](docs/progress.md).
   The game loads file-replacement mods in HedgeModManager's format, the one Unleashed and Marathon Recompiled use. The launcher's new Mods tab switches them on and off and sets their order.
 - [v0.6.1 — Two players and Relay Race on controllers](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.6.1)
   Each player turns, confirms and backs out of the two-player menus with their own controller, and either can pause; a guest second player no longer adds a 10-second wait. Relay Race works with controllers: A swaps in the next racer. The launcher's settings can all be reached with a controller. 4-core CPUs keep the main thread's core to itself, and frames over 250 ms are logged.
+- [v0.6.2 — Fewer freezes, START skips story scenes](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.6.2)
+  The race and Relay hand-over freezes of up to a few seconds are gone: the main thread no longer spins on a lock other threads hold across system calls. START skips a World Grand Prix story scene, and the results screen's Kinect Guide no longer closes the game.
 
 ## System Requirements
 

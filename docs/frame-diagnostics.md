@@ -25,15 +25,25 @@
 
 比賽開場時的一幀藍色（RGB 0,74,135）與選單換頁時的白色閃光是遊戲本身的轉場。
 
-## 卡頓（還在找）
+## 卡頓
 
 玩家的一次 game.log 中，第 8100～8700 幀之間整個程式停了約 2.1 秒，連音訊泵都停了。
 那一格的分項（繪製、上傳、等 GPU、等鎖、排隊）都接近 0，`LOCK_LONG_WAIT` 沒有出現。
 桌機上 6 場比賽沒有重現（最長約 0.4 秒）。
 
-`SFR_STALL_MS=N`（Windows）：超過 N 毫秒沒有新畫面時，每 100 毫秒暫停每條遊戲執行緒一下，
+`SFR_STALL_MS=N`（Windows）：超過 N 毫秒沒有新畫面時，每 100 毫秒（`SFR_STALL_EVERY_MS`
+可改短，例如 10）暫停每條遊戲執行緒一下，
 印出 `STALL_STACK`：指令位址與它堆疊上指向執行檔的位址（`exe+0x...`）。被暫停時只讀暫存器
 與堆疊（以 `VirtualQuery` 限定範圍），不配置記憶體也不取鎖。用 `/MAP` 連結
 （`-DCMAKE_EXE_LINKER_FLAGS=/MAP`）的同一份執行檔產生的 map，
 `python scripts/symbolize_stalls.py game.log sfr_cpu_diagnostic.map` 會換成函式名稱。
-開機時（presents=0）載入 shader pack 的幾秒也會被記下，屬正常。
+開機時（presents=0）載入 shader pack 的幾秒也會被記下，屬正常。堆疊會往上找到 64 個位址，
+足以看到遊戲自己的呼叫者。
+
+**原因與修正（v0.6.2）**：以 `SFR_STALL_MS=60 SFR_STALL_EVERY_MS=10` 取樣比賽與 Relay 交棒時的
+慢幀，主執行緒幾乎都停在 `GuestMemory::check_store_access` 裡的一個自旋迴圈：每次走檢查路徑的
+寫入（例如 `824F4220` 設貼圖寫進裝置結構）都經 `mark_written` → `disarm_watch` 取寫入監看的
+全域自旋鎖，而其他執行緒拿著同一把鎖呼叫 `VirtualProtect`。自旋不讓出處理器，持有者被排程
+擠掉時，主執行緒就空轉數百毫秒（四核心更明顯）。現在 `disarm_watch` 在範圍內沒有受保護頁面時
+不取鎖（絕大多數寫入如此；之後才保護的頁面會由寫入時的保護錯誤處理），等鎖超過 64 次即讓出
+處理器。同一場 Dolphin Resort 比賽：超過 100 毫秒的幀 9 → 0，最慢 247 → 90 毫秒。

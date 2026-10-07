@@ -47,6 +47,10 @@ public:
     void update(const GamepadState& pad, bool racing = false, bool two_player_menu = false, bool cursor_pending = false);
     // A new menu cursor needs a fresh raise on the next right-stick input.
     void rearm_menu();
+    // Moves a raised hand's cursor to the centre of the screen, where a story
+    // scene shows its SKIP button (it fills while a hand rests on it). False
+    // when no hand is up yet.
+    bool centre_cursor();
     // Writes the complete frame for this player alone: the header, this
     // skeleton in slot 0 with tracking id 1, and no other slot tracked.
     void write(GuestMemory& memory, uint32_t address, uint32_t frame_number, uint64_t timestamp_ms) const;
