@@ -137,6 +137,8 @@ with [docs/progress.md](docs/progress.md).
   Spinning the stick in the air raises a side jump's rating again. On touch screens the on-screen stick turns the pause menu's wheel.
 - [v0.6.0 — Mod support](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.6.0)
   The game loads file-replacement mods in HedgeModManager's format, the one Unleashed and Marathon Recompiled use. The launcher's new Mods tab switches them on and off and sets their order.
+- [v0.6.1 — Two players and Relay Race on controllers](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.6.1)
+  Each player turns, confirms and backs out of the two-player menus with their own controller, and either can pause; a guest second player no longer adds a 10-second wait. Relay Race works with controllers: A swaps in the next racer. The launcher's settings can all be reached with a controller. 4-core CPUs keep the main thread's core to itself, and frames over 250 ms are logged.
 
 ## System Requirements
 
