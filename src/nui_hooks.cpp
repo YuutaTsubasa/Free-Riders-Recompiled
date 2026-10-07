@@ -145,6 +145,7 @@ template<class F> void for_each_menu_button(sfr::GuestMemory& memory, uint32_t m
 uint32_t menu_manager=0;        // last manager whose update ran
 uint64_t menu_manager_frame=0;  // input update count at that time
 uint64_t input_frames=0;
+uint64_t menu_page_frame=0;  // input update count when the first player last had a menu page
 // When a ring menu last asked for its step (8246A6D0): the pause menu's wheel
 // runs while the race flag is still set, and the touch stick must then turn
 // it (the D-pad) instead of leaning (Issue #6).
@@ -530,6 +531,20 @@ SFR_INPUT_HOOK(sub_827707B0) {
     // it takes its turn through relay_swap below.
     const bool relay=sfr::active_memory->load<uint8_t>(0x83E515E7)==3;
     const auto second=relay ? std::optional<sfr::GamepadState>{} : sfr::nui_second_gamepad(1u, racing);
+    // START in a story scene (no menu page, no dialog, not racing): the World
+    // Grand Prix scenes end through a SKIP button that only a hand resting on
+    // it presses, and a parked hand never reaches it. The hand moves to the
+    // centre where that button is, as a nudge of the right stick does.
+    {
+        static bool start_held=false;
+        const bool start=(first.buttons & sfr::gamepad_button::start)!=0;
+        if(start && !start_held && !racing && !use_camera &&
+           input_frames-menu_page_frame>30 && !(dialog_seen && input_frames-dialog_frame<=30)) {
+            auto& own=player_routing.reversed()?second_skeleton:skeleton;
+            if(own.centre_cursor()) std::cerr << "NUI_SCENE_SKIP_CURSOR frame=" << input_frames << '\n';
+        }
+        start_held=start;
+    }
     const bool was_reversed=player_routing.reversed();
     player_routing.update(*sfr::active_memory,skeleton,second_skeleton,
                           first,second,racing,use_camera,was_camera && !use_camera);
@@ -916,6 +931,14 @@ SFR_MENU_HOOK(sub_823EF348) {
     const uint32_t dialog=ctx.r3.u32;
     const uint32_t layout=memory.load<uint32_t>(uint64_t(dialog)+124);
     if(ctx.r4.u32) { dialog_frame=input_frames; dialog_layout=layout; dialog_seen=true; }
+    {
+        static uint32_t last_dialog=0, last_layout=~0u;
+        if(ctx.r4.u32 && (dialog!=last_dialog || layout!=last_layout)) {
+            last_dialog=dialog; last_layout=layout;
+            std::cerr << "NUI_DIALOG_SEEN dialog=0x" << std::hex << dialog << " layout=" << std::dec << layout
+                      << " lr=0x" << std::hex << uint32_t(ctx.lr) << std::dec << '\n';
+        }
+    }
     const int slot=ctx.r4.u32 ? sfr::dialog_choice(pressed,layout) : -1;
     if(slot<0) { __imp__sub_823EF348(ctx,base); return; }
     pressed=0;  // one choice per press
@@ -1052,6 +1075,7 @@ SFR_MENU_HOOK(sub_824578F0) {
                     cursor_pending=memory.load<uint32_t>(uint64_t(hands)+116+100)!=0;
             }
         }
+        if (player==0 && page) menu_page_frame=input_frames;
         player_routing.observe_menu_page(player,page,page ? memory.load<uint32_t>(page+336) : 0,cursor_pending);
     }
     // SFR_MENU_DUMP=1 reports each menu page: its buttons as type/flags/kind/state

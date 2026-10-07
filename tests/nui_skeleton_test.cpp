@@ -86,6 +86,12 @@ int main() {
         require(parked[0] < centred[0] - 0.15f && parked[1] > centred[1] + 0.25f, "raised hand is parked top-left");
         joined.update({});
         require(joined.hand(true) == parked, "parked hand stays without input");
+        // START in a story scene brings the parked cursor to the centre
+        // (its SKIP button); a hand that is not up stays where it is.
+        sfr::NuiSkeletonEmulation scene = joined;
+        require(scene.centre_cursor() && scene.hand(true) == centred, "a raised hand moves to the centre");
+        sfr::NuiSkeletonEmulation resting;
+        require(!resting.centre_cursor() && resting.hand(true) == before, "a resting hand is not raised");
         // A race reads the body's pose, so the parked cursor hand comes down.
         joined.update({}, true);
         require(joined.hand(true) == before, "a race rests the hands");

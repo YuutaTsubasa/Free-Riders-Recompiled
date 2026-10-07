@@ -7,7 +7,7 @@
 
 | 按鍵 | 效果 |
 | --- | --- |
-| START | 說「start」（標題畫面開始）；比賽與 Replay 中說「pauseopen」（開暫停選單，Replay 由此離開） |
+| START | 說「start」（標題畫面開始）；比賽與 Replay 中說「pauseopen」（開暫停選單，Replay 由此離開）；World Grand Prix 的劇情畫面中把手移到畫面中央，按住讓 SKIP 填滿而跳過 |
 | A | 說「ok」（選取目前的項目）；是非對話框選 ✓ |
 | B | 說「back」（返回）；是非對話框選 ✗ |
 | 十字鍵 | 說「up」「down」「left」「right」（轉動選單圓環、移動焦點） |
@@ -16,6 +16,12 @@
 已驗證的流程（全程只用按鍵）：標題 START → Omochao 對話框 B（✗）→ Main Menu →
 A 進 Offline Mode → 十字鍵選 Time Attack → A → 選關卡 → A → 角色選擇。
 右類比的手部游標仍然可用。
+
+**劇情畫面的 SKIP**：World Grand Prix 的劇情（電視框裡的對話）不是影片，是遊戲內的畫面，
+SKIP 鈕只在手部游標停在畫面中央時出現並開始填滿。玩家被辨識後手停在左上角，所以以前要推右類比
+把手帶到中央。現在不在比賽中、最近 30 次輸入更新都沒有選單頁面或對話框時，START 會把舉著的手
+直接移到中央（記錄 `NUI_SCENE_SKIP_CURSOR`），等 SKIP 填滿即跳過。跳過開場劇情後遊戲回到隊伍選擇，
+用右類比跳過也一樣。
 
 ## 做法
 

@@ -66,6 +66,12 @@ void NuiSkeletonEmulation::rearm_menu() {
     right_ = rest_position(true);
 }
 
+bool NuiSkeletonEmulation::centre_cursor() {
+    if (engage_ <= 30) return false;
+    right_ = centred_hand;
+    return true;
+}
+
 void NuiSkeletonEmulation::update(const GamepadState& pad, bool racing, bool two_player_menu, bool cursor_pending) {
     const float rx = axis(pad.thumb_rx), ry = axis(pad.thumb_ry);
     if (racing) {
