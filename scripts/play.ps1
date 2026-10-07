@@ -23,9 +23,10 @@ param(
     # one logical processor each (4 is a 4-core, 4-thread i5). 0 uses them all.
     [int]$Cores = 0,
     # The main thread left to Windows instead of pinned to the first core
-    # (SFR_MAIN_AFFINITY=0). With fewer than six logical processors a guest
-    # processor shares that core with it (native_thread.cpp).
+    # (SFR_MAIN_AFFINITY=0). With fewer than six logical processors it is
+    # left unpinned anyway (native_thread.h); -Pinned pins it there too.
     [switch]$Unpinned,
+    [switch]$Pinned,
     # No 60 fps cap, to see how far above 60 the PC would go (races then run
     # faster than real time).
     [switch]$Uncapped,
@@ -57,7 +58,7 @@ $env:SFR_RENDER_EVERY = "$RaceRenderEvery"
 $env:SFR_PARALLEL_WORKER = if ($Serial) { '0' } else { 'all' }
 # A race steps a sixtieth of a second per frame: never faster than 60 fps.
 $env:SFR_FRAME_LIMIT = if ($Uncapped) { '0' } else { '60' }
-if ($Unpinned) { $env:SFR_MAIN_AFFINITY = '0' } else { Remove-Item Env:SFR_MAIN_AFFINITY -ErrorAction SilentlyContinue }
+if ($Unpinned) { $env:SFR_MAIN_AFFINITY = '0' } elseif ($Pinned) { $env:SFR_MAIN_AFFINITY = '1' } else { Remove-Item Env:SFR_MAIN_AFFINITY -ErrorAction SilentlyContinue }
 # One line a frame in the log, for the race's frame rate printed at the end
 $env:SFR_FRAME_METRICS = '1'
 $env:SFR_VERTEX_CACHE = if ($NoVertexCache) { '0' } else { '1' }
@@ -83,6 +84,7 @@ try {
     $limits = @()
     if ($Cores -gt 0) { $limits += "$Cores cores (mask 0x$('{0:X}' -f $mask))" }
     if ($Unpinned) { $limits += 'main thread unpinned' }
+    if ($Pinned) { $limits += 'main thread pinned' }
     if ($Uncapped) { $limits += 'no fps cap' }
     if ($limits.Count) { Write-Output ('Playing with ' + ($limits -join ', ')) }
     Write-Output "Running; trace output goes to $Log. Close the game window or press Ctrl+C here to stop."

@@ -153,8 +153,10 @@ difference from the baseline of its round in ms a frame: no drawing at all (the
 most that making drawing free could give), a quarter of the pixels (the GPU's
 part), no sound sent to the output (`SFR_AUDIO=0`; the game still mixes it) and
 the main thread left to Windows instead of pinned to the first core
-(`SFR_MAIN_AFFINITY=0`; with fewer than six logical processors guest processor 4
-shares that core with it), which reads the other way round, as what the pin saves.
+(`SFR_MAIN_AFFINITY=0`), which reads the other way round, as what the pin saves.
+With fewer than six logical processors the main thread is left unpinned by default,
+so there `main-pinned` (`SFR_MAIN_AFFINITY=1`) is the one that differs from the
+baseline: it reads as what leaving it unpinned saves.
 `serial`, `render-every-2`, `no-vertex-cache` and `no-gpu-pipeline` are listed too
 when they were run; those that turn an optimization off read the other way round,
 as what it saves. `serial` is not in the mode, to keep it short. A setting whose first run never reaches the

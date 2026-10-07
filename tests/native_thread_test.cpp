@@ -387,6 +387,16 @@ void migrating_workers_respect_small_process_cpu_masks() {
 // Fewer host processors than guest processors: guest processor 0 (the main
 // thread's) keeps the first one to itself, and 1-5 take turns on the others
 // (Issue #52: 4 % 4 put guest processor 4 on the main thread's core).
+// The main thread is pinned only with six or more host processors
+// (Issue #52: pinned on four, it waited for its core while the others idled).
+void main_thread_is_pinned_only_with_six_or_more_processors() {
+    for (size_t count = 0; count < 6; ++count) require(!sfr::pin_main_thread_by_default(count));
+    for (size_t count = 6; count <= 64; ++count) require(sfr::pin_main_thread_by_default(count));
+    GROUP_AFFINITY current{};
+    require(GetThreadGroupAffinity(GetCurrentThread(), &current) != FALSE);
+    require(sfr::current_host_processor_count() == sfr::host_processor_order(current.Mask, current.Group).size());
+}
+
 void host_processor_slots_leave_the_first_to_guest_processor_zero() {
     for (size_t count = 6; count <= 8; ++count)
         for (uint32_t cpu = 0; cpu < 6; ++cpu) require(sfr::host_processor_slot(cpu, count) == cpu);
@@ -511,6 +521,7 @@ int main() {
         migrating_workers_keep_their_guest_processor_preference();
         migrating_workers_respect_small_process_cpu_masks();
         host_processor_slots_leave_the_first_to_guest_processor_zero();
+        main_thread_is_pinned_only_with_six_or_more_processors();
         four_host_processors_keep_the_main_threads_core_apart();
         invalid_guest_processor_is_rejected_without_mutation();
         parked_cancel_joins_without_running_entry_and_keeps_handle_open();

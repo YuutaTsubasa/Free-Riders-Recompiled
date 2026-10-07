@@ -21,6 +21,17 @@ inline uint32_t host_processor_slot(uint32_t guest_cpu, size_t count) {
     return 1 + (guest_cpu - 1) % uint32_t(count - 1);
 }
 
+// Whether the main thread is pinned to the first of count host processors
+// when SFR_MAIN_AFFINITY does not say. With fewer than six it is not: pinned,
+// it is the one thread Windows cannot move, and every thread readied on that
+// core (the game's workers, whose mask is all of them, the kernel, other
+// programs) takes turns with it while the others sit idle. On an i5-3470
+// (4 cores, 4 threads, v0.6.2) unpinned ran 21% faster, and a context-switch
+// trace had the pinned main thread waiting for its core 2.2 ms of each 18 ms
+// frame with the other three idle 40% of the time (Issue #52). The pin keeps
+// it off E-cores, and hybrid CPUs have six or more.
+inline bool pin_main_thread_by_default(size_t count) { return count >= 6; }
+
 #ifdef _WIN32
 // The allowed logical processors of one group in the order guest processors
 // take them (guest processor n gets entry host_processor_slot(n, count)): the first
@@ -31,6 +42,8 @@ std::vector<uint32_t> host_processor_order(uint64_t allowed, uint16_t group);
 // group/mask. Explicit CPU Sets keep their current mask. Returns the resulting
 // host mask; does not change process affinity.
 uint64_t pin_current_guest_processor(uint32_t guest_cpu);
+// How many host processors the calling thread may run on (in its group).
+size_t current_host_processor_count();
 #endif
 
 class NativeThread {
