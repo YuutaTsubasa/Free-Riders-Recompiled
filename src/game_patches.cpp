@@ -13,12 +13,14 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <vector>
 
 // Compatibility patches for latent bugs in the original game code. Each one
 // is narrow, documented and leaves the original body in charge.
@@ -676,4 +678,53 @@ SFR_CONCURRENT_HOOK(sub_827BCFA8) {
     sfr::enter_function(ctx,"sub_827BCFA8",0x827BCFA8);
     if(audio_cue_trace()) report_cue("by_id",ctx,ctx.r4.u32,false);
     __imp__sub_827BCFA8(ctx,base);
+}
+
+// SFR_DUMP_DECOMPRESSED=<directory>: everything the game's LZX decoder
+// produces, for making mods of the compressed files. The decoder is a stream:
+// 824DE658 starts one (and returns its context), then each call of
+// 824DE650 (context, destination, &destination size, source, source size)
+// returns the next part of the file. Each part goes to <directory>/<n>.bin,
+// with a line in index.txt: "<n> <size> <source size> <context> <first 64
+// source bytes>", which find the file on the disc; a stream's start is
+// "R <context>". scripts/unpack_assets.py joins the parts. Off unless set.
+static const std::string& decompressed_dump() {
+    static const std::string directory=[]{ const char* t=std::getenv("SFR_DUMP_DECOMPRESSED"); return std::string(t?t:""); }();
+    return directory;
+}
+static std::mutex decompressed_dump_lock;
+
+PPC_FUNC_IMPL(__imp__sub_824DE658);
+SFR_CONCURRENT_HOOK(sub_824DE658) {
+    sfr::enter_function(ctx,"sub_824DE658",0x824DE658);
+    __imp__sub_824DE658(ctx,base);
+    if(decompressed_dump().empty()) return;
+    std::lock_guard guard(decompressed_dump_lock);
+    std::ofstream(decompressed_dump()+"/index.txt",std::ios::app) << "R " << std::hex << ctx.r3.u32 << '\n';
+}
+
+PPC_FUNC_IMPL(__imp__sub_824DE650);
+SFR_CONCURRENT_HOOK(sub_824DE650) {
+    sfr::enter_function(ctx,"sub_824DE650",0x824DE650);
+    const std::string& directory=decompressed_dump();
+    if(directory.empty()) { __imp__sub_824DE650(ctx,base); return; }
+    const uint32_t context=ctx.r3.u32, destination=ctx.r4.u32, size_at=ctx.r5.u32, source=ctx.r6.u32,
+                   source_size=ctx.r7.u32;
+    __imp__sub_824DE650(ctx,base);
+    if(ctx.r3.s32<0) return;
+    auto& memory=*sfr::active_memory;
+    const uint32_t produced=memory.load<uint32_t>(size_at);
+    static uint32_t count=0;
+    std::lock_guard guard(decompressed_dump_lock);
+    const uint32_t n=count++;
+    std::vector<char> bytes(produced);
+    for(uint32_t i=0;i<produced;++i) bytes[i]=char(memory.load<uint8_t>(uint64_t(destination)+i));
+    std::ofstream(directory+"/"+std::to_string(n)+".bin",std::ios::binary).write(bytes.data(),std::streamsize(bytes.size()));
+    std::ostringstream line;
+    line<<n<<' '<<produced<<' '<<source_size<<' '<<std::hex<<context<<' ';
+    for(uint32_t i=0;i<64 && i<source_size;++i) {
+        const uint32_t b=memory.load<uint8_t>(uint64_t(source)+i);
+        line<<(b<16?"0":"")<<b;
+    }
+    std::ofstream(directory+"/index.txt",std::ios::app)<<line.str()<<'\n';
 }
