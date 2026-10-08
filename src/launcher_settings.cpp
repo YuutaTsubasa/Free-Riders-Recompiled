@@ -65,7 +65,6 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         else if (key == "skip_movies") read_flag(value, settings.skip_movies);
         else if (key == "vertex_cache") read_flag(value, settings.vertex_cache);
         else if (key == "gpu_pipeline") read_flag(value, settings.gpu_pipeline);
-        else if (key == "parallel") read_flag(value, settings.parallel);
         else if (key == "race_render_every") read_number(value, 1, 4, settings.race_render_every);
         else if (key == "ui_sounds") read_flag(value, settings.ui_sounds);
         else if (key == "vulkan") read_flag(value, settings.vulkan);
@@ -109,7 +108,6 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "skip_movies=" << s.skip_movies << '\n'
         << "vertex_cache=" << s.vertex_cache << '\n'
         << "gpu_pipeline=" << s.gpu_pipeline << '\n'
-        << "parallel=" << s.parallel << '\n'
         << "race_render_every=" << s.race_render_every << '\n'
         << "ui_sounds=" << s.ui_sounds << '\n'
         << "vulkan=" << s.vulkan << '\n'
@@ -180,7 +178,11 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         // A race steps a sixtieth of a second per frame.
         {"SFR_FRAME_LIMIT", "60"},
         {"SFR_RENDER_EVERY", std::to_string(s.race_render_every)},
-        {"SFR_PARALLEL_WORKER", s.parallel ? "all" : "0"},
+        // Every guest thread in parallel, always: with one execution permit
+        // ("parallel=0", the old "Multi-core execution" switch turned off)
+        // the game stopped at start, since v0.6.0 at least (Issue #1). An
+        // old settings.ini that still says parallel=0 is ignored.
+        {"SFR_PARALLEL_WORKER", "all"},
         {"SFR_VERTEX_CACHE", s.vertex_cache ? "1" : "0"},
         {"SFR_GPU_PIPELINE", s.gpu_pipeline ? "1" : "0"},
         {"SFR_AUDIO", s.audio ? "1" : "0"},

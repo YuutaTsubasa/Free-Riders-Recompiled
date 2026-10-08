@@ -77,7 +77,7 @@ enum Text {
     WindowSize, DesktopSize, Fullscreen, FullscreenHint, VSync, VSyncHint, RenderResolution, RenderResolutionHint, NativeResolution,
     Sound, SoundHint, Volume,
     SkipMovies, SkipMoviesHint,
-    Parallel, ParallelHint, VertexCache, VertexCacheHint, GpuPipeline, GpuPipelineHint, RaceEvery, RaceEveryHint,
+    VertexCache, VertexCacheHint, GpuPipeline, GpuPipelineHint, RaceEvery, RaceEveryHint,
     CameraLabel, CameraHint, CameraHintOff, CameraHintPicture, CameraHintKinect, CameraOff, CameraPicture, CameraMotion, CameraDevice, CameraDeviceHint, CameraNone,
     CameraTest, CameraTesting, CameraWorks, CameraSilent, CameraClosed, CameraMirror, CameraMirrorHint,
     CameraKinect, KinectRow, KinectRowHint, KinectMissing,
@@ -139,9 +139,6 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Volume", "音量"},
     {"Skip movies", "略過影片"},
     {"Ends the opening and story movies after their first frames.", "開場與劇情影片只播放開頭便結束。"},
-    {"Multi-core execution", "多核心執行"},
-    {"Runs the game's threads on several processor cores, as the console does. Turn it off if the game becomes unstable.",
-     "像主機一樣以多個處理器核心執行遊戲的執行緒。若遊戲不穩定，可以關閉。"},
     {"Vertex cache", "頂點快取"},
     {"Keeps geometry that does not change on the GPU. Turn it off if models look out of date.",
      "將沒有變動的幾何資料保留在 GPU 上。若模型顯示不正確，可以關閉。"},
@@ -2217,7 +2214,6 @@ struct Launcher {
 
     void performance_settings() {
         const float switch_width = ImGui::GetFrameHeight() * 1.9f;
-        setting_row(tr(Parallel), tr(ParallelHint), switch_width, scale, [&] { toggle("##parallel", &settings.parallel); });
         setting_row(tr(VertexCache), tr(VertexCacheHint), switch_width, scale, [&] { toggle("##vertex", &settings.vertex_cache); });
         setting_row(tr(GpuPipeline), tr(GpuPipelineHint), switch_width, scale, [&] { toggle("##pipeline", &settings.gpu_pipeline); });
         const float slider_width = 220 * scale;

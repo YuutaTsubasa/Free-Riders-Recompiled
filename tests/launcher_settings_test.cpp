@@ -29,7 +29,6 @@ void settings_round_trip() {
     settings.skip_movies = true;
     settings.vertex_cache = false;
     settings.gpu_pipeline = false;
-    settings.parallel = false;
     settings.race_render_every = 2;
     settings.ui_sounds = false;
     settings.vulkan = true;
@@ -50,7 +49,7 @@ void settings_round_trip() {
     const auto read = sfr::parse_launcher_settings(sfr::format_launcher_settings(settings));
     require(read.window_width == 1920 && read.window_height == 1080, "window size survives a round trip");
     require(read.fullscreen && read.vsync && !read.audio && read.volume == 35, "display and sound survive a round trip");
-    require(read.skip_movies && !read.vertex_cache && !read.gpu_pipeline && !read.parallel && read.race_render_every == 2 && !read.ui_sounds && read.vulkan,
+    require(read.skip_movies && !read.vertex_cache && !read.gpu_pipeline && read.race_render_every == 2 && !read.ui_sounds && read.vulkan,
             "advanced settings survive a round trip");
     require(read.camera == "motion" && read.camera_device == "e2eSoft iVCam #2" && read.camera_mirror,
             "the camera choice, name, and mirror setting survive a round trip");
@@ -226,6 +225,8 @@ void environment_follows_settings() {
     sfr::LauncherSettings settings;
     require(value_of(settings, "SFR_FRAME_LIMIT") == "60", "the game is capped at 60 fps");
     require(value_of(settings, "SFR_PARALLEL_WORKER") == "all", "every guest thread in parallel by default");
+    require(value_of(sfr::parse_launcher_settings("parallel=0\n"), "SFR_PARALLEL_WORKER") == "all",
+            "an old parallel=0 no longer runs the game on one permit, where it stopped at start");
     require(value_of(settings, "SFR_SKIP_MOVIES").empty(), "movies play by default");
     require(value_of(settings, "SFR_GRAPHICS") == "vulkan", "Vulkan by default");
     require(value_of(settings, "SFR_CAMERA").empty(), "the camera is left alone by default");
@@ -270,7 +271,6 @@ void environment_follows_settings() {
     require(value_of(settings, "SFR_FULLSCREEN") == "0" && value_of(settings, "SFR_WINDOW_WIDTH") == "1280",
             "windowed 1280x720 by default");
     settings.fullscreen = true;
-    settings.parallel = false;
     settings.window_height = 1440;
     settings.skip_movies = true;
     settings.audio = false;
@@ -278,7 +278,7 @@ void environment_follows_settings() {
     require(value_of(settings, "SFR_GRAPHICS") == "vulkan", "the Vulkan setting selects Vulkan");
     settings.vulkan = false;
     require(value_of(settings, "SFR_GRAPHICS") == "d3d12", "the D3D12 choice is explicit");
-    require(value_of(settings, "SFR_FULLSCREEN") == "1" && value_of(settings, "SFR_PARALLEL_WORKER") == "0" &&
+    require(value_of(settings, "SFR_FULLSCREEN") == "1" && value_of(settings, "SFR_PARALLEL_WORKER") == "all" &&
             value_of(settings, "SFR_WINDOW_HEIGHT") == "1440" && value_of(settings, "SFR_SKIP_MOVIES") == "1" &&
             value_of(settings, "SFR_AUDIO") == "0", "the environment carries the player's choices");
     settings.image_directory = "C:/a";
