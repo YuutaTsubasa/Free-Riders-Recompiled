@@ -896,7 +896,8 @@ if(SFR_BUILD_DIAGNOSTIC)
     else()
         add_executable(sfr_cpu_diagnostic)
         if(WIN32)
-            target_sources(sfr_cpu_diagnostic PRIVATE src/app_icon.rc)  # the icon, Issue #63
+            # The icon (Issue #63), and narrow strings in UTF-8 (src/game.manifest, Issue #71).
+            target_sources(sfr_cpu_diagnostic PRIVATE src/app_icon.rc src/game.manifest)
         endif()
     endif()
     target_sources(sfr_cpu_diagnostic PRIVATE src/diagnostic_main.cpp src/guest_memory.cpp src/xex_module.cpp src/virtual_memory.cpp src/critical_section.cpp src/hardware_info.cpp src/thread_local_storage.cpp src/system_time.cpp src/guest_clock.cpp src/timestamp_bundle.cpp src/vector_memory.cpp src/optional_import_policy.cpp src/native_modules.cpp src/integer_arithmetic.cpp src/memory_statistics.cpp
