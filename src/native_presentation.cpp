@@ -329,6 +329,11 @@ struct NativePresentation::Impl {
     void draw_model(const AvatarFrameTransform& frame);
     // The last blit's viewport (x, y, width, height) and window size, for touches.
     std::array<float, 6> touch_view{};
+    // An acquire refused (VK_ERROR_OUT_OF_DATE_KHR: on Linux the window
+    // manager is still sizing a full-screen window): the swap chain is made
+    // again and the frame skipped, a few times in a row before giving up.
+    bool resize_swap_chain = false;
+    uint32_t acquire_failures = 0;
 #ifdef __ANDROID__
     // Android destroys the window's surface in the background; the swap chain
     // is made again on the new one when the app returns (or a present fails).
@@ -1600,7 +1605,7 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height) {
 #endif
     // The window was resized (or went full screen): the swap chain follows
     // once nothing in flight still uses its textures.
-    if (impl_->swap_chain->needsResize()) {
+    if (impl_->swap_chain->needsResize() || std::exchange(impl_->resize_swap_chain, false)) {
         impl_->flush();
         impl_->wait_presentation_queue();
         impl_->blit_targets.clear();
@@ -1630,8 +1635,14 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height) {
         impl_->rebuild_swap_chain = true;  // the surface went away
         return;
 #endif
+        if (++impl_->acquire_failures <= 8) {
+            std::cerr << "NATIVE_PRESENTATION acquire_refused attempt=" << impl_->acquire_failures << '\n';
+            impl_->resize_swap_chain = true;
+            return;
+        }
         throw std::runtime_error("failed to acquire native presentation texture");
     }
+    impl_->acquire_failures = 0;
     if (texture_index >= impl_->swap_chain->getTextureCount() ||
         (acquired && texture_index >= impl_->rendered.size()))
         throw std::runtime_error("acquired native presentation image index is out of range");
