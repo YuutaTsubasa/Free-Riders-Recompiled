@@ -123,9 +123,11 @@ $settings = @{
     'no-vertex-cache' = @{ SFR_VERTEX_CACHE = '0' }
     'no-gpu-pipeline' = @{ SFR_GPU_PIPELINE = '0' }
     'no-audio'     = @{ SFR_AUDIO = '0' }                      # no sound sent to the PC's output (the game still mixes it): what the output costs
-    # the main thread left to Windows instead of pinned to the first core: on a PC with fewer than six
-    # logical processors guest processor 4 shares that core with it (native_thread.cpp, guest_cpu % count)
+    # the main thread left to Windows instead of pinned to the first core, and the other way round.
+    # The default pins it with six or more logical processors and leaves it unpinned with fewer
+    # (pin_main_thread_by_default in native_thread.h), so one of the two is the baseline on any PC.
     'main-unpinned' = @{ SFR_MAIN_AFFINITY = '0' }
+    'main-pinned'   = @{ SFR_MAIN_AFFINITY = '1' }
     # a self-suspended guest is woken by polling every 1 ms again, as before
     # (baseline wakes it by notification: GuestThreads::suspension_waiter)
     'no-suspend-notify' = @{ SFR_SUSPEND_NOTIFY = '0' }

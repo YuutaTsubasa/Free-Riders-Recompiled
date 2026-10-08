@@ -2805,8 +2805,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     window_class.lpfnWndProc = window_proc;
     window_class.hInstance = instance;
     window_class.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));  // IDC_ARROW
-    window_class.hIcon = make_icon(GetSystemMetrics(SM_CXICON));
-    window_class.hIconSm = make_icon(GetSystemMetrics(SM_CXSMICON));
+    // The program's icon (src/app_icon.rc), or the drawn one without it.
+    auto icon = [](int size) {
+        if (HANDLE loaded = LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1), IMAGE_ICON, size, size, 0))
+            return static_cast<HICON>(loaded);
+        return make_icon(size);
+    };
+    window_class.hIcon = icon(GetSystemMetrics(SM_CXICON));
+    window_class.hIconSm = icon(GetSystemMetrics(SM_CXSMICON));
     window_class.lpszClassName = L"SfrLauncher";
     RegisterClassExW(&window_class);
 

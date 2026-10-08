@@ -1,0 +1,2 @@
+// The program icon (Issue #63), for the launcher and the game on Windows.
+1 ICON "../packaging/icon/app.ico"

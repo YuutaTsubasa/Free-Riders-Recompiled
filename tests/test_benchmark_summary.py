@@ -74,6 +74,7 @@ class AblationTest(unittest.TestCase):
                 write_race(directory, f'no-audio-{repeat}.log', 39.8, race_frames=1500)
                 write_race(directory, f'serial-{repeat}.log', 50, race_frames=1500)
                 write_race(directory, f'main-unpinned-{repeat}.log', 36, race_frames=1500)
+                write_race(directory, f'main-pinned-{repeat}.log', 45, race_frames=1500)
             table, _ = bench.summarise(directory, 0)
             parts = table.split('### What each part costs', 1)[1].split('### Details', 1)[0]
             self.assertIn('| skip-draws | nothing drawn | 32.0 | -8.0 ms | 1.25 1.25 1.25 1.25 | drawing (CPU and GPU) made free would save at most: 8.0 ms |', parts)
@@ -86,6 +87,9 @@ class AblationTest(unittest.TestCase):
             # Faster without the pin: the pin costs on this PC.
             self.assertIn('| main-unpinned | main thread not pinned to the first core | 36.0 | -4.0 ms |', parts)
             self.assertIn('turned off it is 4.0 ms faster: this optimization costs on this PC', parts)
+            # Slower pinned (the default with fewer than six processors leaves it unpinned).
+            self.assertIn('| main-pinned | main thread pinned to the first core | 45.0 | +5.0 ms |', parts)
+            self.assertIn('what leaving the main thread unpinned saves on this PC: 5.0 ms', parts)
 
     def test_no_table_without_baseline_or_ablations(self):
         with tempfile.TemporaryDirectory() as directory:
