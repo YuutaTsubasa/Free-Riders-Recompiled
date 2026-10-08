@@ -82,6 +82,19 @@ void game_language_settings() {
                 "legacy or invalid game language explicitly resets an inherited override");
 }
 
+void voice_language_settings() {
+    for (const char* code : {"auto", "en", "ja"}) {
+        const auto loaded = sfr::parse_launcher_settings(std::string("game_language=ja\nvoice_language=") + code + "\n");
+        const auto saved = sfr::parse_launcher_settings(sfr::format_launcher_settings(loaded));
+        require(saved.voice_language == code && saved.game_language == "ja" &&
+                value_of(saved, "SFR_VOICE_LANGUAGE") == code,
+                "voice language persists and reaches the runtime apart from the game language");
+    }
+    for (const char* text : {"", "voice_language=de\n", "voice_language=EN\n"})
+        require(value_of(sfr::parse_launcher_settings(text), "SFR_VOICE_LANGUAGE") == "auto",
+                "a missing or unknown voice language follows the game");
+}
+
 void graphics_backend_settings() {
     for (const char* text : {"", "vulkan=invalid\n", "window_width=1920\n"})
         require(value_of(sfr::parse_launcher_settings(text), "SFR_GRAPHICS") == "vulkan",
@@ -353,6 +366,7 @@ int main() {
     try {
         settings_round_trip();
         game_language_settings();
+        voice_language_settings();
         graphics_backend_settings();
         rendering_resolution_settings();
         camera_debug_settings();
