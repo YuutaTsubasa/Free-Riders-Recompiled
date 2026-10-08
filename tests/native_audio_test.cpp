@@ -34,6 +34,28 @@ int main() {
         require(near(stereo[18], 0.35355339f) && near(stereo[19], 0.0f), "surround left to the left");
         require(near(stereo[20], 0.0f) && near(stereo[21], 0.35355339f), "surround right to the right");
         require(near(stereo[0], 0.0f) && near(stereo[511], 0.0f), "silence stays silent");
+
+        // The cushion: play once 3 frames wait, pause to refill when dry.
+        sfr::AudioCushion cushion(3);
+        auto step = cushion.next(0);
+        require(step.submit && !step.start, "the first frame waits for the cushion");
+        step = cushion.next(1);
+        require(step.submit && !step.start, "so does the second");
+        step = cushion.next(2);
+        require(step.submit && step.start && !step.pause, "the third starts the device");
+        step = cushion.next(2);
+        require(step.submit && !step.start && !step.pause && cushion.underruns() == 0, "then each frame queues");
+        step = cushion.next(0);
+        require(step.submit && step.pause && !step.start && cushion.underruns() == 1, "running dry pauses to refill");
+        cushion.next(1);
+        require(cushion.next(2).start, "and it plays again with the cushion full");
+        step = cushion.next(sfr::AudioCushion::limit);
+        require(!step.submit && cushion.dropped() == 1, "a quarter second waiting drops the frame");
+        // 0: each frame plays at once and a dry device is only counted.
+        sfr::AudioCushion off(0);
+        require(off.next(0).start, "without a cushion the first frame plays");
+        step = off.next(0);
+        require(step.submit && !step.pause && !step.start && off.underruns() == 1, "and a dry device keeps playing");
         std::cout << "native audio tests passed\n";
         return 0;
     } catch (const std::exception& error) {
