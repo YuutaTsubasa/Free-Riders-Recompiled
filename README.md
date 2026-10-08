@@ -147,6 +147,8 @@ with [docs/progress.md](docs/progress.md).
   With the launcher's Multi-core execution turned off the game got stuck at start on every device. The switch is gone: the game's threads always run in parallel, and an old setting that turned it off is ignored.
 - [v0.6.5 — Index buffers kept on the GPU (test build)](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.6.5)
   Index buffers the game leaves unchanged stay on the GPU instead of being decoded and copied for every draw, and cached buffers are found without checking memory views each time. A test build for slower CPUs; `SFR_INDEX_CACHE=0` turns the new cache off.
+- [v0.6.6 — Crash records in the Android diagnostic ZIP (test build)](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.6.6)
+  On Android 11 and later the diagnostic ZIP now says how the game last ended, with the system's crash record (tombstone) when it crashed in native code, so a crash that leaves nothing in the log can be located. Also has v0.6.5's index cache.
 
 ## System Requirements
 
