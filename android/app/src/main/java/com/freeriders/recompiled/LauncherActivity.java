@@ -58,6 +58,44 @@ public class LauncherActivity extends SDLActivity {
         android.widget.Toast.makeText(this, message, android.widget.Toast.LENGTH_LONG).show();
     }
 
+    // How the app's processes (the launcher and :game) last ended, newest
+    // first, with a native crash's tombstone or an ANR's trace.
+    private java.util.List<DiagnosticsArchive.Exit> recentExits() {
+        java.util.List<DiagnosticsArchive.Exit> exits = new java.util.ArrayList<>();
+        if (android.os.Build.VERSION.SDK_INT < 30) return exits;
+        try {
+            android.app.ActivityManager manager = getSystemService(android.app.ActivityManager.class);
+            for (android.app.ApplicationExitInfo info : manager.getHistoricalProcessExitReasons(getPackageName(), 0, 5)) {
+                String summary = info.getProcessName() + " reason=" + info.getReason() + " status=" + info.getStatus()
+                        + " time=" + new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.ROOT)
+                                .format(new java.util.Date(info.getTimestamp()))
+                        + " importance=" + info.getImportance() + " description=" + info.getDescription();
+                byte[] trace = null;
+                String traceName = null;
+                final int reason = info.getReason();
+                if (reason == android.app.ApplicationExitInfo.REASON_CRASH_NATIVE
+                        || reason == android.app.ApplicationExitInfo.REASON_ANR) {
+                    try (java.io.InputStream input = info.getTraceInputStream()) {
+                        if (input != null) {
+                            java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+                            byte[] buffer = new byte[16384];
+                            for (int count; (count = input.read(buffer)) != -1 && bytes.size() < 4 * 1024 * 1024;)
+                                bytes.write(buffer, 0, count);
+                            trace = bytes.toByteArray();
+                            traceName = reason == android.app.ApplicationExitInfo.REASON_ANR ? "anr.txt" : "tombstone.pb";
+                        }
+                    } catch (Exception error) {
+                        summary += " trace_unreadable=" + error.getClass().getSimpleName();
+                    }
+                }
+                exits.add(new DiagnosticsArchive.Exit(summary, trace, traceName));
+            }
+        } catch (Exception error) {
+            Log.w("FreeRiders", "cannot read exit reasons", error);
+        }
+        return exits;
+    }
+
     private void saveDiagnostics(Uri uri) {
         new Thread(() -> {
             boolean success = false;
@@ -68,7 +106,7 @@ public class LauncherActivity extends SDLActivity {
                         + "\nmanufacturer=" + android.os.Build.MANUFACTURER + "\nmodel=" + android.os.Build.MODEL
                         + "\nandroid=" + android.os.Build.VERSION.RELEASE + "\nsdk=" + android.os.Build.VERSION.SDK_INT
                         + "\nabis=" + String.join(",", android.os.Build.SUPPORTED_ABIS) + "\n";
-                DiagnosticsArchive.write(getExternalFilesDir(null), output, device);
+                DiagnosticsArchive.write(getExternalFilesDir(null), output, device, recentExits());
                 success = true;
             } catch (Exception error) {
                 success = false;

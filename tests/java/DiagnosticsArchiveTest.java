@@ -44,6 +44,31 @@ public class DiagnosticsArchiveTest {
         check(small.get("settings.env").equals("SFR_RENDER_SCALE=0.5\nSFR_GRAPHICS=vulkan\n"), "settings allowlist");
         check(small.get("debug.env").equals("SFR_FRAME_METRICS=1\n"), "overrides allowlist");
         check(!small.containsKey("save.bin"), "no recursive export");
+        check(!small.containsKey("exits.txt") && small.get("report.txt").contains("exits.txt: none"),
+              "no exits recorded: said, no file");
+        {
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            DiagnosticsArchive.write(root, bytes, "model=test\n", Arrays.asList(
+                new DiagnosticsArchive.Exit("com.freeriders.recompiled:game reason=5 description=crash",
+                                            new byte[] {1, 2, 3}, "tombstone.pb"),
+                new DiagnosticsArchive.Exit("com.freeriders.recompiled reason=10", null, null)));
+            Set<String> names = new HashSet<>();
+            String exits = null;
+            try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(bytes.toByteArray()))) {
+                for (ZipEntry e; (e = zip.getNextEntry()) != null;) {
+                    names.add(e.getName());
+                    if (e.getName().equals("exits.txt")) {  // Java 8: no readAllBytes
+                        ByteArrayOutputStream entry = new ByteArrayOutputStream();
+                        byte[] buffer = new byte[8192];
+                        for (int count; (count = zip.read(buffer)) != -1;) entry.write(buffer, 0, count);
+                        exits = new String(entry.toByteArray(), StandardCharsets.UTF_8);
+                    }
+                }
+            }
+            check(names.contains("exit-1-tombstone.pb"), "a native crash's tombstone is kept");
+            check(exits != null && exits.contains("reason=5") && exits.contains("reason=10")
+                  && exits.contains("exit-1-tombstone.pb"), "every exit is listed, with its trace's name");
+        }
         try (RandomAccessFile log = new RandomAccessFile(new File(root, "game.log"), "rw")) {
             log.setLength(16 * 1024 * 1024);
             log.seek(log.length() - 5);
