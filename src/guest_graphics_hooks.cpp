@@ -28,6 +28,7 @@
 #include <iostream>
 #include <iomanip>
 #include <set>
+#include <unordered_set>
 #include <span>
 #include <utility>
 #include <cstdio>
@@ -322,6 +323,7 @@ static uint64_t frame_vertex_bytes=0;
 static uint64_t frame_vertex_cached_bytes=0, frame_vertex_swap_bytes=0, frame_vertex_repack_bytes=0;
 static double frame_vertex_swap_ms=0, frame_vertex_repack_ms=0;
 static uint32_t frame_cached_draws=0;  // drawn from vertex_cache buffers
+static uint32_t frame_kept_index_draws=0, frame_indexed_draws=0;  // indexed draws, and those with kept indices
 static uint32_t frame_biggest_draw=0;
 // The distinct stream 0 buffers a frame draws from, and their total size: what
 // uploading each stream once a frame would cost instead of gathering every
@@ -573,6 +575,7 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
               << " lr=0x" << ctx.lr << std::dec << " frame=" << sfr::present_count.load() << " draws=" << frame_draws
               << " textured=" << frame_textured_draws << " foreign=" << foreign_draws
               << " vertex_bytes=" << frame_vertex_bytes << " cached_draws=" << frame_cached_draws
+              << " indexed_draws=" << frame_indexed_draws << " kept_index_draws=" << frame_kept_index_draws
               << " vertex_cached_bytes=" << frame_vertex_cached_bytes << " vertex_swap_bytes=" << frame_vertex_swap_bytes
               << " vertex_repack_bytes=" << frame_vertex_repack_bytes
               << " vertex_swap_ms=" << frame_vertex_swap_ms << " vertex_repack_ms=" << frame_vertex_repack_ms
@@ -626,6 +629,7 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
     frame_vertex_cached_bytes=frame_vertex_swap_bytes=frame_vertex_repack_bytes=0;
     frame_vertex_swap_ms=frame_vertex_repack_ms=0;
     frame_cached_draws=0;
+    frame_kept_index_draws=frame_indexed_draws=0;
     sfr::active_memory->advance_write_epoch();  // vertex_cache's frames
     frame_biggest_draw=0;
     frame_streams.clear();
@@ -706,7 +710,8 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
 static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint32_t primitive,
                         uint32_t count, std::span<const uint8_t> vertices, uint32_t stride,
                         std::span<const uint32_t> indices={}, int32_t base_vertex_location=0,
-                        uint32_t source_physical=0) {
+                        uint32_t source_physical=0, const plume::RenderBuffer* index_buffer=nullptr,
+                        uint32_t index_count=0) {
     auto& memory=*sfr::active_memory;
     if(skip_draws() || !rendering_this_frame()) return;
     // Everything a draw costs beside reading its indices and vertices.
@@ -768,6 +773,8 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     draw.vertex_count=count;
     draw.stride=stride;
     draw.indices=indices;
+    draw.index_buffer=index_buffer;
+    draw.index_count=index_count;
     draw.base_vertex_location=base_vertex_location;
 
     // Declaration elements (+11992: object with count at +24, 12-byte elements at +52).
@@ -1201,8 +1208,13 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
         for(size_t i=0;i<4;++i) record.constant[i]=std::bit_cast<float>(draw.pixel_constants[i]);
         flat_current.push_back(record);
     }
-    static std::set<std::array<uint32_t,4>> seen;
-    if(seen.insert({vs_object,ps_object,draw.shared.texture_2d[0],primitive}).second)
+    // Each combination is logged once. Every draw asks, so a hashed set:
+    // the ordered set's tree walk and node allocations cost about 0.06 ms of
+    // an i5-3470 race frame (Issue #65).
+    static std::unordered_set<uint64_t> seen=[]{ std::unordered_set<uint64_t> s; s.reserve(8192); return s; }();
+    const uint64_t combination=(uint64_t(vs_object)*0x9E3779B97F4A7C15ull)^(uint64_t(ps_object)*0xC2B2AE3D27D4EB4Full)^
+                               (uint64_t(draw.shared.texture_2d[0])<<20)^primitive;
+    if(seen.insert(combination).second)
         std::cerr << "NATIVE_DRAW source=0x" << std::hex << source << std::dec << " primitive=" << primitive
                   << " count=" << count << " stride=" << stride
                   << " vs=0x" << std::hex << vs_object << " ps=0x" << ps_object << " texture0=" << std::dec
@@ -1357,6 +1369,52 @@ static void gather_vertices(uint8_t* destination,const uint8_t* source,const uin
         std::memcpy(destination+i*stride,source+size_t(order[i])*stride,stride);
 }
 
+// The indices of an index buffer the title leaves unwritten, kept in a GPU
+// buffer by the vertex cache's rules (NativeRenderer::vertex_cache): most of a
+// race's index buffers never change, and decoding them (byte swap and range
+// scan) and copying 3 MB a frame of them into the upload ring cost about
+// 0.5 ms of an i5-3470 race frame and flushed its caches (Issue #65). A kept
+// buffer is decoded once, straight into the GPU buffer; its range (lowest and
+// highest index) is kept here. Not for primitive restart, whose strips are
+// rebuilt. A CPU-side copy of the decoded indices was measured and was slower:
+// reading it cold cost more than decoding. SFR_INDEX_CACHE=0 turns it off.
+struct KeptIndexKey {
+    uint32_t physical,count,base; bool wide;
+    bool operator==(const KeptIndexKey&) const = default;
+};
+struct KeptIndexKeyHash {
+    size_t operator()(const KeptIndexKey& k) const noexcept {
+        return size_t((uint64_t(k.physical)*0x9E3779B97F4A7C15ull)^(uint64_t(k.count)*0xC2B2AE3D27D4EB4Full)^
+                      (uint64_t(k.base)<<17)^(k.wide?1:0));
+    }
+};
+struct KeptIndices {
+    const plume::RenderBuffer* buffer=nullptr;
+    sfr::IndexScan scan;
+};
+static KeptIndices kept_indices(sfr::GuestMemory& memory,uint32_t physical,const uint8_t* bytes,uint32_t count,
+                                bool wide,uint32_t base) {
+    static const bool enabled=[]{ const char* t=std::getenv("SFR_INDEX_CACHE"); return !t || *t!='0'; }();
+    if(!enabled) return {};
+    static std::unordered_map<KeptIndexKey,sfr::IndexScan,KeptIndexKeyHash> scans;
+    if(scans.size()>=65536) scans.clear();  // the buffers stay; their next fill records the range again
+    const KeptIndexKey key{physical,count,base,wide};
+    // A layout no vertex format uses (its top bit), with what makes the
+    // decoded words differ for the same guest bytes.
+    const uint64_t layout=(1ull<<63)|(uint64_t(base)<<1)|(wide?1u:0u);
+    const auto cached=graphics().renderer().vertex_cache(memory,physical,uint64_t(count)*(wide?4:2),
+                                                         uint64_t(count)*4,layout,true);
+    if(!cached.buffer) return {};
+    if(!cached.fill.empty()) {
+        const auto scan=sfr::decode_indices(bytes,count,wide,base,false,reinterpret_cast<uint32_t*>(cached.fill.data()));
+        scans[key]=scan;
+        return {cached.buffer,scan};
+    }
+    const auto found=scans.find(key);
+    if(found==scans.end()) return {};
+    return {cached.buffer,found->second};
+}
+
 SFR_GRAPHICS_HOOK(sub_824F56E8) {
     sfr::enter_function(ctx,"sub_824F56E8",0x824F56E8);
     if(skip_draws() || !rendering_this_frame()) return;
@@ -1386,8 +1444,16 @@ SFR_GRAPHICS_HOOK(sub_824F56E8) {
     frame_indices+=count;
     const auto index_start=metrics_clock();
     static thread_local std::vector<uint32_t> order;
-    order.resize(count);
-    const sfr::IndexScan scan=sfr::decode_indices(index_bytes,count,wide,base_vertex,restart_enabled,order.data());
+    const KeptIndices kept=restart_enabled ? KeptIndices{}
+        : kept_indices(memory,index_physical+start*index_size,index_bytes,count,wide,base_vertex);
+    bool decoded=false;
+    const auto decode=[&] {
+        order.resize(count);
+        decoded=true;
+        return sfr::decode_indices(index_bytes,count,wide,base_vertex,restart_enabled,order.data());
+    };
+    const sfr::IndexScan scan=kept.buffer ? kept.scan : decode();
+    if(frame_metrics) { ++frame_indexed_draws; if(kept.buffer) ++frame_kept_index_draws; }
     const bool cut=scan.restart;
     const uint32_t lowest=scan.lowest, highest=scan.highest;
     if(lowest<=highest && highest>=vertex_count)
@@ -1407,18 +1473,21 @@ SFR_GRAPHICS_HOOK(sub_824F56E8) {
     // uses keeps the gather, which copies less.
     if(!cut) {
         const uint64_t block=uint64_t(highest-lowest+1);
-        if(block<=4*order.size() && used<=0x800000) {
+        if(block<=4*uint64_t(count) && used<=0x800000) {
             const auto copy_start=metrics_clock();
             // Read in place (native_draw swaps it into the upload ring). The
             // indices keep their stream numbering; the base vertex location
             // moves the block back to the start.
             const std::span<const uint8_t> window(used_bytes,size_t(used));
             if(frame_metrics) frame_gather_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-copy_start).count();
-            native_draw(ctx,0x824F56E8,device,primitive,uint32_t(block),window,stream.stride,order,-int32_t(lowest),
-                        stream.physical+lowest*stream.stride);
+            if(kept.buffer) native_draw(ctx,0x824F56E8,device,primitive,uint32_t(block),window,stream.stride,{},
+                                        -int32_t(lowest),stream.physical+lowest*stream.stride,kept.buffer,count);
+            else native_draw(ctx,0x824F56E8,device,primitive,uint32_t(block),window,stream.stride,order,
+                             -int32_t(lowest),stream.physical+lowest*stream.stride);
             return;
         }
     }
+    if(!decoded) decode();  // the paths below rework the indices themselves
     if(cut) {
         const auto cut_start=metrics_clock();
         if(primitive!=6) throw sfr::RuntimeStop("native-draw",primitive,"primitive restart outside a triangle strip");

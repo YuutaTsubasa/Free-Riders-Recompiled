@@ -59,6 +59,10 @@ struct NativeDraw {
     // time: the gather is by far a race frame's largest cost. Empty for an
     // unindexed draw.
     std::span<const uint32_t> indices;
+    // Or a buffer that already holds index_count of them (vertex_cache with
+    // index set): indices is then not read and nothing is copied for them.
+    const plume::RenderBuffer* index_buffer = nullptr;
+    uint32_t index_count = 0;
     // Added to every index, so the block can start anywhere in the stream.
     int32_t base_vertex_location = 0;
     std::vector<plume::RenderInputElement> elements;
@@ -152,8 +156,9 @@ public:
     };
     // bytes: the guest data watched; host_bytes: the buffer (layouts that
     // repack elements widen the vertices).
+    // index: the buffer holds 32-bit indices (an index buffer) instead.
     CachedVertices vertex_cache(GuestMemory& memory, uint32_t physical, uint64_t bytes, uint64_t host_bytes,
-                                uint64_t layout);
+                                uint64_t layout, bool index = false);
     uint32_t draws() const noexcept;
     // Pipelines created since the last call, and the milliseconds spent
     // creating them: a draw that meets a state combination for the first time
