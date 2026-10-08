@@ -1,0 +1,87 @@
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -28,6 +28,13 @@
+ // - Fix resource pools.
+ 
+ namespace plume {
++    // A Vulkan 1.1 device that has VK_KHR_buffer_device_address (required below)
++    // gives the function only under its extension name: the core name is
++    // null there, and calling it jumped to address 0 (an Adreno 730 driver).
++    static VkDeviceAddress getBufferDeviceAddress(VkDevice device, const VkBufferDeviceAddressInfo *info) {
++        return (vkGetBufferDeviceAddress != nullptr ? vkGetBufferDeviceAddress : vkGetBufferDeviceAddressKHR)(device, info);
++    }
++
+     // Backend constants.
+ 
+     // Required buffer alignment for acceleration structures.
+@@ -916,7 +923,7 @@
+         info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+         info.pNext = nullptr;
+         info.buffer = vk;
+-        return vkGetBufferDeviceAddress(device->vk, &info);
++        return getBufferDeviceAddress(device->vk, &info);
+     }
+ 
+     // VulkanBufferFormattedView
+@@ -2891,7 +2898,7 @@
+         tableAddressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+         tableAddressInfo.buffer = interfaceBuffer->vk;
+ 
+-        const VkDeviceAddress tableAddress = vkGetBufferDeviceAddress(queue->device->vk, &tableAddressInfo) + shaderBindingTable.offset;
++        const VkDeviceAddress tableAddress = getBufferDeviceAddress(queue->device->vk, &tableAddressInfo) + shaderBindingTable.offset;
+         const RenderShaderBindingGroupInfo &rayGen = shaderBindingGroupsInfo.rayGen;
+         const RenderShaderBindingGroupInfo &miss = shaderBindingGroupsInfo.miss;
+         const RenderShaderBindingGroupInfo &hitGroup = shaderBindingGroupsInfo.hitGroup;
+@@ -3373,7 +3380,7 @@
+         buildGeometryInfo.flags = toRTASBuildFlags(buildInfo.preferFastBuild, buildInfo.preferFastTrace);
+         buildGeometryInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+         buildGeometryInfo.dstAccelerationStructure = interfaceAccelerationStructure->vk;
+-        buildGeometryInfo.scratchData.deviceAddress = vkGetBufferDeviceAddress(queue->device->vk, &scratchAddressInfo) + scratchBuffer.offset;
++        buildGeometryInfo.scratchData.deviceAddress = getBufferDeviceAddress(queue->device->vk, &scratchAddressInfo) + scratchBuffer.offset;
+         buildGeometryInfo.pGeometries = reinterpret_cast<const VkAccelerationStructureGeometryKHR *>(buildInfo.buildData.data());
+         buildGeometryInfo.geometryCount = buildInfo.meshCount;
+ 
+@@ -3415,14 +3422,14 @@
+ 
+         VkAccelerationStructureGeometryInstancesDataKHR &instancesData = topGeometry.geometry.instances;
+         instancesData.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
+-        instancesData.data.deviceAddress = vkGetBufferDeviceAddress(queue->device->vk, &instancesAddressInfo) + instancesBuffer.offset;
++        instancesData.data.deviceAddress = getBufferDeviceAddress(queue->device->vk, &instancesAddressInfo) + instancesBuffer.offset;
+ 
+         VkAccelerationStructureBuildGeometryInfoKHR buildGeometryInfo = {};
+         buildGeometryInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+         buildGeometryInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+         buildGeometryInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+         buildGeometryInfo.dstAccelerationStructure = interfaceAccelerationStructure->vk;
+-        buildGeometryInfo.scratchData.deviceAddress = vkGetBufferDeviceAddress(queue->device->vk, &scratchAddressInfo) + scratchBuffer.offset;
++        buildGeometryInfo.scratchData.deviceAddress = getBufferDeviceAddress(queue->device->vk, &scratchAddressInfo) + scratchBuffer.offset;
+         buildGeometryInfo.pGeometries = &topGeometry;
+         buildGeometryInfo.geometryCount = 1;
+ 
+@@ -4223,7 +4230,7 @@
+                 VkBufferDeviceAddressInfo vertexAddressInfo = {};
+                 vertexAddressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+                 vertexAddressInfo.buffer = interfaceVertexBuffer->vk;
+-                triangles.vertexData.deviceAddress = vkGetBufferDeviceAddress(vk, &vertexAddressInfo) + mesh.vertexBuffer.offset;
++                triangles.vertexData.deviceAddress = getBufferDeviceAddress(vk, &vertexAddressInfo) + mesh.vertexBuffer.offset;
+             }
+ 
+             if (interfaceIndexBuffer != nullptr) {
+@@ -4232,7 +4239,7 @@
+                 VkBufferDeviceAddressInfo indexAddressInfo = {};
+                 indexAddressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+                 indexAddressInfo.buffer = interfaceIndexBuffer->vk;
+-                triangles.indexData.deviceAddress = vkGetBufferDeviceAddress(vk, &indexAddressInfo) + mesh.indexBuffer.offset;
++                triangles.indexData.deviceAddress = getBufferDeviceAddress(vk, &indexAddressInfo) + mesh.indexBuffer.offset;
+                 geometryPrimitiveCounts[i] = mesh.indexCount / 3;
+             }
+             else {
+@@ -4285,7 +4292,7 @@
+             VkBufferDeviceAddressInfo blasAddressInfo = {};
+             blasAddressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+             blasAddressInfo.buffer = interfaceBottomLevelAS->vk;
+-            bufferInstance.accelerationStructureReference = vkGetBufferDeviceAddress(vk, &blasAddressInfo) + instance.bottomLevelAS.offset;
++            bufferInstance.accelerationStructureReference = getBufferDeviceAddress(vk, &blasAddressInfo) + instance.bottomLevelAS.offset;
+         }
+ 
+         // Retrieve the size the TLAS will require.
