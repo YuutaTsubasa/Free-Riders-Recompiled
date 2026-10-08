@@ -141,6 +141,8 @@ with [docs/progress.md](docs/progress.md).
   Each player turns, confirms and backs out of the two-player menus with their own controller, and either can pause; a guest second player no longer adds a 10-second wait. Relay Race works with controllers: A swaps in the next racer. The launcher's settings can all be reached with a controller. 4-core CPUs keep the main thread's core to itself, and frames over 250 ms are logged.
 - [v0.6.2 — Fewer freezes, START skips story scenes](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.6.2)
   The race and Relay hand-over freezes of up to a few seconds are gone: the main thread no longer spins on a lock other threads hold across system calls. START skips a World Grand Prix story scene, and the results screen's Kinect Guide no longer closes the game.
+- [v0.6.3 — Any install folder, voices apart from text, steadier sound](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.6.3)
+  The game starts from a folder with non-Latin letters on Windows, and full screen works with Vulkan on Linux. Voices can be English or Japanese apart from the text. Sound keeps a short cushion against crackles, and 4-core CPUs no longer pin the main thread. The programs have an icon, and HedgeModManager can find the game and manage its mods.
 
 ## System Requirements
 
