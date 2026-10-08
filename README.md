@@ -176,7 +176,7 @@ The launcher groups settings by what you want to change:
 
 | Category | Settings |
 | --- | --- |
-| General | Launcher and game languages, movies, restore defaults |
+| General | Launcher, game and voice languages, movies, restore defaults |
 | Graphics | Window and rendering resolutions, fullscreen, backend, VSync, expandable performance options |
 | Sound | Game volume and launcher sounds |
 | Controls | Each player's input source and controller, button/key bindings, Android touch and tilt |
@@ -369,8 +369,14 @@ creates every shader it has while it boots, so a pack made with
 `python scripts/pack_shaders.py` after starting the game once on Windows
 (under Vulkan too, for the SPIR-V) is complete. Releases include one.
 
-**Can I use the No Kinect Patch or other mods?** No mod support exists. The
-Kinect emulation here is the project's own code (see [Credits](#credits)).
+**Can I use mods?** File-replacement mods, yes, since v0.6.0: put each in its
+own folder in `mods` beside the launcher and switch it on in the **Mods** tab
+([Mods](docs/mods.md)). Sound, texture and text mods made for the original
+game work once their files sit in a folder with a `mod.ini`; for example the
+[Traditional Chinese mod](https://github.com/YuutaTsubasa/Free-Riders-Recompiled-Traditional-Chinese-Mod).
+Code mods do not apply: the No Kinect Patch changes the original executable
+for Xenia, and the Kinect emulation here is the project's own code (see
+[Credits](#credits)).
 
 **Why does the release need my disc?** The release holds the recompiled
 program, but none of the game's data (models, textures, sound, movies): that
