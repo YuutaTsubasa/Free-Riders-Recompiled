@@ -28,6 +28,7 @@
 #include <iostream>
 #include <iomanip>
 #include <set>
+#include <unordered_set>
 #include <span>
 #include <utility>
 #include <cstdio>
@@ -1201,8 +1202,13 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
         for(size_t i=0;i<4;++i) record.constant[i]=std::bit_cast<float>(draw.pixel_constants[i]);
         flat_current.push_back(record);
     }
-    static std::set<std::array<uint32_t,4>> seen;
-    if(seen.insert({vs_object,ps_object,draw.shared.texture_2d[0],primitive}).second)
+    // Each combination is logged once. Every draw asks, so a hashed set:
+    // the ordered set's tree walk and node allocations cost about 0.06 ms of
+    // an i5-3470 race frame (Issue #65).
+    static std::unordered_set<uint64_t> seen=[]{ std::unordered_set<uint64_t> s; s.reserve(8192); return s; }();
+    const uint64_t combination=(uint64_t(vs_object)*0x9E3779B97F4A7C15ull)^(uint64_t(ps_object)*0xC2B2AE3D27D4EB4Full)^
+                               (uint64_t(draw.shared.texture_2d[0])<<20)^primitive;
+    if(seen.insert(combination).second)
         std::cerr << "NATIVE_DRAW source=0x" << std::hex << source << std::dec << " primitive=" << primitive
                   << " count=" << count << " stride=" << stride
                   << " vs=0x" << std::hex << vs_object << " ps=0x" << ps_object << " texture0=" << std::dec
