@@ -4556,9 +4556,15 @@ int main(int argc, char** argv) {
         // the original process thread is not a NativeThread. Place guest 1
         // too, within its inherited mask, instead of leaving it on E-cores.
         // The override is for matched benchmarks; guest clocks are unchanged.
-        if (const char* setting = std::getenv("SFR_MAIN_AFFINITY"); !setting || *setting != '0') {
+        // With fewer than six host processors it stays unpinned unless
+        // SFR_MAIN_AFFINITY=1 (pin_main_thread_by_default).
+        const char* main_affinity = std::getenv("SFR_MAIN_AFFINITY");
+        const size_t host_processors = sfr::current_host_processor_count();
+        if (main_affinity && *main_affinity ? *main_affinity != '0' : sfr::pin_main_thread_by_default(host_processors)) {
             const auto mask = sfr::pin_current_guest_processor(0);
             std::cerr << "MAIN_HOST_AFFINITY mask=0x" << std::hex << mask << std::dec << '\n';
+        } else {
+            std::cerr << "MAIN_HOST_AFFINITY unpinned processors=" << host_processors << '\n';
         }
 #endif
         ctx.fpscr.loadFromHost();

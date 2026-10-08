@@ -264,6 +264,13 @@ uint64_t pin_current_guest_processor(uint32_t guest_cpu) {
     return selected;
 }
 
+size_t current_host_processor_count() {
+    GROUP_AFFINITY current{};
+    if (!GetThreadGroupAffinity(GetCurrentThread(), &current))
+        throw_host_error("GetThreadGroupAffinity", GetLastError());
+    return host_processor_order(current.Mask, current.Group).size();
+}
+
 uint64_t NativeThread::set_guest_processor(uint32_t guest_cpu) {
     return set_guest_processor(guest_cpu, false);
 }

@@ -669,9 +669,10 @@ ABLATIONS = (
     ('no-vertex-cache', 'vertex cache off', 'read the other way: what this optimization saves on this PC'),
     ('no-gpu-pipeline', 'GPU pipelining off', 'read the other way: what this optimization saves on this PC'),
     ('main-unpinned', 'main thread not pinned to the first core', 'read the other way: what pinning the main thread saves on this PC'),
+    ('main-pinned', 'main thread pinned to the first core', 'read the other way: what leaving the main thread unpinned saves on this PC'),
 )
 # Those that turn an optimization off: slower is what the optimization saves.
-REVERSED = {'serial', 'no-vertex-cache', 'no-gpu-pipeline', 'main-unpinned'}
+REVERSED = {'serial', 'no-vertex-cache', 'no-gpu-pipeline', 'main-unpinned', 'main-pinned'}
 
 
 def ablation_table(rows):
