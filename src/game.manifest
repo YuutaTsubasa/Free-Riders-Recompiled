@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- The game's narrow strings are UTF-8 (Windows 10 1903 and later): the
+     launcher passes folders through the environment and the command line,
+     and the game reads them with getenv and argv as UTF-8. Under the
+     system's code page, a folder with letters outside it (Cyrillic under
+     a Western code page, or any non-ASCII name read as UTF-8) stopped the
+     game at start (Issue #71). -->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+    </windowsSettings>
+  </application>
+</assembly>
