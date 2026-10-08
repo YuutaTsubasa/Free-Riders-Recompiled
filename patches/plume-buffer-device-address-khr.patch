@@ -1,20 +1,46 @@
 --- a/plume_vulkan.cpp
 +++ b/plume_vulkan.cpp
-@@ -28,6 +28,13 @@
+@@ -28,6 +28,39 @@
  // - Fix resource pools.
  
  namespace plume {
 +    // A Vulkan 1.1 device that has VK_KHR_buffer_device_address (required below)
-+    // gives the function only under its extension name: the core name is
-+    // null there, and calling it jumped to address 0 (an Adreno 730 driver).
++    // gives the function only under its extension name. The pointers volk loads
++    // from the instance are never null (the loader's trampolines), yet the core
++    // one jumps to address 0 on such a device (an Adreno 730 driver), so the
++    // device's own entry point is taken once it exists, by its API version.
++    static PFN_vkGetBufferDeviceAddress bufferDeviceAddressFunction = nullptr;
++    static const char *bufferDeviceAddressName = "none";
++
++    static void loadBufferDeviceAddress(VkDevice device, uint32_t apiVersion) {
++        bufferDeviceAddressFunction = nullptr;
++        bufferDeviceAddressName = "none";
++        const char *names[] = { (apiVersion >= VK_API_VERSION_1_2) ? "vkGetBufferDeviceAddress" : nullptr, "vkGetBufferDeviceAddressKHR" };
++        for (const char *name : names) {
++            if (name == nullptr) {
++                continue;
++            }
++
++            bufferDeviceAddressFunction = reinterpret_cast<PFN_vkGetBufferDeviceAddress>(vkGetDeviceProcAddr(device, name));
++            if (bufferDeviceAddressFunction != nullptr) {
++                bufferDeviceAddressName = name;
++                return;
++            }
++        }
++    }
++
 +    static VkDeviceAddress getBufferDeviceAddress(VkDevice device, const VkBufferDeviceAddressInfo *info) {
-+        return (vkGetBufferDeviceAddress != nullptr ? vkGetBufferDeviceAddress : vkGetBufferDeviceAddressKHR)(device, info);
++        return bufferDeviceAddressFunction(device, info);
++    }
++
++    const char *VulkanDevice::bufferDeviceAddressEntryPoint() {
++        return bufferDeviceAddressName;
 +    }
 +
      // Backend constants.
  
      // Required buffer alignment for acceleration structures.
-@@ -916,7 +923,7 @@
+@@ -916,7 +949,7 @@ namespace plume {
          info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
          info.pNext = nullptr;
          info.buffer = vk;
@@ -23,7 +49,7 @@
      }
  
      // VulkanBufferFormattedView
-@@ -2891,7 +2898,7 @@
+@@ -2891,7 +2924,7 @@ namespace plume {
          tableAddressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
          tableAddressInfo.buffer = interfaceBuffer->vk;
  
@@ -32,7 +58,7 @@
          const RenderShaderBindingGroupInfo &rayGen = shaderBindingGroupsInfo.rayGen;
          const RenderShaderBindingGroupInfo &miss = shaderBindingGroupsInfo.miss;
          const RenderShaderBindingGroupInfo &hitGroup = shaderBindingGroupsInfo.hitGroup;
-@@ -3373,7 +3380,7 @@
+@@ -3373,7 +3406,7 @@ namespace plume {
          buildGeometryInfo.flags = toRTASBuildFlags(buildInfo.preferFastBuild, buildInfo.preferFastTrace);
          buildGeometryInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
          buildGeometryInfo.dstAccelerationStructure = interfaceAccelerationStructure->vk;
@@ -41,7 +67,7 @@
          buildGeometryInfo.pGeometries = reinterpret_cast<const VkAccelerationStructureGeometryKHR *>(buildInfo.buildData.data());
          buildGeometryInfo.geometryCount = buildInfo.meshCount;
  
-@@ -3415,14 +3422,14 @@
+@@ -3415,14 +3448,14 @@ namespace plume {
  
          VkAccelerationStructureGeometryInstancesDataKHR &instancesData = topGeometry.geometry.instances;
          instancesData.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
@@ -58,7 +84,16 @@
          buildGeometryInfo.pGeometries = &topGeometry;
          buildGeometryInfo.geometryCount = 1;
  
-@@ -4223,7 +4230,7 @@
+@@ -4020,6 +4053,8 @@ namespace plume {
+             return;
+         }
+ 
++        loadBufferDeviceAddress(vk, physicalDeviceProperties.apiVersion);
++
+         for (uint32_t i = 0; i < queueFamilyCount; i++) {
+             for (uint32_t j = 0; j < queueFamilies[i].queues.size(); j++) {
+                 vkGetDeviceQueue(vk, i, j, &queueFamilies[i].queues[j].vk);
+@@ -4223,7 +4258,7 @@ namespace plume {
                  VkBufferDeviceAddressInfo vertexAddressInfo = {};
                  vertexAddressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
                  vertexAddressInfo.buffer = interfaceVertexBuffer->vk;
@@ -67,7 +102,7 @@
              }
  
              if (interfaceIndexBuffer != nullptr) {
-@@ -4232,7 +4239,7 @@
+@@ -4232,7 +4267,7 @@ namespace plume {
                  VkBufferDeviceAddressInfo indexAddressInfo = {};
                  indexAddressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
                  indexAddressInfo.buffer = interfaceIndexBuffer->vk;
@@ -76,7 +111,7 @@
                  geometryPrimitiveCounts[i] = mesh.indexCount / 3;
              }
              else {
-@@ -4285,7 +4292,7 @@
+@@ -4285,7 +4320,7 @@ namespace plume {
              VkBufferDeviceAddressInfo blasAddressInfo = {};
              blasAddressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
              blasAddressInfo.buffer = interfaceBottomLevelAS->vk;
@@ -85,3 +120,15 @@
          }
  
          // Retrieve the size the TLAS will require.
+--- a/plume_vulkan.h
++++ b/plume_vulkan.h
+@@ -428,6 +428,9 @@ namespace plume {
+ 
+         VulkanDevice(VulkanInterface *renderInterface, const std::string &preferredDeviceName);
+         ~VulkanDevice() override;
++        // The name buffer device addresses were loaded under: the core name, its
++        // extension name on a Vulkan 1.1 device, or "none".
++        static const char *bufferDeviceAddressEntryPoint();
+         std::unique_ptr<RenderDescriptorSet> createDescriptorSet(const RenderDescriptorSetDesc &desc) override;
+         std::unique_ptr<RenderShader> createShader(const void *data, uint64_t size, const char *entryPointName, RenderShaderFormat format) override;
+         std::unique_ptr<RenderSampler> createSampler(const RenderSamplerDesc &desc) override;

@@ -239,13 +239,14 @@ void report_vulkan_formats(NativeGraphics& graphics) {
     std::cerr << "NATIVE_FORMATS missing=" << (missing.empty() ? "none" : missing) << '\n';
     // The device's Vulkan version and where its buffer device addresses come
     // from: a Vulkan 1.1 driver has only the extension's entry point, and the
-    // renderer takes an address at every draw (Issue #85, an Adreno 730).
+    // renderer takes an address at every draw (Issues #85 and #88, an Adreno
+    // 730). The instance-level pointers say nothing here: they are the
+    // loader's, never null, so the device's own entry point is what counts.
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(physical, &properties);
     std::cerr << "NATIVE_VULKAN api=" << VK_API_VERSION_MAJOR(properties.apiVersion) << '.'
               << VK_API_VERSION_MINOR(properties.apiVersion) << '.' << VK_API_VERSION_PATCH(properties.apiVersion)
-              << " device_address_core=" << (vkGetBufferDeviceAddress != nullptr)
-              << " device_address_khr=" << (vkGetBufferDeviceAddressKHR != nullptr) << '\n';
+              << " device_address=" << plume::VulkanDevice::bufferDeviceAddressEntryPoint() << '\n';
 }
 
 // A guest GPU physical address as a readable virtual address. Physical
