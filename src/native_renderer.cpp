@@ -420,6 +420,20 @@ struct NativeRenderer::Impl {
         uint64_t dynamic_until = 0;
     };
     std::unordered_map<VertexKey, VertexEntry, VertexKeyHash> vertex_entries;
+    // The entry's key by physical address, so a lookup finds a known buffer
+    // without asking which of the three views are readable: for the views
+    // that are not, readable() searched the committed regions, and every
+    // cached draw asked it three times (Issue #65).
+    struct PhysicalKey {
+        uint32_t physical; uint64_t bytes, layout;
+        bool operator==(const PhysicalKey&) const = default;
+    };
+    struct PhysicalKeyHash {
+        size_t operator()(const PhysicalKey& k) const noexcept {
+            return size_t((uint64_t(k.physical) * 0x9E3779B97F4A7C15ull) ^ (k.bytes * 0xC2B2AE3D27D4EB4Full) ^ k.layout);
+        }
+    };
+    std::unordered_map<PhysicalKey, VertexKey, PhysicalKeyHash> keys_by_physical;
     std::vector<std::pair<uint64_t, std::unique_ptr<plume::RenderBuffer>>> retired_vertex_buffers;
     uint64_t cached_vertex_bytes = 0;
     void retire_vertices(VertexEntry& entry) {
@@ -755,16 +769,27 @@ NativeRenderer::PipelineWork NativeRenderer::take_pipeline_work() noexcept {
 }
 
 NativeRenderer::CachedVertices NativeRenderer::vertex_cache(GuestMemory& memory, uint32_t physical,
-                                                            uint64_t bytes, uint64_t host_bytes, uint64_t layout) {
+                                                            uint64_t bytes, uint64_t host_bytes, uint64_t layout,
+                                                            bool index) {
     constexpr uint64_t budget = 512ull << 20;  // host-visible memory for cached vertices
     memory.enable_write_epochs();
     std::array<uint32_t, 3> views{};
     uint32_t view_count = 0;
-    for (uint64_t candidate : {uint64_t(physical) + 0xE0000000u - 0x1000u, uint64_t(physical) | 0xA0000000u,
-                               uint64_t(physical) | 0xC0000000u})
-        if (candidate + bytes <= 0x100000000ull && memory.readable(candidate, bytes)) views[view_count++] = uint32_t(candidate);
-    if (!view_count || !bytes) return {};
-    auto& entry = impl_->vertex_entries[Impl::VertexKey{views[0], bytes, layout}];
+    const Impl::PhysicalKey physical_key{physical, bytes, layout};
+    Impl::VertexEntry* known = nullptr;
+    if (const auto key = impl_->keys_by_physical.find(physical_key); key != impl_->keys_by_physical.end())
+        if (const auto found = impl_->vertex_entries.find(key->second);
+                found != impl_->vertex_entries.end() && found->second.view_count)
+            known = &found->second;
+    if (!known) {
+        for (uint64_t candidate : {uint64_t(physical) + 0xE0000000u - 0x1000u, uint64_t(physical) | 0xA0000000u,
+                                   uint64_t(physical) | 0xC0000000u})
+            if (candidate + bytes <= 0x100000000ull && memory.readable(candidate, bytes)) views[view_count++] = uint32_t(candidate);
+        if (!view_count || !bytes) return {};
+        if (impl_->keys_by_physical.size() >= 262144) impl_->keys_by_physical.clear();
+        impl_->keys_by_physical[physical_key] = Impl::VertexKey{views[0], bytes, layout};
+    }
+    auto& entry = known ? *known : impl_->vertex_entries[Impl::VertexKey{views[0], bytes, layout}];
     const uint32_t now = memory.write_epoch();
     entry.last_frame = impl_->frame;
     const auto written = [&] {
@@ -799,7 +824,8 @@ NativeRenderer::CachedVertices NativeRenderer::vertex_cache(GuestMemory& memory,
     // Unwritten for a whole frame: keep it. Stores from here on (including
     // later in this frame) show as written at the next lookup.
     entry.buffer = impl_->graphics.device().createBuffer(
-        plume::RenderBufferDesc::UploadBuffer(host_bytes, plume::RenderBufferFlag::VERTEX));
+        plume::RenderBufferDesc::UploadBuffer(host_bytes, index ? plume::RenderBufferFlag::INDEX
+                                                                : plume::RenderBufferFlag::VERTEX));
     if (!entry.buffer) return {};
     auto* mapped = static_cast<uint8_t*>(entry.buffer->map());
     if (!mapped) { entry.buffer.reset(); return {}; }
@@ -1335,11 +1361,15 @@ void NativeRenderer::draw(const NativeDraw& draw) {
     // Per-draw data lives in a persistent upload ring that is recycled after
     // the frame's command list completes.
     const uint64_t vertex_bytes = draw.vertex_buffer ? 0 : draw.vertices.size();  // in the ring
-    const uint64_t index_bytes = draw.indices.size() * sizeof(uint32_t);
+    // A kept index buffer is bound as it is; otherwise the indices follow
+    // the draw's data in the ring.
+    const plume::RenderBuffer* const index_buffer = draw.index_buffer;
+    const uint64_t index_bytes = (index_buffer ? draw.index_count : draw.indices.size()) * sizeof(uint32_t);
+    const uint64_t ring_index_bytes = index_buffer ? 0 : index_bytes;
     const uint64_t vs_rel = align(vertex_bytes, 256), ps_rel = vs_rel + 4096,
                    shared_rel = ps_rel + 4096, palette_rel = shared_rel + 512,
                    loop_rel = palette_rel + (draw.palette.empty() ? 0 : palette_bytes),
-                   index_rel = align(loop_rel + 256, 256), total = index_rel + index_bytes;
+                   index_rel = align(loop_rel + 256, 256), total = index_rel + ring_index_bytes;
     if (total > ring_size) unsupported(uint32_t(total), "draw data exceeds the upload ring");
     // Vertices already written in place by the caller (vertex_space), which
     // also made room for the rest of this draw.
@@ -1399,7 +1429,7 @@ void NativeRenderer::draw(const NativeDraw& draw) {
         std::memcpy(mapped + palette_rel, draw.palette.data(),
                     (std::min)(size_t(palette_bytes), draw.palette.size()));
     std::memcpy(mapped + loop_rel, draw.loop_constants.data(), sizeof(draw.loop_constants));
-    if (index_bytes) std::memcpy(mapped + index_rel, draw.indices.data(), index_bytes);
+    if (ring_index_bytes) std::memcpy(mapped + index_rel, draw.indices.data(), ring_index_bytes);
     const uint64_t shared_offset = base_offset + shared_rel;
 
     // Recorded by the render thread (NativePresentation::record_async), so
@@ -1413,11 +1443,12 @@ void NativeRenderer::draw(const NativeDraw& draw) {
     const uint32_t vertex_view_bytes = uint32_t(draw.vertex_buffer ? uint64_t(draw.vertex_count) * draw.stride
                                                                    : draw.vertices.size());
     const plume::RenderBuffer* const vertex_buffer = draw.vertex_buffer;
-    const uint32_t index_count = uint32_t(draw.indices.size());
+    const uint32_t index_count = uint32_t(index_bytes / sizeof(uint32_t));
     const int32_t base_vertex_location = draw.base_vertex_location;
     impl_->presentation.record_async([impl = impl_.get(), pipeline = pipeline.get(), palette_bound, stencil_enabled,
                                       stencil_reference, stride, vertex_count, vertex_view_bytes, vertex_buffer,
-                                      index_count, base_vertex_location, index_bytes, vulkan, upload_address,
+                                      index_count, base_vertex_location, index_bytes, index_buffer, vulkan,
+                                      upload_address,
                                       ring_address, upload, base_offset, vs_offset, ps_offset, shared_rel,
                                       palette_rel, loop_rel, index_rel, shared_offset](plume::RenderCommandList& list,
                                                                                    uint64_t generation) {
@@ -1468,8 +1499,10 @@ void NativeRenderer::draw(const NativeDraw& draw) {
         // An indexed draw selects its vertices from the uploaded block; the
         // base location puts that block back where the stream holds it.
         if (index_bytes) {
-            const plume::RenderIndexBufferView view(plume::RenderBufferReference(upload, base_offset + index_rel),
-                                                    uint32_t(index_bytes), plume::RenderFormat::R32_UINT);
+            const plume::RenderIndexBufferView view(
+                index_buffer ? plume::RenderBufferReference(const_cast<plume::RenderBuffer*>(index_buffer), 0)
+                             : plume::RenderBufferReference(upload, base_offset + index_rel),
+                uint32_t(index_bytes), plume::RenderFormat::R32_UINT);
             list.setIndexBuffer(&view);
             list.drawIndexedInstanced(index_count, 1, 0, base_vertex_location, 0);
         } else {
