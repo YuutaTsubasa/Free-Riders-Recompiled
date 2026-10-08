@@ -145,6 +145,8 @@ with [docs/progress.md](docs/progress.md).
   The game starts from a folder with non-Latin letters on Windows, and full screen works with Vulkan on Linux. Voices can be English or Japanese apart from the text. Sound keeps a short cushion against crackles, and 4-core CPUs no longer pin the main thread. The programs have an icon, and HedgeModManager can find the game and manage its mods.
 - [v0.6.4 — No more getting stuck at start with Multi-core execution off](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.6.4)
   With the launcher's Multi-core execution turned off the game got stuck at start on every device. The switch is gone: the game's threads always run in parallel, and an old setting that turned it off is ignored.
+- [v0.6.5 — Index buffers kept on the GPU (test build)](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.6.5)
+  Index buffers the game leaves unchanged stay on the GPU instead of being decoded and copied for every draw, and cached buffers are found without checking memory views each time. A test build for slower CPUs; `SFR_INDEX_CACHE=0` turns the new cache off.
 
 ## System Requirements
 
