@@ -150,7 +150,9 @@ with [docs/progress.md](docs/progress.md).
 - [v0.6.6 — Crash records in the Android diagnostic ZIP (test build)](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.6.6)
   On Android 11 and later the diagnostic ZIP now says how the game last ended, with the system's crash record (tombstone) when it crashed in native code, so a crash that leaves nothing in the log can be located. Also has v0.6.5's index cache.
 - [v0.6.7 — Starts on Vulkan 1.1 phones](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.6.7)
-  Phones whose GPU driver offers Vulkan 1.1, such as the Snapdragon 8 Gen 1's Adreno 730 on some devices, crashed at the game's first frame; the crash record from v0.6.6 showed why. Includes v0.6.5's index buffers kept on the GPU and v0.6.6's crash records.
+  Phones whose GPU driver offers Vulkan 1.1, such as the Snapdragon 8 Gen 1's Adreno 730 on some devices, crashed at the game's first frame; the crash record from v0.6.6 showed why. Includes v0.6.5's index buffers kept on the GPU and v0.6.6's crash records. Its fix did not take effect on those phones; see v0.6.8.
+- [v0.6.8 — Vulkan 1.1 phones, second fix](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.6.8)
+  v0.6.7 still crashed at the first frame on Vulkan 1.1 phones: its check could not see that the driver lacked the function. The function is now asked of the GPU driver itself, under the name that driver's Vulkan version uses.
 
 ## System Requirements
 
