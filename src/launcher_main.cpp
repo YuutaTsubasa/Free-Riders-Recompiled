@@ -2785,6 +2785,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     Launcher launcher;
     sounds = &launcher.ui_sounds;
     launcher.directory = sfr::launcher::launcher_directory();
+    sfr::launcher::register_install(launcher.directory);
     launcher.settings_file = launcher.directory / L"settings.ini";
     launcher.log_file = launcher.directory / L"game.log";
     launcher.runtime_root = sfr::find_runtime_root(launcher.directory);

@@ -104,6 +104,15 @@ Index& index() {
     return i;
 }
 
+// cpkredir.ini's ModsDbIni. HedgeModManager writes it relative to the game's
+// folder (mods\ModsDB.ini), the folder cpkredir.ini is in.
+fs::path database_of(const Ini& redirect, const fs::path& config) {
+    const std::string text = redirect.get("CPKREDIR", "ModsDbIni");
+    if (text.empty()) return {};
+    const fs::path db = utf8_path(text);
+    return db.is_absolute() ? db : config.parent_path() / db;
+}
+
 void build_index() {
     auto& files = index().files;
     Ini redirect;
@@ -113,9 +122,10 @@ void build_index() {
         Ini::lower(redirect.get("CPKREDIR", "Enabled", "1")) == "false")
         return;
     Ini database;
-    const std::string database_path = redirect.get("CPKREDIR", "ModsDbIni");
-    if (database_path.empty() || !database.read(utf8_path(database_path))) {
-        std::cerr << "MODS database=" << database_path << " readable=0\n";
+    const fs::path database_path = database_of(redirect, config);
+    if (database_path.empty() || !database.read(database_path)) {
+        const auto text = database_path.u8string();
+        std::cerr << "MODS database=" << std::string(text.begin(), text.end()) << " readable=0\n";
         return;
     }
     const size_t active = database.number("Main", "ActiveModCount");
@@ -172,9 +182,11 @@ ModList scan_mods(const fs::path& launcher_directory) {
     const fs::path own_db = list.folder / "ModsDB.ini";
     Ini redirect;
     if (redirect.read(launcher_directory / "cpkredir.ini")) {
-        const fs::path db = utf8_path(redirect.get("CPKREDIR", "ModsDbIni"));
+        const fs::path db = database_of(redirect, launcher_directory / "cpkredir.ini");
         std::error_code error;
-        if (!db.empty() && !fs::equivalent(db, own_db, error)) {
+        // HedgeModManager's own (it adds a [HedgeModManager] section) is its
+        // even when it uses mods\ModsDB.ini: its ids are not folder names.
+        if (!db.empty() && (redirect.sections.count("hedgemodmanager") || !fs::equivalent(db, own_db, error))) {
             list.external = true;
             list.external_db = db;
         }

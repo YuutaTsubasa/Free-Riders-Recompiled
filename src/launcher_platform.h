@@ -81,5 +81,9 @@ void draw_system_glyphs();
 // The launcher window owns the file dialogs; the main loop waits on the game.
 void set_owner_window(void* window);
 void* wait_handle(GameProcess& game);
+// Where mod managers find this copy, as they find Unleashed Recompiled:
+// HKEY_CURRENT_USER\SOFTWARE\FreeRidersRecompiled, ExecutableFilePath and
+// RootDirectoryPath. Written at each start, so a moved folder follows.
+void register_install(const std::filesystem::path& directory);
 #endif
 }
