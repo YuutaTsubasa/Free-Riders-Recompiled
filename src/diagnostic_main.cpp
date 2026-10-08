@@ -3411,7 +3411,15 @@ static void refresh_entry_observation() {
 
 static void observe_function_entry(PPCContext&, const char*, uint32_t) __attribute__((noinline));
 
+GuestThreadState& bind_guest_thread_state(uint64_t& slot) noexcept {
+    slot = reinterpret_cast<uint64_t>(&guest_thread_state);
+    return guest_thread_state;
+}
+
 void enter_function_observed(PPCContext& ctx, const char* name, uint32_t address) {
+    // A context bound on another host thread would share that thread's state.
+    if (ctx.reserved.u64 != reinterpret_cast<uint64_t>(&guest_thread_state))
+        throw RuntimeStop("thread-state", address, "a guest context was bound on another host thread");
     auto& entry = guest_thread_state.entry;
     if (entry.parallel) parallel_function_entry(ctx, address);
     guest_checkpoint();

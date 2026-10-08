@@ -110,9 +110,29 @@ struct HookScope {
     HookScope(const HookScope&) = delete;
     HookScope& operator=(const HookScope&) = delete;
 };
+// The calling thread's state, kept in the context's reservation register,
+// which the generated code never uses (sfr::load_reserved_word keeps the
+// reservation in GuestThreadState). On Android libmain is loaded after start,
+// so its thread_locals are dynamic TLS: every guest function entry called
+// the linker's TLS resolver, 5% of the main thread of an AYN Thor race.
+// Every context belongs to one host thread (a new guest thread gets a new
+// one), and the first entry on a context binds it.
+GuestThreadState& bind_guest_thread_state(uint64_t& slot) noexcept;
+template <class Context>
+inline GuestThreadState& entry_thread_state(Context& ctx) {
+    if constexpr (requires { ctx.reserved.u64; }) {
+        if (ctx.reserved.u64) [[likely]] return *reinterpret_cast<GuestThreadState*>(ctx.reserved.u64);
+        return bind_guest_thread_state(ctx.reserved.u64);
+    } else {
+        return guest_thread_state;
+    }
+}
 // Every guest function entry; inline, as it runs millions of times a second.
-inline void enter_function(PPCContext& ctx, const char* name, uint32_t address) {
-    GuestEntryState& entry = guest_thread_state.entry;
+// A template so that the body sees the generated PPCContext, which is
+// defined after this header.
+template <class Context>
+inline void enter_function(Context& ctx, const char* name, uint32_t address) {
+    GuestEntryState& entry = entry_thread_state(ctx).entry;
     // A guest running beside the permit is observed only for hooks: an entry
     // that is no hook, outside every hook, needs nothing more than the fast
     // path. Taken out of line every time, these entries cost the main thread
