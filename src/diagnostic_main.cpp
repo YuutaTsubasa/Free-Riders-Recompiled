@@ -7,6 +7,7 @@
 #include "critical_section.h"
 #include "hardware_info.h"
 #include "thread_local_storage.h"
+#include "host_core_plan.h"
 #include "system_time.h"
 #include "host_timing.h"
 #include "guest_clock.h"
@@ -4566,6 +4567,10 @@ int main(int argc, char** argv) {
         } else {
             std::cerr << "MAIN_HOST_AFFINITY unpinned processors=" << host_processors << '\n';
         }
+#else
+        if (sfr::host_core_plan() & 2)
+            std::cerr << "MAIN_HOST_AFFINITY fastest mask=0x" << std::hex << sfr::prefer_fastest_host_processors()
+                      << std::dec << '\n';
 #endif
         ctx.fpscr.loadFromHost();
         {

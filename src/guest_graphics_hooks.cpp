@@ -620,9 +620,16 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
               << std::chrono::duration<double>(frame_end-process_start).count() << '\n';
     std::cerr << present_log.str();
     } else if(sfr::present_count.load()%300==0) {
-        // A bounded liveness record, not a consecutive-frame benchmark sample.
+        // A bounded liveness record, not a consecutive-frame benchmark sample;
+        // its seconds give the frame rate of normal play, which the detailed
+        // metrics' own timers slow down (about 1 ms a race frame on a Thor).
+        const bool racing=sfr::active_memory && sfr::active_memory->readable(0x83E52F8C,4) &&
+                          sfr::active_memory->load<uint32_t>(0x83E52F8C)!=0;
         std::cerr << "NATIVE_FRAME_HEARTBEAT frame=" << sfr::present_count.load()
-                  << " draws=" << frame_draws << " detailed_metrics=0\n";
+                  << " draws=" << frame_draws << " detailed_metrics=0 racing=" << racing << " seconds="
+                  << std::fixed << std::setprecision(4)
+                  << std::chrono::duration<double>(std::chrono::steady_clock::now()-process_start).count()
+                  << std::defaultfloat << '\n';
     }
     frame_draws=frame_textured_draws=foreign_draws=0;
     frame_vertex_bytes=0;
