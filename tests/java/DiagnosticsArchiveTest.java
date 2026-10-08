@@ -57,8 +57,12 @@ public class DiagnosticsArchiveTest {
             try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(bytes.toByteArray()))) {
                 for (ZipEntry e; (e = zip.getNextEntry()) != null;) {
                     names.add(e.getName());
-                    if (e.getName().equals("exits.txt"))
-                        exits = new String(zip.readAllBytes(), StandardCharsets.UTF_8);
+                    if (e.getName().equals("exits.txt")) {  // Java 8: no readAllBytes
+                        ByteArrayOutputStream entry = new ByteArrayOutputStream();
+                        byte[] buffer = new byte[8192];
+                        for (int count; (count = zip.read(buffer)) != -1;) entry.write(buffer, 0, count);
+                        exits = new String(entry.toByteArray(), StandardCharsets.UTF_8);
+                    }
                 }
             }
             check(names.contains("exit-1-tombstone.pb"), "a native crash's tombstone is kept");
