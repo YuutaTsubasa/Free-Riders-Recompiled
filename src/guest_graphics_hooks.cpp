@@ -1218,9 +1218,15 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     // Each combination is logged once. Every draw asks, so a hashed set:
     // the ordered set's tree walk and node allocations cost about 0.06 ms of
     // an i5-3470 race frame (Issue #65).
+    // In front of it, the combination last seen in each of 1024 slots: the
+    // set's insert was still 1.2% of the main thread of an AYN Thor race.
     static std::unordered_set<uint64_t> seen=[]{ std::unordered_set<uint64_t> s; s.reserve(8192); return s; }();
+    static std::array<uint64_t,1024> recent{};
     const uint64_t combination=(uint64_t(vs_object)*0x9E3779B97F4A7C15ull)^(uint64_t(ps_object)*0xC2B2AE3D27D4EB4Full)^
                                (uint64_t(draw.shared.texture_2d[0])<<20)^primitive;
+    uint64_t& recent_slot=recent[(combination^(combination>>29))%recent.size()];
+    if(recent_slot==combination) return;
+    recent_slot=combination;
     if(seen.insert(combination).second)
         std::cerr << "NATIVE_DRAW source=0x" << std::hex << source << std::dec << " primitive=" << primitive
                   << " count=" << count << " stride=" << stride
