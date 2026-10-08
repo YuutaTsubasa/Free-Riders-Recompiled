@@ -19,6 +19,7 @@ static constexpr socket_t no_socket = -1;
 #endif
 
 #include <algorithm>
+#include <cerrno>
 #include <array>
 #include <atomic>
 #include <cstdio>
@@ -304,10 +305,20 @@ std::unique_ptr<LiveService> LiveService::start(uint16_t port) {
     int on = 1;
     if (impl->listener != no_socket)
         setsockopt(impl->listener, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&on), sizeof(on));
-    if (impl->listener == no_socket || impl->datagrams == no_socket ||
-        bind(impl->listener, reinterpret_cast<sockaddr*>(&any), sizeof(any)) != 0 || listen(impl->listener, 16) != 0 ||
-        bind(impl->datagrams, reinterpret_cast<sockaddr*>(&any), sizeof(any)) != 0) {
-        std::cerr << "LIVE_SERVICE started=0 port=" << port << " reason=bind\n";
+    // Which step failed, and the system's error (on Android, socket fails
+    // with EACCES without the INTERNET permission).
+    const char* failed = impl->listener == no_socket || impl->datagrams == no_socket ? "socket"
+        : bind(impl->listener, reinterpret_cast<sockaddr*>(&any), sizeof(any)) != 0  ? "bind-tcp"
+        : listen(impl->listener, 16) != 0                                            ? "listen"
+        : bind(impl->datagrams, reinterpret_cast<sockaddr*>(&any), sizeof(any)) != 0 ? "bind-udp"
+                                                                                     : nullptr;
+    if (failed) {
+#ifdef _WIN32
+        const int error = WSAGetLastError();
+#else
+        const int error = errno;
+#endif
+        std::cerr << "LIVE_SERVICE started=0 port=" << port << " reason=" << failed << " error=" << error << '\n';
         if (impl->listener != no_socket) close_socket(impl->listener);
         if (impl->datagrams != no_socket) close_socket(impl->datagrams);
         return nullptr;
