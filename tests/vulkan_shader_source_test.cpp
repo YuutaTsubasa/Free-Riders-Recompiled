@@ -27,11 +27,11 @@ const std::string header = push +
 void defines_the_screen_scale() {
     const auto text = sfr::vulkan_shader_source(header + "float2 s = g_ScreenSpaceScale;\n");
     require(text.has_value(), "the header's SPIR-V branch is found");
-    require(text->find("#define g_ScreenSpaceScale (sfrRawBufferLoad<float2, 8>(g_PushConstants.SharedConstants, sfrOffset(320)))") !=
-                std::string::npos, "the screen scale reads shared constant bytes 320");
+    require(text->find("#define g_ScreenSpaceScale (asfloat(sfrWords2SC(uint(320))))") != std::string::npos,
+            "the screen scale reads shared constant bytes 320");
     require(text->find("#define g_ScreenSpaceScale") < text->find("#else"), "only the SPIR-V branch gains it");
-    require(text->find("#define g_ResolvedTextureScale (sfrRawBufferLoad<float2, 8>(g_PushConstants.SharedConstants, sfrOffset(328)))") !=
-                std::string::npos, "resolved texture scale reads the aligned shared constant extension");
+    require(text->find("#define g_ResolvedTextureScale (asfloat(sfrWords2SC(uint(328))))") != std::string::npos,
+            "resolved texture scale reads the shared constant extension");
     require(!sfr::vulkan_shader_source("float4 x;\n"), "text without the header is refused");
     std::string crlf;
     for (const char c : header) {
@@ -41,61 +41,66 @@ void defines_the_screen_scale() {
     require(sfr::vulkan_shader_source(crlf).has_value(), "CRLF line ends are accepted");
 }
 
-void reads_the_palette_and_loop_constants_through_addresses() {
-    const std::string body =
-        "cbuffer VertexPalette : register(b3, space4)\n{\n\tfloat4 g_VertexPalette[1024];\n};\n\n"
-        "float4 sfrVertexPalette(int index)\n{\n\treturn g_VertexPalette[uint(index) & 1023u];\n}\n\n"
-        "cbuffer LoopConstants : register(b4, space4)\n{\n\tint4 g_LoopConstants[16];\n};\n\n"
-        "\tint4 i0 = g_LoopConstants[0];\n\tint4 i3 = g_LoopConstants[3];\n\tint4 x = my_g_LoopConstants[1];\n";
-    const auto text = sfr::vulkan_shader_source(header + body);
-    require(text.has_value(), "a shader with both buffers converts");
-    require(text->find("cbuffer VertexPalette") == std::string::npos && text->find("cbuffer LoopConstants") == std::string::npos,
-            "the root constant buffers are gone");
-    require(text->find("return sfrRawBufferLoad<float4, 16>(g_PushConstants.VertexPalette, "
-                       "sfrScale16(sfrOffset(uint(index) & 1023u)));") != std::string::npos,
-            "a palette read loads from the palette push constant");
-    require(text->find("int4 i3 = sfrRawBufferLoad<int4, 16>(g_PushConstants.LoopConstants, "
-                       "sfrScale16(sfrOffset(3)));") != std::string::npos,
-            "a loop constant loads from the loop push constant");
-    require(text->find("my_g_LoopConstants[1]") != std::string::npos, "a longer name is left alone");
-}
-
-void loads_push_constant_addresses_as_32_bit_pairs() {
-    const auto text = sfr::vulkan_shader_source(header +
-        "float4 c = vk::RawBufferLoad<float4>(g_PushConstants.PixelShaderConstants + (3 + min(INDEX, 220)) * 16, 16);\n");
-    require(text.has_value(), "the complete push constant header converts");
-    require(text->find("uint64_t") == std::string::npos,
-            "Vulkan buffer addresses must not require shaderInt64 on Adreno");
+void declares_the_uniform_buffers() {
+    const auto text = sfr::vulkan_shader_source(header);
+    require(text.has_value(), "the header converts");
+    for (const char* buffer : {"[[vk::binding(0, 2)]] cbuffer SfrVertexShaderConstants { uint4 sfrRowsVS[256]; };",
+                               "[[vk::binding(1, 2)]] cbuffer SfrPixelShaderConstants { uint4 sfrRowsPS[256]; };",
+                               "[[vk::binding(2, 2)]] cbuffer SfrSharedConstants { uint4 sfrRowsSC[32]; };"})
+        require(text->find(buffer) != std::string::npos, "each shader constant block is a uniform buffer in set 2");
+    require(text->find("uint64_t") == std::string::npos, "no shader asks for shaderInt64");
     for (const char* field : {"VertexShaderConstants", "PixelShaderConstants", "SharedConstants",
-                              "VertexPalette", "LoopConstants"}) {
+                              "VertexPalette", "LoopConstants"})
         require(text->find(std::string("uint2 ") + field + ";") != std::string::npos,
-                "each push constant address is loaded as two 32-bit words");
-        require(text->find(std::string("uint64_t ") + field + ";") == std::string::npos,
-                "no 64-bit push constant load remains");
-    }
-    require(text->find("sfrPointerCast<T>(sfrAddAddress(address, offset))") != std::string::npos,
-            "physical pointers consume both address words");
-    require(text->find("sfrOffset((3 + min(INDEX, 220)) * 16)") != std::string::npos,
-            "nested offset expressions keep their original type and arithmetic");
-    require(text->find("vk::RawBufferLoad<") == std::string::npos, "all raw loads use Int64-free physical pointers");
+                "the unread push constants keep their 40-byte layout without 64-bit members");
 }
 
-void preserves_load_types_and_rejects_unknown_shapes() {
-    for (const char* type : {"uint", "uint2", "uint3", "uint4", "int", "int2", "int3", "int4",
-                             "float", "float2", "float3", "float4"}) {
-        const auto text = sfr::vulkan_shader_source(header + std::string("x = vk::RawBufferLoad<") +
-            type + ">(g_PushConstants.SharedConstants + unsignedOffset, 0x10);");
-        require(text && text->find(std::string("sfrRawBufferLoad<") + type + ", 16>") != std::string::npos,
-                "scalar and vector types retain their type/alignment");
-        require(text->find("sfrOffset(unsignedOffset)") != std::string::npos,
-                "unsigned offsets are not forced into signed int");
-    }
-    const auto boolean = sfr::vulkan_shader_source(header +
-        "b = vk::RawBufferLoad<bool>(g_PushConstants.SharedConstants + -4);\n"
-        "b = (swappedFloats & (1ull << semanticIndex)) != 0;\n");
-    require(boolean && boolean->find("(sfrRawBufferLoad<uint, 4>(g_PushConstants.SharedConstants, sfrOffset(-4))) != 0u")
-                != std::string::npos, "bool loads retain 32-bit memory representation and signed offsets");
-    require(boolean->find("1ull") == std::string::npos && boolean->find("(semanticIndex & 63u) < 32u") != std::string::npos,
+void binds_the_palette_loop_constants_textures_and_samplers() {
+    const std::string body =
+        "Texture2D<float4> g_Texture2DDescriptorHeap[] : register(t0, space0);\n"
+        "Texture2DArray<float4> g_Texture2DArrayDescriptorHeap[] : register(t0, space1);\n"
+        "TextureCube<float4> g_TextureCubeDescriptorHeap[] : register(t0, space2);\n"
+        "SamplerState g_SamplerDescriptorHeap[] : register(s0, space3);\n"
+        "cbuffer VertexPalette : register(b3, space4)\n{\n\tfloat4 g_VertexPalette[1024];\n};\n\n"
+        "cbuffer LoopConstants : register(b4, space4)\n{\n\tint4 g_LoopConstants[16];\n};\n\n"
+        "\tint4 i3 = g_LoopConstants[3];\n";
+    const auto text = sfr::vulkan_shader_source(header + body);
+    require(text.has_value(), "a shader with every resource converts");
+    require(text->find("[[vk::binding(3, 2)]] cbuffer VertexPalette : register(b3, space4)") != std::string::npos,
+            "the palette is uniform buffer 3 of set 2");
+    require(text->find("[[vk::binding(4, 2)]] cbuffer LoopConstants : register(b4, space4)") != std::string::npos,
+            "the loop constants are uniform buffer 4 of set 2");
+    require(text->find("int4 i3 = g_LoopConstants[3];") != std::string::npos, "their reads are left as they are");
+    for (const char* heap : {"[[vk::binding(0, 0)]] Texture2D<float4> g_Texture2DDescriptorHeap[]",
+                             "[[vk::binding(0, 0)]] Texture2DArray<float4> g_Texture2DArrayDescriptorHeap[]",
+                             "[[vk::binding(0, 0)]] TextureCube<float4> g_TextureCubeDescriptorHeap[]"})
+        require(text->find(heap) != std::string::npos, "the three texture heaps share set 0");
+    require(text->find("[[vk::binding(0, 1)]] SamplerState g_SamplerDescriptorHeap[]") != std::string::npos,
+            "the samplers are set 1");
+}
+
+void reads_constants_by_type_and_alignment() {
+    const auto text = sfr::vulkan_shader_source(header +
+        "float4 c = vk::RawBufferLoad<float4>(g_PushConstants.PixelShaderConstants + (3 + min(INDEX, 220)) * 16, 16);\n"
+        "float4 v = vk::RawBufferLoad<float4>(g_PushConstants.VertexShaderConstants + 32);\n"
+        "uint u = vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 256);\n"
+        "int3 i = vk::RawBufferLoad<int3>(g_PushConstants.VertexShaderConstants + 48, 16);\n"
+        "bool b = vk::RawBufferLoad<bool>(g_PushConstants.SharedConstants + 304);\n");
+    require(text.has_value(), "the loads convert");
+    require(text->find("float4 c = (asfloat(sfrRowPS(uint((3 + min(INDEX, 220)) * 16))));") != std::string::npos,
+            "an aligned float4 reads a whole row, keeping the offset expression");
+    require(text->find("float4 v = (asfloat(sfrWords4VS(uint(32))));") != std::string::npos,
+            "a float4 of unstated alignment is gathered word by word");
+    require(text->find("uint u = (sfrWordSC(uint(256)));") != std::string::npos, "a scalar reads one word");
+    require(text->find("int3 i = (asint(sfrWords3VS(uint(48))));") != std::string::npos, "an int3 reads three words");
+    require(text->find("bool b = ((sfrWordSC(uint(304)) != 0u));") != std::string::npos,
+            "a bool keeps its 32-bit representation");
+    require(text->find("vk::RawBufferLoad<") == std::string::npos, "no buffer-address load remains");
+}
+
+void rejects_unknown_shapes() {
+    const auto mask = sfr::vulkan_shader_source(header + "b = (swappedFloats & (1ull << semanticIndex)) != 0;\n");
+    require(mask && mask->find("1ull") == std::string::npos && mask->find("(semanticIndex & 63u) < 32u") != std::string::npos,
             "32-bit bitmasks preserve the upper half of 64-bit shift results");
     for (const char* bad : {
              "vk::RawBufferLoad<float4>(unknown + 4)",
@@ -104,8 +109,9 @@ void preserves_load_types_and_rejects_unknown_shapes() {
              "vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 4, 3)",
              "vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 4, 4, 8)",
              "vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + (4)",
-             "g_VertexPalette[index"})
-        require(!sfr::vulkan_shader_source(header + bad), "unrecognized physical loads fail closed");
+             "vk::RawBufferLoad<float4>(g_PushConstants.VertexPalette + 16)",
+             "vk::RawBufferLoad<bool2>(g_PushConstants.SharedConstants + 4)"})
+        require(!sfr::vulkan_shader_source(header + bad), "unrecognized loads fail closed");
     require(!sfr::vulkan_shader_source(header.substr(push.size())), "incomplete push constant header is refused");
     std::string missing = header;
     missing.erase(missing.find("uint64_t LoopConstants;"), std::string("uint64_t LoopConstants;").size());
@@ -116,9 +122,10 @@ void preserves_load_types_and_rejects_unknown_shapes() {
 int main() {
     try {
         defines_the_screen_scale();
-        reads_the_palette_and_loop_constants_through_addresses();
-        loads_push_constant_addresses_as_32_bit_pairs();
-        preserves_load_types_and_rejects_unknown_shapes();
+        declares_the_uniform_buffers();
+        binds_the_palette_loop_constants_textures_and_samplers();
+        reads_constants_by_type_and_alignment();
+        rejects_unknown_shapes();
         std::cout << "Vulkan shader source checks passed\n";
         return 0;
     } catch (const std::exception& e) {

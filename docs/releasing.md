@@ -87,8 +87,8 @@ packaging. The pack's shader ABI must match the executable; a successful boot
 or title movie does not establish compatibility. Verify the extracted release
 through a 1P race on both Vulkan and D3D12, with a clean cache and save directory.
 
-Pack format `SFRSHPK2` includes shader ABI 10 before its entry count. The packer
-selects `v10-*` cache entries, and the runtime and release scripts reject legacy
+Pack format `SFRSHPK2` includes shader ABI 11 before its entry count. The packer
+selects `v11-*` cache entries, and the runtime and release scripts reject legacy
 or incompatible packs. A previous pack must not merely be relabeled: rebuild
 it from shaders compiled for the current ABI. v0.2.0 shipped a legacy Vulkan
 pack with three buffer addresses while its executable supplied five, causing

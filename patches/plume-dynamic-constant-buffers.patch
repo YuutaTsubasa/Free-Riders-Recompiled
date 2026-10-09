@@ -1,0 +1,66 @@
+diff --git a/plume_d3d12.cpp b/plume_d3d12.cpp
+index e3241c1..2c1ecd1 100644
+--- a/plume_d3d12.cpp
++++ b/plume_d3d12.cpp
+@@ -452,6 +452,7 @@ namespace plume {
+         case RenderDescriptorRangeType::READ_WRITE_BYTE_ADDRESS_BUFFER:
+             return D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+         case RenderDescriptorRangeType::CONSTANT_BUFFER:
++        case RenderDescriptorRangeType::DYNAMIC_CONSTANT_BUFFER:
+             return D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+         case RenderDescriptorRangeType::SAMPLER:
+             return D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
+@@ -967,7 +968,8 @@ namespace plume {
+         uint32_t descriptorIndexClamped = std::min(descriptorIndex, descriptorTypeMaxIndex);
+         RenderDescriptorRangeType descriptorType = descriptorTypes[descriptorIndexClamped];
+         switch (descriptorType) {
+-        case RenderDescriptorRangeType::CONSTANT_BUFFER: {
++        case RenderDescriptorRangeType::CONSTANT_BUFFER:
++        case RenderDescriptorRangeType::DYNAMIC_CONSTANT_BUFFER: {
+             uint64_t bufferViewSize = bufferSize;
+             if ((bufferSize == 0) && (interfaceBuffer != nullptr)) {
+                 bufferViewSize = interfaceBuffer->desc.size;
+diff --git a/plume_render_interface_builders.h b/plume_render_interface_builders.h
+index acfedce..19cd1b2 100644
+--- a/plume_render_interface_builders.h
++++ b/plume_render_interface_builders.h
+@@ -31,6 +31,10 @@ namespace plume {
+             setIndex = 0;
+         }
+ 
++        uint32_t addDynamicConstantBuffer(uint32_t binding, uint32_t count = 1) {
++            return addRange(RenderDescriptorRange(RenderDescriptorRangeType::DYNAMIC_CONSTANT_BUFFER, binding, count, nullptr));
++        }
++
+         uint32_t addConstantBuffer(uint32_t binding, uint32_t count = 1) {
+             return addRange(RenderDescriptorRange(RenderDescriptorRangeType::CONSTANT_BUFFER, binding, count, nullptr));
+         }
+diff --git a/plume_render_interface_types.h b/plume_render_interface_types.h
+index eeb193b..87fb272 100644
+--- a/plume_render_interface_types.h
++++ b/plume_render_interface_types.h
+@@ -355,7 +355,10 @@ namespace plume {
+         READ_WRITE_STRUCTURED_BUFFER,
+         BYTE_ADDRESS_BUFFER,
+         READ_WRITE_BYTE_ADDRESS_BUFFER,
+-        ACCELERATION_STRUCTURE
++        ACCELERATION_STRUCTURE,
++        // A constant buffer whose offset each bind of its set gives (Vulkan:
++        // VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC; D3D12: a CBV).
++        DYNAMIC_CONSTANT_BUFFER
+     };
+ 
+     enum class RenderRootDescriptorType {
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index b803ad4..1baea3d 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -527,6 +527,8 @@ namespace plume {
+         switch (type) {
+         case RenderDescriptorRangeType::CONSTANT_BUFFER:
+             return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
++        case RenderDescriptorRangeType::DYNAMIC_CONSTANT_BUFFER:
++            return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+         case RenderDescriptorRangeType::FORMATTED_BUFFER:
+             return VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
+         case RenderDescriptorRangeType::READ_WRITE_FORMATTED_BUFFER:

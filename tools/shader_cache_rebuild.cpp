@@ -46,7 +46,7 @@ int main(int argc, char** argv) {
             throw std::runtime_error("unrecognized source shader pack");
         at = 8;
         const uint32_t abi = word(), count = word();
-        if ((abi != 8 && abi != 9) || !count || count > (bytes.size() - at) / 24)
+        if ((abi < 8 || abi > 10) || !count || count > (bytes.size() - at) / 24)
             throw std::runtime_error("unsupported source ABI or invalid shader count");
         struct Source { sfr::ShaderStage stage; std::span<const uint8_t> data; };
         std::vector<Source> sources;
