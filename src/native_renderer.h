@@ -81,6 +81,12 @@ struct NativeDraw {
     uint32_t pixel_spec_constants = 0;
     std::array<uint32_t, 1024> vertex_constants{};  // 256 float4
     std::array<uint32_t, 1024> pixel_constants{};
+    // The game's constants as the device holds them (4 KiB each, big-endian,
+    // already checked), in place of the two arrays above: the renderer swaps
+    // them straight into the upload ring. A copy into the arrays, a swap there
+    // and a copy into the ring read and wrote each draw's 8 KiB three times,
+    // which a 6 MB L3 felt (Issue #65). Empty: the arrays hold them.
+    std::span<const uint8_t> vertex_constants_source, pixel_constants_source;
     // Vertex loop constants i0..i15, unpacked to int4 (see loop_constants.h).
     std::array<int32_t, 64> loop_constants{};
     SharedConstants shared{};

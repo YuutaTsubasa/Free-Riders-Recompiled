@@ -1414,6 +1414,15 @@ void NativeRenderer::draw(const NativeDraw& draw) {
     auto* upload = impl_->rings[impl_->ring_index].get();
     uint8_t* mapped = impl_->rings_mapped[impl_->ring_index] + base_offset;
     if (!in_place) std::memcpy(mapped, draw.vertices.data(), vertex_bytes);
+    // The game's constants straight from the device, unless an option below
+    // compares or reuses whole arrays (then swapped into them first).
+    const bool constant_sources = draw.vertex_constants_source.size() == 4096 &&
+                                  draw.pixel_constants_source.size() == 4096;
+    if (constant_sources && (impl_->constant_reuse_probe || impl_->constant_uploads)) {
+        auto& arrays = const_cast<NativeDraw&>(draw);
+        swap_words_into({reinterpret_cast<uint8_t*>(arrays.vertex_constants.data()), 4096}, draw.vertex_constants_source);
+        swap_words_into({reinterpret_cast<uint8_t*>(arrays.pixel_constants.data()), 4096}, draw.pixel_constants_source);
+    }
     if (auto* probe = impl_->constant_reuse_probe.get()) {
         const std::array<const std::array<uint32_t, 1024>*, 2> stages{
             &draw.vertex_constants, &draw.pixel_constants};
@@ -1436,6 +1445,9 @@ void NativeRenderer::draw(const NativeDraw& draw) {
         vs_offset = vs.offset;
         ps_offset = ps.offset;
         impl_->constant_saved_bytes += (uint64_t(vs.reused) + uint64_t(ps.reused)) * 4096;
+    } else if (constant_sources) {
+        swap_words_into({mapped + vs_rel, 4096}, draw.vertex_constants_source);
+        swap_words_into({mapped + ps_rel, 4096}, draw.pixel_constants_source);
     } else {
         std::memcpy(mapped + vs_rel, draw.vertex_constants.data(), 4096);
         std::memcpy(mapped + ps_rel, draw.pixel_constants.data(), 4096);

@@ -1038,14 +1038,23 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     // Constants: VS float4 c0..c255 at +1920, PS at +6016, big-endian words.
     // Copied in one block each: a thousand checked loads per draw was a
     // quarter of the time a draw took.
-    const auto constants=[&](uint32_t offset,std::array<uint32_t,1024>& into) {
-        memory.check(uint64_t(device)+offset,into.size()*4);
-        std::memcpy(into.data(),memory.base()+uint64_t(device)+offset,into.size()*4);
-        sfr::swap_words({reinterpret_cast<uint8_t*>(into.data()),into.size()*4});
+    // The renderer swaps them into its upload ring from where they are; the
+    // arrays are filled only for the dumps and traces that print them.
+    const auto constants=[&](uint32_t offset) {
+        memory.check(uint64_t(device)+offset,4096);
+        return std::span<const uint8_t>(memory.base()+uint64_t(device)+offset,4096);
     };
     const auto constants_start=metrics_clock();
-    constants(1920,draw.vertex_constants);
-    constants(6016,draw.pixel_constants);
+    draw.vertex_constants_source=constants(1920);
+    draw.pixel_constants_source=constants(6016);
+    static const bool constant_arrays=[]{
+        const char* dump=std::getenv("SFR_DRAW_DUMP");
+        return (dump && std::strtol(dump,nullptr,10)>0) || flat_trace_enabled();
+    }();
+    if(constant_arrays) {
+        sfr::swap_words_into({reinterpret_cast<uint8_t*>(draw.vertex_constants.data()),4096},draw.vertex_constants_source);
+        sfr::swap_words_into({reinterpret_cast<uint8_t*>(draw.pixel_constants.data()),4096},draw.pixel_constants_source);
+    }
     if(frame_metrics) frame_constants_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-constants_start).count();
     // Loop constants i0..i15 (+10140, one packed register each: count, start
     // and step as signed bytes) for a shader whose loops count with them.
