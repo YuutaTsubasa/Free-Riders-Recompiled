@@ -49,7 +49,7 @@ static void repair_checksum(std::vector<uint8_t>& bytes) {
     for (unsigned i = 0; i < 8; ++i) bytes.at(bytes.size() - 8 + i) = uint8_t(hash >> (8 * i));
 }
 
-int main() {
+int main(int argc, char** argv) {
     try {
         const uint8_t source[]{'h', 'e', 'l', 'l', 'o'};
         const auto id = sfr::pipeline_shader_id(source);
@@ -229,6 +229,15 @@ int main() {
         rejects([&] { sfr::load_pipeline_manifest_file(path, 0); }, "corrupt file reported");
         require(!sfr::save_pipeline_manifest_file(path / "child", one, 0), "I/O errors reported");
         std::filesystem::remove_all(temporary);
+        // The lists the releases ship (data/pipeline-manifests) must decode
+        // under this build's shader ABI, or no pipeline is prepared at start.
+        if (argc > 1) {
+            const std::filesystem::path shipped = argv[1];
+            require(!sfr::load_pipeline_manifest_file(shipped / "pipelines-d3d12.manifest", 0).empty(),
+                    "shipped D3D12 list loads");
+            require(!sfr::load_pipeline_manifest_file(shipped / "pipelines-vulkan.manifest", 1).empty(),
+                    "shipped Vulkan list loads");
+        }
         std::cout << "pipeline manifest regression passed\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

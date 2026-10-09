@@ -49,6 +49,12 @@ Prix, Time Attack, a mission race and Xbox LIVE races. D3D12 grew from 280 to
 Every earlier recipe was kept in its place. Courses, characters and items those
 runs did not reach still compile on first use.
 
+2026-10-09 (v0.6.10): both lists moved to shader ABI 11 (Vulkan constants read
+from uniform buffers). As for ABI 10, only the ABI field and checksum changed;
+the records are byte for byte those of v0.6.9 (455 Vulkan, 465 D3D12). The
+`pipeline_manifest` test now loads these files, so a shader ABI change that
+leaves them behind fails there instead of preparing nothing at start.
+
 To join several recorded lists, use `sfr_pipeline_manifest_merge <d3d12|vulkan>
 <output> <input>...` (tools/pipeline_manifest_merge.cpp). It decodes each input
 with the runtime's own validation, drops duplicates and keeps the first-seen

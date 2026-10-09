@@ -813,7 +813,7 @@ if(WIN32 OR UNIX)
     add_executable(sfr_pipeline_manifest_test tests/pipeline_manifest_test.cpp src/pipeline_manifest.cpp)
     target_include_directories(sfr_pipeline_manifest_test PRIVATE src)
     target_link_libraries(sfr_pipeline_manifest_test PRIVATE plume)
-    add_test(NAME pipeline_manifest COMMAND sfr_pipeline_manifest_test)
+    add_test(NAME pipeline_manifest COMMAND sfr_pipeline_manifest_test ${CMAKE_CURRENT_SOURCE_DIR}/data/pipeline-manifests)
     # Joins recorded pipeline lists (data/pipeline-manifests/README.md).
     add_executable(sfr_pipeline_manifest_merge tools/pipeline_manifest_merge.cpp src/pipeline_manifest.cpp)
     target_include_directories(sfr_pipeline_manifest_merge PRIVATE src)
