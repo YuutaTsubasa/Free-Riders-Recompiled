@@ -713,6 +713,19 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
         if (!impl_->rings[i]) unsupported(0, "native upload ring creation failed");
         impl_->rings_mapped[i] = static_cast<uint8_t*>(impl_->rings[i]->map());
     }
+    // The memory types the device offers and the one the upload ring (its
+    // vertices, indices and constants) took: on a phone the GPU caches some
+    // host-visible types and not others.
+    if (graphics.backend() == GraphicsBackend::vulkan) {
+        VkPhysicalDeviceMemoryProperties memory{};
+        vkGetPhysicalDeviceMemoryProperties(static_cast<plume::VulkanDevice&>(device).physicalDevice, &memory);
+        std::cerr << "NATIVE_MEMORY_TYPES";
+        for (uint32_t t = 0; t < memory.memoryTypeCount; ++t)
+            std::cerr << ' ' << t << ":flags=0x" << std::hex << memory.memoryTypes[t].propertyFlags << std::dec
+                      << ",heap=" << memory.memoryTypes[t].heapIndex;
+        std::cerr << " ring_type=" << static_cast<plume::VulkanBuffer*>(impl_->rings[0].get())->allocationInfo.memoryType
+                  << '\n';
+    }
     const char* batch_setting = std::getenv("SFR_TEXTURE_UPLOAD_BATCH");
     const char* wait_setting = std::getenv("SFR_TEXTURE_UPLOAD_WAIT");
     if ((!batch_setting || *batch_setting != '0') && (!wait_setting || *wait_setting != '1'))
