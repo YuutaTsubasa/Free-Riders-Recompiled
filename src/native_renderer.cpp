@@ -404,6 +404,13 @@ struct NativeRenderer::Impl {
     uint8_t* rings_mapped[2] = {};
     int ring_index = 0;
     uint64_t ring_offset = 0;
+    // Vulkan: the uniform buffers each draw binds at its offsets in the ring
+    // (set 2): vertex and pixel constants, shared constants, the skinning
+    // palette and the loop constants. A range may reach past a draw's own
+    // data (an absent palette), so the rings keep uniform_slack spare bytes.
+    static constexpr std::array<uint64_t, 5> uniform_ranges{4096, 4096, 512, 16384, 256};
+    static constexpr uint64_t uniform_slack = 32768;
+    std::array<std::unique_ptr<plume::RenderDescriptorSet>, 2> uniform_sets;
     // vertex_cache's entries, by guest address (first readable view), size
     // and layout; buffers are never changed once filled, and ones dropped are
     // kept until the frames that may read them have finished.
@@ -629,13 +636,27 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
     textures.addTexture(0, texture_capacity);
     textures.end(true, texture_capacity);
     impl_->textures = textures.create(&device);
-    for (int space = 0; space < 3; ++space) layout.addDescriptorSet(textures);
+    const bool vulkan = graphics.backend() == GraphicsBackend::vulkan;
+    // D3D12 binds the one texture heap as spaces 0..2 (2D, 2D array, cube);
+    // Vulkan's shaders read all three from set 0 (vulkan_shader_source.cpp).
+    for (int space = 0; space < (vulkan ? 1 : 3); ++space) layout.addDescriptorSet(textures);
     plume::RenderDescriptorSetBuilder samplers;
     samplers.begin();
     samplers.addSampler(0, sampler_capacity);
     samplers.end(true, sampler_capacity);
     impl_->samplers = samplers.create(&device);
     layout.addDescriptorSet(samplers);
+    if (vulkan) {
+        // Set 2: the shader constants, palette and loop constants as uniform
+        // buffers in the upload ring, one set per ring, at offsets each draw
+        // gives (Impl::uniform_ranges).
+        plume::RenderDescriptorSetBuilder uniforms;
+        uniforms.begin();
+        for (uint32_t b = 0; b < Impl::uniform_ranges.size(); ++b) uniforms.addDynamicConstantBuffer(b);
+        uniforms.end();
+        for (auto& set : impl_->uniform_sets) set = uniforms.create(&device);
+        layout.addDescriptorSet(uniforms);
+    }
     // The survey UAV (space 4) is a fifth set, and Vulkan allows as few as
     // four: Mali-G57 reports maxBoundDescriptorSets=4, and its driver crashed
     // making this layout (Issue #1). No SPIR-V in the pack uses a set past 3,
@@ -649,13 +670,9 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
         impl_->survey = survey.create(&device);
         layout.addDescriptorSet(survey);
     }
-    if (graphics.backend() == GraphicsBackend::vulkan) {
-        // XenosRecomp's SPIR-V reads its constants through buffer addresses
-        // in push constants: vertex, pixel and shared, and the two this
-        // project adds for the skinning palette and the loop constants. Those
-        // two were read out of the shared constants with a 64-bit
-        // vk::RawBufferLoad, an indirection every skinned draw paid for and
-        // an under-aligned load a strict driver need not perform as meant.
+    if (vulkan) {
+        // The translator's push constants (the five buffer addresses) stay
+        // declared in every shader though no shader reads them now.
         layout.addPushConstant(0, 0, 5 * sizeof(uint64_t),
                                plume::RenderShaderStageFlag::VERTEX | plume::RenderShaderStageFlag::PIXEL);
     } else {
@@ -666,7 +683,8 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
     }
     layout.end();
     impl_->layout = layout.create(&device);
-    if (!impl_->layout || !impl_->textures || !impl_->samplers || (survey_set && !impl_->survey))
+    if (!impl_->layout || !impl_->textures || !impl_->samplers || (survey_set && !impl_->survey) ||
+        (vulkan && (!impl_->uniform_sets[0] || !impl_->uniform_sets[1])))
         unsupported(0, "native draw pipeline layout creation failed");
 
     if (survey_set) {
@@ -708,10 +726,26 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
 
     for (int i = 0; i < 2; ++i) {
         impl_->rings[i] = device.createBuffer(plume::RenderBufferDesc::UploadBuffer(
-            ring_size, plume::RenderBufferFlag::VERTEX | plume::RenderBufferFlag::CONSTANT |
-                           plume::RenderBufferFlag::INDEX));
+            ring_size + Impl::uniform_slack, plume::RenderBufferFlag::VERTEX | plume::RenderBufferFlag::CONSTANT |
+                                                 plume::RenderBufferFlag::INDEX));
         if (!impl_->rings[i]) unsupported(0, "native upload ring creation failed");
         impl_->rings_mapped[i] = static_cast<uint8_t*>(impl_->rings[i]->map());
+        if (auto& set = impl_->uniform_sets[i])
+            for (uint32_t b = 0; b < Impl::uniform_ranges.size(); ++b)
+                set->setBuffer(b, impl_->rings[i].get(), Impl::uniform_ranges[b]);
+    }
+    // The memory types the device offers and the one the upload ring (its
+    // vertices, indices and constants) took: on a phone the GPU caches some
+    // host-visible types and not others.
+    if (graphics.backend() == GraphicsBackend::vulkan) {
+        VkPhysicalDeviceMemoryProperties memory{};
+        vkGetPhysicalDeviceMemoryProperties(static_cast<plume::VulkanDevice&>(device).physicalDevice, &memory);
+        std::cerr << "NATIVE_MEMORY_TYPES";
+        for (uint32_t t = 0; t < memory.memoryTypeCount; ++t)
+            std::cerr << ' ' << t << ":flags=0x" << std::hex << memory.memoryTypes[t].propertyFlags << std::dec
+                      << ",heap=" << memory.memoryTypes[t].heapIndex;
+        std::cerr << " ring_type=" << static_cast<plume::VulkanBuffer*>(impl_->rings[0].get())->allocationInfo.memoryType
+                  << '\n';
     }
     const char* batch_setting = std::getenv("SFR_TEXTURE_UPLOAD_BATCH");
     const char* wait_setting = std::getenv("SFR_TEXTURE_UPLOAD_WAIT");
@@ -1414,6 +1448,15 @@ void NativeRenderer::draw(const NativeDraw& draw) {
     auto* upload = impl_->rings[impl_->ring_index].get();
     uint8_t* mapped = impl_->rings_mapped[impl_->ring_index] + base_offset;
     if (!in_place) std::memcpy(mapped, draw.vertices.data(), vertex_bytes);
+    // The game's constants straight from the device, unless an option below
+    // compares or reuses whole arrays (then swapped into them first).
+    const bool constant_sources = draw.vertex_constants_source.size() == 4096 &&
+                                  draw.pixel_constants_source.size() == 4096;
+    if (constant_sources && (impl_->constant_reuse_probe || impl_->constant_uploads)) {
+        auto& arrays = const_cast<NativeDraw&>(draw);
+        swap_words_into({reinterpret_cast<uint8_t*>(arrays.vertex_constants.data()), 4096}, draw.vertex_constants_source);
+        swap_words_into({reinterpret_cast<uint8_t*>(arrays.pixel_constants.data()), 4096}, draw.pixel_constants_source);
+    }
     if (auto* probe = impl_->constant_reuse_probe.get()) {
         const std::array<const std::array<uint32_t, 1024>*, 2> stages{
             &draw.vertex_constants, &draw.pixel_constants};
@@ -1436,6 +1479,9 @@ void NativeRenderer::draw(const NativeDraw& draw) {
         vs_offset = vs.offset;
         ps_offset = ps.offset;
         impl_->constant_saved_bytes += (uint64_t(vs.reused) + uint64_t(ps.reused)) * 4096;
+    } else if (constant_sources) {
+        swap_words_into({mapped + vs_rel, 4096}, draw.vertex_constants_source);
+        swap_words_into({mapped + ps_rel, 4096}, draw.pixel_constants_source);
     } else {
         std::memcpy(mapped + vs_rel, draw.vertex_constants.data(), 4096);
         std::memcpy(mapped + ps_rel, draw.pixel_constants.data(), 4096);
@@ -1451,8 +1497,6 @@ void NativeRenderer::draw(const NativeDraw& draw) {
         std::memcpy(mapped + shared_rel, &shared, sizeof(shared));
     }
     const bool vulkan = impl_->graphics.backend() == GraphicsBackend::vulkan;
-    const uint64_t upload_address = vulkan ? upload->getDeviceAddress() : 0;
-    const uint64_t ring_address = upload_address + base_offset;
     // Only the entries the palette holds are written. The rest of the
     // allocation keeps whatever an earlier draw left, which a clamped index
     // may read but never reaches past the ring; zeroing sixteen kilobytes for
@@ -1480,8 +1524,7 @@ void NativeRenderer::draw(const NativeDraw& draw) {
     impl_->presentation.record_async([impl = impl_.get(), pipeline = pipeline.get(), palette_bound, stencil_enabled,
                                       stencil_reference, stride, vertex_count, vertex_view_bytes, vertex_buffer,
                                       index_count, base_vertex_location, index_bytes, index_buffer, vulkan,
-                                      upload_address,
-                                      ring_address, upload, base_offset, vs_offset, ps_offset, shared_rel,
+                                      upload, base_offset, vs_offset, ps_offset,
                                       palette_rel, loop_rel, index_rel, shared_offset](plume::RenderCommandList& list,
                                                                                    uint64_t generation) {
         const std::array<plume::RenderInputSlot, 2> slots{plume::RenderInputSlot(0, stride),
@@ -1490,9 +1533,14 @@ void NativeRenderer::draw(const NativeDraw& draw) {
         if (fresh) {
             impl->bound_generation = generation;
             list.setGraphicsPipelineLayout(impl->layout.get());
-            for (uint32_t space = 0; space < 3; ++space) list.setGraphicsDescriptorSet(impl->textures.get(), space);
-            list.setGraphicsDescriptorSet(impl->samplers.get(), 3);
-            if (impl->survey) list.setGraphicsDescriptorSet(impl->survey.get(), 4);
+            if (vulkan) {
+                list.setGraphicsDescriptorSet(impl->textures.get(), 0);
+                list.setGraphicsDescriptorSet(impl->samplers.get(), 1);
+            } else {
+                for (uint32_t space = 0; space < 3; ++space) list.setGraphicsDescriptorSet(impl->textures.get(), space);
+                list.setGraphicsDescriptorSet(impl->samplers.get(), 3);
+                if (impl->survey) list.setGraphicsDescriptorSet(impl->survey.get(), 4);
+            }
             const plume::RenderVertexBufferView zeros(plume::RenderBufferReference(impl->zero_buffer.get(), 0), 256);
             list.setVertexBuffers(zero_slot, &zeros, 1, &slots[1]);
             impl->bound_pipeline = nullptr;
@@ -1511,10 +1559,15 @@ void NativeRenderer::draw(const NativeDraw& draw) {
             static_cast<plume::D3D12CommandList&>(list).d3d->OMSetStencilRef(stencil_reference);
 #endif
         if (vulkan) {
-            const uint64_t addresses[5] = {upload_address + vs_offset, upload_address + ps_offset, ring_address + shared_rel,
-                                           palette_bound ? ring_address + palette_rel : 0,
-                                           ring_address + loop_rel};
-            list.setGraphicsPushConstants(0, addresses, 0, sizeof(addresses));
+            // Set 2 at this draw's offsets in its ring (Impl::uniform_ranges).
+            const uint32_t offsets[Impl::uniform_ranges.size()] = {
+                uint32_t(vs_offset), uint32_t(ps_offset), uint32_t(shared_offset),
+                uint32_t(base_offset + palette_rel), uint32_t(base_offset + loop_rel)};
+            const auto* set = static_cast<const plume::VulkanDescriptorSet*>(
+                impl->uniform_sets[upload == impl->rings[0].get() ? 0 : 1].get());
+            vkCmdBindDescriptorSets(static_cast<plume::VulkanCommandList&>(list).vk, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    static_cast<const plume::VulkanPipelineLayout*>(impl->layout.get())->vk, 2, 1, &set->vk,
+                                    uint32_t(Impl::uniform_ranges.size()), offsets);
         } else {
             list.setGraphicsRootDescriptor(plume::RenderBufferReference(upload, vs_offset), 0);
             list.setGraphicsRootDescriptor(plume::RenderBufferReference(upload, ps_offset), 1);

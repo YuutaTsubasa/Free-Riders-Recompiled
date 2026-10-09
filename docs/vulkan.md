@@ -30,16 +30,28 @@
 
 ## 著色器
 
-XenosRecomp 翻譯出的 HLSL 本來就有 SPIR-V 分支：常數透過 push constants 裡的三個緩衝區位址
-（頂點、像素、共用常數）以 `vk::RawBufferLoad` 讀取，貼圖與取樣器沿用 descriptor set 0–4。
+XenosRecomp 翻譯出的 HLSL 本來就有 SPIR-V 分支：常數透過 push constants 裡的緩衝區位址
+（頂點、像素、共用常數）以 `vk::RawBufferLoad` 讀取。本專案把這些讀取改成 uniform buffer
+（`src/vulkan_shader_source.cpp`，著色器 ABI 11）：透過位址讀取的常數無法被 Adreno 編譯器移進
+每次繪製只跑一次的 preamble，AYN Thor 上的頂點著色器因此每個頂點要做約 130 次記憶體讀取。
 
-本專案自己加進著色器的部分在 SPIR-V 上另外處理（`src/vulkan_shader_source.cpp`）：
+| Set | 內容 |
+| --- | --- |
+| 0 | 貼圖（`Texture2D`、`Texture2DArray`、`TextureCube` 三種型別共用 binding 0） |
+| 1 | 取樣器 |
+| 2 | 五個 dynamic uniform buffer：b0 頂點常數 4 KB、b1 像素常數 4 KB、b2 共用常數 512 B、b3 骨架調色盤 16 KB、b4 迴圈常數 256 B |
+
+Set 2 每次繪製以 dynamic offset 指向上傳環（`native_renderer.cpp`），不需要每次繪製取緩衝區位址。
+只有三個 set，在 Mali-G57 的上限四個之內（Issue #1）。Push constants 仍宣告（位址改成 `uint2`，
+避免要求 `shaderInt64`）但不再被讀取。
+
+本專案自己加進著色器的部分：
 
 | 內容 | D3D12 | Vulkan |
 | --- | --- | --- |
 | 螢幕座標換算 `g_ScreenSpaceScale` | 共用常數 `c20.xy` | 共用常數位元組 320 |
-| 骨架調色盤 | root CBV b3 | 位址放在共用常數位元組 328 |
-| 迴圈常數 i0–i15 | root CBV b4 | 位址放在共用常數位元組 336 |
+| 骨架調色盤 | root CBV b3 | set 2 binding 3 |
+| 迴圈常數 i0–i15 | root CBV b4 | set 2 binding 4 |
 
 `SharedConstants` 為此從 336 位元組延長到 352。像素著色器的 specialization constant（alpha test）
 在 Vulkan 上設定在管線上，不需要 D3D12 那樣用 DXC 連結。模板參考值 Vulkan 也存在管線裡，
