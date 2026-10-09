@@ -153,6 +153,8 @@ with [docs/progress.md](docs/progress.md).
   Phones whose GPU driver offers Vulkan 1.1, such as the Snapdragon 8 Gen 1's Adreno 730 on some devices, crashed at the game's first frame; the crash record from v0.6.6 showed why. Includes v0.6.5's index buffers kept on the GPU and v0.6.6's crash records. Its fix did not take effect on those phones; see v0.6.8.
 - [v0.6.8 — Vulkan 1.1 phones, second fix](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.6.8)
   v0.6.7 still crashed at the first frame on Vulkan 1.1 phones: its check could not see that the driver lacked the function. The function is now asked of the GPU driver itself, under the name that driver's Vulkan version uses.
+- [v0.6.9 — Faster races on Android](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.6.9)
+  On phones with one core faster than the rest, the game's main thread now gets that core: on an AYN Thor a race went from 45 to about 56 fps while racing, and to 60 at the start line.
 
 ## System Requirements
 
