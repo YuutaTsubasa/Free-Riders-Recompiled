@@ -620,9 +620,16 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
               << std::chrono::duration<double>(frame_end-process_start).count() << '\n';
     std::cerr << present_log.str();
     } else if(sfr::present_count.load()%300==0) {
-        // A bounded liveness record, not a consecutive-frame benchmark sample.
+        // A bounded liveness record, not a consecutive-frame benchmark sample;
+        // its seconds give the frame rate of normal play, which the detailed
+        // metrics' own timers slow down (about 1 ms a race frame on a Thor).
+        const bool racing=sfr::active_memory && sfr::active_memory->readable(0x83E52F8C,4) &&
+                          sfr::active_memory->load<uint32_t>(0x83E52F8C)!=0;
         std::cerr << "NATIVE_FRAME_HEARTBEAT frame=" << sfr::present_count.load()
-                  << " draws=" << frame_draws << " detailed_metrics=0\n";
+                  << " draws=" << frame_draws << " detailed_metrics=0 racing=" << racing << " seconds="
+                  << std::fixed << std::setprecision(4)
+                  << std::chrono::duration<double>(std::chrono::steady_clock::now()-process_start).count()
+                  << std::defaultfloat << '\n';
     }
     frame_draws=frame_textured_draws=foreign_draws=0;
     frame_vertex_bytes=0;
@@ -1211,9 +1218,15 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     // Each combination is logged once. Every draw asks, so a hashed set:
     // the ordered set's tree walk and node allocations cost about 0.06 ms of
     // an i5-3470 race frame (Issue #65).
+    // In front of it, the combination last seen in each of 1024 slots: the
+    // set's insert was still 1.2% of the main thread of an AYN Thor race.
     static std::unordered_set<uint64_t> seen=[]{ std::unordered_set<uint64_t> s; s.reserve(8192); return s; }();
+    static std::array<uint64_t,1024> recent{};
     const uint64_t combination=(uint64_t(vs_object)*0x9E3779B97F4A7C15ull)^(uint64_t(ps_object)*0xC2B2AE3D27D4EB4Full)^
                                (uint64_t(draw.shared.texture_2d[0])<<20)^primitive;
+    uint64_t& recent_slot=recent[(combination^(combination>>29))%recent.size()];
+    if(recent_slot==combination) return;
+    recent_slot=combination;
     if(seen.insert(combination).second)
         std::cerr << "NATIVE_DRAW source=0x" << std::hex << source << std::dec << " primitive=" << primitive
                   << " count=" << count << " stride=" << stride

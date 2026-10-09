@@ -3,6 +3,7 @@
 #include <functional>
 
 #include "native_graphics.h"
+#include "host_core_plan.h"
 #include "native_raster_state.h"
 #include "gltf_model.h"
 #include "touch_controls.h"
@@ -548,7 +549,13 @@ struct NativePresentation::Impl {
 
     void start_render_thread() {
         slots = std::make_unique<RecordSlot[]>(queue_capacity);
-        render_thread = std::thread([this] { run_render_thread(); });
+        render_thread = std::thread([this] {
+            if (host_core_plan() & 1) {
+                const uint64_t mask = avoid_fastest_host_processors();
+                std::fprintf(stderr, "RENDER_THREAD_AFFINITY mask=0x%llx\n", static_cast<unsigned long long>(mask));
+            }
+            run_render_thread();
+        });
     }
     void run_render_thread() {
         for (;;) {

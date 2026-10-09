@@ -444,6 +444,20 @@ struct NativeRenderer::Impl {
         }
     };
     std::unordered_map<PhysicalKey, VertexKey, PhysicalKeyHash> keys_by_physical;
+    // In front of both maps: the entry each recently drawn range found, by
+    // its physical key. The two map lookups were 4.5% of the main thread of
+    // an AYN Thor race (the key map grows to a quarter of a million ranges,
+    // so most lookups missed the cache); a frame draws the same few hundred
+    // ranges again. Entries stay where they are until erased (unordered_map
+    // nodes), and every erase moves vertex_generation on, which retires the
+    // whole memo.
+    struct VertexMemo {
+        PhysicalKey key{};
+        VertexEntry* entry = nullptr;
+        uint64_t generation = 0;
+    };
+    std::array<VertexMemo, 4096> vertex_memo{};
+    uint64_t vertex_generation = 1;
     std::vector<std::pair<uint64_t, std::unique_ptr<plume::RenderBuffer>>> retired_vertex_buffers;
     uint64_t cached_vertex_bytes = 0;
     void retire_vertices(VertexEntry& entry) {
@@ -728,12 +742,13 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
         // Dropped vertex buffers outlive the frame in flight that may read them.
         std::erase_if(state->retired_vertex_buffers, [&](const auto& retired) { return retired.first + 2 < state->frame; });
         // Ranges not drawn for ten seconds or so are forgotten.
-        if (state->frame % 600 == 0)
+        if (state->frame % 600 == 0 &&
             std::erase_if(state->vertex_entries, [&](auto& item) {
                 if (item.second.last_frame + 600 >= state->frame) return false;
                 state->retire_vertices(item.second);
                 return true;
-            });
+            }))
+            ++state->vertex_generation;
     });
 }
 
@@ -787,7 +802,10 @@ NativeRenderer::CachedVertices NativeRenderer::vertex_cache(GuestMemory& memory,
     uint32_t view_count = 0;
     const Impl::PhysicalKey physical_key{physical, bytes, layout};
     Impl::VertexEntry* known = nullptr;
-    if (const auto key = impl_->keys_by_physical.find(physical_key); key != impl_->keys_by_physical.end())
+    auto& memo = impl_->vertex_memo[Impl::PhysicalKeyHash{}(physical_key) % impl_->vertex_memo.size()];
+    if (memo.generation == impl_->vertex_generation && memo.key == physical_key && memo.entry->view_count)
+        known = memo.entry;
+    else if (const auto key = impl_->keys_by_physical.find(physical_key); key != impl_->keys_by_physical.end())
         if (const auto found = impl_->vertex_entries.find(key->second);
                 found != impl_->vertex_entries.end() && found->second.view_count)
             known = &found->second;
@@ -796,10 +814,14 @@ NativeRenderer::CachedVertices NativeRenderer::vertex_cache(GuestMemory& memory,
                                    uint64_t(physical) | 0xC0000000u})
             if (candidate + bytes <= 0x100000000ull && memory.readable(candidate, bytes)) views[view_count++] = uint32_t(candidate);
         if (!view_count || !bytes) return {};
-        if (impl_->keys_by_physical.size() >= 262144) impl_->keys_by_physical.clear();
+        if (impl_->keys_by_physical.size() >= 262144) {
+            impl_->keys_by_physical.clear();
+            ++impl_->vertex_generation;
+        }
         impl_->keys_by_physical[physical_key] = Impl::VertexKey{views[0], bytes, layout};
     }
     auto& entry = known ? *known : impl_->vertex_entries[Impl::VertexKey{views[0], bytes, layout}];
+    memo = {physical_key, &entry, impl_->vertex_generation};
     const uint32_t now = memory.write_epoch();
     entry.last_frame = impl_->frame;
     const auto written = [&] {

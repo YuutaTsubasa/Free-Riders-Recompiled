@@ -7,6 +7,7 @@
 #include "critical_section.h"
 #include "hardware_info.h"
 #include "thread_local_storage.h"
+#include "host_core_plan.h"
 #include "system_time.h"
 #include "host_timing.h"
 #include "guest_clock.h"
@@ -701,6 +702,8 @@ bool register_hook(const char* name) {
     if (offset < hook_limit - hook_base && !(address & 3)) {
         const uint32_t index = offset / 4;
         hook_bits[index / 64] |= uint64_t(1) << (index % 64);
+        const uint32_t folded = index % hook_filter_bits;
+        hook_filter[folded / 64] |= uint64_t(1) << (folded % 64);
     }
     return true;
 }
@@ -3410,7 +3413,15 @@ static void refresh_entry_observation() {
 
 static void observe_function_entry(PPCContext&, const char*, uint32_t) __attribute__((noinline));
 
+GuestThreadState& bind_guest_thread_state(uint64_t& slot) noexcept {
+    slot = reinterpret_cast<uint64_t>(&guest_thread_state);
+    return guest_thread_state;
+}
+
 void enter_function_observed(PPCContext& ctx, const char* name, uint32_t address) {
+    // A context bound on another host thread would share that thread's state.
+    if (ctx.reserved.u64 != reinterpret_cast<uint64_t>(&guest_thread_state))
+        throw RuntimeStop("thread-state", address, "a guest context was bound on another host thread");
     auto& entry = guest_thread_state.entry;
     if (entry.parallel) parallel_function_entry(ctx, address);
     guest_checkpoint();
@@ -4566,6 +4577,10 @@ int main(int argc, char** argv) {
         } else {
             std::cerr << "MAIN_HOST_AFFINITY unpinned processors=" << host_processors << '\n';
         }
+#else
+        if (sfr::host_core_plan() & 2)
+            std::cerr << "MAIN_HOST_AFFINITY fastest mask=0x" << std::hex << sfr::prefer_fastest_host_processors()
+                      << std::dec << '\n';
 #endif
         ctx.fpscr.loadFromHost();
         {

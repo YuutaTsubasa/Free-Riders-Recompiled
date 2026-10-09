@@ -31,12 +31,20 @@ bool register_hook(const char* name);  // "sub_XXXXXXXX"
 // them naming a function of the title -- still goes to the registry.
 constexpr uint32_t hook_base = 0x82000000, hook_limit = 0x83000000;
 inline uint64_t hook_bits[(hook_limit - hook_base) / 4 / 64];
+// The same bits folded into 4 KiB, which stays in the L1 cache: the main
+// thread runs beside the permit and asks at nearly every entry, and the
+// functions of a race frame touch more of the half megabyte than an AYN
+// Thor's L2 holds. A clear bit answers no; a set one asks hook_bits.
+inline constexpr uint32_t hook_filter_bits = 32768;
+inline uint64_t hook_filter[hook_filter_bits / 64];
 bool is_hook_outside_the_image(uint32_t address);
 inline bool is_hook(uint32_t address) {
     const uint32_t offset = address - hook_base;
     if (offset >= hook_limit - hook_base) [[unlikely]] return is_hook_outside_the_image(address);
     if (address & 3) return false;  // a function begins on a word
     const uint32_t index = offset / 4;
+    const uint32_t folded = index % hook_filter_bits;
+    if (!((hook_filter[folded / 64] >> (folded % 64)) & 1)) [[likely]] return false;
     return (hook_bits[index / 64] >> (index % 64)) & 1;
 }
 // Hooks of the title's Direct3D (guest_graphics_hooks.cpp): with
@@ -110,9 +118,41 @@ struct HookScope {
     HookScope(const HookScope&) = delete;
     HookScope& operator=(const HookScope&) = delete;
 };
+// The calling thread's state, kept in the context's reservation register,
+// which the generated code never uses (sfr::load_reserved_word keeps the
+// reservation in GuestThreadState). On Android libmain is loaded after start,
+// so its thread_locals are dynamic TLS: every guest function entry called
+// the linker's TLS resolver, 5% of the main thread of an AYN Thor race.
+// Every context belongs to one host thread (a new guest thread gets a new
+// one), and the first entry on a context binds it.
+GuestThreadState& bind_guest_thread_state(uint64_t& slot) noexcept;
+template <class Context>
+inline GuestThreadState& entry_thread_state(Context& ctx) {
+    if constexpr (requires { ctx.reserved.u64; }) {
+        if (ctx.reserved.u64) [[likely]] return *reinterpret_cast<GuestThreadState*>(ctx.reserved.u64);
+        return bind_guest_thread_state(ctx.reserved.u64);
+    } else {
+        return guest_thread_state;
+    }
+}
+// The checkpoint at every loop label of the generated code, with the state
+// its context holds: through TLS, each label not dominated by another paid
+// the resolver again.
+template <class Context>
+inline void guest_checkpoint(Context& ctx) {
+    GuestEntryState& entry = entry_thread_state(ctx).entry;
+    if (entry.checkpoint_countdown) [[likely]] {
+        --entry.checkpoint_countdown;
+        return;
+    }
+    guest_checkpoint_permit();
+}
 // Every guest function entry; inline, as it runs millions of times a second.
-inline void enter_function(PPCContext& ctx, const char* name, uint32_t address) {
-    GuestEntryState& entry = guest_thread_state.entry;
+// A template so that the body sees the generated PPCContext, which is
+// defined after this header.
+template <class Context>
+inline void enter_function(Context& ctx, const char* name, uint32_t address) {
+    GuestEntryState& entry = entry_thread_state(ctx).entry;
     // A guest running beside the permit is observed only for hooks: an entry
     // that is no hook, outside every hook, needs nothing more than the fast
     // path. Taken out of line every time, these entries cost the main thread
