@@ -3506,6 +3506,46 @@ static void observe_function_entry(PPCContext& ctx, const char* name, uint32_t a
         earlier_name.store(name, std::memory_order_relaxed);
         earlier_address.store(address, std::memory_order_relaxed);
     }
+    // SFR_WATCH_RACERS=1: the racer list two race readers walk (Issue #64).
+    // sub_82327CF8 and sub_82326518 take it at **(this+192): the count at
+    // +496 (at most ten read) and ten 32-byte entries from +192 whose word
+    // at +4 points at a racer. Each entry reports the list when it differs
+    // from that list's last report, and RACER_LIST_HOLE when a pointer
+    // inside the count is null, which crashed two races.
+    static const bool watch_racers = [] { const char* t = std::getenv("SFR_WATCH_RACERS"); return t && *t == '1'; }();
+    if (watch_racers && (address == 0x82327CF8 || address == 0x82326518)) {
+        static std::mutex racers_mutex;
+        static std::unordered_map<uint32_t, std::array<uint32_t, 11>> seen;
+        const uint32_t holder = active_memory->load<uint32_t>(ctx.r3.u32 + 192);
+        const uint32_t racers = holder ? active_memory->load<uint32_t>(holder) : 0;
+        std::array<uint32_t, 11> now{};
+        if (racers) {
+            now[0] = active_memory->load<uint32_t>(racers + 496);
+            for (uint32_t i = 0; i < 10; ++i) now[i + 1] = active_memory->load<uint32_t>(racers + 196 + 32 * i);
+        }
+        bool hole = false;
+        for (uint32_t i = 0; racers && i < std::min<uint32_t>(now[0], 10); ++i) hole |= !now[i + 1];
+        static std::atomic<uint32_t> readers{0}, outside{0};
+        const uint32_t read = ++readers;
+        if (!race_jobs_dispatching.load(std::memory_order_relaxed)) {
+            const uint32_t count = ++outside;
+            if (count <= 8 || count % 1024 == 0)
+                std::cerr << "RACER_JOB_OUTSIDE_WAIT count=" << count << " of=" << read << " guest=" << current_id
+                          << " present=" << present_count.load(std::memory_order_relaxed) << '\n';
+        }
+        std::lock_guard lock(racers_mutex);
+        auto [it, fresh] = seen.try_emplace(racers, now);
+        if (fresh || it->second != now || hole) {
+            std::ostringstream line;
+            line << (hole ? "RACER_LIST_HOLE" : "RACER_LIST") << " reader=0x" << std::hex << address << " this=0x"
+                 << ctx.r3.u32 << " holder=0x" << holder << " list=0x" << racers << " lr=0x" << ctx.lr << std::dec
+                 << " count=" << now[0] << " slots=" << std::hex;
+            for (uint32_t i = 1; i < 11; ++i) line << (i > 1 ? "," : "") << now[i];
+            line << std::dec << " guest=" << current_id << " present=" << present_count.load(std::memory_order_relaxed) << '\n';
+            std::cerr << line.str();
+            it->second = now;
+        }
+    }
     trace_entry(address);
     // SFR_DUMP_ENTRY=<hex address>: print r3..r5, LR and the first words at r3
     // for the first entries of that function (debugging aid).

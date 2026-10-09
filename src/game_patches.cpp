@@ -310,6 +310,49 @@ SFR_CONCURRENT_HOOK(sub_824D0B10) {
     if(work_share) work_share_wait_done(ctx.r3.u32);
 }
 
+PPC_FUNC_IMPL(__imp__sub_824D0150);
+PPC_FUNC_IMPL(__imp__sub_8249F048);
+
+namespace sfr { std::atomic<uint32_t> race_jobs_dispatching{0}; }
+// While 8249F048 runs, its jobs are expected to run (SFR_WATCH_RACERS counts
+// the racer readers that run outside it).
+SFR_CONCURRENT_HOOK(sub_8249F048) {
+    sfr::enter_function(ctx,"sub_8249F048",0x8249F048);
+    sfr::race_jobs_dispatching.fetch_add(1,std::memory_order_relaxed);
+    struct Done { ~Done() { sfr::race_jobs_dispatching.fetch_sub(1,std::memory_order_relaxed); } } done;
+    __imp__sub_8249F048(ctx,base);
+}
+
+// The second job pool has the same flaw (Issue #64). Its dispatcher 8249F048
+// queues a race step's jobs, resumes the pool's three workers (8249EF00),
+// then waits for each worker's done event with WaitForSingleObject(event,
+// 16 ms) and ignores the result. A worker still in a job after 16 ms - more
+// likely on a 4-core PC - kept walking that job's racer list while the game
+// went on to reset it, and read through an emptied slot (sub_82327CF8 and
+// sub_82326518, the reads at +156). A worker signals its event only once the
+// queue is empty and its own job has returned, so the waits get
+// SFR_RACE_JOB_WAIT_MS (default 1000; 16 is the original) instead.
+SFR_CONCURRENT_HOOK(sub_824D0150) {
+    sfr::enter_function(ctx,"sub_824D0150",0x824D0150);
+    static const uint32_t wait_ms=[]{
+        const char* text=std::getenv("SFR_RACE_JOB_WAIT_MS");
+        const long value=text?std::strtol(text,nullptr,10):1000;
+        return uint32_t(value>0?value:1000);
+    }();
+    const bool race_jobs=ctx.lr==0x8249F114 && ctx.r4.u32==16;
+    if(race_jobs) {
+        static std::atomic<bool> reported{false};
+        if(!reported.exchange(true)) std::cerr << "GAME_PATCH race_job_wait ms=" << wait_ms << '\n';
+        ctx.r4.u64=wait_ms;
+    }
+    __imp__sub_824D0150(ctx,base);
+    if(race_jobs && ctx.r3.u32==0x102) {
+        static std::atomic<uint32_t> timeouts{0};
+        const uint32_t count=++timeouts;
+        if(count<=16 || count%256==0) std::cerr << "GAME_PATCH race_job_wait_timeout count=" << count << '\n';
+    }
+}
+
 PPC_FUNC_IMPL(__imp__sub_82A53BC0);
 
 // The CRT's pure virtual call handler (R6025), which the title turns into a

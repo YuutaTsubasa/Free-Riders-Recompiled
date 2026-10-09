@@ -253,6 +253,8 @@ uint32_t current_guest_thread_id();
 // entered, which names the code that wrote it. A hook may set it for an
 // address only known at run time. Zero is off.
 extern std::atomic<uint32_t> watch_word;
+// Nonzero while the race job dispatcher 8249F048 runs (game_patches.cpp).
+extern std::atomic<uint32_t> race_jobs_dispatching;
 // Nanoseconds the main thread spent waiting for the GPU (within main_blocked).
 extern std::atomic<uint64_t> main_gpu_wait_ns;
 // Runs a host wait for the current guest thread without its execution
