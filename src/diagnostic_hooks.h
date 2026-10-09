@@ -135,6 +135,18 @@ inline GuestThreadState& entry_thread_state(Context& ctx) {
         return guest_thread_state;
     }
 }
+// The checkpoint at every loop label of the generated code, with the state
+// its context holds: through TLS, each label not dominated by another paid
+// the resolver again.
+template <class Context>
+inline void guest_checkpoint(Context& ctx) {
+    GuestEntryState& entry = entry_thread_state(ctx).entry;
+    if (entry.checkpoint_countdown) [[likely]] {
+        --entry.checkpoint_countdown;
+        return;
+    }
+    guest_checkpoint_permit();
+}
 // Every guest function entry; inline, as it runs millions of times a second.
 // A template so that the body sees the generated PPCContext, which is
 // defined after this header.

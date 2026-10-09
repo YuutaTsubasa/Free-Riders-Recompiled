@@ -1636,7 +1636,7 @@ def generate(input_dir, log_path, output_dir, jump_table_path=None):
                     rewritten_body = rewrite_native_resource_coherency(rewritten_body, addresses[name], body)
                     rewritten_body = rewrite_country_ctr(rewritten_body, addresses[name], body)
                     rewritten_body = re.sub(r'^(loc_[0-9A-Fa-f]+:)(\r?\n)',
-                        lambda match: match[1] + match[2] + '\tsfr::guest_checkpoint();' + match[2],
+                        lambda match: match[1] + match[2] + '\tsfr::guest_checkpoint(ctx);' + match[2],
                         rewritten_body, flags=re.MULTILINE)
                     chunks.append((rewritten_body + '}').replace(
                         'PPC_FUNC_PROLOGUE();', 'PPC_FUNC_PROLOGUE();\n\tSFR_FAST_PATH();\n\tsfr::enter_function(ctx, '

@@ -144,7 +144,7 @@ class DiagnosticGenerationTests(unittest.TestCase):
         self.assertEqual([(int(a, 16), int(b, 16)) for a, b in cases], [(t, t) for t in targets])
         for target in targets:
             self.assertEqual(result.count(f'loc_{target:X}:'), 1)
-            self.assertIn(f'loc_{target:X}:\n\tsfr::guest_checkpoint();', result)
+            self.assertIn(f'loc_{target:X}:\n\tsfr::guest_checkpoint(ctx);', result)
         self.assertIn('default: throw sfr::RuntimeStop("format-ctr-target", ctx.ctr.u32, '
                       '"unrecognized local format branch target");', result)
         self.assertEqual([m[1].rstrip('\r') for m in diagnostic.INSTRUCTION.finditer(result)],
@@ -259,8 +259,8 @@ class DiagnosticGenerationTests(unittest.TestCase):
                          [(target, target) for target in targets])
         for target in targets:
             self.assertEqual(result.count(f'loc_{target:X}:'), 1)
-            self.assertIn(f'loc_{target:X}:\n\tsfr::guest_checkpoint();', result)
-        self.assertIn(f'loc_{targets[-1] + 4:X}:\n\tsfr::guest_checkpoint();', result)
+            self.assertIn(f'loc_{target:X}:\n\tsfr::guest_checkpoint(ctx);', result)
+        self.assertIn(f'loc_{targets[-1] + 4:X}:\n\tsfr::guest_checkpoint(ctx);', result)
         self.assertIn('default: throw sfr::RuntimeStop("country-ctr-target", ctx.ctr.u32, '
                       '"unrecognized local country branch target");', result)
         self.assertNotIn('PPC_CALL_INDIRECT_FUNC(ctx.ctr.u32);', result)
@@ -356,7 +356,7 @@ class DiagnosticGenerationTests(unittest.TestCase):
         for hook, reg, ea in [('left', 63, 'ctx.r3.u32'), ('right', 127, 'ctx.r31.u32 + ctx.r0.u32'),
                               ('left', 31, 'ctx.r31.u32'), ('right', 0, 'ctx.r3.u32 + ctx.r3.u32')]:
             self.assertIn(f'temp.u32 = {ea};\n\tsfr::load_vector_{hook}(temp.u32, ctx.v{reg}.u8);', result)
-        self.assertIn('loc_1010:\n\tsfr::guest_checkpoint();', result)
+        self.assertIn('loc_1010:\n\tsfr::guest_checkpoint(ctx);', result)
         self.assertEqual(len(list(diagnostic.INSTRUCTION.finditer(result))), 5)
         self.assertNotIn('simde_mm_', result)
         for path, original in originals.items():
@@ -527,7 +527,7 @@ class DiagnosticGenerationTests(unittest.TestCase):
         self.assertNotIn('ctx.r3.u64 = 1;', result)
         self.assertNotIn('loc_1008:', result)
         self.assertNotIn('goto loc_100C;', result)
-        self.assertIn('loc_100C:\n\tsfr::guest_checkpoint();', result)
+        self.assertIn('loc_100C:\n\tsfr::guest_checkpoint(ctx);', result)
         self.assertIn('\treturn;', result)
         self.assertEqual([m[1].rstrip('\r') for m in diagnostic.INSTRUCTION.finditer(result)],
                          [m[1].rstrip('\r') for m in diagnostic.INSTRUCTION.finditer(raw)])
@@ -591,7 +591,7 @@ class DiagnosticGenerationTests(unittest.TestCase):
         self.assertEqual(report['counts']['retained_functions'], 1)
         for d, a in registers:
             self.assertIn(f'sfr::addme(ctx.r{d}.u64, ctx.r{a}.u64, ctx.xer.ca);', result)
-        self.assertIn('ctx.xer.ca);\nloc_1004:\n\tsfr::guest_checkpoint();', result)
+        self.assertIn('ctx.xer.ca);\nloc_1004:\n\tsfr::guest_checkpoint(ctx);', result)
         self.assertEqual(source.read_bytes(), original)
 
     def test_addme_rejects_variants_nonempty_blocks_and_conflicting_logs(self):
@@ -639,7 +639,7 @@ class DiagnosticGenerationTests(unittest.TestCase):
         self.assertEqual(report['counts']['retained_functions'], 1)
         for d, a, b in registers:
             self.assertIn(f'sfr::addc(ctx.r{d}.u64, ctx.r{a}.u64, ctx.r{b}.u64, ctx.xer.ca);', result)
-        self.assertIn('ctx.xer.ca);\nloc_1004:\n\tsfr::guest_checkpoint();', result)
+        self.assertIn('ctx.xer.ca);\nloc_1004:\n\tsfr::guest_checkpoint(ctx);', result)
         self.assertEqual(source.read_bytes(), original)
 
     def test_addc_rejects_variants_nonempty_blocks_and_conflicting_logs(self):
@@ -688,7 +688,7 @@ class DiagnosticGenerationTests(unittest.TestCase):
         for ra, rb in pairs:
             ea = ('' if ra in ('0', 'r0') else f'ctx.{ra}.u32 + ') + f'ctx.r{rb}.u32'
             self.assertIn(f'sfr::zero_cache_block(uint32_t({ea}));', result)
-        self.assertIn('loc_1010:\n\tsfr::guest_checkpoint();', result)
+        self.assertIn('loc_1010:\n\tsfr::guest_checkpoint(ctx);', result)
         self.assertNotIn('memset(base', result)
         self.assertEqual(source.read_bytes(), original)
 
@@ -732,7 +732,7 @@ class DiagnosticGenerationTests(unittest.TestCase):
         self.assertEqual(report['counts']['retained_bdzf'], 32)
         for cr, bit in bits:
             self.assertIn(f'if (sfr::branch_counter_zero_false(ctx.ctr.u64, ctx.cr{cr}.{bit})) goto loc_1080;', result)
-        self.assertIn('loc_1080:\n\tsfr::guest_checkpoint();', result)
+        self.assertIn('loc_1080:\n\tsfr::guest_checkpoint(ctx);', result)
         self.assertEqual(source.read_bytes(), original)
         self.assertEqual(report['log']['unrecognized_events'], 32)
 
@@ -781,8 +781,8 @@ class DiagnosticGenerationTests(unittest.TestCase):
         report = generate(self.source, self.log, self.output)
         result = (self.output / 'ppc_recomp.0.cpp').read_text()
         self.assertEqual(report['counts']['retained_functions'], 1)
-        self.assertIn('loc_1000:\n\tsfr::guest_checkpoint();', result)
-        self.assertIn('loc_1004:\n\tsfr::guest_checkpoint();', result)
+        self.assertIn('loc_1000:\n\tsfr::guest_checkpoint(ctx);', result)
+        self.assertIn('loc_1004:\n\tsfr::guest_checkpoint(ctx);', result)
         self.assertIn('ctx.r3.s64 = ctx.r3.s64 + 1;', result)
         self.assertIn('goto loc_1000;', result)
 
@@ -1251,7 +1251,7 @@ class DiagnosticGenerationTests(unittest.TestCase):
         result, report = self.run_generation()
         self.assertEqual(result.count(expected), 1)
         self.assertIn('\t__nop();', result)
-        self.assertIn('loc_8222B538:\n\tsfr::guest_checkpoint();', result)
+        self.assertIn('loc_8222B538:\n\tsfr::guest_checkpoint(ctx);', result)
         self.assertEqual(source.read_bytes(), before)
         self.assertEqual(report['counts']['retained_eqv'], 1)
         self.assertEqual(report['counts']['retained_functions'], 1)
@@ -1650,7 +1650,7 @@ class DiagnosticGenerationTests(unittest.TestCase):
         self.assertIn('ctx.r4.u64 = sfr::load_reserved_doubleword(ctx, uint32_t(ctx.r31.u32));', result)
         self.assertIn('sfr::store_conditional_doubleword(ctx, uint32_t(ctx.r7.u32 + ctx.r0.u32), ctx.r31.u64);', result)
         self.assertIn('ctx.r0.u64 = sfr::load_reserved_doubleword(ctx, uint32_t(ctx.r0.u32));', result)
-        self.assertIn('loc_1000:\n\tsfr::guest_checkpoint();', result)
+        self.assertIn('loc_1000:\n\tsfr::guest_checkpoint(ctx);', result)
         self.assertNotIn('ctx.reserved', result)
         self.assertNotIn('__sync_bool_compare_and_swap', result)
         self.assertEqual(report['counts']['retained_functions'], 3)
