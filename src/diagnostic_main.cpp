@@ -702,6 +702,8 @@ bool register_hook(const char* name) {
     if (offset < hook_limit - hook_base && !(address & 3)) {
         const uint32_t index = offset / 4;
         hook_bits[index / 64] |= uint64_t(1) << (index % 64);
+        const uint32_t folded = index % hook_filter_bits;
+        hook_filter[folded / 64] |= uint64_t(1) << (folded % 64);
     }
     return true;
 }

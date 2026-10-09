@@ -31,12 +31,20 @@ bool register_hook(const char* name);  // "sub_XXXXXXXX"
 // them naming a function of the title -- still goes to the registry.
 constexpr uint32_t hook_base = 0x82000000, hook_limit = 0x83000000;
 inline uint64_t hook_bits[(hook_limit - hook_base) / 4 / 64];
+// The same bits folded into 4 KiB, which stays in the L1 cache: the main
+// thread runs beside the permit and asks at nearly every entry, and the
+// functions of a race frame touch more of the half megabyte than an AYN
+// Thor's L2 holds. A clear bit answers no; a set one asks hook_bits.
+inline constexpr uint32_t hook_filter_bits = 32768;
+inline uint64_t hook_filter[hook_filter_bits / 64];
 bool is_hook_outside_the_image(uint32_t address);
 inline bool is_hook(uint32_t address) {
     const uint32_t offset = address - hook_base;
     if (offset >= hook_limit - hook_base) [[unlikely]] return is_hook_outside_the_image(address);
     if (address & 3) return false;  // a function begins on a word
     const uint32_t index = offset / 4;
+    const uint32_t folded = index % hook_filter_bits;
+    if (!((hook_filter[folded / 64] >> (folded % 64)) & 1)) [[likely]] return false;
     return (hook_bits[index / 64] >> (index % 64)) & 1;
 }
 // Hooks of the title's Direct3D (guest_graphics_hooks.cpp): with
