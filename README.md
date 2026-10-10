@@ -157,6 +157,8 @@ with [docs/progress.md](docs/progress.md).
   On phones with one core faster than the rest, the game's main thread now gets that core: on an AYN Thor a race went from 45 to about 56 fps while racing, and to 60 at the start line.
 - [v0.6.10 — Less GPU work under Vulkan](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.6.10)
   Vulkan shaders read their constants from uniform buffers instead of through buffer addresses, which phone GPUs can load once per draw: on an AYN Thor the GPU time per frame fell from about 14.8 to 10 ms. Frame rate there is unchanged (the game's CPU side now limits it), but the GPU has more headroom. Shader packs from earlier versions do not work with it.
+- [v0.6.11 — A race crash on 4-core PCs](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.6.11)
+  Part of each race frame runs on the game's job threads, and the game waited only 16 ms for them before going on. On slower 4-core PCs a job could still be reading the racer list when the game moved on, which crashed races (Issue #64). The game now waits for those jobs to finish; the race keeps its frame rate.
 
 ## System Requirements
 
