@@ -15,6 +15,9 @@
 #include "timestamp_bundle.h"
 #include "vector_memory.h"
 #include "optional_import_policy.h"
+#include "live_imports.h"
+#include "live_client.h"
+#include "guest_timers.h"
 #include "native_modules.h"
 #include "native_language.h"
 #include "native_country.h"
@@ -298,6 +301,7 @@ static GuestFiles* guest_files = nullptr;
 static ContentFiles* content_files = nullptr;  // saves: mounted content packages
 static GuestAsyncFiles* guest_async_files = nullptr;
 static NativeSyncObjects* native_sync_objects = nullptr;
+static GuestTimers* guest_timers = nullptr;
 // Kernel dispatcher objects (KEVENT/KSEMAPHORE) live in guest memory and are
 // initialized inline by the title. Each maps, on first kernel use, to a native
 // object created from its DISPATCHER_HEADER: Type at +0 (0 notification event,
@@ -1394,6 +1398,37 @@ void dispatch_import(PPCContext& ctx, const char* name, uint32_t address) {
     }
     if (!execution_permit->detached() && !guest_thread_state.entry.hook_stack_pointer && !guest_thread_state.entry.detach_at_entry) execution_permit->detach();
 }
+// SFR_LIVE_PROBE=1 (investigation only): the profile reports itself signed in
+// to Xbox Live, and the Live and network calls the title then makes, and the
+// XAM messages it sends, are logged (LIVE_PROBE) and refused instead of
+// stopping the run, so one run shows the sequence a Live feature needs.
+static bool live_probe() {
+    static const bool enabled = [] { const char* v = std::getenv("SFR_LIVE_PROBE"); return v && *v == '1'; }();
+    return enabled;
+}
+static bool live_probe_import(std::string_view name) {
+    for (std::string_view prefix : {"__imp__XamUser", "__imp__XamSession", "__imp__NetDll_", "__imp__XamShowNuiFriends",
+                                    "__imp__XamShowNuiGamerCard", "__imp__XamShowNuiParty", "__imp__XamEnumerate",
+                                    "__imp__XMsg", "__imp__XamVoice", "__imp__XamXlfs", "__imp__XamXStudio"})
+        if (name.substr(0, prefix.size()) == prefix) return true;
+    return false;
+}
+static void live_probe_words(uint32_t buffer, uint32_t length) {
+    if (!buffer || !active_memory->readable(buffer, 4)) return;
+    std::cerr << " buffer=";
+    for (uint32_t i = 0; i < (std::min)(length ? (length + 3) / 4 : 8u, 24u) && active_memory->readable(uint64_t(buffer) + 4 * i, 4); ++i)
+        std::cerr << (i ? "," : "") << std::hex << active_memory->load<uint32_t>(uint64_t(buffer) + 4 * i) << std::dec;
+}
+// The guest thread's last error (GetLastError reads [[r13+256]+352]). XAM's
+// XMsgStartIORequest clears it when a message succeeds or goes pending, and
+// the title's XSession wrappers called without an overlapped block return
+// GetLastError() as their result: a stale error there made a successful
+// XSessionJoin of a remote player fail (the host then left its lobby).
+static void set_guest_last_error(PPCContext& ctx, uint32_t error) {
+    if (!active_memory) return;
+    const uint32_t thread = active_memory->readable(ctx.r13.u32 + 256, 4) ? active_memory->load<uint32_t>(ctx.r13.u32 + 256) : 0;
+    if (thread && active_memory->readable(thread + 352, 4)) active_memory->store<uint32_t>(thread + 352, error);
+}
 // Completes an XOVERLAPPED at once: InternalLow = result, InternalHigh =
 // length, extended error 0, then its event (if any) is set. Returns
 // ERROR_IO_PENDING, what the asynchronous XAM call reports.
@@ -1623,6 +1658,7 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
     if (address == 0x82ACB32C && std::string_view(name) == "__imp__XamUserGetSigninState") {
         const uint32_t index = ctx.r3.u32;
         ctx.r3.u64 = profile_signin_state(index);
+        if ((live_probe() || live_enabled()) && ctx.r3.u32 == 1) ctx.r3.u64 = 2;  // signed in to Live
         if (ctx.lr == 0x822344D8 && ctx.r3.u32 == 0) {
             unselected_user = {true, false, false, index, ctx.r30.u32, ctx.r31.u32, 0};
             refresh_entry_observation();
@@ -1640,8 +1676,11 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         } else {
             if (!buffer || !size) throw RuntimeStop("user-name", buffer, "XamUserGetName needs an output buffer");
             active_memory->check_write(buffer, size);
-            const size_t count = std::min<size_t>(profile->name.size(), size - 1);
-            for (size_t i = 0; i < count; ++i) active_memory->store<uint8_t>(uint64_t(buffer) + i, uint8_t(profile->name[i]));
+            // Online, the gamertag the others see (SFR_LIVE_NAME); the profile's
+            // own name keeps naming its saves.
+            const std::string gamertag = live_enabled() ? live_gamertag() : profile->name;
+            const size_t count = std::min<size_t>(gamertag.size(), size - 1);
+            for (size_t i = 0; i < count; ++i) active_memory->store<uint8_t>(uint64_t(buffer) + i, uint8_t(gamertag[i]));
             active_memory->store<uint8_t>(uint64_t(buffer) + count, 0);
             ctx.r3.u64 = 0;
         }
@@ -2461,6 +2500,10 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         std::cerr << std::dec << '\n';
         return;
     }
+    if (address == 0x82ACB4CC && std::string_view(name) == "__imp__ObDereferenceObject" && live_owns_object(ctx.r3.u32)) {
+        ctx.r3.u64 = 0;
+        return;
+    }
     if (address == 0x82ACB4CC && std::string_view(name) == "__imp__ObDereferenceObject" && guest_threads) {
         check_reservation_context(ctx);
         const auto object = ctx.r3.u32;
@@ -2827,6 +2870,60 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         ctx.r3.u64 = content_files->flush(ctx.r3.u32, ctx.r4.u32);
         return;
     }
+    // Waitable timers (guest_timers.h): the title's network library keeps its
+    // XNet and session upkeep on them.
+    if (std::string_view(name) == "__imp__NtCreateTimer" && guest_timers && active_memory) {
+        // (handle*, attributes, type)
+        const uint32_t output = ctx.r3.u32;
+        uint32_t handle = 0;
+        const uint32_t status = guest_timers->create(ctx.r5.u32, handle);
+        if (status == 0) {
+            active_memory->check_write(output, 4);
+            active_memory->store<uint32_t>(output, handle);
+        }
+        std::cerr << "RESULT NtCreateTimer type=" << ctx.r5.u32 << " handle=0x" << std::hex << handle
+                  << " status=0x" << status << std::dec << '\n';
+        ctx.r3.u64 = status;
+        return;
+    }
+    if (std::string_view(name) == "__imp__NtDuplicateObject" && guest_threads && active_memory &&
+        GuestThreads::is_handle_range(ctx.r3.u32)) {
+        // (handle, new handle*, options): a thread handle (the title's network
+        // worker keeps one of its own); DUPLICATE_CLOSE_SOURCE (1) closes the source.
+        const uint32_t source = ctx.r3.u32, output = ctx.r4.u32, options = ctx.r5.u32;
+        uint32_t duplicate = 0;
+        const uint32_t status = guest_threads->duplicate(source, duplicate);
+        if (status == 0 && output) {
+            active_memory->check_write(output, 4);
+            active_memory->store<uint32_t>(output, duplicate);
+        }
+        if (status == 0 && (options & 1)) guest_threads->close(source);
+        std::cerr << "RESULT NtDuplicateObject handle=0x" << std::hex << source << " duplicate=0x" << duplicate
+                  << " status=0x" << status << std::dec << '\n';
+        ctx.r3.u64 = status;
+        return;
+    }
+    if (std::string_view(name) == "__imp__NtSetTimerEx" && guest_timers && active_memory) {
+        // (handle, due*, APC routine, APC mode, APC context, resume, period ms, previous*)
+        if (ctx.r5.u32) throw RuntimeStop("timer", ctx.r3.u32, "timer APC routines are unsupported");
+        const auto due = static_cast<int64_t>(active_memory->load<uint64_t>(ctx.r4.u32));
+        bool was_set = false;
+        ctx.r3.u64 = guest_timers->set(ctx.r3.u32, due, ctx.r9.u32, was_set);
+        if (ctx.r10.u32 && active_memory->readable(ctx.r10.u32, 4)) active_memory->store<uint32_t>(ctx.r10.u32, was_set);
+        return;
+    }
+    if (std::string_view(name) == "__imp__NtCancelTimer" && guest_timers && active_memory) {
+        bool was_set = false;
+        const uint32_t output = ctx.r4.u32;
+        ctx.r3.u64 = guest_timers->cancel(ctx.r3.u32, was_set);
+        if (output && active_memory->readable(output, 4)) active_memory->store<uint32_t>(output, was_set);
+        return;
+    }
+    if (address == 0x82ACB62C && std::string_view(name) == "__imp__NtClose" && live_owns_handle(ctx.r3.u32)) {
+        // A session handle: its object stays for the title's XSession calls.
+        ctx.r3.u64 = 0;
+        return;
+    }
     if (address == 0x82ACB62C && std::string_view(name) == "__imp__NtClose" && ctx.r3.u32 == 0) {
         // Closing the null handle (e.g. cleanup after a failed open) only reports
         // STATUS_INVALID_HANDLE; no object is involved.
@@ -2838,6 +2935,7 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         (guest_files || (native_sync_objects && NativeSyncObjects::is_handle_range(ctx.r3.u32)) ||
          (guest_threads && GuestThreads::is_handle_range(ctx.r3.u32)))) {
         const uint32_t handle=ctx.r3.u32;
+        if (guest_timers && guest_timers->owns(handle)) guest_timers->forget(handle);
         ctx.r3.u64 = native_notifications && native_notifications->owns(handle) ? native_notifications->close(handle) :
             guest_threads && GuestThreads::is_handle_range(handle) ? guest_threads->close(handle) :
             native_sync_objects && NativeSyncObjects::is_handle_range(handle)
@@ -3006,6 +3104,15 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         // Only the music player's XMPSetPlaybackController without an
         // overlapped block: the title keeps playback control (xmp_app.cc).
         const uint32_t app = ctx.r3.u32, message = ctx.r4.u32, overlapped = ctx.r5.u32, buffer = ctx.r6.u32;
+        if ((app != 0xFA || message != 0x0007001A || overlapped || ctx.r7.u32 != 12) && live_probe()) {
+            std::cerr << "LIVE_PROBE XMsgStartIORequestEx app=0x" << std::hex << app << " message=0x" << message
+                      << " overlapped=0x" << overlapped << " length=" << std::dec << ctx.r7.u32
+                      << " lr=0x" << std::hex << ctx.lr << std::dec;
+            live_probe_words(buffer, ctx.r7.u32);
+            std::cerr << " result=refused\n";
+            ctx.r3.u64 = overlapped ? complete_overlapped(overlapped, 0x65B) : 0x65B;
+            return;
+        }
         if (app != 0xFA || message != 0x0007001A || overlapped || ctx.r7.u32 != 12)
             throw RuntimeStop("xmsg", message, "unsupported XAM asynchronous message");
         active_memory->check(buffer, 12);
@@ -3021,6 +3128,25 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         // XGI app's user context and property writes (rich presence, used by
         // Live only) are accepted and dropped (xgi_app.cc).
         const uint32_t app = ctx.r3.u32, message = ctx.r4.u32, overlapped = ctx.r5.u32;
+        if (app == 0xFB && message != 0x000B0008)
+            if (const auto result = live_message(message, ctx.r6.u32, ctx.r7.u32, *active_memory)) {
+                set_guest_last_error(ctx, overlapped ? 0 : *result);
+                static const bool trace = [] { const char* t = std::getenv("SFR_LIVE_TRACE"); return t && *t == '1'; }();
+                if (trace && message != 0x000B0006 && message != 0x000B0007)
+                    std::cerr << "LIVE_MESSAGE message=0x" << std::hex << message << " result=0x" << *result
+                              << " overlapped=0x" << overlapped << " lr=0x" << ctx.lr << std::dec << '\n';
+                if (trace && message == 0x000B0011) {
+                    // Who deletes the session: return addresses on the guest stack.
+                    std::cerr << "LIVE_DELETE_STACK";
+                    for (uint32_t at = ctx.r1.u32, n = 0; n < 512 && active_memory->readable(at, 4); at += 4, ++n) {
+                        const uint32_t word = active_memory->load<uint32_t>(at);
+                        if (word >= 0x82180000 && word < 0x82B00000 && (word & 3) == 0) std::cerr << " 0x" << std::hex << word << std::dec;
+                    }
+                    std::cerr << '\n';
+                }
+                ctx.r3.u64 = overlapped ? complete_overlapped(overlapped, *result) : *result;
+                return;
+            }
         // 0x000B0008 is XUserWriteAchievements, sent once a player is signed
         // in (after a race): {count, achievements*} with (user, id) pairs, as
         // Xenia's xgi_app.cc reads it. There is no Live to award them to; the
@@ -3039,6 +3165,15 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
             ctx.r3.u64 = overlapped ? complete_overlapped(overlapped, 0) : 0;
             return;
         }
+        if ((app != 0xFB || (message != 0x000B0006 && message != 0x000B0007)) && live_probe()) {
+            std::cerr << "LIVE_PROBE XMsgStartIORequest app=0x" << std::hex << app << " message=0x" << message
+                      << " overlapped=0x" << overlapped << " length=" << std::dec << ctx.r7.u32
+                      << " lr=0x" << std::hex << ctx.lr << std::dec;
+            live_probe_words(ctx.r6.u32, ctx.r7.u32);
+            std::cerr << " result=refused\n";
+            ctx.r3.u64 = overlapped ? complete_overlapped(overlapped, 0x65B) : 0x65B;  // ERROR_FUNCTION_FAILED
+            return;
+        }
         if (app != 0xFB || (message != 0x000B0006 && message != 0x000B0007))
             throw RuntimeStop("xmsg", message, "unsupported XAM asynchronous message");
         static uint32_t accepted = 0;
@@ -3054,6 +3189,10 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         // exists, so the title controls playback (controller 0, unlocked),
         // as in the pinned reference (xam/apps/xmp_app.cc).
         const uint32_t app = ctx.r3.u32, message = ctx.r4.u32, buffer = ctx.r5.u32;
+        if (const auto result = live_in_process(app, message, buffer, ctx.r6.u32, *active_memory)) {
+            ctx.r3.u64 = *result;
+            return;
+        }
         if (app != 0xFA || message != 0x0007001B)
             throw RuntimeStop("xmsg", message, "unsupported XAM in-process message");
         active_memory->check(buffer, 12);
@@ -3176,6 +3315,45 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
                       << " access=0x" << information.access_flags << " mode=0x" << information.mode
                       << " alignment_requirement=0x" << information.alignment_requirement
                       << std::dec << " backend=windows-file\n";
+        }
+        return;
+    }
+    if (live_enabled() && active_memory) {
+        LiveCall call;
+        call.r[3] = ctx.r3.u32; call.r[4] = ctx.r4.u32; call.r[5] = ctx.r5.u32; call.r[6] = ctx.r6.u32;
+        call.r[7] = ctx.r7.u32; call.r[8] = ctx.r8.u32; call.r[9] = ctx.r9.u32; call.r[10] = ctx.r10.u32;
+        call.r64[3] = ctx.r3.u64; call.r64[4] = ctx.r4.u64; call.r64[5] = ctx.r5.u64; call.r64[6] = ctx.r6.u64;
+        call.r64[7] = ctx.r7.u64; call.r64[8] = ctx.r8.u64; call.r64[9] = ctx.r9.u64; call.r64[10] = ctx.r10.u64;
+        call.sp = ctx.r1.u32;
+        call.lr = static_cast<uint32_t>(ctx.lr);
+        if (sfr::live_import(name, call, *active_memory, [](uint32_t event) { native_sync_objects->set_event(event); })) {
+            // SFR_LIVE_TRACE=1: every LIVE and network call with its result.
+            static const bool trace = [] { const char* t = std::getenv("SFR_LIVE_TRACE"); return t && *t == '1'; }();
+            if (trace && std::string_view(name) != "__imp__NetDll_recvfrom")
+                std::cerr << "LIVE_CALL " << std::string_view(name).substr(7) << " r3=0x" << std::hex << call.r[3]
+                          << " r4=0x" << call.r[4] << " r5=0x" << call.r[5] << " r6=0x" << call.r[6]
+                          << " result=0x" << call.result << " lr=0x" << call.lr << std::dec << '\n';
+            ctx.r3.u64 = call.result;
+            return;
+        }
+    }
+    if (live_probe() && live_probe_import(name)) {
+        const std::string_view call(name);
+        std::cerr << "LIVE_PROBE " << call.substr(7) << " lr=0x" << std::hex << ctx.lr << " r3=0x" << ctx.r3.u32
+                  << " r4=0x" << ctx.r4.u32 << " r5=0x" << ctx.r5.u32 << " r6=0x" << ctx.r6.u32
+                  << " r7=0x" << ctx.r7.u32 << " r8=0x" << ctx.r8.u32 << std::dec;
+        if (call == "__imp__XamUserCheckPrivilege" && profile_for(ctx.r3.u32) && active_memory->readable(ctx.r5.u32, 4)) {
+            active_memory->store<uint32_t>(ctx.r5.u32, 1);  // (user, privilege, BOOL*): granted
+            ctx.r3.u64 = 0;
+            std::cerr << " result=granted\n";
+        } else if (call == "__imp__XamUserGetXUID" && profile_for(ctx.r3.u32) && active_memory->readable(ctx.r5.u32, 8)) {
+            active_memory->store<uint64_t>(ctx.r5.u32, profile_for(ctx.r3.u32)->xuid);  // (user, type, XUID*)
+            ctx.r3.u64 = 0;
+            std::cerr << " result=xuid\n";
+        } else {
+            if (call.find("XMsg") != std::string_view::npos) live_probe_words(ctx.r6.u32, ctx.r7.u32);
+            ctx.r3.u64 = 0x65B;  // ERROR_FUNCTION_FAILED
+            std::cerr << " result=refused\n";
         }
         return;
     }
@@ -4391,6 +4569,8 @@ int main(int argc, char** argv) {
         sfr::notification_placement = &notification_placement;
         sfr::GuestSyncObjects sync_adapter(memory, sync_objects);
         sfr::native_sync_objects = &sync_objects;
+        sfr::GuestTimers timers(sync_objects);
+        sfr::guest_timers = &timers;
         sfr::guest_sync_objects = &sync_adapter;
         sfr::GuestThreads threads(memory, {tls_slots, tls_raw_address, tls_data_size, tls_raw_size},
             module.header_field(sfr::XexModule::header_address, 0x20200),

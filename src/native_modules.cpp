@@ -20,6 +20,9 @@ bool is_missing_optional_xam_export(uint32_t ordinal) {
     // Original 8270CDF8 explicitly falls back to its plain startup import
     // when this optional Ex export is absent. Its SDK extension is not hosted.
     case 0x24:
+    // Asked for by 828FFD20 once a LIVE session is created (SFR_LIVE_SERVER);
+    // without it the wrapper returns E_FAIL to its caller.
+    case 0x48c:
         return true;
     default:
         return false;

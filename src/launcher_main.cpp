@@ -111,6 +111,8 @@ enum Text {
     SectionGameAudio, SectionLauncherAudio, SectionPlayer1, SectionPlayer2, SectionBindings, SectionTouch, SectionVoice,
     SectionResolution, WindowResolutionHint, SectionDiagnostics, ExportDiagnostics, ExportDiagnosticsHint,
     TabMods, SectionMods, ModsHint, ModsEmpty, ModsExternal, ModsRefresh, ModsOpenFolder, MoveUp, MoveDown,
+    SectionOnline, OnlineLabel, OnlineHint, OnlineHostLabel, OnlineHostHint, OnlineServerLabel, OnlineServerHint,
+    OnlineNameLabel, OnlineNameHint,
     TextCount
 };
 
@@ -362,6 +364,19 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Open mods folder", "開啟 mods 資料夾"},
     {"Up", "上移"},
     {"Down", "下移"},
+    {"Online play", "線上遊玩"},
+    {"Xbox LIVE", "Xbox LIVE"},
+    {"Plays the game's Xbox LIVE mode (Quick Match, Create Match) through this project's own server instead of Microsoft's. Everyone must use the same server.",
+     "透過本專案自己的伺服器（不是微軟的）使用遊戲的 Xbox LIVE 模式（快速配對、建立對戰）。所有人必須連到同一台伺服器。"},
+    {"Host the server", "由這台裝置當伺服器"},
+    {"Runs the server inside this game. The others enter this device's local IP address (port 47800 must be reachable).",
+     "在這個遊戲裡執行伺服器。其他人輸入這台裝置的區網 IP 位址（需能連到連接埠 47800）。"},
+    {"Server address", "伺服器位址"},
+    {"The host's IP address or name, optionally with :port (default 47800). Ignored while hosting.",
+     "主持者的 IP 位址或名稱，可加上 :連接埠（預設 47800）。自己當伺服器時不使用。"},
+    {"Online name", "線上名稱"},
+    {"The gamertag the others see (15 characters). Saves stay with your profile.",
+     "其他玩家看到的玩家名稱（15 個字元）。存檔仍跟著原本的設定檔。"},
 }};
 
 int language = 0;
@@ -1776,6 +1791,26 @@ struct Launcher {
         settings_section(SectionPlayback);
         const float switch_width = ImGui::GetFrameHeight() * 1.9f;
         setting_row(tr(SkipMovies), tr(SkipMoviesHint), switch_width, scale, [&] { toggle("##movies", &settings.skip_movies); });
+        settings_section(SectionOnline);
+        setting_row(tr(OnlineLabel), tr(OnlineHint), switch_width, scale, [&] { toggle("##online", &settings.online); });
+        if (settings.online) {
+            setting_row(tr(OnlineHostLabel), tr(OnlineHostHint), switch_width, scale,
+                        [&] { toggle("##online_host", &settings.online_host); });
+            if (!settings.online_host)
+                setting_row(tr(OnlineServerLabel), tr(OnlineServerHint), 260 * scale, scale, [&] {
+                    char text[128] = {};
+                    std::snprintf(text, sizeof text, "%s", settings.online_server.c_str());
+                    ImGui::SetNextItemWidth(260 * scale);
+                    if (ImGui::InputTextWithHint("##online_server", "192.168.1.10", text, sizeof text))
+                        settings.online_server = text;
+                });
+            setting_row(tr(OnlineNameLabel), tr(OnlineNameHint), 260 * scale, scale, [&] {
+                char text[16] = {};
+                std::snprintf(text, sizeof text, "%s", settings.online_name.c_str());
+                ImGui::SetNextItemWidth(260 * scale);
+                if (ImGui::InputTextWithHint("##online_name", "Player", text, sizeof text)) settings.online_name = text;
+            });
+        }
         settings_section(SectionReset);
         reset_settings();
     }

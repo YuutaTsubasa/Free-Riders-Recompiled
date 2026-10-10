@@ -76,6 +76,13 @@ public:
     static void write_floor(GuestMemory& memory, uint32_t address, const std::array<float, 4>& plane,
                             const std::array<float, 3>& gravity);
     std::array<float, 3> hand(bool right) const { return right ? right_ : left_; }
+    // Puts the raised right hand at (x, y), where pad input would have moved
+    // it (a menu cursor steered onto a hand-only button, nui_hooks.cpp).
+    void place_right(float x, float y, float z = 2.25f) {
+        right_[0] = x;
+        right_[1] = y;
+        right_[2] = z;
+    }
     // After NuiIdentityIdentify completes the skeleton carries that result
     // instead of "not yet identified": the enrollment of the signed-in
     // profile it was recognised as, or an unenrolled guest.
