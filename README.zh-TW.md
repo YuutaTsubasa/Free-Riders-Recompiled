@@ -196,6 +196,30 @@ Linux／Android 實機 VRM 遊玩仍待更多測試。
 
 平台細節與疑難排解見 [VRM Avatar 使用說明](docs/vrm-avatar.md)（英文）。
 
+## 線上對戰
+
+從 v0.7.0 開始，遊戲的 **Xbox LIVE** 模式可以再次使用了：改由本專案提供的伺服器取代微軟的
+伺服器，支援 Create Match、Quick Match、大廳與線上比賽。Windows、Linux 與 Android 的玩家
+可以一起比賽。
+
+![三台裝置在同一場線上比賽](docs/images/online-3-devices.png)
+
+*同一場線上比賽：PC（主機）、ROG Xbox Ally X 與 AYN Thor。*
+
+1. 每台裝置：**啟動器 → 一般 → 線上遊玩 → Xbox LIVE**。
+2. **一台裝置當主機**：開啟 **由這台裝置當伺服器**。遊戲本身會在 TCP 與 UDP 連接埠 47800 執行
+   伺服器。Windows 第一次會詢問是否讓遊戲通過防火牆，請在私人網路上允許；Android 不需要設定。
+3. **其他裝置連線**：在 **伺服器位址** 輸入主機的區域網路 IP（例如 `192.168.1.10`），每位玩家
+   的 **線上名稱** 要不同。存檔與設定檔不受影響。
+4. 進入遊戲後開啟 **主選單 → Xbox LIVE**。主機選 **Create Match**；其他人選 **Quick Match**，
+   在找到的大廳上按 **A**。由主機開始比賽。
+
+已在家用網路測試：三台裝置同一場比賽、主機是 PC 或 AYN Thor、有玩家中途離開。透過網際網路
+對戰需要把 47800 連接埠轉送到主機，這部分還沒測試。排行榜、Xbox LIVE Party、語音聊天與
+成就不支援。
+
+詳細說明與運作方式：[Online play](docs/xbox-live.md)（英文）。
+
 ## 常見問題
 
 **如何選擇西班牙文或其他遊戲語言？** 在啟動器的 **一般 → 遊戲語言** 選擇英文、日文、
@@ -236,6 +260,8 @@ Linux／Android 實機 VRM 遊玩仍待更多測試。
   [DirectX Shader Compiler](https://github.com/microsoft/DirectXShaderCompiler)（經
   [dxc-bin](https://github.com/renderbag/dxc-bin)）。
 - [Xenia](https://github.com/xenia-project/xenia)：Xbox 360 核心行為的參考。
+- [Xenia Canary 的連線版](https://github.com/AdrianCassar/xenia-canary)（`netplay_canary_experimental`，
+  BSD 授權）：線上對戰所回應的 Xbox LIVE 結構與訊息編號的參考。沒有使用它的程式碼。
 - [ONNX Runtime](https://github.com/microsoft/onnxruntime)（姿勢推論）、
   [OpenCV Zoo](https://github.com/opencv/opencv_zoo) 與
   [MediaPipe](https://github.com/google-ai-edge/mediapipe)（人物偵測與 3D 姿勢模型）。
