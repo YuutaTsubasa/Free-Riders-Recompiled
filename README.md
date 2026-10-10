@@ -38,6 +38,7 @@ page; to build it yourself, see [Building](docs/building.md).
 - [Kinect and Kinect v2](#kinect-and-kinect-v2)
 - [Camera motion input](#camera-motion-input)
 - [VRM Avatar models](#vrm-avatar-models)
+- [Online play](#online-play)
 - [FAQ](#faq)
 - [Repository Layout](#repository-layout)
 - [Credits](#credits)
@@ -159,6 +160,8 @@ with [docs/progress.md](docs/progress.md).
   Vulkan shaders read their constants from uniform buffers instead of through buffer addresses, which phone GPUs can load once per draw: on an AYN Thor the GPU time per frame fell from about 14.8 to 10 ms. Frame rate there is unchanged (the game's CPU side now limits it), but the GPU has more headroom. Shader packs from earlier versions do not work with it.
 - [v0.6.11 — A race crash on 4-core PCs](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.6.11)
   Part of each race frame runs on the game's job threads, and the game waited only 16 ms for them before going on. On slower 4-core PCs a job could still be reading the racer list when the game moved on, which crashed races (Issue #64). The game now waits for those jobs to finish; the race keeps its frame rate.
+- [v0.7.0 — Online play](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.7.0)
+  The game's Xbox LIVE mode works again, on this project's own server: one player's game hosts, the others join over the network, and players on Windows, Linux and Android race together (three devices tested; the lobby holds eight). See [Online play](#online-play).
 
 ## System Requirements
 
@@ -338,6 +341,34 @@ and physical Linux/Android VRM gameplay still need broader testing.
 
 Troubleshooting and platform details: [VRM Avatar guide](docs/vrm-avatar.md).
 
+## Online play
+
+Starting with v0.7.0, the game's **Xbox LIVE** mode works again, on a server
+this project provides instead of Microsoft's: Create Match, Quick Match, the
+lobby and online races. Windows, Linux and Android players can race together.
+
+![Three devices in the same online race](docs/images/online-3-devices.png)
+
+*The same online race on a PC (the host), a ROG Xbox Ally X and an AYN Thor.*
+
+1. On every device: **Launcher → General → Online play → Xbox LIVE**.
+2. **One device hosts:** turn on **Host the server**. The game runs the server
+   itself on TCP and UDP port 47800. Windows asks once whether to let the game
+   through its firewall; allow it on private networks. Android needs no setup.
+3. **The others connect:** enter the host's local IP address under **Server
+   address** (for example `192.168.1.10`), and give each player a different
+   **Online name**. Your save and profile stay as they are.
+4. In the game, open **Main Menu → Xbox LIVE**. The host chooses
+   **Create Match**; the others choose **Quick Match** and press **A** on the
+   lobby they find. The host starts the race.
+
+Tested on a home network: three devices in one race, the host on a PC or on an
+AYN Thor, and a player leaving mid-race. Playing over the internet needs
+port 47800 forwarded to the host; that has not been tested. Leaderboards,
+Xbox LIVE Party, voice chat and achievements are not supported.
+
+Details and how it works: [Online play](docs/xbox-live.md).
+
 ## FAQ
 
 **How do I select Spanish or another game language?** Open **General > Game language**
@@ -433,6 +464,9 @@ saves and local reference checkouts.
   (through [dxc-bin](https://github.com/renderbag/dxc-bin)).
 - [Xenia](https://github.com/xenia-project/xenia): reference for the Xbox 360
   kernel's behaviour and GPU texture formats/layouts.
+- [Xenia Canary's netplay build](https://github.com/AdrianCassar/xenia-canary)
+  (`netplay_canary_experimental`, BSD licence): reference for the Xbox LIVE
+  structures and message numbers online play answers. None of its code is used.
 - [ONNX Runtime](https://github.com/microsoft/onnxruntime) (camera pose inference),
   [OpenCV Zoo](https://github.com/opencv/opencv_zoo) and
   [MediaPipe](https://github.com/google-ai-edge/mediapipe) (person detection and

@@ -53,6 +53,8 @@ struct GuestThreads::Impl {
         uint32_t prepared_previous = 0;
         bool handle_open = true;
         bool owns_storage = true;
+        // NtDuplicateObject's further handles to this thread, each closed on its own.
+        std::vector<uint32_t> duplicates;
     };
     GuestMemory& memory;
     TlsTemplate tls;
@@ -82,7 +84,9 @@ struct GuestThreads::Impl {
     }
     Record* find_handle(uint32_t handle) const {
         for (const auto& record : records)
-            if (record->handle_open && record->state.handle == handle) return record.get();
+            if ((record->handle_open && record->state.handle == handle) ||
+                std::find(record->duplicates.begin(), record->duplicates.end(), handle) != record->duplicates.end())
+                return record.get();
         return nullptr;
     }
     Record& find_object(uint32_t object) const {
@@ -324,7 +328,7 @@ uint32_t GuestThreads::create(const Request& r) {
     if (stack_size > stack_max) throw RuntimeStop("thread-stack", requested, "guest stack exceeds supported slot");
     Impl::Record* retired = nullptr;
     for (const auto& previous : i.records) {
-        if (previous->owns_storage && !previous->handle_open && !previous->references &&
+        if (previous->owns_storage && !previous->handle_open && previous->duplicates.empty() && !previous->references &&
             previous->state.stack_base - previous->state.stack_limit == stack_size &&
             previous->native->completed()) {
             retired = previous.get();
@@ -368,7 +372,8 @@ uint32_t GuestThreads::create(const Request& r) {
 }
 GuestThreads::Snapshot GuestThreads::snapshot(uint32_t handle) const {
     for (const auto& record : impl_->records)
-        if (record->state.handle == handle)
+        if (record->state.handle == handle ||
+            std::find(record->duplicates.begin(), record->duplicates.end(), handle) != record->duplicates.end())
             return {record->state, record->native->native_id(), record->native->suspended(), record->native->entry_started()};
     throw RuntimeStop("thread-handle", handle, "unknown native thread handle");
 }
@@ -391,10 +396,26 @@ void GuestThreads::dereference(uint32_t object) {
     --record.references;
 }
 uint32_t GuestThreads::references(uint32_t object) const { return impl_->find_object(object).references; }
+uint32_t GuestThreads::duplicate(uint32_t handle, uint32_t& duplicate) {
+    std::unique_lock registry(impl_->registry_mutex);
+    auto* record = impl_->find_handle(handle);
+    if (!record) return 0xC0000008;
+    if (!is_handle_range(impl_->next_handle))
+        throw RuntimeStop("thread-capacity", impl_->next_handle, "thread handle identities exhausted");
+    duplicate = impl_->next_handle;
+    impl_->next_handle += 4;
+    record->duplicates.push_back(duplicate);
+    return 0;
+}
 uint32_t GuestThreads::close(uint32_t handle) {
     std::unique_lock registry(impl_->registry_mutex);
     auto* record = impl_->find_handle(handle);
     if (!record) return 0xC0000008;
+    if (const auto duplicate = std::find(record->duplicates.begin(), record->duplicates.end(), handle);
+        duplicate != record->duplicates.end()) {
+        record->duplicates.erase(duplicate);
+        return 0;
+    }
     record->handle_open = false;
     // Live execution owns itself independently of handles and explicit references.
     // Parked-only execution is retained until this diagnostic session shuts down.
