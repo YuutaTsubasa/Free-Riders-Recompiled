@@ -11,6 +11,7 @@ separate from **Window resolution**. Restart the game to apply a change.
 | 720p / 100% (native, default) | 1280 x 720 | 100% |
 | 1080p / 150% | 1920 x 1080 | 225% |
 | 1440p / 200% | 2560 x 1440 | 400% |
+| 2160p (4K) / 300% | 3840 x 2160 | 900% |
 
 Lower resolutions reduce pixel shading and framebuffer memory, which may help
 GPU-limited devices. They do not remove game-logic or CPU submission costs. A
@@ -24,7 +25,7 @@ screen and the HUD. It does not give each player a separate full-resolution
 framebuffer or change the game simulation's 1/60-second step.
 
 `settings.ini` stores `render_scale=100`; the runtime equivalent is
-`SFR_RENDER_SCALE=100`. Supported percentages are 50, 75, 100, 150 and 200.
+`SFR_RENDER_SCALE=100`. Supported percentages are 50, 75, 100, 150, 200 and 300.
 Missing or invalid settings use native resolution. The startup log prints
 `NATIVE_RENDER_SCALE` with the actual logical and physical dimensions.
 

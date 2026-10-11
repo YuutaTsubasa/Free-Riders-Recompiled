@@ -1701,7 +1701,7 @@ struct Launcher {
         setting_row(tr(RenderResolution), tr(RenderResolutionHint), combo_width, scale, [&] {
             ImGui::SetNextItemWidth(combo_width);
             if (ImGui::BeginCombo("##render_scale", render_name(settings.render_scale).c_str())) {
-                for (const uint32_t percent : {50u, 75u, 100u, 150u, 200u}) {
+                for (const uint32_t percent : {50u, 75u, 100u, 150u, 200u, 300u}) {
                     const bool chosen = percent == settings.render_scale;
                     if (ImGui::Selectable(render_name(percent).c_str(), chosen)) {
                         settings.render_scale = percent;

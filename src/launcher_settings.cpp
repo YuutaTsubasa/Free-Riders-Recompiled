@@ -40,7 +40,7 @@ void read_flag(const std::string& text, bool& out) {
 
 uint32_t validated_render_scale(uint32_t scale) {
     switch (scale) {
-    case 50: case 75: case 100: case 150: case 200: return scale;
+    case 50: case 75: case 100: case 150: case 200: case 300: return scale;
     default: return 100;
     }
 }
@@ -68,7 +68,7 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         else if (key == "window_height") read_number(value, 160, 16384, settings.window_height);
         else if (key == "render_scale") {
             uint32_t scale = 100;
-            read_number(value, 50, 200, scale);
+            read_number(value, 50, 300, scale);
             settings.render_scale = validated_render_scale(scale);
         }
         else if (key == "fullscreen") read_flag(value, settings.fullscreen);

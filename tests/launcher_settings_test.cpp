@@ -137,7 +137,7 @@ void rendering_resolution_settings() {
                      "SFR_RENDER_SCALE") == "100",
             "older settings keep native rendering regardless of output window size");
 
-    for (const char* scale : {"50", "75", "100", "150", "200"}) {
+    for (const char* scale : {"50", "75", "100", "150", "200", "300"}) {
         const auto settings = sfr::parse_launcher_settings(
             std::string("window_width=1920\nwindow_height=1080\nrender_scale=") + scale + "\n");
         const auto saved = sfr::format_launcher_settings(settings);
@@ -151,7 +151,7 @@ void rendering_resolution_settings() {
                 value_of(reloaded, "SFR_WINDOW_HEIGHT") == "1080",
                 "internal rendering does not change the output window size");
     }
-    for (const char* scale : {"", "abc", "0", "49", "51", "99", "101", "125", "201",
+    for (const char* scale : {"", "abc", "0", "49", "51", "99", "101", "125", "201", "250", "301", "400",
                               "-50", "+50", "50.0", "50junk", "4294967296"}) {
         const auto settings = sfr::parse_launcher_settings(std::string("render_scale=") + scale + "\n");
         require(value_of(settings, "SFR_RENDER_SCALE") == "100",
