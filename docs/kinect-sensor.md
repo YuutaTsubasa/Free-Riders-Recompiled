@@ -57,8 +57,18 @@ v2 目前只提供骨架，會自動啟用骨架轉向與蹲跳，不必額外�
 v2 有 25 個關節，前 20 個與第一代同名同順序，只有一處不同：第一代的「肩中心」
 對應 v2 的 SpineShoulder（20），而不是位置更高的 Neck（2）；指尖與拇指（21～24）不用。
 身體中心用 SpineBase。座標系與第一代相同（公尺、+x 朝玩家右手、+z 離開感測器），
-所以不用換算。v2 SDK 沒有第一代的 `NuiTransformSmooth`，關節直接交給遊戲；
-v2 本身比第一代穩定，實測若覺得抖再加平滑。
+所以不用換算。v2 SDK 沒有第一代的 `NuiTransformSmooth`，玩家回報關節在比賽中會抖（#97），
+所以 v0.7.2 起 v2 的關節預設套用同一種濾波（Holt 雙指數平滑，參數與第一代相同：0.5／0.5／0.5、
+抖動半徑 5 公分、最大偏差 4 公分，推測的關節半徑加倍；[`kinect_smoothing.cpp`](../src/kinect_smoothing.cpp)），
+約多一格延遲；log 會寫 `NATIVE_KINECT model=v2 smooth=1`。
+
+launcher 的 **Kinect** 設定多了三項（下次啟動遊戲時生效；預設值等於原本行為，不會傳任何設定）：
+
+| 設定 | 範圍（預設） | 對應 |
+| --- | --- | --- |
+| 平滑 Kinect v2 追蹤 | 開／關（開） | 關閉時 `SFR_KINECT_SMOOTH=0` |
+| 傾身靈敏度 | 10～100%（100%） | `SFR_KINECT_LEAN_SCALE` = 3.5 × 百分比 |
+| 蹲下深度 | 5～35 公分（15） | `SFR_KINECT_CROUCH_DEPTH`（公尺） |
 
 程式在 [`kinect_v2_win32.cpp`](../src/kinect_v2_win32.cpp)：執行時才載入 `Kinect20.dll`，
 COM 介面依 SDK 2.0 的 `Kinect.h` 宣告到用得到的最後一個方法為止（vtable 只看順序）。
