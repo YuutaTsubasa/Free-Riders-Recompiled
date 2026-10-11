@@ -47,6 +47,12 @@ void write_xinput_state(GuestMemory& memory, uint32_t address, uint32_t packet, 
 struct InputBindings;
 enum class PlayerDevice : uint8_t;
 
+// While held (the Kinect adjustment window is open), every connected
+// controller and the keyboard read as at rest: the game waits behind the
+// window as it did behind the console's system UI.
+void set_input_held(bool held);
+bool input_held();
+
 class NativeInput {
 public:
     // pad(user) reads a host controller; keyboard() reads the fallback keys
@@ -67,6 +73,9 @@ public:
     // User 0's current() is always connected, which says nothing about whether
     // anybody is there.
     std::optional<GamepadState> controller(uint32_t user) const;
+    // A host pad's own buttons with its bindings, whether or not the input is
+    // held: the adjustment window closes on Back while the game reads none.
+    std::optional<GamepadState> pad_through_hold(uint32_t user) const;
     // XamInputSetState: forward rumble motor speeds to a host pad when present.
     // User 0 is always connected (keyboard-backed), so it always succeeds.
     uint32_t set_vibration(uint32_t user, uint16_t left_motor, uint16_t right_motor);

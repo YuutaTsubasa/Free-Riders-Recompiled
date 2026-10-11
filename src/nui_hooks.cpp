@@ -3,8 +3,12 @@
 #include "guest_memory.h"
 #include "camera_player.h"
 #include "kinect_sensor.h"
+#include "kinect_preview.h"
+#include "kinect_tuner.h"
+#include "camera_tuner.h"
 #include "kinect_stability.h"
 #include "window_title.h"
+#include "native_input.h"
 #include "camera_debug.h"
 #include "camera_input.h"
 #include "nui_skeleton.h"
@@ -54,6 +58,11 @@ bool camera_has_joints = false;
 // Its skeletons go to the title untouched, and the race reads them through
 // the title's own detectors instead of the pad (nui_body_from_sensor).
 std::unique_ptr<sfr::KinectSensor> kinect;
+// The menu's Kinect adjustment window over that sensor (kinect_tuner.h).
+std::mutex tuner_lock;
+std::unique_ptr<sfr::KinectPreviewWindow> tuner;
+// The same over the webcam, when that is what the player uses.
+std::unique_ptr<sfr::CameraTunerWindow> camera_tuner;
 std::once_flag kinect_start_once;
 std::atomic<bool> sensor_body{false};
 std::atomic<bool> sensor_depth{false};
@@ -105,6 +114,44 @@ void start_kinect() {
 }
 
 namespace sfr {
+KinectTuner open_kinect_tuner() {
+    std::lock_guard guard(tuner_lock);
+    if((tuner && !tuner->closed()) || (camera_tuner && !camera_tuner->closed())) {
+        // Asked for again while open (perhaps behind another window): in
+        // front again rather than nothing.
+        if(tuner && !tuner->closed()) tuner->raise();
+        if(camera_tuner && !camera_tuner->closed()) camera_tuner->raise();
+        return KinectTuner::already_open;
+    }
+    bool opened=false;
+    if(kinect) {
+        tuner.reset();  // a closed one: its thread has ended
+        tuner=KinectPreviewWindow::open_over(*kinect);
+        opened=tuner!=nullptr;
+        std::cerr << "NUI_KINECT_TUNER opened=" << opened << " source=kinect\n";
+    } else if(camera_player) {
+        camera_tuner.reset();
+        camera_tuner=CameraTunerWindow::open_over(*camera_player);
+        opened=camera_tuner!=nullptr;
+        std::cerr << "NUI_KINECT_TUNER opened=" << opened << " source=webcam\n";
+    }
+    // The game waits behind the window: the controllers and the keyboard
+    // read as at rest until it closes (the input update lets go).
+    if(opened) sfr::set_input_held(true);
+    return opened ? KinectTuner::opened : KinectTuner::unavailable;
+}
+// Back (Select) on a pad closes an open adjustment window, as Esc does,
+// and the game's window is in front again.
+void close_kinect_tuner() {
+    std::lock_guard guard(tuner_lock);
+    if(tuner) tuner->close();
+    if(camera_tuner) camera_tuner->close();
+    std::cerr << "NUI_KINECT_TUNER close=pad-back\n";
+}
+bool kinect_tuner_open() {
+    std::lock_guard guard(tuner_lock);
+    return (tuner && !tuner->closed()) || (camera_tuner && !camera_tuner->closed());
+}
 bool camera_motion_active() { return camera_input_active.load(std::memory_order_relaxed); }
 uint64_t camera_pose_generation() { return camera_pose_counter.load(std::memory_order_relaxed); }
 uint64_t camera_motion_clock_ns() {
@@ -427,6 +474,17 @@ void write_kinect_body(sfr::GuestMemory& memory, uint32_t frame, const sfr::Kine
 SFR_INPUT_HOOK(sub_827707B0) {
     sfr::enter_function(ctx,"sub_827707B0",0x827707B0);
     sfr::poll_window_title();  // the frame rate in the window title
+    {
+        // Back on any pad closes the adjustment window (the game reads the
+        // pads as at rest meanwhile); a press already down when it opened
+        // does not count.
+        static bool was_open=false, was_back=false;
+        const bool open=sfr::kinect_tuner_open();
+        const bool back=open && (sfr::nui_pad_buttons_through_hold() & sfr::gamepad_button::back);
+        if(open && was_open && back && !was_back) sfr::close_kinect_tuner();
+        was_open=open;
+        was_back=back;
+    }
     const uint32_t frame=ctx.r4.u32;
     if(!frame) { ctx.r3.u64=0x80004003u; return; }  // E_POINTER, as the original
     // [83E52F8C] is the race flag: the hands leave the menu cursor pose.
@@ -448,16 +506,45 @@ SFR_INPUT_HOOK(sub_827707B0) {
         // console (asking the player to step in). The pads keep their voice
         // commands and menu buttons (the input update below).
         auto& memory=*sfr::active_memory;
-        // Turned once per new frame: the last one is kept as it was turned.
-        const bool received=kinect->next(kinect_frame);
-        if(received) {
-            sfr::note_kinect_frame();  // for the window's title
-            // The menu cursor steadied (kinect_stability.h) before
-            // anything reads the frame.
-            static sfr::KinectBodySteadying steadying=sfr::KinectBodySteadying::from_environment();
-            steadying.steady(kinect_frame.bodies,!racing);
+        // While the adjustment window is open the game is given one frame
+        // with every arm hanging down, then nothing new: no cursor, no
+        // gesture, nobody leaving. The window sees the sensor throughout.
+        const bool tuning=sfr::kinect_tuner_open();
+        static bool arms_given=false;
+        static sfr::KinectFrame tuner_frame;
+        if(!tuning) {
+            if(arms_given) std::cerr << "NUI_KINECT_TUNER input=released\n";
+            arms_given=false;
+            sfr::set_input_held(false);
         }
-        const bool expired=sfr::kinect_expire_frame(kinect_frame,std::chrono::steady_clock::now());
+        // Turned once per new frame: the last one is kept as it was turned.
+        bool received=false, expired=false;
+        if(tuning && arms_given) {
+            if(kinect->next(tuner_frame)) {
+                std::lock_guard guard(tuner_lock);
+                if(tuner && !tuner->closed()) tuner->show_frame(tuner_frame);
+            }
+        } else {
+            received=kinect->next(kinect_frame);
+            if(received) {
+                sfr::note_kinect_frame();  // for the window's title
+                // The menu cursor steadied (kinect_stability.h) before
+                // anything reads the frame.
+                static sfr::KinectBodySteadying steadying=sfr::KinectBodySteadying::from_environment();
+                steadying.steady(kinect_frame.bodies,!racing);
+            }
+            expired=sfr::kinect_expire_frame(kinect_frame,std::chrono::steady_clock::now());
+            // The adjustment window sees the frames the game reads, not its own.
+            if(received) {
+                std::lock_guard guard(tuner_lock);
+                if(tuner && !tuner->closed()) tuner->show_frame(kinect_frame);
+            }
+            if(tuning && received) {
+                for(sfr::KinectBody& body:kinect_frame.bodies) sfr::kinect_arms_down(body);
+                arms_given=true;
+                std::cerr << "NUI_KINECT_TUNER input=held bodies=" << kinect_frame.bodies.size() << '\n';
+            }
+        }
         if(received || expired) {
             // The title stores two fully tracked body indices, even though
             // the sensor frame has six slots. Keep the same two real bodies
@@ -538,9 +625,28 @@ SFR_INPUT_HOOK(sub_827707B0) {
     const bool debug_active=camera_debug && !camera_debug->closed();
     sfr::CameraTrackingStatus camera_status;
     if(camera_player) camera_player->set_in_menu(!racing);
-    if(camera_player && camera_player->joints(camera_joints,&camera_status)) {
-        camera_has_joints=true;
-        camera_pose_counter.fetch_add(1,std::memory_order_relaxed);
+    // While the adjustment window is open, as with the Kinect: the arms put
+    // down once, then the pose kept (the camera's freshness still read, so
+    // the camera stays the player's source).
+    static bool camera_arms_given=false;
+    const bool camera_tuning=camera_player && sfr::kinect_tuner_open();
+    if(camera_tuning) {
+        sfr::SkeletonJoints ignored{};
+        camera_player->joints(ignored,&camera_status);
+        if(!camera_arms_given && camera_has_joints) {
+            sfr::arms_down(camera_joints);
+            camera_pose_counter.fetch_add(1,std::memory_order_relaxed);
+            camera_arms_given=true;
+            std::cerr << "NUI_KINECT_TUNER input=held source=webcam\n";
+        }
+    } else {
+        if(camera_arms_given) std::cerr << "NUI_KINECT_TUNER input=released source=webcam\n";
+        camera_arms_given=false;
+        if(camera_player) sfr::set_input_held(false);
+        if(camera_player && camera_player->joints(camera_joints,&camera_status)) {
+            camera_has_joints=true;
+            camera_pose_counter.fetch_add(1,std::memory_order_relaxed);
+        }
     }
     const auto first=sfr::nui_gamepad();
     const bool use_camera=camera_selection.update(first,camera_has_joints?camera_status.pose_age_ms:-1,

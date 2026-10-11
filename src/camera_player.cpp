@@ -23,6 +23,9 @@ struct CameraPlayer::Impl {
     PoseStabilizer stabilizer = PoseStabilizer::from_environment();
     MenuHandSteadying menu_hands = MenuHandSteadying::from_environment();
     std::atomic<bool> in_menu{false};
+    std::atomic<bool> sharing{false};
+    std::mutex view_lock;
+    CameraView shared;  // under view_lock
     bool mirrored = false;
     std::mutex lock;
     SkeletonJoints joints{};
@@ -31,6 +34,16 @@ struct CameraPlayer::Impl {
     std::chrono::steady_clock::time_point last_observation{}, last_pose{};
     std::atomic<bool> ever_found{false};
     std::jthread worker;
+
+    void keep_view(const CameraFrame& frame, const PoseLandmarks* body) {
+        if (!sharing.load(std::memory_order_relaxed)) return;
+        std::lock_guard guard(view_lock);
+        shared.picture = frame;
+        shared.found = body != nullptr;
+        if (body) shared.body = *body;
+        shared.motion = estimator != nullptr;
+        shared.mirrored = mirrored;
+    }
 
     void run(std::stop_token stop) {
         CameraFrame frame;
@@ -45,7 +58,10 @@ struct CameraPlayer::Impl {
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
                 continue;
             }
-            if (!estimator) continue;  // a picture for the title, no body
+            if (!estimator) {  // a picture for the title, no body
+                keep_view(frame, nullptr);
+                continue;
+            }
             const auto started = std::chrono::steady_clock::now();
             const double interval = std::chrono::duration<double>(started - last_picture).count();
             last_picture = started;
@@ -64,6 +80,7 @@ struct CameraPlayer::Impl {
                 smoothing.forget();
                 menu_hands.forget();
             }
+            keep_view(frame, body ? &landmarks : nullptr);
             const double took = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
             spent += took;
             note_pose_estimate(took);  // for the window's title
@@ -138,6 +155,25 @@ bool CameraPlayer::joints(SkeletonJoints& out, CameraTrackingStatus* status) {
 }
 
 void CameraPlayer::set_in_menu(bool in_menu) { impl_->in_menu.store(in_menu, std::memory_order_relaxed); }
+
+void CameraPlayer::share_view(bool on) { impl_->sharing.store(on, std::memory_order_relaxed); }
+
+bool CameraPlayer::view(CameraView& view) {
+    std::lock_guard guard(impl_->view_lock);
+    if (impl_->shared.picture.number == 0 || impl_->shared.picture.number == view.picture.number) return false;
+    view = impl_->shared;
+    return true;
+}
+
+bool CameraPlayer::control_range(CameraControl control, CameraControlRange& range) {
+    return impl_->camera->control_range(control, range);
+}
+bool CameraPlayer::control(CameraControl control, CameraControlValue& value) {
+    return impl_->camera->control(control, value);
+}
+bool CameraPlayer::set_control(CameraControl control, const CameraControlValue& value) {
+    return impl_->camera->set_control(control, value);
+}
 
 bool CameraPlayer::tracking() const { return impl_->ever_found.load(std::memory_order_relaxed); }
 

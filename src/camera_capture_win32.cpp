@@ -12,12 +12,16 @@
 #include <mfreadwrite.h>
 #include <mferror.h>
 #include <wrl/client.h>
+#include <strmif.h>
 
 #include <atomic>
+#include <fstream>
+#include <sstream>
 #include <cstdlib>
 #include <iostream>
 #include <mutex>
 #include <string>
+#include <filesystem>
 #include <functional>
 #include <thread>
 #include <vector>
@@ -38,10 +42,42 @@ struct MediaFoundation {
     ~MediaFoundation() { if (ready) MFShutdown(); }
 };
 
+// The controls the player set, kept beside the game (camera_controls.txt).
+std::filesystem::path saved_controls_path() {
+    wchar_t path[MAX_PATH]{};
+    const DWORD length = GetModuleFileNameW(nullptr, path, MAX_PATH);
+    if (!length || length >= MAX_PATH) return "camera_controls.txt";
+    return std::filesystem::path(path).parent_path() / "camera_controls.txt";
+}
+std::mutex saved_controls_lock;
+std::vector<SavedCameraControl> read_saved_controls() {
+    std::ifstream file(saved_controls_path(), std::ios::binary);
+    std::stringstream text;
+    text << file.rdbuf();
+    return parse_camera_controls(text.str());
+}
+
+// UVC's controls behind a Media Foundation camera: IAMCameraControl for
+// zoom and exposure, IAMVideoProcAmp for gain (the same flags: 1 automatic,
+// 2 manual).
 class Win32Camera final : public CameraCapture {
 public:
-    Win32Camera(ComPtr<IMFSourceReader> reader, CameraPixels format, uint32_t width, uint32_t height, uint32_t stride)
-        : reader_(std::move(reader)), format_(format), width_(width), height_(height), stride_(stride) {
+    Win32Camera(ComPtr<IMFSourceReader> reader, ComPtr<IMFMediaSource> source, std::string device, CameraPixels format,
+                uint32_t width, uint32_t height, uint32_t stride)
+        : reader_(std::move(reader)), device_(std::move(device)), format_(format), width_(width), height_(height),
+          stride_(stride) {
+        source.As(&camera_control_);
+        source.As(&proc_amp_);
+        // What the player set for this camera last time.
+        std::vector<SavedCameraControl> saved;
+        { std::lock_guard guard(saved_controls_lock); saved = read_saved_controls(); }
+        for (const SavedCameraControl& setting : saved)
+            if (setting.device == device_) {
+                const bool applied = apply(setting.control, setting.value);
+                std::cerr << "NATIVE_CAMERA_CONTROL restored " << camera_control_name(setting.control) << '='
+                          << (setting.value.automatic ? std::string("auto") : std::to_string(setting.value.value))
+                          << " applied=" << applied << '\n';
+            }
         // Read on a thread of its own: a read blocks until the camera has a
         // picture, and the game asks for one whenever it draws.
         worker_ = std::jthread([this](std::stop_token stop) { read_frames(stop); });
@@ -55,7 +91,58 @@ public:
         return true;
     }
 
+    bool control_range(CameraControl control, CameraControlRange& range) override {
+        long minimum = 0, maximum = 0, step = 0, standard = 0, flags = 0;
+        HRESULT result = E_NOINTERFACE;
+        if (control == CameraControl::gain) {
+            if (proc_amp_) result = proc_amp_->GetRange(VideoProcAmp_Gain, &minimum, &maximum, &step, &standard, &flags);
+        } else if (camera_control_) {
+            result = camera_control_->GetRange(control == CameraControl::zoom ? CameraControl_Zoom : CameraControl_Exposure,
+                                               &minimum, &maximum, &step, &standard, &flags);
+        }
+        if (FAILED(result) || maximum <= minimum) return false;
+        range = {minimum, maximum, step > 0 ? step : 1, standard, (flags & 1) != 0};
+        return true;
+    }
+
+    bool control(CameraControl control, CameraControlValue& value) override {
+        long number = 0, flags = 0;
+        HRESULT result = E_NOINTERFACE;
+        if (control == CameraControl::gain) {
+            if (proc_amp_) result = proc_amp_->Get(VideoProcAmp_Gain, &number, &flags);
+        } else if (camera_control_) {
+            result = camera_control_->Get(control == CameraControl::zoom ? CameraControl_Zoom : CameraControl_Exposure,
+                                          &number, &flags);
+        }
+        if (FAILED(result)) return false;
+        value = {number, (flags & 1) != 0};
+        return true;
+    }
+
+    bool set_control(CameraControl control, const CameraControlValue& value) override {
+        if (!apply(control, value)) return false;
+        std::lock_guard guard(saved_controls_lock);
+        std::vector<SavedCameraControl> saved = read_saved_controls();
+        remember_camera_control(saved, {device_, control, value});
+        std::ofstream(saved_controls_path(), std::ios::binary | std::ios::trunc) << format_camera_controls(saved);
+        std::cerr << "NATIVE_CAMERA_CONTROL set " << camera_control_name(control) << '='
+                  << (value.automatic ? std::string("auto") : std::to_string(value.value)) << '\n';
+        return true;
+    }
+
 private:
+    bool apply(CameraControl control, const CameraControlValue& value) {
+        // Automatic keeps the value the camera has; held needs the value.
+        CameraControlValue now{};
+        long number = value.value;
+        if (value.automatic && this->control(control, now)) number = now.value;
+        const long flags = value.automatic ? 1 : 2;
+        if (control == CameraControl::gain) return proc_amp_ && SUCCEEDED(proc_amp_->Set(VideoProcAmp_Gain, number, flags));
+        return camera_control_ &&
+               SUCCEEDED(camera_control_->Set(control == CameraControl::zoom ? CameraControl_Zoom : CameraControl_Exposure,
+                                              number, flags));
+    }
+
     void read_frames(std::stop_token stop) {
         uint64_t number = 0;
         while (!stop.stop_requested()) {
@@ -83,6 +170,9 @@ private:
     }
 
     ComPtr<IMFSourceReader> reader_;
+    ComPtr<IAMCameraControl> camera_control_;
+    ComPtr<IAMVideoProcAmp> proc_amp_;
+    std::string device_;
     CameraPixels format_;
     uint32_t width_, height_, stride_;
     std::mutex lock_;
@@ -216,6 +306,7 @@ std::unique_ptr<CameraCapture> CameraCapture::open(uint32_t width, uint32_t heig
     std::cerr << " size=" << actual_width << 'x' << actual_height << " format="
               << (format == CameraPixels::bgra ? "bgra" : format == CameraPixels::yuy2 ? "yuy2" : "nv12")
               << " stride=" << stride << '\n';
-    return std::make_unique<Win32Camera>(std::move(reader), format, actual_width, actual_height, uint32_t(stride));
+    return std::make_unique<Win32Camera>(std::move(reader), std::move(source), chosen, format, actual_width, actual_height,
+                                         uint32_t(stride));
 }
 }

@@ -6,6 +6,7 @@
 #include "touch_controls.h"
 #include "guest_memory.h"
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <iostream>
 #include <cstdlib>
@@ -150,6 +151,12 @@ bool uses_keyboard(uint8_t device) {
 }
 }
 
+namespace {
+std::atomic<bool> held_input{false};
+}
+void set_input_held(bool held) { held_input.store(held, std::memory_order_relaxed); }
+bool input_held() { return held_input.load(std::memory_order_relaxed); }
+
 std::optional<GamepadState> NativeInput::current(uint32_t user) const {
     if (user >= players_.size()) return std::nullopt;
     const Player& player = players_[user];
@@ -169,6 +176,7 @@ std::optional<GamepadState> NativeInput::current(uint32_t user) const {
     // The title polls user 0 every frame and stops when it is not there, so
     // that user stays connected even with every device taken away.
     if (user == 0 && !state) state = GamepadState{};
+    if (state && input_held()) state = GamepadState{};
     return state;
 }
 
@@ -187,6 +195,14 @@ std::optional<GamepadState> NativeInput::controller(uint32_t user) const {
     if (user != 0 && uses_keyboard(player.device) && player.keyboard)
         state = merge_gamepads(state.value_or(GamepadState{}), player.keyboard());
     if (user == 1 && second_script_) state = merge_gamepads(state.value_or(GamepadState{}), second_script_());
+    if (state && input_held()) state = GamepadState{};
+    return state;
+}
+
+std::optional<GamepadState> NativeInput::pad_through_hold(uint32_t user) const {
+    if (user >= players_.size() || !uses_pad(players_[user].device)) return std::nullopt;
+    std::optional<GamepadState> state = pad_(user);
+    if (state && players_[user].pad) state = remap_pad(*players_[user].pad, *state);
     return state;
 }
 

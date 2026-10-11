@@ -232,5 +232,22 @@ mingw 編譯連結過。Kinect for Xbox 360（v1）已在實機上讀到骨架�
 僅 Windows）：左邊彩色影像、右邊深度影像（玩家依骨架位置上色），兩者都疊上追蹤到的骨架
 （深度照 SDK 的 `NuiTransformSkeletonToDepthImage` 投影，精確；彩色用標稱焦距，兩顆鏡頭相距幾公分，
 是近似對齊），上方列出每個人的編號、骨架位置、距離與「腳是否在畫面內」（腳關節被追蹤到才算）。
+還沒能玩的時候，最上面一行依序列出四個檢查：執行環境（SDK）、感應器、資料傳送、人體追蹤，
+各標 ✓（通過）、✗（失敗）或 …（等待中），下一行說明第一個失敗的步驟要怎麼處理
+（[`kinect_readiness`](../src/kinect_preview.h)）。每一步都要真的在運作才算通過：感應器開了但
+1.5 秒沒有傳來骨架或影像、或開啟 3 秒都沒有任何資料，「資料傳送」就算失敗；有資料但沒有人，
+「人體追蹤」失敗並提示站位。四項都通過後才改回顯示機型、人數和角度。
 右上角的「往上」「往下」（或 ↑↓）轉動感應器，邊看邊調到全身入鏡。SDK 一個程式只能開一次 Kinect，所以
 按「開始遊戲」會先關閉預覽，把 Kinect 讓給遊戲。
+
+遊戲中也開得到同一個視窗（[`kinect_tuner.h`](../src/kinect_tuner.h)）：選單裡調整 Kinect 的選項會向系統要
+Kinect 疑難排解（`XamShowNuiTroubleshooterUI`）或 Kinect Guide（`XamShowNuiGuideUI`，結算畫面的 Guide 按鈕），
+原本這裡沒有系統畫面、打開就關閉；現在用實體 Kinect 時改成打開「Kinect 調整」視窗，比賽中也一樣（暫停選單裡的 Xbox 選單、玩家離開畫面時的暫停）。它借用遊戲已開的感應器
+（不另外開、不關閉），骨架由遊戲讀到後轉交給它（不會搶走遊戲的骨架），彩色與深度影像照常顯示，角度一樣用按鈕或
+↑↓ 調整；視窗開在遊戲視窗正中央，按 Esc、手把的 Back（Select）或關閉鈕就回到遊戲；它不會一直蓋在最上層，而是每次叫出時拉到前景（已經開著時再叫一次也是），語言跟系統；webcam 調整視窗也一樣。開著時通知遊戲系統畫面開啟（XN_SYS_UI 1），關閉視窗才通知關閉（0）。
+實測遊戲在系統畫面開著時不會自己停住，玩家還能繞過視窗操作遊戲，離開選單後遊戲就不正常了；所以視窗開著時
+遊戲等在後面：手把與鍵盤一律讀成放開（`set_input_held`），Kinect 只送一格雙手垂在身側的骨架給遊戲
+（`kinect_arms_down`：選單游標要舉手才會出現，手停在按鈕上也不會一直按下），之後不再更新，暫停手勢也不作用；
+視窗照常顯示感應器的即時畫面。關閉視窗後一切恢復。用 webcam 時改開「Webcam 調整」視窗（見[攝影機體感](camera-input.md)），只用手把時照舊打開就關閉。log：
+`NUI_SYSTEM_UI ... backend=adjustment-window`、`NUI_KINECT_TUNER opened=1 source=kinect`、`NUI_KINECT_TUNER input=held`、
+`NUI_KINECT_TUNER input=released`、`NUI_KINECT_TUNER closed`。
