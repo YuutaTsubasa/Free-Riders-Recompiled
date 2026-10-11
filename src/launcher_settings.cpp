@@ -1,5 +1,6 @@
 #include "launcher_settings.h"
 #include "game_language.h"
+#include <algorithm>
 #include <charconv>
 #include <fstream>
 #include <sstream>
@@ -73,6 +74,7 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         else if (key == "camera" && (value == "off" || value == "picture" || value == "motion" || value == "kinect")) settings.camera = value;
         else if (key == "camera_device" && value.size() <= 128) settings.camera_device = value;
         else if (key == "camera_mirror") read_flag(value, settings.camera_mirror);
+        else if (key == "menu_steady_radius") read_number(value, 0, 30, settings.menu_steady_radius);
         else if (key == "voice") read_flag(value, settings.voice);
         else if (key == "camera_debug") read_flag(value, settings.camera_debug);
         else if (key == "avatar_model") settings.avatar_model = utf8_path(value);
@@ -121,6 +123,7 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "camera=" << s.camera << '\n'
         << "camera_device=" << s.camera_device << '\n'
         << "camera_mirror=" << s.camera_mirror << '\n'
+        << "menu_steady_radius=" << (std::min)(s.menu_steady_radius, 30u) << '\n'
         << "voice=" << s.voice << '\n'
         << "camera_debug=" << s.camera_debug << '\n'
         << "avatar_model=" << path_utf8(s.avatar_model) << '\n'
@@ -229,6 +232,8 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         {"SFR_CAMERA", s.camera == "off" ? "" : s.camera},
         {"SFR_CAMERA_DEVICE", s.camera_device},
         {"SFR_CAMERA_MIRROR", s.camera_mirror ? "1" : "0"},
+        {"SFR_MENU_HAND_STEADY", s.menu_steady_radius ? "1" : "0"},
+        {"SFR_MENU_STEADY_RADIUS", s.menu_steady_radius ? std::to_string((std::min)(s.menu_steady_radius, 30u)) : ""},
         {"SFR_VOICE", s.voice ? "1" : ""},
         {"SFR_AVATAR", s.avatar_model.empty() ? "0" : "1"},
         {"SFR_AVATAR_MODEL", path_utf8(resolved_avatar_model(s, directory))},

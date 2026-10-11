@@ -3,6 +3,7 @@
 #include "guest_memory.h"
 #include "camera_player.h"
 #include "kinect_sensor.h"
+#include "kinect_stability.h"
 #include "camera_debug.h"
 #include "camera_input.h"
 #include "nui_skeleton.h"
@@ -446,6 +447,12 @@ SFR_INPUT_HOOK(sub_827707B0) {
         auto& memory=*sfr::active_memory;
         // Turned once per new frame: the last one is kept as it was turned.
         const bool received=kinect->next(kinect_frame);
+        if(received) {
+            // The menu cursor steadied (kinect_stability.h) before
+            // anything reads the frame.
+            static sfr::KinectBodySteadying steadying=sfr::KinectBodySteadying::from_environment();
+            steadying.steady(kinect_frame.bodies,!racing);
+        }
         const bool expired=sfr::kinect_expire_frame(kinect_frame,std::chrono::steady_clock::now());
         if(received || expired) {
             // The title stores two fully tracked body indices, even though
@@ -526,6 +533,7 @@ SFR_INPUT_HOOK(sub_827707B0) {
     }
     const bool debug_active=camera_debug && !camera_debug->closed();
     sfr::CameraTrackingStatus camera_status;
+    if(camera_player) camera_player->set_in_menu(!racing);
     if(camera_player && camera_player->joints(camera_joints,&camera_status)) {
         camera_has_joints=true;
         camera_pose_counter.fetch_add(1,std::memory_order_relaxed);

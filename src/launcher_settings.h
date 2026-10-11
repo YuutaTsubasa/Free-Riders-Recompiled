@@ -40,6 +40,11 @@ struct LauncherSettings {
     // it is a setting: with it wrong, left and right are the wrong way
     // round and the cursor runs off the side of the screen.
     bool camera_mirror = false;   // SFR_CAMERA_MIRROR
+    // The menu cursor's steadying (pose_stability.h), webcam and Kinect: the
+    // circle a hand held still may wander in without moving the cursor, in
+    // millimetres; 0 turns it off. SFR_MENU_STEADY_RADIUS and
+    // SFR_MENU_HAND_STEADY.
+    uint32_t menu_steady_radius = 8;
     // Voice commands through the host's speech recognizer and the default
     // microphone (a Kinect's array, made the default, is heard), in English
     // or Traditional Chinese; the pad's buttons still say them too.

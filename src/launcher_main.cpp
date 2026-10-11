@@ -84,7 +84,7 @@ enum Text {
     KinectNoRuntime, KinectNoSensor, KinectFailed, KinectDownload, KinectDownloadV2, KinectInstallHint,
     VoiceLabel, VoiceHint,
     KinectPreviewOpen, KinectPreviewClose,
-    CameraDebug, CameraDebugHint,
+    CameraDebug, CameraDebugHint, MenuSteady, MenuSteadyHint, MenuSteadyOff,
     ImageDirectory, ImageDirectoryHint, AssetDirectory, AssetDirectoryHint, Browse, Found, Missing, FilesHint,
     SaveDirectory, SaveDirectoryHint, SaveFound, SaveNone, SaveDefault, SaveOpen,
     StartGame, Quit, Defaults,
@@ -194,6 +194,10 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Skeleton debug window", "骨架 Debug 視窗"},
     {"Shows only the skeleton received by the game, in front and side views, with no camera image. Closing this window does not stop the game. Changes apply on the next game launch.",
      "僅顯示遊戲收到的骨架，提供正面與側面視圖，不顯示攝影機影像。關閉此視窗不會停止遊戲。設定會在下次啟動遊戲時套用。"},
+    {"Menu cursor steadying", "選單游標穩定"},
+    {"A hand held still on a button still wanders a few millimetres, and the cursor with it. Movement inside this circle is ignored in the menus (never while racing); a larger circle is steadier but a little stickier. 0 turns it off.",
+     "手停在按鈕上時仍會晃動幾公釐，游標也跟著抖。在選單中（比賽時不作用），手在這個圓圈內的移動會被忽略；圈越大越穩，但會稍微黏手。設為 0 關閉。"},
+    {"Off", "關閉"},
     {"Game code image", "遊戲程式映像"},
     {"The game's decoded code and data (complete.txt, image.bin).", "解碼後的遊戲程式與資料（complete.txt、image.bin）。"},
     {"Game data", "遊戲資料"},
@@ -2248,6 +2252,19 @@ struct Launcher {
                             [&] { toggle("##camera_debug", &settings.camera_debug); });
 #endif
             }
+        }
+        if (settings.camera == "motion" || settings.camera == "kinect") {
+            const float slider_width = 220 * scale;
+            setting_row(tr(MenuSteady), tr(MenuSteadyHint), slider_width, scale, [&] {
+                int radius = int((std::min)(settings.menu_steady_radius, 30u));
+                char shown[32];
+                if (radius) std::snprintf(shown, sizeof shown, "%d mm", radius);
+                else std::snprintf(shown, sizeof shown, "%s", tr(MenuSteadyOff));
+                ImGui::SetNextItemWidth(slider_width);
+                bool moved = ImGui::SliderInt("##menu_steady", &radius, 0, 30, shown);
+                moved |= slider_steps(&radius, 0, 30, 1);
+                if (moved) settings.menu_steady_radius = uint32_t(std::clamp(radius, 0, 30));
+            });
         }
         if (sfr::VoiceRecognizer::supported()) {
             settings_section(SectionVoice);

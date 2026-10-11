@@ -3,6 +3,7 @@
 #include "camera_capture.h"
 #include "pose_estimator.h"
 #include "pose_smoothing.h"
+#include "pose_stability.h"
 
 #include <atomic>
 #include <chrono>
@@ -18,6 +19,9 @@ struct CameraPlayer::Impl {
     std::unique_ptr<CameraCapture> camera;
     std::unique_ptr<PoseEstimator> estimator;
     PoseSmoothing smoothing = PoseSmoothing::from_environment();
+    PoseStabilizer stabilizer = PoseStabilizer::from_environment();
+    MenuHandSteadying menu_hands = MenuHandSteadying::from_environment();
+    std::atomic<bool> in_menu{false};
     bool mirrored = false;
     std::mutex lock;
     SkeletonJoints joints{};
@@ -31,7 +35,7 @@ struct CameraPlayer::Impl {
         CameraFrame frame;
         PoseLandmarks landmarks{};
         SkeletonJoints mapped{};
-        uint64_t estimates = 0;
+        uint64_t estimates = 0, held = 0;
         auto reported = std::chrono::steady_clock::now();
         auto last_picture = reported;
         double spent = 0;
@@ -46,12 +50,18 @@ struct CameraPlayer::Impl {
             last_picture = started;
             bool body = estimator->estimate(frame, landmarks);
             if (body) {
-                // Smoothed where the model read them, before the picture
-                // becomes metres: the wandering is a picture's wandering.
+                // Limb points the body cannot have reached are held first,
+                // then everything is smoothed where the model read it, before
+                // the picture becomes metres: the wandering is a picture's.
+                stabilizer.stabilize(landmarks, interval);
+                held += stabilizer.held();
                 smoothing.smooth(landmarks, interval);
                 body = pose_to_joints(landmarks, frame.width, frame.height, mapped, mirrored);
+                if (body) menu_hands.steady(mapped, in_menu.load(std::memory_order_relaxed));
             } else {
+                stabilizer.forget();
                 smoothing.forget();
+                menu_hands.forget();
             }
             spent += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
             ++estimates;
@@ -71,9 +81,11 @@ struct CameraPlayer::Impl {
             const auto now = std::chrono::steady_clock::now();
             if (now - reported >= std::chrono::seconds(5)) {
                 std::cerr << "NATIVE_CAMERA_PLAYER estimates=" << estimates << " tracked=" << found
-                          << " average_ms=" << (estimates ? spent / double(estimates) : 0.0) << '\n';
+                          << " average_ms=" << (estimates ? spent / double(estimates) : 0.0)
+                          << " held_points=" << held << '\n';
                 reported = now;
                 estimates = 0;
+                held = 0;
                 spent = 0;
             }
         }
@@ -121,6 +133,8 @@ bool CameraPlayer::joints(SkeletonJoints& out, CameraTrackingStatus* status) {
     impl_->taken = impl_->found;
     return true;
 }
+
+void CameraPlayer::set_in_menu(bool in_menu) { impl_->in_menu.store(in_menu, std::memory_order_relaxed); }
 
 bool CameraPlayer::tracking() const { return impl_->ever_found.load(std::memory_order_relaxed); }
 

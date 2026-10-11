@@ -212,6 +212,20 @@ mingw 編譯連結過。Kinect for Xbox 360（v1）已在實機上讀到骨架�
   遊戲是否自己呼叫平滑，可以用
   `scripts/analyse_detectors.py ... --calls-into 82760000-82780000` 列出遊戲呼叫 NUI 函式庫的每一處來查。
 
+### 選單游標
+
+骨架照原樣交給遊戲，只有選單游標和主機不同（[`kinect_stability.h`](../src/kinect_stability.h)，和 webcam 共用
+[`pose_stability.h`](../src/pose_stability.h) 的 `MenuHandSteadying`；尚未實機確認效果）：選單中（不在比賽時）雙手以肩膀為準，
+靜止時小幅晃動不移動游標，慢慢移動立刻跟上，快速移動完全不延遲，單一格的突跳忽略。比賽中不作用。每個被追蹤的人各自記憶，
+依 SDK 追蹤編號區分。靜止圈半徑在啟動器「體感」頁的「選單游標穩定」設定（1–30 公釐，預設 8，0 關閉；`SFR_MENU_STEADY_RADIUS`、`SFR_MENU_HAND_STEADY=0`）。
+
+用實體 Kinect 比較：`sfr_kinect_compare`（Windows，先關遊戲，Kinect 一次只給一個程式）開一個四格視窗，上排是 SDK 原樣、
+下排是游標穩定處理後，左邊彩色、右邊深度。M 切換比賽／選單（預設選單，畫出右手的游標軌跡），1 開關下排的游標穩定。
+
+**試過、拿掉的**：被遮住的四肢點固定（遮擋保持，含骨長判斷）與用深度影像檢查推測位置（深度分層）曾經套用到 Kinect，
+用四格比較視窗在實機上看不出差別，所以拿掉了；SDK 1.8 在一般遊玩姿勢下推測關節的情況不多。webcam 的遮擋保持仍保留
+（[攝影機體感](camera-input.md)）。
+
 ### 預覽視窗
 
 啟動器 Kinect 設定的「Kinect 感測器」→「開啟預覽」開一個視窗（取代原本的「測試」：開不起來時一樣顯示原因與 SDK 下載按鈕）（[`kinect_preview_window.cpp`](../src/kinect_preview_window.cpp)，

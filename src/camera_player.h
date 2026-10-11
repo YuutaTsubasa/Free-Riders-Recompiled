@@ -28,6 +28,9 @@ public:
     // Whether a body has ever been found: until one is, the title is better
     // off with the pad's emulated player than with an empty skeleton.
     bool tracking() const;
+    // Whether the title is in its menus (not racing), where the hands are a
+    // cursor and are steadied (MenuHandSteadying).
+    void set_in_menu(bool in_menu);
 
     struct Impl;
 private:

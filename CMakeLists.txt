@@ -381,6 +381,12 @@ add_test(NAME pose_skeleton COMMAND sfr_pose_skeleton_test)
 add_executable(sfr_pose_smoothing_test tests/pose_smoothing_test.cpp src/pose_smoothing.cpp)
 target_include_directories(sfr_pose_smoothing_test PRIVATE src)
 add_test(NAME pose_smoothing COMMAND sfr_pose_smoothing_test)
+add_executable(sfr_pose_stability_test tests/pose_stability_test.cpp src/pose_stability.cpp)
+target_include_directories(sfr_pose_stability_test PRIVATE src)
+add_test(NAME pose_stability COMMAND sfr_pose_stability_test)
+add_executable(sfr_kinect_stability_test tests/kinect_stability_test.cpp src/kinect_stability.cpp src/pose_stability.cpp)
+target_include_directories(sfr_kinect_stability_test PRIVATE src)
+add_test(NAME kinect_stability COMMAND sfr_kinect_stability_test)
 if(SFR_POSE_AVAILABLE)
     # Running the model over a camera picture, or a BMP, without the game.
     add_executable(sfr_pose_probe tests/pose_probe.cpp src/pose_skeleton.cpp ${SFR_POSE_SOURCES} ${SFR_CAMERA_CAPTURE})
@@ -469,6 +475,12 @@ add_executable(sfr_pose_mediapipe_test tests/pose_mediapipe_test.cpp src/pose_me
 target_include_directories(sfr_pose_mediapipe_test PRIVATE src)
 add_test(NAME pose_mediapipe COMMAND sfr_pose_mediapipe_test)
 if(WIN32)
+    # The Kinect skeleton before and after the steadying, four panels, on a
+    # real sensor without the game.
+    add_executable(sfr_kinect_compare tests/kinect_compare.cpp src/kinect_preview.cpp src/kinect_stability.cpp
+        src/pose_stability.cpp src/camera_debug.cpp src/kinect_sensor.cpp ${SFR_KINECT_SENSOR})
+    target_include_directories(sfr_kinect_compare PRIVATE src)
+    target_link_libraries(sfr_kinect_compare PRIVATE user32 gdi32 ole32)
     add_executable(sfr_camera_debug_probe tests/camera_debug_probe.cpp src/camera_debug.cpp src/camera_debug_window.cpp)
     target_include_directories(sfr_camera_debug_probe PRIVATE src)
     target_link_libraries(sfr_camera_debug_probe PRIVATE user32 gdi32)
@@ -915,7 +927,7 @@ if(SFR_BUILD_DIAGNOSTIC)
     target_sources(sfr_cpu_diagnostic PRIVATE src/race_frame_clock_hooks.cpp src/race_orientation_hooks.cpp src/race_boarding_hooks.cpp src/race_launch_hooks.cpp src/race_scripted_motion_hooks.cpp)
     target_sources(sfr_cpu_diagnostic PRIVATE src/offline_presence_hooks.cpp)
     # The webcam standing in for the sensor, and the body it finds.
-    target_sources(sfr_cpu_diagnostic PRIVATE src/camera_player.cpp src/camera_debug.cpp src/camera_debug_window.cpp src/pose_skeleton.cpp src/pose_smoothing.cpp
+    target_sources(sfr_cpu_diagnostic PRIVATE src/camera_player.cpp src/camera_debug.cpp src/camera_debug_window.cpp src/pose_skeleton.cpp src/pose_smoothing.cpp src/pose_stability.cpp src/kinect_stability.cpp
                    ${SFR_CAMERA_CAPTURE} ${SFR_POSE_SOURCES})
     # A real Kinect (SFR_CAMERA=kinect), through the Kinect for Windows runtime.
     target_sources(sfr_cpu_diagnostic PRIVATE src/kinect_sensor.cpp ${SFR_KINECT_SENSOR} ${SFR_VOICE})
