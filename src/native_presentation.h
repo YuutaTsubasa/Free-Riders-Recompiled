@@ -92,6 +92,9 @@ public:
     // presents the whole framebuffer.
     void present(uint32_t area_width = 0, uint32_t area_height = 0);
     void prepare_player_model();
+    // The model loads on its own thread; this waits for it and builds it
+    // (for callers that need it drawn at once, such as the tests).
+    void wait_for_player_model();
     // Draw at the character pass using the title's current viewport/scissor.
     // Later title draws (including HUD) retain their original ordering.
     void draw_player_model(const AvatarFrameTransform& frame);

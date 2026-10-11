@@ -606,7 +606,8 @@ std::filesystem::path avatar_model_path() {
     return path ? std::filesystem::path(path) : std::filesystem::path{};
 }
 
-std::optional<GltfModel> read_binary_gltf(const std::vector<uint8_t>& bytes, std::string* error, GltfPose pose) {
+std::optional<GltfModel> read_binary_gltf(const std::vector<uint8_t>& bytes, std::string* error, GltfPose pose,
+                                          GltfLoadProgress* progress) {
     if (bytes.size() < 20) { fail(error, "shorter than a binary glTF header"); return std::nullopt; }
     uint32_t magic = 0, version = 0, length = 0;
     std::memcpy(&magic, bytes.data(), 4);
@@ -811,6 +812,12 @@ std::optional<GltfModel> read_binary_gltf(const std::vector<uint8_t>& bytes, std
         if (!length || offset + length > binary.size()) return ~0u;
         const std::vector<uint8_t> bytes(binary.begin() + int64_t(offset), binary.begin() + int64_t(offset + length));
         DecodedImage picture = decode_image(bytes);
+        if (progress) {
+            // Each picture decoded moves the second part along by its share.
+            const size_t total = (std::max)(size_t(1), images->array.size());
+            progress->permille.store(uint32_t(400 + 590 * (std::min)(decoded.size(), total) / total),
+                                     std::memory_order_relaxed);
+        }
         if (!picture) return ~0u;
         model.images.push_back(shrink_to(std::move(picture), texture_limit));
         decoded[source] = uint32_t(model.images.size() - 1);
@@ -1030,11 +1037,28 @@ std::optional<GltfModel> read_binary_gltf(const std::vector<uint8_t>& bytes, std
     return model;
 }
 
-std::optional<GltfModel> load_binary_gltf(const std::filesystem::path& file, std::string* error, GltfPose pose) {
-    std::ifstream in(file, std::ios::binary);
+std::optional<GltfModel> load_binary_gltf(const std::filesystem::path& file, std::string* error, GltfPose pose,
+                                          GltfLoadProgress* progress) {
+    std::ifstream in(file, std::ios::binary | std::ios::ate);
     if (!in) { fail(error, "the file cannot be opened"); return std::nullopt; }
-    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    return read_binary_gltf(bytes, error, pose);
+    // Read in large pieces: a VRM can be hundreds of megabytes, and a byte at
+    // a time takes seconds of that.
+    const std::streamoff size = in.tellg();
+    if (size < 0) { fail(error, "the file cannot be read"); return std::nullopt; }
+    in.seekg(0);
+    std::vector<uint8_t> bytes(static_cast<size_t>(size));
+    constexpr size_t piece = size_t(8) << 20;
+    for (size_t at = 0; at < bytes.size(); at += piece) {
+        const size_t count = (std::min)(piece, bytes.size() - at);
+        if (!in.read(reinterpret_cast<char*>(bytes.data() + at), std::streamsize(count))) {
+            fail(error, "the file cannot be read");
+            return std::nullopt;
+        }
+        if (progress) progress->permille.store(uint32_t(400 * (at + count) / bytes.size()), std::memory_order_relaxed);
+    }
+    auto model = read_binary_gltf(bytes, error, pose, progress);
+    if (progress) progress->permille.store(1000, std::memory_order_relaxed);
+    return model;
 }
 
 }

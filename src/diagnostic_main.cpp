@@ -1448,10 +1448,19 @@ static uint32_t complete_overlapped(uint32_t overlapped, uint32_t result, uint32
 // title only needs it for the Avatar entry of the character ring, and saying
 // yes to XamAvatarInitialize means answering everything it then asks about
 // the assets it would draw.
+//
+// Online it is always on: another player may race as their Avatar, and a
+// game whose avatar system failed to start loads that racer anyway and reads
+// through a null pointer (an AYN Thor hosting a PC player's Avatar). With
+// the system on, a racer without parts is the empty avatar game_patches.cpp
+// already handles.
 static bool avatars_enabled() {
     static const bool enabled = [] {
         const char* const text = std::getenv("SFR_AVATAR");
-        return text && *text && *text != '0';
+        if (text && *text && *text != '0') return true;
+        const char* const server = std::getenv("SFR_LIVE_SERVER");
+        const char* const host = std::getenv("SFR_LIVE_HOST");
+        return (server && *server) || (host && *host && *host != '0');
     }();
     return enabled;
 }

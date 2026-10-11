@@ -446,15 +446,33 @@ SFR_CONCURRENT_HOOK(sub_82750C40) {
 //
 // 823B9B50 is left alone: it is the one that builds the structure.
 namespace {
+// The walkers read [list] as the count and [list+4] as the parts, 96 bytes
+// each (823BA468; 823B9F00's are 52). Online, a PC loading a race stopped in
+// 823BA468 with a count but parts that pointed nowhere, so the parts must be
+// readable too; a count past anything an avatar has, parts that cannot be
+// read, or a chain that cannot be read is no body to draw, and is skipped
+// like an empty avatar rather than followed.
 bool avatar_has_parts(uint32_t avatar) {
     if(!sfr::active_memory || !avatar) return true;
+    auto& memory=*sfr::active_memory;
+    const auto refuse=[](const char* why) {
+        static std::atomic<uint32_t> reported{0};
+        if(reported.fetch_add(1,std::memory_order_relaxed)<8)
+            std::cerr << "GAME_PATCH avatar_parts_unusable reason=" << why << char(10);
+        return false;
+    };
     try {
-        const uint32_t list=sfr::active_memory->load<uint32_t>(uint64_t(avatar)+0x2FC40);
+        const uint32_t list=memory.load<uint32_t>(uint64_t(avatar)+0x2FC40);
         if(!list) return false;
-        const uint32_t entry=sfr::active_memory->load<uint32_t>(list);
+        const uint32_t entry=memory.load<uint32_t>(list);
         if(!entry) return false;
-        return sfr::active_memory->load<uint32_t>(entry)!=0;
-    } catch(...) { return true; }  // unreadable is not ours to judge
+        const uint32_t count=memory.load<uint32_t>(entry);
+        if(!count) return false;
+        if(count>256) return refuse("count");
+        const uint32_t parts=memory.load<uint32_t>(uint64_t(entry)+4);
+        if(!parts || !memory.readable(parts,uint64_t(count)*96)) return refuse("parts");
+        return true;
+    } catch(...) { return refuse("chain"); }
 }
 
 void note_avatar_skip(uint32_t address) {

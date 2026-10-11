@@ -3,6 +3,7 @@
 #include "avatar_pose.h"
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -88,8 +89,14 @@ enum class GltfPose { rest, riding };
 //
 // Returns nothing when the file is not a binary glTF this can read; when
 // `error` is given it is told why.
+// How far a load has come, in thousandths: reading the file is the first
+// 400, decoding its pictures the rest. Read from another thread to show it.
+struct GltfLoadProgress {
+    std::atomic<uint32_t> permille{0};
+};
+
 std::optional<GltfModel> load_binary_gltf(const std::filesystem::path& file, std::string* error = nullptr,
-                                          GltfPose pose = GltfPose::rest);
+                                          GltfPose pose = GltfPose::rest, GltfLoadProgress* progress = nullptr);
 
 // Whether the player named a model to draw for their Avatar
 // (SFR_AVATAR_MODEL). Asked before a frame is presented, so it is read
@@ -99,6 +106,6 @@ std::filesystem::path avatar_model_path();
 
 // The same from bytes already in hand (what the tests use).
 std::optional<GltfModel> read_binary_gltf(const std::vector<uint8_t>& bytes, std::string* error = nullptr,
-                                          GltfPose pose = GltfPose::rest);
+                                          GltfPose pose = GltfPose::rest, GltfLoadProgress* progress = nullptr);
 
 }
