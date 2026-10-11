@@ -86,6 +86,7 @@ enum Text {
     KinectPreviewOpen, KinectPreviewClose,
     CameraDebug, CameraDebugHint,
     ImageDirectory, ImageDirectoryHint, AssetDirectory, AssetDirectoryHint, Browse, Found, Missing, FilesHint,
+    SaveDirectory, SaveDirectoryHint, SaveFound, SaveNone, SaveDefault, SaveOpen,
     StartGame, Quit, Defaults,
     MissingFiles, MissingGame, LaunchFailed, Ready,
     Stopped, StoppedDetail, BackToSettings, OpenLog,
@@ -201,6 +202,13 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Found", "已找到"},
     {"Not found", "找不到"},
     {"Installing from a disc image or folder fills in both.", "從光碟映像檔或資料夾安裝時，會自動設定這兩項。"},
+    {"Save folder", "存檔目錄"},
+    {"Where the game keeps its saves: <player>\\00000001\\SfrAllData.sav\\SfrAllData.sav inside it. Empty uses the save folder beside the launcher. Changes apply on the next game launch; copy the folder along when moving to another build.",
+     "遊戲存放存檔的資料夾，存檔在其中的 <玩家>\\00000001\\SfrAllData.sav\\SfrAllData.sav。留空時使用啟動器旁的 save 資料夾。下次啟動遊戲時套用；換到另一個版本時請把整個資料夾一起複製過去。"},
+    {"Save found", "有存檔"},
+    {"No save yet", "還沒有存檔"},
+    {"Use default", "使用預設"},
+    {"Open folder", "開啟資料夾"},
     {"Start game", "開始遊戲"},
     {"Quit", "離開"},
     {"Restore defaults", "恢復預設值"},
@@ -2265,7 +2273,9 @@ struct Launcher {
         ImGui::Dummy(ImVec2(0, 6 * scale));
         if (small_button(tr(Defaults), scale)) {
             const auto image = settings.image_directory, assets = settings.asset_directory;
+            const auto saves = settings.save_directory;  // the saves stay where they are
             settings = {};
+            settings.save_directory = saves;
             avatar_model_import_failed = false;
             settings.image_directory = image;
             settings.asset_directory = assets;
@@ -2316,6 +2326,57 @@ struct Launcher {
         ImGui::PopID();
     }
 
+    // The saves' folder: empty is save/ beside the launcher, which the
+    // field shows greyed. Whether it holds a save is looked up again only
+    // when the folder changes, or every two seconds (the game may make one).
+    fs::path save_checked_for;
+    std::chrono::steady_clock::time_point save_checked_at{};
+    bool save_present = false;
+
+    void save_directory_row() {
+        ImGui::Dummy(ImVec2(0, 10 * scale));
+        ImGui::PushID("save_directory");
+        const fs::path saves = sfr::resolved_save_directory(settings, directory);
+        const auto now = std::chrono::steady_clock::now();
+        if (saves != save_checked_for || now - save_checked_at > std::chrono::seconds(2)) {
+            save_checked_for = saves;
+            save_checked_at = now;
+            save_present = sfr::has_game_save(saves);
+        }
+        ImGui::PushFont(fonts.heading);
+        ImGui::TextUnformatted(tr(SaveDirectory));
+        ImGui::PopFont();
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Text, save_present ? ImVec4(0.45f, 0.90f, 0.55f, 1) : dim_text);
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("%s  %s", save_present ? "\xE2\x97\x8F" : "\xE2\x97\x8B", tr(save_present ? SaveFound : SaveNone));
+        ImGui::PopStyleColor();
+        ImGui::PushStyleColor(ImGuiCol_Text, dim_text);
+        ImGui::TextWrapped("%s", wrapped(tr(SaveDirectoryHint), room()).c_str());
+        ImGui::PopStyleColor();
+        const float browse_width = ImGui::CalcTextSize(tr(Browse)).x + ImGui::GetStyle().FramePadding.x * 2;
+        ImGui::SetNextItemWidth(content_width - browse_width - ImGui::GetStyle().ItemSpacing.x);
+        char buffer[1024]{};
+        utf8(settings.save_directory).copy(buffer, sizeof buffer - 1);
+        const std::string fallback = utf8(directory / "save");
+        if (ImGui::InputTextWithHint("##path", fallback.c_str(), buffer, sizeof buffer))
+            settings.save_directory = fs::path(std::u8string(buffer, buffer + std::strlen(buffer)));
+        focus_glow(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), ImGui::GetStyle().FrameRounding,
+                   focus_amount(ImGui::IsItemFocused() && nav_visible()), scale);
+        ImGui::SameLine();
+        if (small_button(tr(Browse), scale))
+            if (auto chosen = sfr::launcher::pick_path(saves, true)) settings.save_directory = *chosen;
+        if (small_button(tr(SaveDefault), scale)) settings.save_directory.clear();
+        ImGui::SameLine();
+        if (small_button(tr(SaveOpen), scale)) {
+            std::error_code error;
+            fs::create_directories(saves, error);
+            sfr::launcher::open_url(utf8(saves).c_str());
+        }
+        ImGui::Dummy(ImVec2(0, 10 * scale));
+        ImGui::PopID();
+    }
+
     void file_settings() {
 #ifdef __ANDROID__
         settings_section(SectionDiagnostics);
@@ -2332,6 +2393,7 @@ struct Launcher {
         ImGui::PopStyleColor();
         ImGui::Dummy(ImVec2(0, 4 * scale));
         if (small_button(tr(sfr::launcher::can_pick_folders() ? InstallFromDisc : InstallFromImage), scale)) open_install_page();
+        if (sfr::launcher::can_pick_folders()) save_directory_row();
         // Without the checkout's shader tools the game needs a pack.
         if (runtime_root.empty() && sfr::shader_tool_environment(directory).empty()) {
             ImGui::Dummy(ImVec2(0, 10 * scale));

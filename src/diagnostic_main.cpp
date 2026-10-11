@@ -4785,6 +4785,13 @@ int main(int argc, char** argv) {
         // Saves live in SFR_SAVE_DIRECTORY (default "save" in the working directory).
         const char* save_directory = std::getenv("SFR_SAVE_DIRECTORY");
         sfr::ContentFiles content(memory, save_directory && *save_directory ? save_directory : "save");
+        {
+            // Where the saves are read from, as the game resolves it.
+            std::error_code where;
+            const auto saves = std::filesystem::absolute(save_directory && *save_directory ? save_directory : "save", where);
+            std::cerr << "NATIVE_SAVE_DIRECTORY path=" << saves.string()
+                      << " from=" << (save_directory && *save_directory ? "SFR_SAVE_DIRECTORY" : "working-directory") << '\n';
+        }
         sfr::content_files = &content;
         sfr::MemoryStatistics statistics(memory, allocations, physical, {PPC_IMAGE_BASE, PPC_IMAGE_SIZE},
             {stack, stack_size}, {sfr::ThreadLocalStorage::static_address, tls_backing_size});

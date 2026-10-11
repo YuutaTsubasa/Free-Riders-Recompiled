@@ -25,6 +25,11 @@
   `XamContentGetDeviceData`／`GetDeviceState` 回報它。
 - 內容放在 `save/<XUID>/<內容類型>/<檔名>/`（`SFR_SAVE_DIRECTORY` 可改；Android 在 app 的
   外部檔案目錄下）。顯示名稱存在旁邊的 `<檔名>.name`。
+- 用啟動器時，存檔資料夾預設是**啟動器旁的 `save`**，不管遊戲的工作目錄在哪裡。啟動器「遊戲檔案」頁的
+  「存檔目錄」可以改成別的資料夾（相對路徑從啟動器算起；留空或按「使用預設」回到 `save`），旁邊會顯示
+  裡面有沒有存檔（`<XUID>\00000001\SfrAllData.sav\SfrAllData.sav`），「開啟資料夾」直接打開它；
+  設定存在 `settings.ini` 的 `save_directory=`，「恢復預設值」不會改動它。換到另一個版本或資料夾時，
+  把存檔目錄指到原本的 `save`，或把整個資料夾複製過去。
 - 掛載點下的路徑由 `ContentFiles` 處理：建立／開啟／覆寫、讀寫、大小與位置、刪除，
   其餘路徑仍是唯讀的遊戲檔案。檔案代碼在 `0x72300004..0x723FFFFC`。
 - 第一次執行時遊戲會問「No previous save data detected. Would you like to create a new save?」，

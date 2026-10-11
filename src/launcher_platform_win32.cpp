@@ -129,8 +129,9 @@ std::unique_ptr<GameProcess> start_game(const LauncherSettings& settings, const 
         else
             SetEnvironmentVariableA(name.c_str(), value.empty() ? nullptr : value.c_str());
     }
-    // Saves beside the launcher, whatever the game's working directory.
-    SetEnvironmentVariableW(L"SFR_SAVE_DIRECTORY", (directory / L"save").c_str());
+    // Saves beside the launcher (or where the player chose), whatever the
+    // game's working directory.
+    SetEnvironmentVariableW(L"SFR_SAVE_DIRECTORY", resolved_save_directory(settings, directory).c_str());
     const fs::path root = find_runtime_root(directory);
     // Without the checkout's shader tools, the pack beside the launcher.
     std::error_code missing;

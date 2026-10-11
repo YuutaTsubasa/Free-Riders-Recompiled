@@ -98,7 +98,7 @@ void apply_environment(const LauncherSettings& settings, const fs::path& directo
         if (value.empty()) unsetenv(name.c_str());
         else setenv(name.c_str(), value.c_str(), 1);
     }
-    setenv("SFR_SAVE_DIRECTORY", utf8(directory / "save").c_str(), 1);
+    setenv("SFR_SAVE_DIRECTORY", utf8(resolved_save_directory(settings, directory)).c_str(), 1);
     std::error_code error;
     if (!checkout && fs::is_regular_file(directory / "shaders.pack", error))
         setenv("SFR_SHADER_PACK", utf8(directory / "shaders.pack").c_str(), 1);

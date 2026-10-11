@@ -150,6 +150,30 @@ void rendering_resolution_settings() {
             "unsupported in-memory settings serialize and launch at native resolution");
 }
 
+void save_directory_settings() {
+    const auto root = std::filesystem::temp_directory_path() / "sfr_launcher_saves_test";
+    std::filesystem::remove_all(root);
+    const sfr::LauncherSettings defaults;
+    require(sfr::resolved_save_directory(defaults, root) == root / "save", "the saves default to save beside the launcher");
+    require(sfr::format_launcher_settings(defaults).find("save_directory=\n") != std::string::npos,
+            "an empty save folder is written as empty");
+    const auto relative = sfr::parse_launcher_settings("save_directory=../saves\n");
+    require(relative.save_directory == std::filesystem::path("../saves") &&
+                sfr::resolved_save_directory(relative, root / "launcher") == root / "saves",
+            "a relative save folder is from the launcher");
+    const auto chosen = (root / "elsewhere").lexically_normal();
+    sfr::LauncherSettings absolute;
+    absolute.save_directory = chosen;
+    require(sfr::resolved_save_directory(sfr::parse_launcher_settings(sfr::format_launcher_settings(absolute)), root) == chosen,
+            "a chosen save folder survives a save and is used as it is");
+    require(!sfr::has_game_save(chosen), "a missing folder holds no save");
+    std::filesystem::create_directories(chosen / "E000C56DDFFD8EA0" / "00000001" / "SfrAllData.sav");
+    require(!sfr::has_game_save(chosen), "an empty content folder is no save");
+    std::ofstream(chosen / "E000C56DDFFD8EA0" / "00000001" / "SfrAllData.sav" / "SfrAllData.sav") << "x";
+    require(sfr::has_game_save(chosen), "a player's SfrAllData.sav is a save");
+    std::filesystem::remove_all(root);
+}
+
 void camera_debug_settings() {
     const sfr::LauncherSettings defaults;
     require(sfr::format_launcher_settings(defaults).find("camera_debug=0\n") != std::string::npos,
@@ -370,6 +394,7 @@ int main() {
         graphics_backend_settings();
         rendering_resolution_settings();
         camera_debug_settings();
+        save_directory_settings();
         avatar_model_settings();
         malformed_values_keep_defaults();
         environment_follows_settings();
