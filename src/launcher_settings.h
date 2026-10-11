@@ -40,6 +40,13 @@ struct LauncherSettings {
     // it is a setting: with it wrong, left and right are the wrong way
     // round and the cursor runs off the side of the screen.
     bool camera_mirror = false;   // SFR_CAMERA_MIRROR
+    // A real Kinect's tuning (Issue #97). Smoothing steadies a v2's joints
+    // (v1's SDK smooths its own when asked); the lean is the steering a body
+    // lean gives, as a percent of the most; the crouch is how far the hips
+    // drop for a crouch, in centimetres. The defaults are the game's own.
+    bool kinect_smooth = true;      // SFR_KINECT_SMOOTH=0 when off
+    uint32_t kinect_lean = 100;     // SFR_KINECT_LEAN_SCALE = 3.5 x percent
+    uint32_t kinect_crouch_cm = 15; // SFR_KINECT_CROUCH_DEPTH in metres
     // Voice commands through the host's speech recognizer and the default
     // microphone (a Kinect's array, made the default, is heard), in English
     // or Traditional Chinese; the pad's buttons still say them too.
