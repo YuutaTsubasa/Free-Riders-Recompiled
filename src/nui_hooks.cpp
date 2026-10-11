@@ -11,6 +11,7 @@
 #include "native_input.h"
 #include "camera_debug.h"
 #include "camera_input.h"
+#include "pause_gesture.h"
 #include "nui_skeleton.h"
 #include "nui_player_routing.h"
 #include "nui_menu_progress.h"
@@ -69,6 +70,30 @@ std::atomic<bool> sensor_depth{false};
 std::atomic<uint64_t> kinect_generation{0};  // kinect_frame_generation
 sfr::KinectFrame kinect_frame;
 sfr::KinectPlayerSlots kinect_players;
+// The Pause Gesture (pause_gesture.h): seen on the skeleton hook,
+// heard as the pause command by the next input update.
+sfr::PauseGesture pause_gesture=sfr::PauseGesture::from_environment();
+std::atomic<bool> pause_requested{false};
+// active: a race (or its replay) is running with no menu page or dialog
+// up. Anywhere else (the menus, the pause menu itself, story scenes,
+// results) the gesture does nothing: there, a second pause would be START
+// answering the pause menu, and the menus have nothing for it to open.
+void watch_pause_gesture(const sfr::SkeletonJoints& joints,bool active) {
+    if(!active) {
+        pause_gesture.forget();
+        sfr::publish_pause_gauge(0.0f);
+        return;
+    }
+    const auto now=std::chrono::steady_clock::now();
+    const bool fired=pause_gesture.update(joints,now);
+    // The gauge in the lower left, as the console drew it, once the arm has
+    // been up for a moment (a pose passed through in play does not flash it).
+    const float progress=pause_gesture.progress();
+    sfr::publish_pause_gauge(progress>=0.15f ? progress : 0.0f);
+    if(!fired) return;
+    pause_requested.store(true,std::memory_order_relaxed);
+    std::cerr << "NUI_PAUSE_GESTURE pause\n";
+}
 // A real Kinect's skeletons reach the title as the sensor gives them: in the
 // sensor's own six slots, under its own tracking ids, so the depth image's
 // player index (slot + 1) marks the same people and a person who steps back
@@ -222,6 +247,16 @@ constexpr uint32_t hand_seek_columns=19, hand_seek_rows=21;
 uint64_t dialog_frame=0;
 uint32_t dialog_layout=0;
 bool dialog_seen=false;
+// Whether the Pause Gesture may act: in a race with no menu up. The pause
+// menu's ring runs with the race flag still set (ring_asked_ms), so a ring
+// asked for in the last half second, or a menu page, menu or dialog seen in
+// the last half second of input updates, means a menu is open: a second
+// gesture there would be START answering it.
+bool pause_gesture_active(bool racing) {
+    const auto recent=[](uint64_t frame) { return frame && input_frames-frame<=30; };
+    return racing && !sfr::kinect_tuner_open() && now_ms()-ring_asked_ms.load(std::memory_order_relaxed)>500 &&
+           !recent(menu_page_frame) && !recent(menu_manager_frame) && !(dialog_seen && recent(dialog_frame));
+}
 }
 
 
@@ -615,6 +650,14 @@ SFR_INPUT_HOOK(sub_827707B0) {
                 std::cerr << "NATIVE_KINECT_ENTER tracking_id=" << body.tracking_id << " slot=" << body.sensor_index << '\n';
         seen.clear();
         for(const sfr::KinectBody& body:kinect_frame.bodies) seen.push_back(body.tracking_id);
+        {
+            // Anyone the sensor tracks may pause, as on the console.
+            static const sfr::SkeletonJoints nobody{};
+            const sfr::SkeletonJoints* posed=&nobody;
+            for(const sfr::KinectBody& body:kinect_frame.bodies)
+                if(sfr::PauseGesture::in_pose(body.joints)) { posed=&body.joints; break; }
+            watch_pause_gesture(*posed,pause_gesture_active(racing));
+        }
         if((kinect_frame.bodies.size()>=2)!=second_present) {
             second_present=kinect_frame.bodies.size()>=2;
             std::cerr << "NUI_SECOND_PLAYER present=" << second_present << " source=kinect\n";
@@ -653,6 +696,11 @@ SFR_INPUT_HOOK(sub_827707B0) {
                                                   sfr::CameraInputSelection::Clock::now());
     const bool was_camera=sfr::camera_motion_active();
     camera_input_active.store(use_camera,std::memory_order_relaxed);
+    if(use_camera) watch_pause_gesture(camera_joints,pause_gesture_active(racing));
+    else {
+        pause_gesture.forget();
+        sfr::publish_pause_gauge(0.0f);
+    }
     if(use_camera!=was_camera)
         std::cerr<<"NUI_INPUT_SOURCE player=0 source="<<(use_camera?"camera":"controller")
                  <<" pose_age_ms="<<camera_status.pose_age_ms<<'\n';
@@ -1082,6 +1130,10 @@ SFR_MENU_HOOK(sub_82494658) {
             return;
         }
     }
+    // The Pause Gesture held (watch_pause_gesture): START in a race, which
+    // the title hears as "pauseopen". Left for a later frame when a word
+    // above was heard instead.
+    if(pause_requested.exchange(false,std::memory_order_relaxed) && racing) spoken|=pad::start;
     const auto word=sfr::NuiSpeechEmulation::hear(spoken,racing);
     if(word==sfr::NuiSpeechEmulation::Word::none) return;
     static bool written=false;

@@ -87,6 +87,7 @@ $targets += 'sfr_kinect_sensor_test'
 $targets += 'sfr_kinect_stability_test'
 $targets += 'sfr_camera_tuner_test'
 $targets += 'sfr_pose_stability_test'
+$targets += 'sfr_pause_gesture_test'
 $targets += 'sfr_voice_commands_test'
 # Checking a real Kinect without the game (docs/kinect-sensor.md).
 $targets += 'sfr_kinect_probe'

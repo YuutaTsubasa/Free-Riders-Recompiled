@@ -63,6 +63,8 @@ launcher「體感與攝影機」分頁的「攝影機」（`SFR_CAMERA`）有三
    遊戲視窗的標題列每半秒更新 `[FPS 59.8 | 16.7/41.0 ms]  [Webcam 20 | 35 ms]  [Vulkan 100%]`：FPS、平均／最長畫格時間、
    姿勢模型每秒判讀幾張與每張平均耗時、繪圖後端與渲染倍率；啟動器「畫面與效能」頁的「標題顯示效能數字」關閉時
    （`SFR_TITLE_STATS=0`）標題不變。
+   webcam 的骨架也會判斷暫停手勢（Pause Gesture：右手垂下、左手斜下 45 度舉著，暫停比賽），見
+   [Kinect 說明](kinect-sensor.md)的「Pause Gesture／暫停手勢」。
 7. [`camera_player`](../src/camera_player.h)：上面幾步跑在自己的執行緒上，
    遊戲那格要骨架時只拿最新一份，並取得最後有效姿勢的時間。
    [`nui_hooks`](../src/nui_hooks.cpp) 的 `sub_827707B0` 依姿勢新鮮度與手把操作
