@@ -62,6 +62,14 @@ void kinect_v2_body(const std::array<KinectV2Joint, kinect_v2_joint_count>& join
     }
     // v2 reports no centre of its own; v1's sits near the hips.
     body.position = joints[kinect_v2_joint::spine_base].position;
+    // The fingertips and thumbs a v1 does not have (the Stop Sign gesture).
+    const uint32_t tips[2] = {kinect_v2_joint::hand_tip_left, kinect_v2_joint::hand_tip_right};
+    const uint32_t thumbs[2] = {kinect_v2_joint::thumb_left, kinect_v2_joint::thumb_right};
+    for (int side = 0; side < 2; ++side) {
+        const bool seen = joints[tips[side]].state && joints[thumbs[side]].state;
+        body.hand_tips[side] = seen ? joints[tips[side]].position : std::array<float, 3>{};
+        body.thumbs[side] = seen ? joints[thumbs[side]].position : std::array<float, 3>{};
+    }
 }
 
 bool kinect_expire_frame(KinectFrame& frame, std::chrono::steady_clock::time_point now) {

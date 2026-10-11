@@ -78,14 +78,14 @@ std::atomic<bool> pause_requested{false};
 // up. Anywhere else (the menus, the pause menu itself, story scenes,
 // results) the gesture does nothing: there, a second pause would be START
 // answering the pause menu, and the menus have nothing for it to open.
-void watch_pause_gesture(const sfr::SkeletonJoints& joints,bool active) {
+void watch_pause_gesture(bool posed,bool active) {
     if(!active) {
         pause_gesture.forget();
         sfr::publish_pause_gauge(0.0f);
         return;
     }
     const auto now=std::chrono::steady_clock::now();
-    const bool fired=pause_gesture.update(joints,now);
+    const bool fired=pause_gesture.update(posed,now);
     // The gauge in the lower left, as the console drew it, once the arm has
     // been up for a moment (a pose passed through in play does not flash it).
     const float progress=pause_gesture.progress();
@@ -651,12 +651,28 @@ SFR_INPUT_HOOK(sub_827707B0) {
         seen.clear();
         for(const sfr::KinectBody& body:kinect_frame.bodies) seen.push_back(body.tracking_id);
         {
-            // Anyone the sensor tracks may pause, as on the console.
-            static const sfr::SkeletonJoints nobody{};
-            const sfr::SkeletonJoints* posed=&nobody;
+            // Anyone the sensor tracks may pause, as on the console: the
+            // console's pose, or a Kinect v2's Stop Sign.
+            bool posed=false;
             for(const sfr::KinectBody& body:kinect_frame.bodies)
-                if(sfr::PauseGesture::in_pose(body.joints)) { posed=&body.joints; break; }
-            watch_pause_gesture(*posed,pause_gesture_active(racing));
+                if(sfr::PauseGesture::in_pose(body.joints) || sfr::PauseGesture::stop_sign(body.joints,body.hand_states,body.hand_tips,body.thumbs)) { posed=true; break; }
+            watch_pause_gesture(posed,pause_gesture_active(racing));
+            // An open hand raised: which way the v2 says its palm faces, a
+            // line a second, to check the Stop Sign on a real sensor.
+            static auto told=std::chrono::steady_clock::time_point{};
+            const auto now=std::chrono::steady_clock::now();
+            if(now-told>=std::chrono::seconds(1) && !kinect_frame.bodies.empty()) {
+                const sfr::KinectBody& body=kinect_frame.bodies.front();
+                for(int side=0;side<2;++side) {
+                    const auto& hand=body.joints[side==0?sfr::nui_joint::hand_left:sfr::nui_joint::hand_right];
+                    if(body.hand_states[side]!=sfr::PauseGesture::open_hand ||
+                       hand[1]<body.joints[sfr::nui_joint::shoulder_center][1]-0.05f) continue;
+                    told=now;
+                    std::cerr << "NUI_STOP_SIGN hand=" << (side?"right":"left") << " palm_z="
+                              << sfr::PauseGesture::palm_facing(body.joints,side,body.hand_tips,body.thumbs)
+                              << " posed=" << posed << '\n';
+                }
+            }
         }
         if((kinect_frame.bodies.size()>=2)!=second_present) {
             second_present=kinect_frame.bodies.size()>=2;
@@ -696,7 +712,7 @@ SFR_INPUT_HOOK(sub_827707B0) {
                                                   sfr::CameraInputSelection::Clock::now());
     const bool was_camera=sfr::camera_motion_active();
     camera_input_active.store(use_camera,std::memory_order_relaxed);
-    if(use_camera) watch_pause_gesture(camera_joints,pause_gesture_active(racing));
+    if(use_camera) watch_pause_gesture(sfr::PauseGesture::in_pose(camera_joints),pause_gesture_active(racing));
     else {
         pause_gesture.forget();
         sfr::publish_pause_gauge(0.0f);

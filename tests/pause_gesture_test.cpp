@@ -93,6 +93,53 @@ void a_stall_does_not_fill_it_at_once() {
     require(pause.progress() <= 0.051f, "a stall counts as a tenth of a second at most");
 }
 
+void the_stop_sign() {
+    // Standing 2.5 m away, arms down; the right hand raised in front of the
+    // face, 0.35 m towards the sensor, fingers up, the thumb towards the
+    // body's middle (the player's left, -x): the palm faces the sensor.
+    sfr::SkeletonJoints joints{};
+    for (auto& j : joints) j = {0, 0, 2.5f};
+    joints[joint::shoulder_center] = {0.0f, 0.5f, 2.5f};
+    joints[joint::head] = {0.0f, 0.7f, 2.5f};
+    joints[joint::hand_left] = {-0.2f, -0.1f, 2.5f};
+    joints[joint::hand_right] = {0.1f, 0.65f, 2.15f};
+    using Points = sfr::PauseGesture::HandPoints;
+    const Points tips{{{}, {0.1f, 0.82f, 2.15f}}};
+    const Points thumbs{{{}, {0.03f, 0.68f, 2.15f}}};
+    const std::array<uint8_t, 2> open{0, sfr::PauseGesture::open_hand}, fist{0, 3}, lasso{0, 4};
+    const auto sign = [&](const sfr::SkeletonJoints& j, const std::array<uint8_t, 2>& states, const Points& t, const Points& th) {
+        return sfr::PauseGesture::stop_sign(j, states, t, th);
+    };
+    require(sfr::PauseGesture::palm_facing(joints, 1, tips, thumbs) < -0.99f, "that palm faces the sensor");
+    require(sign(joints, open, tips, thumbs), "an open palm up in front, facing the sensor, is the Stop Sign");
+    require(!sign(joints, fist, tips, thumbs) && !sign(joints, lasso, tips, thumbs), "a fist or a lasso is not");
+    require(!sign(joints, {}, {}, {}), "a v1, which reads no hand state, fingertip or thumb, never makes it");
+    require(!sign(joints, open, {}, {}), "without the fingertip and thumb the facing is unknown: no");
+    const Points back{{{}, {0.17f, 0.68f, 2.15f}}};  // the thumb outward: the back of the hand at the sensor
+    require(sfr::PauseGesture::palm_facing(joints, 1, tips, back) > 0.99f && !sign(joints, open, tips, back),
+            "the back of the hand is not");
+    // The mirror image with the left hand.
+    auto left = joints;
+    left[joint::hand_right] = {0.2f, -0.1f, 2.5f};
+    left[joint::hand_left] = {-0.1f, 0.65f, 2.15f};
+    const Points left_tips{{{-0.1f, 0.82f, 2.15f}, {}}}, left_thumbs{{{-0.03f, 0.68f, 2.15f}, {}}};
+    require(sign(left, {sfr::PauseGesture::open_hand, 0}, left_tips, left_thumbs), "the left hand's Stop Sign too");
+    auto low = joints;
+    low[joint::hand_right] = {0.1f, 0.2f, 2.15f};
+    require(!sign(low, open, tips, thumbs), "below the shoulders is not raised");
+    auto flat = joints;
+    flat[joint::hand_right] = {0.1f, 0.65f, 2.48f};
+    require(!sign(flat, open, tips, thumbs), "a hand not held out in front is not");
+    auto both = joints;
+    both[joint::hand_left] = {-0.1f, 0.65f, 2.15f};
+    require(!sign(both, open, tips, thumbs), "both hands up is a race move, not the pause");
+    // It charges the same gauge.
+    sfr::PauseGesture pause(true, 2.0);
+    bool fired = false;
+    for (double t = 0; t <= 2.2 && !fired; t += 1.0 / 30.0) fired = pause.update(sign(joints, open, tips, thumbs), at(t));
+    require(fired, "held, the Stop Sign fills the gauge");
+}
+
 void it_can_be_turned_off() {
     sfr::PauseGesture pause(false);
     bool fired = false;
@@ -108,6 +155,7 @@ int main() {
         out_of_the_pose_the_gauge_drains();
         a_stall_does_not_fill_it_at_once();
         it_can_be_turned_off();
+        the_stop_sign();
     } catch (const std::exception& error) {
         std::cerr << "pause_gesture_test: " << error.what() << '\n';
         return 1;

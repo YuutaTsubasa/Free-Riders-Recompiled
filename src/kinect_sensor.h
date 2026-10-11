@@ -39,6 +39,12 @@ struct KinectBody {
     std::array<float, 3> position{};           // the skeleton's centre
     SkeletonJoints joints{};                   // nui_joint order
     std::array<uint32_t, nui_joint_count> joint_states{};  // 0 not, 1 inferred, 2 tracked
+    // A Kinect v2's reading of each hand (left, right): 0 unknown, 1 not
+    // tracked, 2 open, 3 closed (a fist), 4 lasso. A v1 leaves them 0.
+    std::array<uint8_t, 2> hand_states{};
+    // A Kinect v2's fingertips and thumbs (left, right), which give which
+    // way a palm faces; all zero from a v1 or when not seen.
+    std::array<std::array<float, 3>, 2> hand_tips{}, thumbs{};
 };
 
 struct KinectFrame {
@@ -97,6 +103,7 @@ public:
 constexpr uint32_t kinect_v2_joint_count = 25;
 namespace kinect_v2_joint {
 constexpr uint32_t spine_base = 0, spine_mid = 1, neck = 2, spine_shoulder = 20;
+constexpr uint32_t hand_tip_left = 21, thumb_left = 22, hand_tip_right = 23, thumb_right = 24;
 }
 struct KinectV2Joint {
     std::array<float, 3> position{};  // camera space, metres, as v1's

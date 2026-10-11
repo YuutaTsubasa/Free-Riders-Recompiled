@@ -38,13 +38,33 @@ public:
         : enabled_(enabled), hold_seconds_(hold_seconds) {}
 
     // True once, at the moment the gauge fills.
-    bool update(const SkeletonJoints& joints, Clock::time_point now);
+    bool update(const SkeletonJoints& joints, Clock::time_point now) { return update(in_pose(joints), now); }
+    // The same, told whether a pose is held (the Kinect v2's open palm too).
+    bool update(bool posed, Clock::time_point now);
     void forget();
     // How full the gauge is, 0 to 1 (0 once it has fired, until the arm has
     // come down).
     float progress() const { return float(charge_); }
 
     static bool in_pose(const SkeletonJoints& joints);
+
+    // The Kinect v2's own pause, the Stop Sign: a hand held up in front of
+    // the face, open, fingers up, palm towards the sensor, either hand, the
+    // other one down. Only a v2 can see it: it reads the hand as open (hand
+    // state 2) and tracks the fingertip and the thumb, from which the palm's
+    // facing comes (wrist-side hand point, fingertip, thumb). The hand is
+    // between the shoulders' height and a little above the head, within
+    // 0.35 m of the body's middle sideways and at least 0.1 m in front of
+    // the shoulders; the palm faces within 60 degrees of the sensor; the
+    // other hand is below the shoulders, so both arms up in a race is not
+    // it. It charges the same gauge.
+    static constexpr uint8_t open_hand = 2;
+    using HandPoints = std::array<std::array<float, 3>, 2>;  // left, right
+    static bool stop_sign(const SkeletonJoints& joints, const std::array<uint8_t, 2>& hand_states,
+                          const HandPoints& tips, const HandPoints& thumbs);
+    // Which way a palm faces along the sensor's axis, -1 straight at it to
+    // 1 straight away, or NaN without its fingertip and thumb (for the log).
+    static float palm_facing(const SkeletonJoints& joints, int side, const HandPoints& tips, const HandPoints& thumbs);
 
     // A gap between updates longer than this (a stall, a load) counts as
     // this long, so it cannot fill or empty the gauge at once.
