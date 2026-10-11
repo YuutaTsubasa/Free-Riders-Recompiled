@@ -37,6 +37,8 @@
 #include <cstring>
 #include <limits>
 #include <condition_variable>
+#include <future>
+#include <memory>
 #include <exception>
 #include <mutex>
 #include <unordered_map>
@@ -326,6 +328,14 @@ struct NativePresentation::Impl {
     std::unique_ptr<plume::RenderSampler> model_sampler_object;
     uint32_t model_index_count = 0;
     bool model_tried = false;
+    // The model is read and decoded on its own thread -- a VRM can take many
+    // seconds -- and uploaded here once it is ready. While it loads, the
+    // presented frame says so (model_overlay: thousandths done, or ~0u).
+    std::future<std::optional<sfr::GltfModel>> model_loading;
+    std::shared_ptr<sfr::GltfLoadProgress> model_progress;
+    std::shared_ptr<std::string> model_error;
+    std::chrono::steady_clock::time_point model_started;
+    std::atomic<uint32_t> model_overlay{~0u};
     void build_model();
     void draw_model(const AvatarFrameTransform& frame);
     // The last blit's viewport (x, y, width, height) and window size, for touches.
@@ -840,27 +850,54 @@ void NativePresentation::Impl::build_blit() {
     build_blit_targets();
 }
 
+namespace {
+// Built-in 5x7 text as clear rectangles (defined with preparation_progress).
+void glyph_rectangles(std::vector<plume::RenderRect>& out, const std::string& text, int x, int y, int scale,
+                      int width, int height);
+}
+
 // The model the player chose for the Avatar, uploaded once. SFR_AVATAR_MODEL
 // names a .vrm (or any binary glTF); without it nothing is drawn and nothing
 // is built.
 void NativePresentation::Impl::build_model() {
     if (model_tried) return;
-    model_tried = true;
     const auto path = sfr::avatar_model_path();
-    if (path.empty()) return;
+    if (path.empty()) { model_tried = true; return; }
     // Standing as a rider, not in the T-pose the file was authored in;
     // SFR_AVATAR_MODEL_POSE=rest asks for the file as it is, which is how to
     // tell a posing mistake from a modelling one.
     const char* const pose_text = std::getenv("SFR_AVATAR_MODEL_POSE");
     const bool rest_pose = pose_text && std::strcmp(pose_text, "rest") == 0;
-    model_animation_enabled = !rest_pose;
-    std::string why;
-    model = sfr::load_binary_gltf(path, &why, rest_pose ? sfr::GltfPose::rest : sfr::GltfPose::riding);
-    if (!model) {
-        const auto utf8 = path.u8string();
-        std::cerr << "NATIVE_MODEL unavailable=" << why << " path=" << std::string(utf8.begin(), utf8.end()) << '\n';
+    const auto utf8 = path.u8string();
+    const std::string shown(utf8.begin(), utf8.end());
+    if (!model_loading.valid()) {
+        model_progress = std::make_shared<sfr::GltfLoadProgress>();
+        model_error = std::make_shared<std::string>();
+        model_started = std::chrono::steady_clock::now();
+        model_overlay.store(0, std::memory_order_relaxed);
+        model_loading = std::async(std::launch::async, [path, rest_pose, progress = model_progress, error = model_error] {
+            return sfr::load_binary_gltf(path, error.get(), rest_pose ? sfr::GltfPose::rest : sfr::GltfPose::riding,
+                                         progress.get());
+        });
+        std::cerr << "NATIVE_MODEL loading path=" << shown << '\n';
         return;
     }
+    if (model_loading.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+        model_overlay.store((std::min)(999u, model_progress->permille.load(std::memory_order_relaxed)),
+                            std::memory_order_relaxed);
+        return;
+    }
+    model_tried = true;
+    model_overlay.store(~0u, std::memory_order_relaxed);
+    model_animation_enabled = !rest_pose;
+    model = model_loading.get();
+    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - model_started).count();
+    if (!model) {
+        std::cerr << "NATIVE_MODEL unavailable=" << *model_error << " path=" << shown << '\n';
+        return;
+    }
+    std::cerr << "NATIVE_MODEL loaded seconds=" << seconds << " primitives=" << model->primitives.size()
+              << " images=" << model->images.size() << '\n';
     // One buffer for the lot: position and normal a vertex, with each
     // primitive's indices shifted past the vertices before it.
     std::vector<float> vertices;
@@ -1586,6 +1623,13 @@ void NativePresentation::prepare_player_model() {
     if (sfr::model_wanted()) impl_->build_model();
 }
 
+void NativePresentation::wait_for_player_model() {
+    if (!sfr::model_wanted()) return;
+    impl_->build_model();
+    if (impl_->model_loading.valid()) impl_->model_loading.wait();
+    impl_->build_model();
+}
+
 void NativePresentation::draw_player_model(const AvatarFrameTransform& frame) {
     if (!sfr::model_wanted()) return;
     for (const auto* matrix : {&frame.world, &frame.view, &frame.projection})
@@ -1671,7 +1715,11 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height) {
     const uint32_t out_width = impl_->swap_chain->getWidth(), out_height = impl_->swap_chain->getHeight();
     const bool can_copy = impl_->graphics->backend() != GraphicsBackend::vulkan ||
         (static_cast<plume::VulkanSwapChain*>(impl_->swap_chain.get())->createInfo.imageUsage & VK_IMAGE_USAGE_TRANSFER_DST_BIT);
-    const bool stretch = !can_copy || part || out_width != impl_->render_width || out_height != impl_->render_height;
+    // While the Avatar's model loads, the frame is drawn (not copied) so a
+    // line can be written over it.
+    const uint32_t model_loading = impl_->model_overlay.load(std::memory_order_relaxed);
+    const bool stretch = !can_copy || part || out_width != impl_->render_width || out_height != impl_->render_height ||
+                         model_loading != ~0u;
     // The copy to the swap-chain texture follows the frame's draws in their
     // own list; pipelined, the frame is submitted without waiting for it.
     const bool pipelined = Impl::pipelined();
@@ -1720,6 +1768,24 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height) {
         impl_->touch_view = {viewport.x, viewport.y, viewport.width, viewport.height, float(out_width), float(out_height)};
         impl_->command_list->setGraphicsPushConstants(0, constants.data());
         impl_->command_list->drawInstanced(3, 1, 0, 0);
+        if (model_loading != ~0u) {
+            // "LOADING AVATAR MODEL 45%" in the frame's lower left corner, on a
+            // dark band, so a model that takes seconds does not look like a hang.
+            const std::string line = "LOADING AVATAR MODEL " + std::to_string(model_loading / 10) + "%";
+            const int px = (std::max)(2, int(view_height / 180.0f));
+            const int x = int(viewport.x) + 4 * px, y = int(viewport.y + view_height) - 13 * px;
+            const int w = int(out_width), h = int(out_height);
+            std::vector<plume::RenderRect> pixels;
+            glyph_rectangles(pixels, line, x, y, px, w, h);
+            const plume::RenderRect band{std::clamp(x - 2 * px, 0, w), std::clamp(y - 2 * px, 0, h),
+                                         std::clamp(x + int(line.size()) * 6 * px + px, 0, w), std::clamp(y + 9 * px, 0, h)};
+            if (band.left < band.right && band.top < band.bottom)
+                impl_->command_list->clearColor(0, plume::RenderColor(0.02f, 0.03f, 0.06f, 1.0f), &band, 1);
+            // Small batches: some D3D12 drivers fail with hundreds of rectangles in one clear.
+            for (size_t offset = 0; offset < pixels.size(); offset += 16)
+                impl_->command_list->clearColor(0, plume::RenderColor(0.90f, 0.95f, 1.0f, 1.0f), pixels.data() + offset,
+                                                uint32_t((std::min)(size_t(16), pixels.size() - offset)));
+        }
         impl_->command_list->setFramebuffer(nullptr);
     } else {
         const std::array<plume::RenderTextureBarrier, 2> copy_barriers{
@@ -1763,15 +1829,9 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height) {
 
 // Small built-in 5x7 glyphs keep the startup screen independent of font
 // files, guest shaders, game assets, and the shader pack being prepared.
-bool NativePresentation::preparation_progress(size_t completed, size_t total, bool cancelling) {
-    pump_events();
-#ifdef _WIN32
-    if (GetForegroundWindow() == impl_->window && (GetAsyncKeyState(VK_ESCAPE) & 0x8000))
-        impl_->close_requested = true;
-#else
-    if (SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_ESCAPE]) impl_->close_requested = true;
-#endif
-    cancelling = cancelling || close_requested();
+// Each is five columns, bit 0 the top row; null for a space or anything else.
+namespace {
+const uint8_t* glyph(char c) {
     static constexpr uint8_t letters[26][5] = {
         {126,17,17,17,126},{127,73,73,73,54},{62,65,65,65,34},{127,65,65,34,28},
         {127,73,73,73,65},{127,9,9,9,1},{62,65,73,73,122},{127,8,8,8,127},
@@ -1784,6 +1844,43 @@ bool NativePresentation::preparation_progress(size_t completed, size_t total, bo
         {62,81,73,69,62},{0,66,127,64,0},{66,97,81,73,70},{33,65,69,75,49},
         {24,20,18,127,16},{39,69,69,69,57},{60,74,73,73,48},{1,113,9,5,3},
         {54,73,73,73,54},{6,73,73,41,30}};
+    static constexpr uint8_t percent[5] = {35,19,8,100,98};
+    static constexpr uint8_t period[5] = {0,96,96,0,0};
+    if (c >= 'A' && c <= 'Z') return letters[c - 'A'];
+    if (c >= '0' && c <= '9') return digits[c - '0'];
+    if (c == '%') return percent;
+    if (c == '.') return period;
+    return nullptr;
+}
+
+// The pixels of `text` at (x, y), each glyph pixel `scale` across, appended
+// as rectangles; clipped to `width` x `height`.
+void glyph_rectangles(std::vector<plume::RenderRect>& out, const std::string& text, int x, int y, int scale,
+                      int width, int height) {
+    for (char c : text) {
+        if (const uint8_t* const columns = glyph(c))
+            for (int col = 0; col < 5; ++col)
+                for (int row = 0; row < 7; ++row)
+                    if (columns[col] & (1 << row)) {
+                        const plume::RenderRect rect{std::clamp(x + col * scale, 0, width), std::clamp(y + row * scale, 0, height),
+                                                     std::clamp(x + (col + 1) * scale, 0, width),
+                                                     std::clamp(y + (row + 1) * scale, 0, height)};
+                        if (rect.left < rect.right && rect.top < rect.bottom) out.push_back(rect);
+                    }
+        x += 6 * scale;
+    }
+}
+}
+
+bool NativePresentation::preparation_progress(size_t completed, size_t total, bool cancelling) {
+    pump_events();
+#ifdef _WIN32
+    if (GetForegroundWindow() == impl_->window && (GetAsyncKeyState(VK_ESCAPE) & 0x8000))
+        impl_->close_requested = true;
+#else
+    if (SDL_GetKeyboardState(nullptr)[SDL_SCANCODE_ESCAPE]) impl_->close_requested = true;
+#endif
+    cancelling = cancelling || close_requested();
     const int w = int(width()), h = int(height());
     const int scale = (std::max)(1, (std::min)(w / 200, h / 110));
     const auto rectangle = [&](int x, int y, int right, int bottom) -> plume::RenderRect {
@@ -1791,17 +1888,7 @@ bool NativePresentation::preparation_progress(size_t completed, size_t total, bo
     };
     const auto text = [&](const std::string& value, int y, const std::array<float,4>& color) {
         std::vector<plume::RenderRect> pixels;
-        int x = (w - int(value.size()) * 6 * scale) / 2;
-        for (char c : value) {
-            const uint8_t* glyph = c >= 'A' && c <= 'Z' ? letters[c-'A'] :
-                c >= '0' && c <= '9' ? digits[c-'0'] : nullptr;
-            if (glyph) for (int col=0; col<5; ++col) for (int row=0; row<7; ++row)
-                if (glyph[col] & (1 << row)) {
-                    auto rect = rectangle(x+col*scale,y+row*scale,x+(col+1)*scale,y+(row+1)*scale);
-                    if (rect.left < rect.right && rect.top < rect.bottom) pixels.push_back(rect);
-                }
-            x += 6*scale;
-        }
+        glyph_rectangles(pixels, value, (w - int(value.size()) * 6 * scale) / 2, y, scale, w, h);
         // Keep clear batches small: some D3D12 drivers fail with hundreds of
         // rectangles in one ClearRenderTargetView call.
         for (size_t offset = 0; offset < pixels.size(); offset += 16)

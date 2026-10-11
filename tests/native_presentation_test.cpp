@@ -167,6 +167,7 @@ void avatar_draws_keep_viewport_order_and_independent_poses(uint32_t percent = 1
     frame.pose.valid = true;
     frame.pose.bones[0].translation[0] = -0.55f;
     frame.present = 7;
+    presentation.wait_for_player_model();
     const auto before = presentation.list_generation();
     presentation.draw_player_model(frame);
     const auto after_first = presentation.list_generation();

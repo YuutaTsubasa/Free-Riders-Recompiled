@@ -54,6 +54,12 @@ Current limitations:
   grips may need further adjustment; not every item has been visually tested.
 - Skinning runs on the CPU. Large meshes and textures can increase load time,
   memory use and frame time. Try a simpler model if performance drops.
+- The model loads in the background when the game starts. Until it is ready,
+  the bottom-left corner shows **LOADING AVATAR MODEL** with its progress; a
+  230 MB model took about 8 seconds on a desktop. If AVATAR is chosen before
+  then, the model appears once it has loaded.
+- Online, the model is drawn only on your own screen. Other players see your
+  AVATAR racing without a body, since model files are not sent to them.
 - Windows D3D12 and Vulkan Loading/race rendering have been tested. The actual
   results screen, full two-player play and physical Linux/Android VRM gameplay
   need more coverage.
