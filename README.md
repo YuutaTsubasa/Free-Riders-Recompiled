@@ -164,6 +164,8 @@ with [docs/progress.md](docs/progress.md).
   The game's Xbox LIVE mode works again, on this project's own server: one player's game hosts, the others join over the network, and players on Windows, Linux and Android race together (three devices tested; the lobby holds eight). See [Online play](#online-play).
 - [v0.7.1 — Avatars online, and a sign while a model loads](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.7.1)
   An online race with a player using AVATAR closed the games of the others: a game without a custom model had its avatar system off and could not load another player's AVATAR. Online play now always starts the avatar system. A custom VRM model now loads in the background, with "LOADING AVATAR MODEL" and its progress shown in the corner, instead of the game appearing to freeze.
+- [v0.7.2 — 4K rendering](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.7.2)
+  **Rendering resolution** now offers 3840 x 2160 (4K, 300%) beside 360p to 1440p (Issue #94).
 
 ## System Requirements
 
