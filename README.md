@@ -164,6 +164,8 @@ with [docs/progress.md](docs/progress.md).
   The game's Xbox LIVE mode works again, on this project's own server: one player's game hosts, the others join over the network, and players on Windows, Linux and Android race together (three devices tested; the lobby holds eight). See [Online play](#online-play).
 - [v0.7.1 — Avatars online, and a sign while a model loads](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.7.1)
   An online race with a player using AVATAR closed the games of the others: a game without a custom model had its avatar system off and could not load another player's AVATAR. Online play now always starts the avatar system. A custom VRM model now loads in the background, with "LOADING AVATAR MODEL" and its progress shown in the corner, instead of the game appearing to freeze.
+- [v0.7.2 — 4K rendering](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.7.2)
+  **Rendering resolution** now offers 3840 x 2160 (4K, 300%) beside 360p to 1440p (Issue #94).
 
 ## System Requirements
 
@@ -387,7 +389,7 @@ and choose either backend before starting the game. New settings default to Vulk
 existing saved choices are preserved. Linux and Android use Vulkan.
 
 **Can I change the game's internal resolution?** Yes. **Rendering resolution**
-offers 360p, 540p, native 720p (default), 1080p and 1440p, independently of output
+offers 360p, 540p, native 720p (default), 1080p, 1440p and 2160p (4K), independently of output
 window size. Apply it before starting the game. Lower values may help a limited
 GPU; higher values draw more detail at a greater cost. See
 [Internal resolution](docs/internal-resolution.md).
