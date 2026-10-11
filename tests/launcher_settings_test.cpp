@@ -109,6 +109,23 @@ void graphics_backend_settings() {
     }
 }
 
+void kinect_tuning_settings() {
+    const sfr::LauncherSettings defaults;
+    require(defaults.kinect_smooth && defaults.kinect_lean == 100 && defaults.kinect_crouch_cm == 15,
+            "Kinect tuning defaults to the game's own behaviour");
+    for (const char* name : {"SFR_KINECT_SMOOTH", "SFR_KINECT_LEAN_SCALE", "SFR_KINECT_CROUCH_DEPTH"})
+        require(value_of(defaults, name).empty(), "at the defaults the game decides for itself");
+    const auto tuned = sfr::parse_launcher_settings(sfr::format_launcher_settings(sfr::parse_launcher_settings(
+        "kinect_smooth=0\nkinect_lean=50\nkinect_crouch_cm=20\n")));
+    require(!tuned.kinect_smooth && tuned.kinect_lean == 50 && tuned.kinect_crouch_cm == 20,
+            "Kinect tuning survives a save and a load");
+    require(value_of(tuned, "SFR_KINECT_SMOOTH") == "0", "smoothing off reaches the game");
+    require(value_of(tuned, "SFR_KINECT_LEAN_SCALE") == "1.75", "half the lean is half of 3.5");
+    require(value_of(tuned, "SFR_KINECT_CROUCH_DEPTH") == "0.2", "twenty centimetres are 0.2 metres");
+    const auto odd = sfr::parse_launcher_settings("kinect_lean=5\nkinect_crouch_cm=40\n");
+    require(odd.kinect_lean == 100 && odd.kinect_crouch_cm == 15, "values outside the sliders are ignored");
+}
+
 void rendering_resolution_settings() {
     const sfr::LauncherSettings defaults;
     require(defaults.render_scale == 100, "the render scale defaults to 100 percent");
@@ -368,6 +385,7 @@ int main() {
         game_language_settings();
         voice_language_settings();
         graphics_backend_settings();
+        kinect_tuning_settings();
         rendering_resolution_settings();
         camera_debug_settings();
         avatar_model_settings();

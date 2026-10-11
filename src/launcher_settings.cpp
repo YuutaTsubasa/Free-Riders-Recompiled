@@ -14,6 +14,19 @@ std::string trim(std::string_view text) {
     return std::string(text.substr(first, last - first + 1));
 }
 
+// A setting's number for the game, with a point whatever the locale, three
+// places at most and no trailing zeros ("0.35", "1.75").
+std::string fixed_decimal(double value) {
+    char text[32];
+    const auto result = std::to_chars(text, text + sizeof text, value, std::chars_format::fixed, 3);
+    std::string out(text, result.ptr);
+    if (out.find('.') != std::string::npos) {
+        while (out.back() == '0') out.pop_back();
+        if (out.back() == '.') out.pop_back();
+    }
+    return out;
+}
+
 void read_number(const std::string& text, uint32_t low, uint32_t high, uint32_t& out) {
     uint32_t value = 0;
     const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
@@ -73,6 +86,9 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         else if (key == "camera" && (value == "off" || value == "picture" || value == "motion" || value == "kinect")) settings.camera = value;
         else if (key == "camera_device" && value.size() <= 128) settings.camera_device = value;
         else if (key == "camera_mirror") read_flag(value, settings.camera_mirror);
+        else if (key == "kinect_smooth") read_flag(value, settings.kinect_smooth);
+        else if (key == "kinect_lean") read_number(value, 10, 100, settings.kinect_lean);
+        else if (key == "kinect_crouch_cm") read_number(value, 5, 35, settings.kinect_crouch_cm);
         else if (key == "voice") read_flag(value, settings.voice);
         else if (key == "camera_debug") read_flag(value, settings.camera_debug);
         else if (key == "avatar_model") settings.avatar_model = utf8_path(value);
@@ -120,6 +136,9 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "camera=" << s.camera << '\n'
         << "camera_device=" << s.camera_device << '\n'
         << "camera_mirror=" << s.camera_mirror << '\n'
+        << "kinect_smooth=" << s.kinect_smooth << '\n'
+        << "kinect_lean=" << s.kinect_lean << '\n'
+        << "kinect_crouch_cm=" << s.kinect_crouch_cm << '\n'
         << "voice=" << s.voice << '\n'
         << "camera_debug=" << s.camera_debug << '\n'
         << "avatar_model=" << path_utf8(s.avatar_model) << '\n'
@@ -212,6 +231,10 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         {"SFR_CAMERA", s.camera == "off" ? "" : s.camera},
         {"SFR_CAMERA_DEVICE", s.camera_device},
         {"SFR_CAMERA_MIRROR", s.camera_mirror ? "1" : "0"},
+        // Left unset at the defaults, so the game's own choices stand.
+        {"SFR_KINECT_SMOOTH", s.kinect_smooth ? "" : "0"},
+        {"SFR_KINECT_LEAN_SCALE", s.kinect_lean == 100 ? "" : fixed_decimal(3.5 * s.kinect_lean / 100.0)},
+        {"SFR_KINECT_CROUCH_DEPTH", s.kinect_crouch_cm == 15 ? "" : fixed_decimal(s.kinect_crouch_cm / 100.0)},
         {"SFR_VOICE", s.voice ? "1" : ""},
         {"SFR_AVATAR", s.avatar_model.empty() ? "0" : "1"},
         {"SFR_AVATAR_MODEL", path_utf8(resolved_avatar_model(s, directory))},

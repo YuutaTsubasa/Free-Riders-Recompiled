@@ -113,6 +113,7 @@ enum Text {
     TabMods, SectionMods, ModsHint, ModsEmpty, ModsExternal, ModsRefresh, ModsOpenFolder, MoveUp, MoveDown,
     SectionOnline, OnlineLabel, OnlineHint, OnlineHostLabel, OnlineHostHint, OnlineServerLabel, OnlineServerHint,
     OnlineNameLabel, OnlineNameHint,
+    KinectSmoothLabel, KinectSmoothHint, KinectLeanLabel, KinectLeanHint, KinectCrouchLabel, KinectCrouchHint,
     TextCount
 };
 
@@ -377,6 +378,15 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Online name", "線上名稱"},
     {"The gamertag the others see (15 characters). Saves stay with your profile.",
      "其他玩家看到的玩家名稱（15 個字元）。存檔仍跟著原本的設定檔。"},
+    {"Smooth Kinect v2 tracking", "平滑 Kinect v2 追蹤"},
+    {"Steadies a Kinect v2's joints with the same filter Kinect v1's SDK uses, for about a frame of delay. Turn it off to feel the sensor as measured.",
+     "用與 Kinect v1 SDK 相同的濾波器讓 Kinect v2 的關節更穩定，約多一格延遲。關閉則使用感應器原始量測。"},
+    {"Lean sensitivity", "傾身靈敏度"},
+    {"How much steering a lean gives in races. Lower it if small movements turn too much.",
+     "比賽中身體傾斜帶來的轉向幅度。若小動作就轉太多，請調低。"},
+    {"Crouch depth", "蹲下深度"},
+    {"How far your hips must drop to count as a crouch. Raise it if you crouch by accident; lower it if crouches are missed.",
+     "臀部要下降多少才算蹲下。若常誤判為蹲下就調高；若蹲下沒反應就調低。"},
 }};
 
 int language = 0;
@@ -2193,6 +2203,25 @@ struct Launcher {
                         sfr::launcher::open_url("https://www.microsoft.com/download/details.aspx?id=44561");
                 });
             }
+            // Tuning (Issue #97); applied the next time the game starts.
+            const float kinect_switch = ImGui::GetFrameHeight() * 1.9f;
+            const float kinect_slider = 260 * scale;
+            setting_row(tr(KinectSmoothLabel), tr(KinectSmoothHint), kinect_switch, scale,
+                        [&] { toggle("##kinect_smooth", &settings.kinect_smooth); });
+            setting_row(tr(KinectLeanLabel), tr(KinectLeanHint), kinect_slider, scale, [&] {
+                int lean = int(settings.kinect_lean);
+                ImGui::SetNextItemWidth(kinect_slider);
+                bool moved = ImGui::SliderInt("##kinect_lean", &lean, 10, 100, "%d%%");
+                moved |= slider_steps(&lean, 10, 100, 5);
+                if (moved) settings.kinect_lean = uint32_t(lean);
+            });
+            setting_row(tr(KinectCrouchLabel), tr(KinectCrouchHint), kinect_slider, scale, [&] {
+                int crouch = int(settings.kinect_crouch_cm);
+                ImGui::SetNextItemWidth(kinect_slider);
+                bool moved = ImGui::SliderInt("##kinect_crouch", &crouch, 5, 35, "%d cm");
+                moved |= slider_steps(&crouch, 5, 35, 1);
+                if (moved) settings.kinect_crouch_cm = uint32_t(crouch);
+            });
         } else if (settings.camera != "off") {
             if (cameras_listed_for != settings.camera) {
                 cameras = sfr::CameraCapture::devices();

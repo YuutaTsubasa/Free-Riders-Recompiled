@@ -1,4 +1,5 @@
 #include "kinect_sensor.h"
+#include "kinect_smoothing.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -11,6 +12,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <mutex>
 #include <stop_token>
@@ -147,6 +149,7 @@ public:
             if (why) *why = "tracking-" + hresult(result);
             return false;
         }
+        std::cerr << "NATIVE_KINECT model=v2 smooth=" << (smooth_ ? 1 : 0) << '\n';
         worker_ = std::jthread([this](std::stop_token stop) { run(stop); });
         return true;
     }
@@ -203,6 +206,7 @@ private:
                 }
                 release(body);
             }
+            if (smooth_) smoother_.apply(frame);
             ++frames;
             if (!frame.bodies.empty()) ++tracked;
             {
@@ -223,6 +227,14 @@ private:
     HMODULE library_ = nullptr;
     IKinectSensor* sensor_ = nullptr;
     IBodyFrameReader* reader_ = nullptr;
+    // v2's SDK smooths nothing, so its joints shake from frame to frame; the
+    // filter Kinect v1's SDK offers is applied here (kinect_smoothing.h).
+    // On by default; SFR_KINECT_SMOOTH=0 hands the joints over as measured.
+    bool smooth_ = [] {
+        const char* value = std::getenv("SFR_KINECT_SMOOTH");
+        return !value || *value != '0';
+    }();
+    KinectJointSmoother smoother_;
     std::mutex lock_;
     KinectFrame latest_;
     uint64_t taken_ = 0;
