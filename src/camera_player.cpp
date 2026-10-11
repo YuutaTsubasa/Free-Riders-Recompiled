@@ -4,6 +4,7 @@
 #include "pose_estimator.h"
 #include "pose_smoothing.h"
 #include "pose_stability.h"
+#include "title_stats.h"
 
 #include <atomic>
 #include <chrono>
@@ -63,7 +64,9 @@ struct CameraPlayer::Impl {
                 smoothing.forget();
                 menu_hands.forget();
             }
-            spent += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+            const double took = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+            spent += took;
+            note_pose_estimate(took);  // for the window's title
             ++estimates;
             {
                 std::lock_guard guard(lock);

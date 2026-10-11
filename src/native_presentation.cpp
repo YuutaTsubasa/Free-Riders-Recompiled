@@ -7,6 +7,7 @@
 #include "native_raster_state.h"
 #include "gltf_model.h"
 #include "touch_controls.h"
+#include "title_stats.h"
 #ifdef _WIN32
 #include "plume_d3d12.h"
 #endif
@@ -1237,6 +1238,7 @@ NativePresentation::NativePresentation(NativeGraphics& graphics, uint32_t width,
         0, window_class_name, L"Sonic Free Riders", style, CW_USEDEFAULT, CW_USEDEFAULT,
         bounds.right - bounds.left, bounds.bottom - bounds.top, nullptr, nullptr,
         GetModuleHandleW(nullptr), &implementation->close_requested);
+    sfr::set_game_window(implementation->window);  // its title: title_stats.h
 #else
     // The window Plume's Vulkan instance was made for (NativeGraphics).
     implementation->window = static_cast<SDL_Window*>(graphics.host_window());

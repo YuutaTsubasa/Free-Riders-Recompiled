@@ -150,6 +150,17 @@ void rendering_resolution_settings() {
             "unsupported in-memory settings serialize and launch at native resolution");
 }
 
+void title_stats_settings() {
+    const sfr::LauncherSettings defaults;
+    require(defaults.title_stats && value_of(defaults, "SFR_TITLE_STATS") == "1" &&
+                sfr::format_launcher_settings(defaults).find("title_stats=1\n") != std::string::npos,
+            "the title shows the performance by default");
+    const auto off = sfr::parse_launcher_settings("title_stats=0\n");
+    require(!off.title_stats && value_of(off, "SFR_TITLE_STATS") == "0" &&
+                sfr::format_launcher_settings(off).find("title_stats=0\n") != std::string::npos,
+            "turned off, the title is left alone and it stays off");
+}
+
 void save_directory_settings() {
     const auto root = std::filesystem::temp_directory_path() / "sfr_launcher_saves_test";
     std::filesystem::remove_all(root);
@@ -414,6 +425,7 @@ int main() {
         camera_debug_settings();
         menu_steady_settings();
         save_directory_settings();
+        title_stats_settings();
         avatar_model_settings();
         malformed_values_keep_defaults();
         environment_follows_settings();

@@ -790,7 +790,7 @@ if(WIN32 OR UNIX)
     sfr_embed_shader(src/shaders/blit.hlsl pixelMain ps_6_0 blit_ps)
     sfr_embed_shader(src/shaders/model.hlsl vertexMain vs_6_0 model_vs)
     sfr_embed_shader(src/shaders/model.hlsl pixelMain ps_6_0 model_ps)
-    add_library(sfr_native_presentation STATIC src/native_presentation.cpp src/touch_controls.cpp src/gltf_model.cpp src/image_decode.cpp ${SFR_EMBEDDED_SHADER_HEADERS})
+    add_library(sfr_native_presentation STATIC src/native_presentation.cpp src/title_stats.cpp src/touch_controls.cpp src/gltf_model.cpp src/image_decode.cpp ${SFR_EMBEDDED_SHADER_HEADERS})
     target_include_directories(sfr_native_presentation PRIVATE "${SFR_EMBEDDED_SHADERS}")
     add_executable(sfr_native_presentation_test tests/native_presentation_test.cpp)
     if(WIN32)
@@ -928,6 +928,7 @@ if(SFR_BUILD_DIAGNOSTIC)
     target_sources(sfr_cpu_diagnostic PRIVATE src/offline_presence_hooks.cpp)
     # The webcam standing in for the sensor, and the body it finds.
     target_sources(sfr_cpu_diagnostic PRIVATE src/camera_player.cpp src/camera_debug.cpp src/camera_debug_window.cpp src/pose_skeleton.cpp src/pose_smoothing.cpp src/pose_stability.cpp src/kinect_stability.cpp
+                   src/window_title.cpp
                    ${SFR_CAMERA_CAPTURE} ${SFR_POSE_SOURCES})
     # A real Kinect (SFR_CAMERA=kinect), through the Kinect for Windows runtime.
     target_sources(sfr_cpu_diagnostic PRIVATE src/kinect_sensor.cpp ${SFR_KINECT_SENSOR} ${SFR_VOICE})

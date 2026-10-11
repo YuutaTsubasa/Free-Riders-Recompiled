@@ -4,6 +4,7 @@
 #include "camera_player.h"
 #include "kinect_sensor.h"
 #include "kinect_stability.h"
+#include "window_title.h"
 #include "camera_debug.h"
 #include "camera_input.h"
 #include "nui_skeleton.h"
@@ -13,6 +14,7 @@
 #include "voice_commands.h"
 #include "local_profile.h"
 #include "touch_controls.h"
+#include "title_stats.h"
 #include <bit>
 #include <algorithm>
 #include <unordered_map>
@@ -424,6 +426,7 @@ void write_kinect_body(sfr::GuestMemory& memory, uint32_t frame, const sfr::Kine
 // NuiSkeletonGetNextFrame(timeout ms, frame): one emulated player.
 SFR_INPUT_HOOK(sub_827707B0) {
     sfr::enter_function(ctx,"sub_827707B0",0x827707B0);
+    sfr::poll_window_title();  // the frame rate in the window title
     const uint32_t frame=ctx.r4.u32;
     if(!frame) { ctx.r3.u64=0x80004003u; return; }  // E_POINTER, as the original
     // [83E52F8C] is the race flag: the hands leave the menu cursor pose.
@@ -448,6 +451,7 @@ SFR_INPUT_HOOK(sub_827707B0) {
         // Turned once per new frame: the last one is kept as it was turned.
         const bool received=kinect->next(kinect_frame);
         if(received) {
+            sfr::note_kinect_frame();  // for the window's title
             // The menu cursor steadied (kinect_stability.h) before
             // anything reads the frame.
             static sfr::KinectBodySteadying steadying=sfr::KinectBodySteadying::from_environment();
