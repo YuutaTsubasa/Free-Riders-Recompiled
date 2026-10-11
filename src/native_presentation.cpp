@@ -1190,7 +1190,7 @@ NativePresentation::NativePresentation(NativeGraphics& graphics, uint32_t width,
     uint32_t percent = 100;
     if (const char* setting = std::getenv("SFR_RENDER_SCALE"); setting && *setting) {
         const std::string value(setting);
-        if (value == "50" || value == "75" || value == "100" || value == "150" || value == "200")
+        if (value == "50" || value == "75" || value == "100" || value == "150" || value == "200" || value == "300")
             percent = uint32_t(std::stoul(value));
         else std::cerr << "NATIVE_RENDER_SCALE invalid=" << value << " fallback=100\n";
     }

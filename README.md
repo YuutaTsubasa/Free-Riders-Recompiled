@@ -387,7 +387,7 @@ and choose either backend before starting the game. New settings default to Vulk
 existing saved choices are preserved. Linux and Android use Vulkan.
 
 **Can I change the game's internal resolution?** Yes. **Rendering resolution**
-offers 360p, 540p, native 720p (default), 1080p and 1440p, independently of output
+offers 360p, 540p, native 720p (default), 1080p, 1440p and 2160p (4K), independently of output
 window size. Apply it before starting the game. Lower values may help a limited
 GPU; higher values draw more detail at a greater cost. See
 [Internal resolution](docs/internal-resolution.md).
