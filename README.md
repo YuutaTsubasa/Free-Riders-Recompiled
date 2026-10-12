@@ -483,6 +483,15 @@ saves and local reference checkouts.
   guided the Kinect emulation here. The patch is licensed CC BY-NC-ND 4.0;
   none of its code or files are used or included.
 
+### Contributors
+
+- [knuckleslee](https://github.com/knuckleslee): code and research — D3D12 on Windows 10 ([#14](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/14)), the Avatar's body
+  type ([#15](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/15)), playing with a real Kinect ([#21](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/21)), the benchmark workflow ([#51](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/51)), the pause gestures, steadier menus, window statistics, adjustment windows and save folder ([#99](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/99)–[#104](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/104)), and detailed
+  performance measurements on a 4-core PC that led to faster races ([#33](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/33), [#52](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/52), [#62](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/62), [#65](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/65)).
+- Players who reported problems, sent logs and crash dumps, and tested fixes: [Anim233](https://github.com/Anim233), [dareon88](https://github.com/dareon88), [Didgo1](https://github.com/Didgo1), [Diego-Yoshi](https://github.com/Diego-Yoshi), [francisc0frank0](https://github.com/francisc0frank0), [Infeernuss](https://github.com/Infeernuss), [Janybrito](https://github.com/Janybrito), [Joka2010](https://github.com/Joka2010), [JolTH-dot](https://github.com/JolTH-dot), [KillerBunny12](https://github.com/KillerBunny12), [Koyurofox](https://github.com/Koyurofox), [Larry654](https://github.com/Larry654), [MegaCrashFan](https://github.com/MegaCrashFan), [Minuteworld94](https://github.com/Minuteworld94), [mymes1](https://github.com/mymes1), [shiny-ribbon](https://github.com/shiny-ribbon), [tameradel578-cmyk](https://github.com/tameradel578-cmyk).
+
+Thank you all. Every report with a `game.log` or a dump made a fix possible.
+
 This project was developed with the help of AI models: GPT-6 and Claude
 Opus 5.
 
