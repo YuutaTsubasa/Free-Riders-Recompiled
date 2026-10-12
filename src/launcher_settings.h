@@ -71,6 +71,9 @@ struct LauncherSettings {
     std::string game_language = "auto"; // independent disc language; game_language.h
     std::string voice_language = "auto"; // "en" or "ja" voices apart from the text; voice_language.h
     std::filesystem::path image_directory, asset_directory;
+    // Where the game keeps its saves (SFR_SAVE_DIRECTORY): empty is save/
+    // beside the launcher; a relative path is from the launcher too.
+    std::filesystem::path save_directory;
     // Online play through this project's own server (live_service.h): this
     // device hosts it (SFR_LIVE_HOST) or connects to online_server
     // (SFR_LIVE_SERVER, host[:port]); online_name is the gamertag shown
@@ -90,6 +93,12 @@ bool save_launcher_settings(const std::filesystem::path& file, const LauncherSet
 // game's working directory. Empty selections stay empty.
 std::filesystem::path resolved_avatar_model(const LauncherSettings& settings,
                                             const std::filesystem::path& launcher_directory);
+
+// The saves' folder for these settings, from the launcher's directory.
+std::filesystem::path resolved_save_directory(const LauncherSettings& settings,
+                                              const std::filesystem::path& launcher_directory);
+// Whether a saves' folder holds a game save (<player>/00000001/SfrAllData.sav/).
+bool has_game_save(const std::filesystem::path& save_directory);
 
 // The game's environment for these settings: the play defaults (no
 // diagnostic limits or traces, 60 fps cap) plus the player's choices. An

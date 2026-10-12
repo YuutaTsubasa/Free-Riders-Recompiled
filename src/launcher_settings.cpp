@@ -107,6 +107,7 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         else if (key == "voice_language" && (value == "auto" || value == "en" || value == "ja")) settings.voice_language = value;
         else if (key == "image_directory") settings.image_directory = utf8_path(value);
         else if (key == "asset_directory") settings.asset_directory = utf8_path(value);
+        else if (key == "save_directory") settings.save_directory = utf8_path(value);
         else if (key == "online") read_flag(value, settings.online);
         else if (key == "online_host") read_flag(value, settings.online_host);
         else if (key == "online_server" && value.size() <= 127) settings.online_server = value;
@@ -158,7 +159,8 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "game_language=" << validated_game_language(s.game_language) << '\n'
         << "voice_language=" << s.voice_language << '\n'
         << "image_directory=" << path_utf8(s.image_directory) << '\n'
-        << "asset_directory=" << path_utf8(s.asset_directory) << '\n';
+        << "asset_directory=" << path_utf8(s.asset_directory) << '\n'
+        << "save_directory=" << path_utf8(s.save_directory) << '\n';
     return out.str();
 }
 
@@ -190,6 +192,21 @@ bool save_launcher_settings(const std::filesystem::path& file, const LauncherSet
 std::filesystem::path resolved_avatar_model(const LauncherSettings& settings, const std::filesystem::path& directory) {
     if (settings.avatar_model.empty() || settings.avatar_model.is_absolute() || directory.empty()) return settings.avatar_model;
     return (directory / settings.avatar_model).lexically_normal();
+}
+
+std::filesystem::path resolved_save_directory(const LauncherSettings& settings,
+                                              const std::filesystem::path& directory) {
+    if (settings.save_directory.empty()) return directory / "save";
+    if (settings.save_directory.is_absolute() || directory.empty()) return settings.save_directory;
+    return (directory / settings.save_directory).lexically_normal();
+}
+
+bool has_game_save(const std::filesystem::path& saves) {
+    std::error_code error;
+    for (std::filesystem::directory_iterator player(saves, error), end; !error && player != end; player.increment(error))
+        if (std::filesystem::is_regular_file(player->path() / "00000001" / "SfrAllData.sav" / "SfrAllData.sav", error))
+            return true;
+    return false;
 }
 
 std::vector<std::pair<std::string, std::string>> game_environment(const LauncherSettings& s,

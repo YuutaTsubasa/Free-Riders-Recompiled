@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdio>
 #include <fstream>
+#include <iostream>
 #include <system_error>
 
 namespace sfr {
@@ -116,6 +117,9 @@ uint32_t ContentFiles::create(uint64_t xuid, uint32_t root_name, uint32_t conten
     // XCONTENTFLAG_CREATENEW 1, CREATEALWAYS 2, OPENEXISTING 3, OPENALWAYS 4, TRUNCATEEXISTING 5.
     const uint32_t mode = flags & 0xF;
     if (mode < 1 || mode > 5) unsupported(flags, "unsupported content creation flags");
+    // The package asked for and whether it is there (the log has the rest).
+    std::cerr << "NATIVE_CONTENT_PACKAGE path=" << fs::absolute(directory, error).string() << " exists=" << exists
+              << " mode=" << mode << '\n';
     if ((mode == 3 || mode == 5) && !exists) return error_file_not_found;
     if (mode == 1 && exists) return error_already_exists;
     if (exists && (mode == 2 || mode == 5)) {
