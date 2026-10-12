@@ -105,7 +105,9 @@ void PoseStabilizer::stabilize(PoseLandmarks& landmarks, double interval) {
         }
 
         // Believed, or held as long as it may be: the model's point it is.
-        if (memory.known && !memory.holding) {
+        // Its speed comes from two believed points: not across a give-up,
+        // whose jump would be carried by the next hold.
+        if (memory.known && !memory.holding && !memory.given_up) {
             for (int axis = 0; axis < 2; ++axis)
                 memory.offset_speed[axis] = float((offset[axis] - memory.offset[axis]) / interval);
             for (int axis = 0; axis < 3; ++axis)
@@ -175,6 +177,7 @@ float menu_steady_radius() {
 MenuHandSteadying MenuHandSteadying::from_environment() { return MenuHandSteadying(true); }
 
 void MenuHandSteadying::forget() { hands_ = {}; }
+void MenuHandSteadying::forget_hand(size_t side) { if (side < hands_.size()) hands_[side] = {}; }
 
 void MenuHandSteadying::steady(SkeletonJoints& joints, bool in_menu) {
     if (!enabled_) return;

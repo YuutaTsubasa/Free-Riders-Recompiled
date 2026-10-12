@@ -113,6 +113,8 @@ public:
     // racing passes them through and starts again on the next menu.
     void steady(SkeletonJoints& joints, bool in_menu);
     void forget();
+    // One hand (0 left, 1 right) starts again, as when the sensor lost it.
+    void forget_hand(size_t side);
 
     // The circle's radius is the player's (menu_steady_radius below); a step
     // beyond follow_radius, or twice the circle if that is wider, is

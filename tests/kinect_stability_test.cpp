@@ -89,6 +89,42 @@ void each_body_keeps_its_own_memory() {
     require(near(bodies[1].joints[joint::hand_right][0], given, 1e-6f), "a new body starts from where its own hand is");
 }
 
+// A hand the sensor stops tracking is left as given and starts over, so its
+// return is not steadied towards a stale rest point.
+void an_untracked_hand_starts_over() {
+    sfr::KinectBodySteadying steadying;
+    for (int step = 0; step < 10; ++step) {
+        auto bodies = pointing(step);
+        steadying.steady(bodies, true);
+    }
+    auto lost = pointing(10);
+    lost[0].joints[joint::hand_right] = {0, 0, 0};
+    lost[0].joint_states[joint::hand_right] = 0;
+    steadying.steady(lost, true);
+    require(lost[0].joints[joint::hand_right] == (std::array<float, 3>{0, 0, 0}), "an untracked hand passes through");
+    auto back = pointing(11, 7, -0.05f);
+    const float given = back[0].joints[joint::hand_right][0];
+    steadying.steady(back, true);
+    require(near(back[0].joints[joint::hand_right][0], given, 1e-6f), "back in view it starts from where it is");
+}
+
+// A tracking id gone for a second is someone else when it comes back.
+void a_reused_id_is_someone_new() {
+    sfr::KinectBodySteadying steadying;
+    for (int step = 0; step < 10; ++step) {
+        auto bodies = pointing(step);
+        steadying.steady(bodies, true);
+    }
+    for (int step = 0; step < 31; ++step) {
+        std::vector<sfr::KinectBody> nobody;
+        steadying.steady(nobody, true);
+    }
+    auto again = pointing(0, 7, -0.1f);
+    const float given = again[0].joints[joint::hand_right][0];
+    steadying.steady(again, true);
+    require(near(again[0].joints[joint::hand_right][0], given, 1e-6f), "the id's old rest point is forgotten");
+}
+
 void it_can_be_turned_off() {
     sfr::KinectBodySteadying steadying(false);
     for (int step = 0; step < 10; ++step) {
@@ -105,6 +141,8 @@ int main() {
         the_menu_cursor_settles();
         racing_hands_pass_untouched();
         each_body_keeps_its_own_memory();
+        an_untracked_hand_starts_over();
+        a_reused_id_is_someone_new();
         it_can_be_turned_off();
     } catch (const std::exception& error) {
         std::cerr << "kinect_stability_test: " << error.what() << '\n';
