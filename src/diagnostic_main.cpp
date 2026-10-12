@@ -298,6 +298,10 @@ static NativeWinsock* native_winsock = nullptr;
 static NativeNotifications* native_notifications = nullptr;
 static NotificationPlacement* notification_placement = nullptr;
 
+// Watches the adjustment window opened as the system's Kinect Guide; stopped
+// (stop_system_guide_watch) before the notifications it tells go away.
+static std::jthread system_guide_watch;
+
 KinectTuner show_system_guide(const char* why) {
     const KinectTuner tuner = open_kinect_tuner();
     if (tuner == KinectTuner::unavailable)
@@ -309,17 +313,27 @@ KinectTuner show_system_guide(const char* why) {
     std::cerr << "NUI_SYSTEM_GUIDE open by=" << why << " racing=" << (race_flag() != 0) << '\n';
     if (!native_notifications) return tuner;
     constexpr uint32_t xn_sys_ui = 0x00000009;
+    // The previous window's watcher first: it follows only its own window,
+    // so it ends now and says nothing (this one is open), and its late
+    // "closed" cannot follow this window's "open".
+    stop_system_guide_watch();
     native_notifications->publish(xn_sys_ui, 1);
-    static std::jthread watch;
-    if (watch.joinable()) watch.join();  // the previous window's: it has closed
-    watch = std::jthread([race_flag](std::stop_token stop) {
-        while (!stop.stop_requested() && kinect_tuner_open())
+    const uint64_t mine = kinect_tuner_generation();
+    system_guide_watch = std::jthread([race_flag, mine](std::stop_token stop) {
+        while (!stop.stop_requested() && kinect_tuner_open() && kinect_tuner_generation() == mine)
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        // Stopped (a newer window, or the game ending) or replaced: the
+        // newer window, or nobody, owns the state now.
+        if (stop.stop_requested() || kinect_tuner_generation() != mine) return;
         set_input_held(false);
         if (native_notifications) native_notifications->publish_when_drained(xn_sys_ui, 0);
         std::cerr << "NUI_KINECT_TUNER closed\nNUI_SYSTEM_GUIDE closed racing=" << (race_flag() != 0) << '\n';
     });
     return tuner;
+}
+void stop_system_guide_watch() {
+    system_guide_watch.request_stop();
+    if (system_guide_watch.joinable()) system_guide_watch.join();
 }
 static AssetFiles* asset_files = nullptr;
 static GuestFiles* guest_files = nullptr;
@@ -4623,6 +4637,14 @@ int main(int argc, char** argv) {
         sfr::NativeSyncObjects sync_objects;
         sfr::NativeNotifications notifications(memory, sync_objects);
         sfr::native_notifications = &notifications;
+        // Before `notifications` goes, the system guide's watcher stops
+        // without telling it anything (a window may still be open at exit).
+        struct GuideWatchStop {
+            ~GuideWatchStop() {
+                sfr::stop_system_guide_watch();
+                sfr::native_notifications = nullptr;
+            }
+        } guide_watch_stop;
         sfr::NotificationPlacement notification_placement;
         sfr::notification_placement = &notification_placement;
         sfr::GuestSyncObjects sync_adapter(memory, sync_objects);

@@ -61,6 +61,7 @@ bool camera_has_joints = false;
 std::unique_ptr<sfr::KinectSensor> kinect;
 // The menu's Kinect adjustment window over that sensor (kinect_tuner.h).
 std::mutex tuner_lock;
+std::atomic<uint64_t> tuner_generation{0};  // kinect_tuner_generation
 std::unique_ptr<sfr::KinectPreviewWindow> tuner;
 // The same over the webcam, when that is what the player uses.
 std::unique_ptr<sfr::CameraTunerWindow> camera_tuner;
@@ -189,9 +190,13 @@ KinectTuner open_kinect_tuner() {
     }
     // The game waits behind the window: the controllers and the keyboard
     // read as at rest until it closes (the input update lets go).
-    if(opened) sfr::set_input_held(true);
+    if(opened) {
+        sfr::set_input_held(true);
+        tuner_generation.fetch_add(1,std::memory_order_relaxed);
+    }
     return opened ? KinectTuner::opened : KinectTuner::unavailable;
 }
+uint64_t kinect_tuner_generation() { return tuner_generation.load(std::memory_order_relaxed); }
 // Back (Select) on a pad closes an open adjustment window, as Esc does,
 // and the game's window is in front again.
 void close_kinect_tuner() {

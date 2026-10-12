@@ -124,9 +124,12 @@ public:
         std::lock_guard guard(saved_controls_lock);
         std::vector<SavedCameraControl> saved = read_saved_controls();
         remember_camera_control(saved, {device_, control, value});
-        std::ofstream(saved_controls_path(), std::ios::binary | std::ios::trunc) << format_camera_controls(saved);
+        std::ofstream out(saved_controls_path(), std::ios::binary | std::ios::trunc);
+        out << format_camera_controls(saved);
+        const bool kept = bool(out.flush());
         std::cerr << "NATIVE_CAMERA_CONTROL set " << camera_control_name(control) << '='
-                  << (value.automatic ? std::string("auto") : std::to_string(value.value)) << '\n';
+                  << (value.automatic ? std::string("auto") : std::to_string(value.value))
+                  << (kept ? "" : " saved=0") << '\n';
         return true;
     }
 

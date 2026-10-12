@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 
 namespace sfr {
 // The menu's Kinect adjustment. The title asks the system for its Kinect
@@ -11,6 +12,12 @@ namespace sfr {
 enum class KinectTuner { opened, already_open, unavailable };
 KinectTuner open_kinect_tuner();
 bool kinect_tuner_open();
+// Counts the windows opened, so a watcher can tell its own window from a
+// newer one opened right after it closed.
+uint64_t kinect_tuner_generation();
+// Stops the system guide's watcher without telling the title anything (the
+// game is shutting down); diagnostic_main.cpp.
+void stop_system_guide_watch();
 // Closes it (a pad's Back), the game's window in front again.
 void close_kinect_tuner();
 

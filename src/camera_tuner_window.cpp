@@ -10,6 +10,7 @@
 #endif
 #include <windows.h>
 #include <commctrl.h>
+#include <objbase.h>
 
 #pragma comment(lib, "comctl32.lib")
 
@@ -311,6 +312,9 @@ struct CameraTunerWindow::Impl {
             }
             return 0;
         case WM_HSCROLL:
+            // A drag sends a stream of these; the value is set (and saved)
+            // where the thumb is let go, not at every step on the way.
+            if (LOWORD(wp) == TB_THUMBTRACK) return 0;
             for (size_t c = 0; c < self->rows.size(); ++c)
                 if (self->rows[c].slider && reinterpret_cast<HWND>(lp) == self->rows[c].slider) self->changed(c, false);
             return 0;
@@ -354,6 +358,12 @@ struct CameraTunerWindow::Impl {
     }
 
     void run(std::stop_token stop) {
+        // The camera's controls (IAMCameraControl, IAMVideoProcAmp) are COM
+        // interfaces called from this thread.
+        struct Com {
+            HRESULT result = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+            ~Com() { if (SUCCEEDED(result)) CoUninitialize(); }
+        } com;
         stopping = stop;
         opened_at = std::chrono::steady_clock::now();
         player->share_view(true);
