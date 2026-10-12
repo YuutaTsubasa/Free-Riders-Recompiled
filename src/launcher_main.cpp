@@ -2308,7 +2308,10 @@ struct Launcher {
         const float switch_width = ImGui::GetFrameHeight() * 1.9f;
         setting_row(tr(VertexCache), tr(VertexCacheHint), switch_width, scale, [&] { toggle("##vertex", &settings.vertex_cache); });
         setting_row(tr(GpuPipeline), tr(GpuPipelineHint), switch_width, scale, [&] { toggle("##pipeline", &settings.gpu_pipeline); });
+#ifdef _WIN32
+        // Only the Windows game writes its title (window_title.cpp).
         setting_row(tr(TitleStats), tr(TitleStatsHint), switch_width, scale, [&] { toggle("##title_stats", &settings.title_stats); });
+#endif
         const float slider_width = 220 * scale;
         setting_row(tr(RaceEvery), tr(RaceEveryHint), slider_width, scale, [&] {
             int every = int(settings.race_render_every);

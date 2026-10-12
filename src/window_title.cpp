@@ -36,8 +36,10 @@ namespace {
 //
 // Every half second it says the frame rate and the frame times, the
 // graphics, and, when a body drives the game, how often it arrives.
-std::mutex title_lock;
-std::condition_variable title_wake;
+// Never freed: the worker is detached and may still be waiting on them
+// while the process's statics are destroyed.
+std::mutex& title_lock = *new std::mutex;
+std::condition_variable& title_wake = *new std::condition_variable;
 HWND title_window = nullptr;
 bool title_wanted = false;
 
@@ -56,7 +58,8 @@ std::wstring graphics_label() {
     std::wstring label = selected_graphics_backend() == GraphicsBackend::vulkan ? L"Vulkan" : L"D3D12";
     const char* const scale = std::getenv("SFR_RENDER_SCALE");
     const std::string value = scale ? scale : "";
-    const bool known = value == "50" || value == "75" || value == "100" || value == "150" || value == "200";
+    const bool known = value == "50" || value == "75" || value == "100" || value == "150" || value == "200" ||
+                       value == "300";
     label += L' ';
     label += known ? std::wstring(value.begin(), value.end()) : L"100";
     label += L'%';
@@ -137,7 +140,6 @@ void show(HWND window) {
     title_wake.notify_one();
 }
 
-HWND found_window = nullptr;
 HWND shown_on = nullptr;
 
 // SFR_TITLE_STATS=0 (the launcher's Performance switch) leaves the title alone.
@@ -152,15 +154,9 @@ bool wanted() {
 
 void poll_window_title() {
     if (!wanted()) return;
-    // The game's window, as the presentation made it; else the first window
-    // of ours found in front (the adjustment windows are this process's too).
+    // The game's window, as the presentation made it (not any window of
+    // ours in front: an adjustment window would keep a frozen title).
     HWND game = static_cast<HWND>(game_window());
-    if (!game && !found_window) {
-        HWND window = GetForegroundWindow();
-        DWORD process = 0;
-        if (window && GetWindowThreadProcessId(window, &process) && process == GetCurrentProcessId()) found_window = window;
-    }
-    if (!game) game = found_window;
     if (game && game != shown_on) {
         shown_on = game;
         show(game);

@@ -414,6 +414,7 @@ struct NativePresentation::Impl {
 #endif
         swap_chain.reset();
 #ifdef _WIN32
+        sfr::set_game_window(nullptr);  // before its handle can be reused
         if (window) DestroyWindow(window);
 #else
         if (window) SDL_HideWindow(window);

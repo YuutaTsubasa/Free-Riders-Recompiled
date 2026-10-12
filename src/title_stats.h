@@ -2,7 +2,7 @@
 #include <cstdint>
 
 namespace sfr {
-// What the game window's title reports (menu_steady_hotkey.cpp), counted
+// What the game window's title reports (window_title.cpp), counted
 // where it happens and taken every half second: how long the frames took,
 // and how often a body arrived.
 
