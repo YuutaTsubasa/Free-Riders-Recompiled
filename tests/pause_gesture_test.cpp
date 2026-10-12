@@ -71,19 +71,53 @@ void out_of_the_pose_the_gauge_drains() {
     for (; t < 1.0; t += 1.0 / 30.0) pause.update(body(45), at(t));
     const float half = pause.progress();
     require(half > 0.45f && half < 0.55f, "a second of pose is half the gauge");
-    // Half a second out of the pose takes back a quarter, not everything.
-    for (const double end = t + 0.5; t < end; t += 1.0 / 30.0) pause.update(body(0), at(t));
-    require(std::fabs(pause.progress() - (half - 0.25f)) < 0.03f, "out of the pose it drains at the same rate");
-    // Back in the pose it fills from there: 1.5 more seconds, not 2.
+    // A tenth of a second out of the pose takes back a fifth (four times the
+    // rate it charges), not everything.
+    for (const double end = t + 0.1; t < end - 1e-9; t += 1.0 / 30.0) pause.update(body(0), at(t));
+    require(std::fabs(pause.progress() - (half - 0.2f)) < 0.04f, "out of the pose it drains four times as fast");
+    // Back in the pose it fills from there: 1.4 more seconds, not 2.
     bool fired = false;
     const double back = t;
     for (; t < back + 2.0 && !fired; t += 1.0 / 30.0) fired = pause.update(body(45), at(t));
-    require(fired && t - back < 1.6, "back in the pose it goes on from what was left");
+    require(fired && t - back < 1.55, "back in the pose it goes on from what was left");
     // Long enough out of the pose, it empties.
     sfr::PauseGesture again(true, 2.0);
     for (t = 0; t < 1.0; t += 1.0 / 30.0) again.update(body(45), at(t));
     for (; t < 3.0; t += 1.0 / 30.0) again.update(body(0), at(t));
     require(again.progress() == 0.0f, "it empties and stops at nothing");
+}
+
+// Riding side-on (facing -x), the leading left arm forward and down and the
+// right arm hanging: from the sensor, the shoulders are one behind the other.
+void a_side_stance_is_not_the_pose() {
+    sfr::SkeletonJoints side{};
+    for (auto& j : side) j = {0, 0, 2.5f};
+    side[joint::shoulder_left] = {-0.04f, 0.5f, 2.32f};
+    side[joint::shoulder_right] = {0.04f, 0.5f, 2.68f};
+    const float a = 45 * 3.14159265f / 180.0f;
+    const auto& s = side[joint::shoulder_left];
+    side[joint::elbow_left] = {s[0] - std::cos(a) * 0.28f, s[1] - std::sin(a) * 0.28f, s[2]};
+    side[joint::hand_left] = {s[0] - std::cos(a) * 0.55f, s[1] - std::sin(a) * 0.55f, s[2]};
+    side[joint::hand_right] = {0.06f, 0.0f, 2.68f};
+    require(!sfr::PauseGesture::in_pose(side), "a rider side-on with the leading arm down is not the pose");
+}
+
+// Matching the pose 60% of the time in play never adds up to a pause.
+void a_pose_now_and_then_does_not_add_up() {
+    sfr::PauseGesture pause(true, 3.0);
+    bool fired = false;
+    for (double t = 0; t < 15.0 && !fired; t += 1.0 / 30.0)
+        fired = pause.update(std::fmod(t, 1.0) < 0.6 ? body(45) : body(0), at(t));
+    require(!fired, "on and off the pose, the gauge drains faster than it fills");
+}
+
+// On a Kinect the arm must be seen, not guessed.
+void a_kinect_guess_is_not_the_pose() {
+    std::array<uint32_t, sfr::nui_joint_count> states{};
+    states.fill(2);
+    require(sfr::PauseGesture::in_pose(body(45), states), "tracked joints in the pose are the pose");
+    states[joint::hand_left] = 1;
+    require(!sfr::PauseGesture::in_pose(body(45), states), "an inferred hand is not");
 }
 
 void a_stall_does_not_fill_it_at_once() {
@@ -153,6 +187,9 @@ int main() {
         the_pose();
         it_fires_once_after_the_hold();
         out_of_the_pose_the_gauge_drains();
+        a_side_stance_is_not_the_pose();
+        a_pose_now_and_then_does_not_add_up();
+        a_kinect_guess_is_not_the_pose();
         a_stall_does_not_fill_it_at_once();
         it_can_be_turned_off();
         the_stop_sign();

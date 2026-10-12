@@ -23,10 +23,15 @@ namespace sfr {
 //     than half the arm's length in front of or behind the shoulder;
 //   - the right hand hangs by the side: below the right shoulder, within 30
 //     degrees of straight down.
-// The gauge charges while the pose holds and drains while it does not, at
-// the same rate: hold_seconds of pose fill it from empty, and a moment out
-// of the pose (a picture that lost the arm, a wobble) only takes back what
-// it lasted instead of starting the wait again. Full, it fires once; it
+//   - the body faces the sensor: the shoulders are at least 0.2 m apart
+//     across, and across is at least 70% of their distance. A race is
+//     ridden side-on, where a leading arm forward and down would otherwise
+//     read as the pose; on a Kinect, the arm and shoulder joints must be
+//     tracked, not inferred.
+// The gauge charges while the pose holds and drains four times as fast
+// while it does not: hold_seconds of pose fill it from empty, a brief slip
+// (a picture that lost the arm, a wobble) only takes back a little, and a
+// pose matched now and then in play never adds up. Full, it fires once; it
 // fires again only after the arm has left the pose.
 class PauseGesture {
 public:
@@ -47,6 +52,9 @@ public:
     float progress() const { return float(charge_); }
 
     static bool in_pose(const SkeletonJoints& joints);
+    // The same for a Kinect body, whose joints say whether each was seen.
+    static bool in_pose(const SkeletonJoints& joints, const std::array<uint32_t, nui_joint_count>& states);
+    static constexpr double drain_rate = 4.0;
 
     // The Kinect v2's own pause, the Stop Sign: a hand held up in front of
     // the face, open, fingers up, palm towards the sensor, either hand, the

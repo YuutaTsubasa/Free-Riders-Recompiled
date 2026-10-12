@@ -66,7 +66,8 @@ void kinect_v2_body(const std::array<KinectV2Joint, kinect_v2_joint_count>& join
     const uint32_t tips[2] = {kinect_v2_joint::hand_tip_left, kinect_v2_joint::hand_tip_right};
     const uint32_t thumbs[2] = {kinect_v2_joint::thumb_left, kinect_v2_joint::thumb_right};
     for (int side = 0; side < 2; ++side) {
-        const bool seen = joints[tips[side]].state && joints[thumbs[side]].state;
+        // Tracked, not inferred: a guessed fingertip gives a guessed palm.
+        const bool seen = joints[tips[side]].state == 2 && joints[thumbs[side]].state == 2;
         body.hand_tips[side] = seen ? joints[tips[side]].position : std::array<float, 3>{};
         body.thumbs[side] = seen ? joints[thumbs[side]].position : std::array<float, 3>{};
     }

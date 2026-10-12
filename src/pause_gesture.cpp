@@ -18,8 +18,28 @@ PauseGesture PauseGesture::from_environment() {
     return PauseGesture(!(off && *off == '0'), seconds);
 }
 
+bool PauseGesture::in_pose(const SkeletonJoints& joints, const std::array<uint32_t, nui_joint_count>& states) {
+    // A Kinect's guess at a joint it cannot see is no pose: in the side
+    // stance a race is played in, the far arm is only inferred.
+    namespace joint = nui_joint;
+    for (const uint32_t j : {joint::shoulder_left, joint::elbow_left, joint::hand_left, joint::shoulder_right,
+                             joint::hand_right})
+        if (states[j] != 2) return false;
+    return in_pose(joints);
+}
+
 bool PauseGesture::in_pose(const SkeletonJoints& joints) {
     namespace joint = nui_joint;
+    // Facing the sensor: the shoulders spread across, not one behind the
+    // other. A rider stands side-on, and from the side a leading arm held
+    // forward and down looks like the pose's arm out and down.
+    {
+        const auto& left = joints[joint::shoulder_left];
+        const auto& right = joints[joint::shoulder_right];
+        const float across = std::fabs(right[0] - left[0]);
+        const float width = std::hypot(right[0] - left[0], right[1] - left[1], right[2] - left[2]);
+        if (!std::isfinite(width) || across < 0.2f || across < 0.7f * width) return false;
+    }
     const auto& shoulder = joints[joint::shoulder_left];
     const auto& elbow = joints[joint::elbow_left];
     const auto& hand = joints[joint::hand_left];
@@ -103,7 +123,9 @@ bool PauseGesture::update(bool posed, Clock::time_point now) {
         if (!posed) armed_ = true;
         return false;
     }
-    charge_ += (posed ? step : -step) / hold_seconds_;
+    // Out of the pose it drains four times as fast as it charges, so a rider
+    // who keeps half-matching the pose in play does not save up a pause.
+    charge_ += (posed ? step : -drain_rate * step) / hold_seconds_;
     if (charge_ <= 0) {
         charge_ = 0;
         return false;
