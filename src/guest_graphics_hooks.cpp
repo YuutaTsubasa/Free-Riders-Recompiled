@@ -15,6 +15,7 @@
 #include "guest_execution.h"
 #include "wait_trace.h"
 #include "race_frame_clock.h"
+#include "title_stats.h"
 #include <map>
 #include <plume_render_interface.h>
 #include <algorithm>
@@ -485,6 +486,7 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
         }
         previous=present_start;
     }
+    sfr::note_frame_presented();  // for the window's title
     if(rendering_this_frame()) graphics().present_front_buffer(ctx.r3.u32);
     const double present_ms=
         std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-present_start).count();

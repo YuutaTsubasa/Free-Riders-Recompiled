@@ -20,6 +20,7 @@ struct LauncherSettings {
     bool vertex_cache = true;        // SFR_VERTEX_CACHE
     bool gpu_pipeline = true;        // SFR_GPU_PIPELINE
     uint32_t race_render_every = 1;  // SFR_RENDER_EVERY
+    bool title_stats = true;         // SFR_TITLE_STATS: frame rate and more in the game window's title
     bool ui_sounds = true;           // the launcher's own sounds
     bool vulkan = true;             // legacy settings key; selects Vulkan or D3D12
     bool touch_controls = true;      // SFR_TOUCH_CONTROLS (Android)
@@ -47,6 +48,11 @@ struct LauncherSettings {
     bool kinect_smooth = true;      // SFR_KINECT_SMOOTH=0 when off
     uint32_t kinect_lean = 100;     // SFR_KINECT_LEAN_SCALE = 3.5 x percent
     uint32_t kinect_crouch_cm = 15; // SFR_KINECT_CROUCH_DEPTH in metres
+    // The menu cursor's steadying (pose_stability.h), webcam and Kinect: the
+    // circle a hand held still may wander in without moving the cursor, in
+    // millimetres; 0 turns it off. SFR_MENU_STEADY_RADIUS and
+    // SFR_MENU_HAND_STEADY.
+    uint32_t menu_steady_radius = 8;
     // Voice commands through the host's speech recognizer and the default
     // microphone (a Kinect's array, made the default, is heard), in English
     // or Traditional Chinese; the pad's buttons still say them too.

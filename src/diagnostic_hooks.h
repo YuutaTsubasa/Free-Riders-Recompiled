@@ -272,6 +272,9 @@ struct GamepadState;
 GamepadState nui_gamepad();
 // Controller `user` (0 is the first player's, keyboard included), or none.
 std::optional<GamepadState> nui_pad(uint32_t user);
+// The buttons held on any host pad, read through the input hold (the
+// adjustment window's Back).
+uint16_t nui_pad_buttons_through_hold();
 // Relay Race: which controller drives the racer who is up (0..3).
 void set_relay_pad(uint32_t user);
 uint32_t relay_pad();

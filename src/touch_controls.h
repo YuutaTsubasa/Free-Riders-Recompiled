@@ -63,6 +63,11 @@ TouchOverlay touch_overlay();
 // Whether a race is running (the Kinect hooks know), for the stick's role.
 void set_touch_racing(bool racing);
 bool touch_racing();
+// The Pause Gesture's gauge (pause_gesture.h), as the console showed
+// it: 0 hides it, otherwise how far the hold has got (0..1). The blit draws
+// it as a ring in the lower left, in the START button's slot.
+void publish_pause_gauge(float progress);
+float pause_gauge();
 // SFR_TOUCH_CONTROLS: 1 on Android by default, 0 elsewhere.
 bool touch_controls_enabled();
 // A controller answered for player 1 (native_input): the on-screen buttons

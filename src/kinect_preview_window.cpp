@@ -10,6 +10,7 @@
 #include <windows.h>
 
 #include "camera_debug.h"
+#include "window_placement.h"
 
 #include <algorithm>
 #include <atomic>
@@ -53,10 +54,17 @@ void draw_image(HDC dc, const RECT& area, const std::vector<uint32_t>& pixels, i
 
 struct KinectPreviewWindow::Impl {
     bool chinese = false;
+    // Over the game's sensor (open_over): borrowed, never opened or closed
+    // here, and its skeleton frames come from the game (handed).
+    KinectSensor* borrowed = nullptr;
+    std::mutex handed_lock;
+    KinectFrame handed;
+    bool handed_new = false;
     mutable std::mutex lock;
     std::shared_ptr<KinectSensor> sensor;  // under lock
     std::string failure;                   // why no sensor opened
     std::atomic<bool> is_closed{false};
+    std::atomic<HWND> shown{nullptr};  // for close()
     std::stop_token stopping;
     KinectFrame frame;
     KinectImage colour, depth;
@@ -64,6 +72,9 @@ struct KinectPreviewWindow::Impl {
     int angle = 0;
     bool has_angle = false;
     std::chrono::steady_clock::time_point angle_read{};
+    // When the sensor opened (under lock), and when it last sent a skeleton
+    // frame or an image: what kinect_readiness's frames step asks.
+    std::chrono::steady_clock::time_point opened_at{}, last_frame{};
     // The tilt motor, turned from the window: a turn at a time, a second
     // or so each (the SDK asks for no more than a turn a second).
     static constexpr int up_id = 101, down_id = 102, step = 5;
@@ -110,13 +121,25 @@ struct KinectPreviewWindow::Impl {
         std::shared_ptr<KinectSensor> source;
         { std::lock_guard guard(lock); source = sensor; }
         if (!source) return;
-        source->next(frame);
-        if (source->image(KinectImageKind::colour, colour) && colour.bytes_per_pixel == 4) {
+        const auto now = std::chrono::steady_clock::now();
+        if (borrowed) {
+            std::lock_guard guard(handed_lock);
+            if (handed_new) {
+                frame = handed;
+                handed_new = false;
+                last_frame = now;
+            }
+        } else if (source->next(frame)) last_frame = now;
+        const bool new_colour = source->image(KinectImageKind::colour, colour);
+        if (new_colour) last_frame = now;
+        if (new_colour && colour.bytes_per_pixel == 4) {
             // B, G, R, unused: GDI's own order.
             colour_pixels.resize(size_t(colour.width) * colour.height);
             std::memcpy(colour_pixels.data(), colour.pixels.data(), colour_pixels.size() * 4);
         }
-        if (source->image(KinectImageKind::depth_and_player, depth) && depth.bytes_per_pixel == 2) {
+        const bool new_depth = source->image(KinectImageKind::depth_and_player, depth);
+        if (new_depth) last_frame = now;
+        if (new_depth && depth.bytes_per_pixel == 2) {
             depth_pixels.resize(size_t(depth.width) * depth.height);
             for (size_t i = 0; i < depth_pixels.size(); ++i) {
                 const uint16_t value = uint16_t(depth.pixels[2 * i] | depth.pixels[2 * i + 1] << 8);
@@ -134,7 +157,6 @@ struct KinectPreviewWindow::Impl {
                 depth_pixels[i] = b | g << 8 | r << 16;
             }
         }
-        const auto now = std::chrono::steady_clock::now();
         if (reread_angle.exchange(false) || now - angle_read > std::chrono::seconds(1)) {
             has_angle = source->elevation(angle);
             angle_read = now;
@@ -190,13 +212,64 @@ struct KinectPreviewWindow::Impl {
 
         std::shared_ptr<KinectSensor> source;
         std::string why;
-        { std::lock_guard guard(lock); source = sensor; why = failure; }
+        std::chrono::steady_clock::time_point since{};
+        { std::lock_guard guard(lock); source = sensor; why = failure; since = opened_at; }
+        const auto now = std::chrono::steady_clock::now();
+        const auto seconds = [&](std::chrono::steady_clock::time_point from) {
+            return std::chrono::duration<double>(now - from).count();
+        };
+        KinectReadinessInput input;
+        input.opened = source != nullptr;
+        input.failure = why;
+        input.seconds_open = source ? seconds(since) : 0;
+        input.seconds_since_frame = last_frame == std::chrono::steady_clock::time_point{} ? -1 : seconds(last_frame);
+        input.bodies = frame.bodies.size();
+        const KinectReadiness readiness = kinect_readiness(input);
         wchar_t line[256];
-        if (!source) {
-            text(dc, 20, 16, why.empty() ? say(L"Opening the Kinect...", L"正在開啟 Kinect…")
-                                         : say(L"No Kinect: ", L"找不到 Kinect：") + std::wstring(why.begin(), why.end()),
-                 why.empty() ? foreground : RGB(255, 150, 130));
-        } else {
+        if (!readiness.ready()) {
+            // Not playable yet: each step with its state, then what to do
+            // about the first one that failed.
+            const wchar_t* const names[] = {L"Runtime (SDK)", L"執行環境（SDK）", L"Sensor", L"感應器",
+                                            L"Frames", L"資料傳送", L"Body", L"人體追蹤"};
+            int x = 20;
+            for (size_t step = 0; step < size_t(KinectStep::count); ++step) {
+                const KinectStepState state = readiness.steps[step];
+                const wchar_t* const mark = state == KinectStepState::passed ? L"\u2713 " :
+                                            state == KinectStepState::failed ? L"\u2717 " : L"\u2026 ";
+                const std::wstring item = mark + say(names[2 * step], names[2 * step + 1]);
+                text(dc, x, 16, item, state == KinectStepState::passed ? RGB(128, 225, 167) :
+                                      state == KinectStepState::failed ? RGB(255, 150, 130) : dim);
+                SIZE size{};
+                GetTextExtentPoint32W(dc, item.c_str(), int(item.size()), &size);
+                x += size.cx + 24;
+            }
+            std::wstring hint;
+            switch (readiness.first_failed) {
+            case KinectStep::runtime:
+                hint = say(L"Install Kinect for Windows SDK 1.8 (Kinect for Xbox 360) or SDK 2.0 (Kinect v2), then open the preview again.",
+                           L"請安裝 Kinect for Windows SDK 1.8（Xbox 360 Kinect）或 SDK 2.0（Kinect v2），再重新開啟預覽。");
+                break;
+            case KinectStep::sensor:
+                hint = say(L"Check the Kinect's power adapter and USB cable, close other programs using it, then open the preview again",
+                           L"請檢查 Kinect 的電源變壓器和 USB 線，關閉其他正在使用 Kinect 的程式，再重新開啟預覽") +
+                       L" (" + std::wstring(why.begin(), why.end()) + L")";
+                break;
+            case KinectStep::frames:
+                hint = say(L"The Kinect opened but sends nothing: close other programs using it, or plug its USB and power in again.",
+                           L"Kinect 已開啟但沒有傳來資料：請關閉其他使用 Kinect 的程式，或重新插拔 USB 和電源。");
+                break;
+            case KinectStep::body:
+                hint = say(L"Nobody tracked: stand 1.5 to 3.5 m from the sensor, facing it, with your whole body in view.",
+                           L"沒有追蹤到人：請面向感應器，站在 1.5 到 3.5 公尺處，讓全身入鏡。");
+                break;
+            case KinectStep::count:
+                hint = source ? say(L"Waiting for the Kinect's first frame...", L"正在等待 Kinect 傳來第一筆資料…")
+                              : say(L"Opening the Kinect...", L"正在開啟 Kinect…");
+                break;
+            }
+            text(dc, 20, 40, hint, readiness.first_failed == KinectStep::count ? foreground : RGB(255, 205, 119));
+        }
+        if (source && readiness.ready()) {
             const std::string name = source->model();
             const std::wstring model_name(name.begin(), name.end());
             if (has_angle)
@@ -236,8 +309,9 @@ struct KinectPreviewWindow::Impl {
         draw_image(dc, depth_area, depth_pixels, int(depth.width), int(depth.height));
         skeletons(dc, colour_area, true);
         skeletons(dc, depth_area, false);
-        text(dc, gap, height - 28, say(L"Close this window before starting the game: the Kinect opens for one program at a time.",
-                                       L"開始遊戲前會自動關閉此視窗：Kinect 一次只能給一個程式使用。"), dim);
+        text(dc, gap, height - 28, borrowed ? say(L"Close this window to go back to the game.", L"關閉此視窗即可回到遊戲。")
+                                            : say(L"Close this window before starting the game: the Kinect opens for one program at a time.",
+                                                  L"開始遊戲前會自動關閉此視窗：Kinect 一次只能給一個程式使用。"), dim);
         BitBlt(target, 0, 0, width, height, dc, 0, 0, SRCCOPY);
         SelectObject(dc, old_font);
         SelectObject(dc, old_bitmap);
@@ -291,7 +365,11 @@ struct KinectPreviewWindow::Impl {
             limits->ptMinTrackSize = {760, 420};
             return 0;
         }
-        case WM_CLOSE: DestroyWindow(window); return 0;
+        case WM_CLOSE:
+            // Back to the game it was opened over, which has the keyboard again.
+            if (const HWND game = sfr::find_game_window()) SetForegroundWindow(game);
+            DestroyWindow(window);
+            return 0;
         case WM_DESTROY: self->is_closed.store(true); PostQuitMessage(0); return 0;
         }
         return DefWindowProcW(window, message, wp, lp);
@@ -307,10 +385,12 @@ struct KinectPreviewWindow::Impl {
         cls.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
         if (!RegisterClassW(&cls) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) { is_closed.store(true); return; }
         HWND window = CreateWindowExW(0, cls.lpszClassName,
-                                      chinese ? L"Free Riders - Kinect 預覽" : L"Free Riders - Kinect preview",
+                                      borrowed ? (chinese ? L"Free Riders - Kinect 調整" : L"Free Riders - Kinect adjustment")
+                                               : (chinese ? L"Free Riders - Kinect 預覽" : L"Free Riders - Kinect preview"),
                                       WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 1360, 640, nullptr, nullptr,
                                       instance, this);
         if (!window) { is_closed.store(true); return; }
+        shown.store(window);
         up_button = CreateWindowExW(0, L"BUTTON", chinese ? L"往上" : L"Up", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_PUSHBUTTON,
                                     0, 0, 0, 0, window, reinterpret_cast<HMENU>(INT_PTR(up_id)), instance, nullptr);
         down_button = CreateWindowExW(0, L"BUTTON", chinese ? L"往下" : L"Down", WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_PUSHBUTTON,
@@ -321,19 +401,30 @@ struct KinectPreviewWindow::Impl {
         for (HWND button : {up_button, down_button})
             if (button && button_font) SendMessageW(button, WM_SETFONT, WPARAM(button_font), TRUE);
         place_buttons(window);
+        if (borrowed) sfr::center_over_game(window);  // over the game it adjusts
         ShowWindow(window, SW_SHOW);
+        if (borrowed) sfr::bring_to_front(window);  // in front of the game, with the keyboard
         // The sensor opens once the window shows, so the window says so
         // meanwhile; a second or so for a Kinect v1.
         std::jthread opener([this](std::stop_token) {
             std::string why;
-            std::shared_ptr<KinectSensor> opened = KinectSensor::open(&why);
+            // A borrowed sensor is the game's: shared without an owner, so
+            // closing the window leaves it open.
+            std::shared_ptr<KinectSensor> opened = borrowed ? std::shared_ptr<KinectSensor>(borrowed, [](KinectSensor*) {})
+                                                            : KinectSensor::open(&why);
             std::lock_guard guard(lock);
             sensor = std::move(opened);
             failure = sensor ? "" : why;
+            opened_at = std::chrono::steady_clock::now();
         });
         if (!SetTimer(window, 1, 33, nullptr)) { DestroyWindow(window); return; }
         MSG message;
         while (!stop.stop_requested() && GetMessageW(&message, nullptr, 0, 0) > 0) {
+            // Esc closes it from anywhere in it, a slider or button included.
+            if (message.message == WM_KEYDOWN && message.wParam == VK_ESCAPE) {
+                PostMessageW(window, WM_CLOSE, 0, 0);
+                continue;
+            }
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
@@ -362,7 +453,33 @@ std::unique_ptr<KinectPreviewWindow> KinectPreviewWindow::open(bool chinese) {
     }
 }
 
+std::unique_ptr<KinectPreviewWindow> KinectPreviewWindow::open_over(KinectSensor& sensor) {
+    try {
+        auto impl = std::make_unique<Impl>();
+        impl->chinese = PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_CHINESE;
+        impl->borrowed = &sensor;
+        auto* raw = impl.get();
+        impl->worker = std::jthread([raw](std::stop_token stop) { raw->run(stop); });
+        return std::unique_ptr<KinectPreviewWindow>(new KinectPreviewWindow(std::move(impl)));
+    } catch (const std::exception& error) {
+        std::cerr << "NATIVE_KINECT_PREVIEW unavailable: " << error.what() << '\n';
+        return nullptr;
+    }
+}
+
+void KinectPreviewWindow::show_frame(const KinectFrame& frame) {
+    std::lock_guard guard(impl_->handed_lock);
+    impl_->handed = frame;
+    impl_->handed_new = true;
+}
+
 bool KinectPreviewWindow::closed() const { return impl_->is_closed.load(); }
+void KinectPreviewWindow::close() {
+    if (const HWND window = impl_->shown.load(); window && !closed()) PostMessageW(window, WM_CLOSE, 0, 0);
+}
+void KinectPreviewWindow::raise() {
+    if (const HWND window = impl_->shown.load(); window && !closed()) sfr::bring_to_front(window);
+}
 
 std::shared_ptr<KinectSensor> KinectPreviewWindow::sensor() const {
     std::lock_guard guard(impl_->lock);
@@ -380,7 +497,11 @@ struct KinectPreviewWindow::Impl {};
 KinectPreviewWindow::KinectPreviewWindow(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 KinectPreviewWindow::~KinectPreviewWindow() = default;
 std::unique_ptr<KinectPreviewWindow> KinectPreviewWindow::open(bool) { return nullptr; }
+std::unique_ptr<KinectPreviewWindow> KinectPreviewWindow::open_over(KinectSensor&) { return nullptr; }
+void KinectPreviewWindow::show_frame(const KinectFrame&) {}
 bool KinectPreviewWindow::closed() const { return true; }
+void KinectPreviewWindow::close() {}
+void KinectPreviewWindow::raise() {}
 std::shared_ptr<KinectSensor> KinectPreviewWindow::sensor() const { return nullptr; }
 std::string KinectPreviewWindow::failure() const { return {}; }
 }

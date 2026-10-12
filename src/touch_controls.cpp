@@ -117,6 +117,9 @@ GamepadState touch_gamepad() {
 }
 
 void set_touch_racing(bool racing) { racing_now.store(racing, std::memory_order_relaxed); }
+namespace { std::atomic<float> pause_progress{0.0f}; }
+void publish_pause_gauge(float progress) { pause_progress.store(progress, std::memory_order_relaxed); }
+float pause_gauge() { return pause_progress.load(std::memory_order_relaxed); }
 bool touch_racing() { return racing_now.load(std::memory_order_relaxed); }
 
 TouchOverlay touch_overlay() {

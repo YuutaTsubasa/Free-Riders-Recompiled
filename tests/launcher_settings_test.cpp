@@ -167,6 +167,17 @@ void rendering_resolution_settings() {
             "unsupported in-memory settings serialize and launch at native resolution");
 }
 
+void title_stats_settings() {
+    const sfr::LauncherSettings defaults;
+    require(defaults.title_stats && value_of(defaults, "SFR_TITLE_STATS") == "1" &&
+                sfr::format_launcher_settings(defaults).find("title_stats=1\n") != std::string::npos,
+            "the title shows the performance by default");
+    const auto off = sfr::parse_launcher_settings("title_stats=0\n");
+    require(!off.title_stats && value_of(off, "SFR_TITLE_STATS") == "0" &&
+                sfr::format_launcher_settings(off).find("title_stats=0\n") != std::string::npos,
+            "turned off, the title is left alone and it stays off");
+}
+
 void save_directory_settings() {
     const auto root = std::filesystem::temp_directory_path() / "sfr_launcher_saves_test";
     std::filesystem::remove_all(root);
@@ -189,6 +200,24 @@ void save_directory_settings() {
     std::ofstream(chosen / "E000C56DDFFD8EA0" / "00000001" / "SfrAllData.sav" / "SfrAllData.sav") << "x";
     require(sfr::has_game_save(chosen), "a player's SfrAllData.sav is a save");
     std::filesystem::remove_all(root);
+}
+
+void menu_steady_settings() {
+    const sfr::LauncherSettings defaults;
+    require(sfr::format_launcher_settings(defaults).find("menu_steady_radius=8\n") != std::string::npos,
+            "the menu cursor steadying defaults to an 8 mm circle");
+    require(value_of(defaults, "SFR_MENU_HAND_STEADY") == "1" && value_of(defaults, "SFR_MENU_STEADY_RADIUS") == "8",
+            "the default circle reaches the game");
+    const auto wide = sfr::parse_launcher_settings("menu_steady_radius=15\n");
+    require(wide.menu_steady_radius == 15 && value_of(wide, "SFR_MENU_STEADY_RADIUS") == "15" &&
+                sfr::format_launcher_settings(wide).find("menu_steady_radius=15\n") != std::string::npos,
+            "a chosen circle survives a save and reaches the game");
+    const auto off = sfr::parse_launcher_settings("menu_steady_radius=0\n");
+    require(value_of(off, "SFR_MENU_HAND_STEADY") == "0" && value_of(off, "SFR_MENU_STEADY_RADIUS").empty(),
+            "0 starts the steadying off");
+    for (const char* bad : {"31", "-1", "big"})
+        require(sfr::parse_launcher_settings(std::string("menu_steady_radius=") + bad + "\n").menu_steady_radius == 8,
+                "an out-of-range circle keeps the default");
 }
 
 void camera_debug_settings() {
@@ -412,7 +441,9 @@ int main() {
         kinect_tuning_settings();
         rendering_resolution_settings();
         camera_debug_settings();
+        menu_steady_settings();
         save_directory_settings();
+        title_stats_settings();
         avatar_model_settings();
         malformed_values_keep_defaults();
         environment_follows_settings();

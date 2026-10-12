@@ -47,6 +47,34 @@ bool convert_camera_yuv420(const CameraYuvPlanes& planes, uint32_t width, uint32
 // (0, 90, 180, 270). A front camera sees the screen's turn the other way.
 uint32_t camera_upright_rotation(uint32_t sensor_orientation, bool front_facing, uint32_t display_rotation);
 
+// What a webcam lets the player set (UVC's camera and picture controls):
+// how far it zooms in, how long each picture is exposed -- the shutter, in
+// the driver's own steps of log2 seconds (-6 is 1/64 s) -- and how much the
+// picture is amplified. Each is automatic or held at a value.
+enum class CameraControl : uint8_t { zoom, exposure, gain, count };
+struct CameraControlRange {
+    long minimum = 0, maximum = 0, step = 1, standard = 0;
+    bool can_auto = false;
+};
+struct CameraControlValue {
+    long value = 0;
+    bool automatic = true;
+    bool operator==(const CameraControlValue&) const = default;
+};
+const char* camera_control_name(CameraControl control);
+
+// Controls the player set, kept between runs, a camera at a time by the name
+// it is listed under: a line each, "name<TAB>control<TAB>auto" or a number.
+struct SavedCameraControl {
+    std::string device;
+    CameraControl control = CameraControl::zoom;
+    CameraControlValue value;
+};
+std::vector<SavedCameraControl> parse_camera_controls(const std::string& text);
+std::string format_camera_controls(const std::vector<SavedCameraControl>& saved);
+// Replaces (or adds) one camera's setting in a list.
+void remember_camera_control(std::vector<SavedCameraControl>& saved, const SavedCameraControl& setting);
+
 // An open camera. Only one is opened; nothing else in the runtime holds one.
 class CameraCapture {
 public:
@@ -54,6 +82,12 @@ public:
     // The newest picture, if one has arrived since the last call. False
     // leaves the frame alone, so a caller can keep showing the last one.
     virtual bool next(CameraFrame& frame) = 0;
+    // A control the camera offers, its current setting, and a new one.
+    // False where the camera (or the platform) does not offer it. A setting
+    // made is kept for this camera and applied when it next opens.
+    virtual bool control_range(CameraControl, CameraControlRange&) { return false; }
+    virtual bool control(CameraControl, CameraControlValue&) { return false; }
+    virtual bool set_control(CameraControl, const CameraControlValue&) { return false; }
     // One of the host's cameras, asked for about this size (the nearest it
     // offers is used). The camera is the one named, or the one
     // SFR_CAMERA_DEVICE names when nothing is passed. Null when there is
