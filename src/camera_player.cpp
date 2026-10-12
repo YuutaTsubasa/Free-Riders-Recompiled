@@ -75,6 +75,7 @@ struct CameraPlayer::Impl {
                 smoothing.smooth(landmarks, interval);
                 body = pose_to_joints(landmarks, frame.width, frame.height, mapped, mirrored);
                 if (body) menu_hands.steady(mapped, in_menu.load(std::memory_order_relaxed));
+                else menu_hands.forget();  // no body this picture: no rest point kept
             } else {
                 stabilizer.forget();
                 smoothing.forget();

@@ -166,6 +166,8 @@ with [docs/progress.md](docs/progress.md).
   An online race with a player using AVATAR closed the games of the others: a game without a custom model had its avatar system off and could not load another player's AVATAR. Online play now always starts the avatar system. A custom VRM model now loads in the background, with "LOADING AVATAR MODEL" and its progress shown in the corner, instead of the game appearing to freeze.
 - [v0.7.2 — 4K rendering and steadier Kinect v2](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.7.2)
   **Rendering resolution** now offers 3840 x 2160 (4K, 300%) beside 360p to 1440p (Issue #94). A Kinect v2's joints are smoothed the way Kinect v1's SDK smooths its own, and the launcher's Kinect settings gain smoothing, lean sensitivity and crouch depth (Issue #97).
+- [v0.7.3 — Pause gestures, steadier menus, and more from knuckleslee](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.7.3)
+  Contributions by knuckleslee: pause a race with the Kinect's Pause Gesture or a Kinect v2's Stop Sign; a steadier menu cursor for motion input; the frame rate in the window title on Windows; adjustment windows when the game asks for the Kinect troubleshooter or Kinect Guide; and a choice of save folder in the launcher.
 
 ## System Requirements
 
