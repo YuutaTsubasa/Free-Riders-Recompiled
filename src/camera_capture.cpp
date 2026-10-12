@@ -4,6 +4,8 @@
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <string>
+#include <vector>
 
 namespace sfr {
 namespace {
@@ -123,5 +125,69 @@ size_t chosen_camera_device(const std::vector<std::string>& names, const std::st
     if (!wanted.empty()) return camera_device_index(names, wanted);
     const char* const text = std::getenv("SFR_CAMERA_DEVICE");
     return camera_device_index(names, text ? text : "");
+}
+
+const char* camera_control_name(CameraControl control) {
+    switch (control) {
+    case CameraControl::zoom: return "zoom";
+    case CameraControl::exposure: return "exposure";
+    case CameraControl::gain: return "gain";
+    case CameraControl::count: break;
+    }
+    return "";
+}
+
+std::vector<SavedCameraControl> parse_camera_controls(const std::string& text) {
+    std::vector<SavedCameraControl> saved;
+    size_t start = 0;
+    while (start < text.size()) {
+        size_t end = text.find('\n', start);
+        if (end == std::string::npos) end = text.size();
+        std::string line = text.substr(start, end - start);
+        start = end + 1;
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        const size_t first = line.find('\t');
+        const size_t second = first == std::string::npos ? std::string::npos : line.find('\t', first + 1);
+        if (second == std::string::npos || first == 0) continue;
+        const std::string name = line.substr(first + 1, second - first - 1), value = line.substr(second + 1);
+        SavedCameraControl setting;
+        setting.device = line.substr(0, first);
+        bool known = false;
+        for (uint8_t c = 0; c < uint8_t(CameraControl::count); ++c)
+            if (name == camera_control_name(CameraControl(c))) {
+                setting.control = CameraControl(c);
+                known = true;
+            }
+        if (!known || value.empty()) continue;
+        if (value == "auto") {
+            setting.value.automatic = true;
+        } else {
+            char* rest = nullptr;
+            const long number = std::strtol(value.c_str(), &rest, 10);
+            if (!rest || *rest) continue;
+            setting.value = {number, false};
+        }
+        remember_camera_control(saved, setting);
+    }
+    return saved;
+}
+
+std::string format_camera_controls(const std::vector<SavedCameraControl>& saved) {
+    std::string text;
+    for (const SavedCameraControl& setting : saved) {
+        if (setting.device.empty() || setting.device.find_first_of("\t\r\n") != std::string::npos) continue;
+        text += setting.device + '\t' + camera_control_name(setting.control) + '\t' +
+                (setting.value.automatic ? std::string("auto") : std::to_string(setting.value.value)) + '\n';
+    }
+    return text;
+}
+
+void remember_camera_control(std::vector<SavedCameraControl>& saved, const SavedCameraControl& setting) {
+    for (SavedCameraControl& kept : saved)
+        if (kept.device == setting.device && kept.control == setting.control) {
+            kept.value = setting.value;
+            return;
+        }
+    saved.push_back(setting);
 }
 }

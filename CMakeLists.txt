@@ -384,6 +384,18 @@ add_test(NAME pose_skeleton COMMAND sfr_pose_skeleton_test)
 add_executable(sfr_pose_smoothing_test tests/pose_smoothing_test.cpp src/pose_smoothing.cpp)
 target_include_directories(sfr_pose_smoothing_test PRIVATE src)
 add_test(NAME pose_smoothing COMMAND sfr_pose_smoothing_test)
+add_executable(sfr_pose_stability_test tests/pose_stability_test.cpp src/pose_stability.cpp)
+target_include_directories(sfr_pose_stability_test PRIVATE src)
+add_test(NAME pose_stability COMMAND sfr_pose_stability_test)
+add_executable(sfr_kinect_stability_test tests/kinect_stability_test.cpp src/kinect_stability.cpp src/pose_stability.cpp)
+target_include_directories(sfr_kinect_stability_test PRIVATE src)
+add_test(NAME kinect_stability COMMAND sfr_kinect_stability_test)
+add_executable(sfr_camera_tuner_test tests/camera_tuner_test.cpp src/camera_tuner.cpp)
+target_include_directories(sfr_camera_tuner_test PRIVATE src)
+add_test(NAME camera_tuner COMMAND sfr_camera_tuner_test)
+add_executable(sfr_pause_gesture_test tests/pause_gesture_test.cpp src/pause_gesture.cpp)
+target_include_directories(sfr_pause_gesture_test PRIVATE src)
+add_test(NAME pause_gesture COMMAND sfr_pause_gesture_test)
 if(SFR_POSE_AVAILABLE)
     # Running the model over a camera picture, or a BMP, without the game.
     add_executable(sfr_pose_probe tests/pose_probe.cpp src/pose_skeleton.cpp ${SFR_POSE_SOURCES} ${SFR_CAMERA_CAPTURE})
@@ -472,6 +484,22 @@ add_executable(sfr_pose_mediapipe_test tests/pose_mediapipe_test.cpp src/pose_me
 target_include_directories(sfr_pose_mediapipe_test PRIVATE src)
 add_test(NAME pose_mediapipe COMMAND sfr_pose_mediapipe_test)
 if(WIN32)
+    # The Kinect skeleton before and after the steadying, four panels, on a
+    # real sensor without the game.
+    add_executable(sfr_kinect_compare tests/kinect_compare.cpp src/kinect_preview.cpp src/kinect_stability.cpp
+        src/pose_stability.cpp src/camera_debug.cpp src/kinect_sensor.cpp ${SFR_KINECT_SENSOR})
+    target_include_directories(sfr_kinect_compare PRIVATE src)
+    target_link_libraries(sfr_kinect_compare PRIVATE user32 gdi32 ole32)
+    # The webcam adjustment window over a real camera, without the game.
+    add_executable(sfr_camera_tuner_probe tests/camera_tuner_probe.cpp src/camera_player.cpp src/title_stats.cpp src/camera_tuner.cpp
+        src/camera_tuner_window.cpp src/pose_skeleton.cpp src/pose_smoothing.cpp src/pose_stability.cpp
+        ${SFR_CAMERA_CAPTURE} ${SFR_POSE_SOURCES})
+    target_include_directories(sfr_camera_tuner_probe PRIVATE src)
+    target_link_libraries(sfr_camera_tuner_probe PRIVATE user32 gdi32 comctl32 ${SFR_CAMERA_LIBRARIES})
+    if(SFR_POSE_AVAILABLE)
+        target_link_libraries(sfr_camera_tuner_probe PRIVATE sfr_onnxruntime)
+        sfr_copy_onnx_dlls(sfr_camera_tuner_probe)
+    endif()
     add_executable(sfr_camera_debug_probe tests/camera_debug_probe.cpp src/camera_debug.cpp src/camera_debug_window.cpp)
     target_include_directories(sfr_camera_debug_probe PRIVATE src)
     target_link_libraries(sfr_camera_debug_probe PRIVATE user32 gdi32)
@@ -781,7 +809,7 @@ if(WIN32 OR UNIX)
     sfr_embed_shader(src/shaders/blit.hlsl pixelMain ps_6_0 blit_ps)
     sfr_embed_shader(src/shaders/model.hlsl vertexMain vs_6_0 model_vs)
     sfr_embed_shader(src/shaders/model.hlsl pixelMain ps_6_0 model_ps)
-    add_library(sfr_native_presentation STATIC src/native_presentation.cpp src/touch_controls.cpp src/gltf_model.cpp src/image_decode.cpp ${SFR_EMBEDDED_SHADER_HEADERS})
+    add_library(sfr_native_presentation STATIC src/native_presentation.cpp src/title_stats.cpp src/touch_controls.cpp src/gltf_model.cpp src/image_decode.cpp ${SFR_EMBEDDED_SHADER_HEADERS})
     target_include_directories(sfr_native_presentation PRIVATE "${SFR_EMBEDDED_SHADERS}")
     add_executable(sfr_native_presentation_test tests/native_presentation_test.cpp)
     if(WIN32)
@@ -918,10 +946,12 @@ if(SFR_BUILD_DIAGNOSTIC)
     target_sources(sfr_cpu_diagnostic PRIVATE src/race_frame_clock_hooks.cpp src/race_orientation_hooks.cpp src/race_boarding_hooks.cpp src/race_launch_hooks.cpp src/race_scripted_motion_hooks.cpp)
     target_sources(sfr_cpu_diagnostic PRIVATE src/offline_presence_hooks.cpp)
     # The webcam standing in for the sensor, and the body it finds.
-    target_sources(sfr_cpu_diagnostic PRIVATE src/camera_player.cpp src/camera_debug.cpp src/camera_debug_window.cpp src/pose_skeleton.cpp src/pose_smoothing.cpp
+    target_sources(sfr_cpu_diagnostic PRIVATE src/camera_player.cpp src/camera_debug.cpp src/camera_debug_window.cpp src/pose_skeleton.cpp src/pose_smoothing.cpp src/pose_stability.cpp src/kinect_stability.cpp
+                   src/window_title.cpp src/camera_tuner.cpp src/camera_tuner_window.cpp
                    ${SFR_CAMERA_CAPTURE} ${SFR_POSE_SOURCES})
     # A real Kinect (SFR_CAMERA=kinect), through the Kinect for Windows runtime.
-    target_sources(sfr_cpu_diagnostic PRIVATE src/kinect_sensor.cpp ${SFR_KINECT_SENSOR} ${SFR_VOICE})
+    target_sources(sfr_cpu_diagnostic PRIVATE src/kinect_sensor.cpp ${SFR_KINECT_SENSOR} ${SFR_VOICE}
+        src/kinect_preview.cpp src/kinect_preview_window.cpp)
     if(SFR_POSE_AVAILABLE)
         target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_onnxruntime)
         sfr_copy_onnx_dlls(sfr_cpu_diagnostic)
@@ -930,7 +960,7 @@ if(SFR_BUILD_DIAGNOSTIC)
     target_sources(sfr_cpu_diagnostic PRIVATE src/native_input.cpp src/input_bindings.cpp src/pad_assignment.cpp src/pad_devices.cpp src/sony_gamepad.cpp src/native_audio.cpp src/nui_skeleton.cpp src/nui_speech.cpp src/nui_race.cpp)
     target_sources(sfr_cpu_diagnostic PRIVATE src/guest_printf.cpp)
     if(WIN32)
-        target_link_libraries(sfr_cpu_diagnostic PRIVATE xinput hid setupapi xaudio2 ole32)
+        target_link_libraries(sfr_cpu_diagnostic PRIVATE xinput hid setupapi xaudio2 ole32 comctl32)
         # Symbol map for host-side profiling (SFR_HOST_PROFILE).
         target_link_options(sfr_cpu_diagnostic PRIVATE "/MAP:$<TARGET_FILE_DIR:sfr_cpu_diagnostic>/sfr_cpu_diagnostic.map")
     endif()
@@ -942,7 +972,7 @@ if(SFR_BUILD_DIAGNOSTIC)
     target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_guest_execution)
     target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_wait_trace)
     target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_native_timer_resolution)
-    target_sources(sfr_cpu_diagnostic PRIVATE src/guest_graphics_hooks.cpp src/game_patches.cpp src/nui_hooks.cpp src/nui_race_hooks.cpp)
+    target_sources(sfr_cpu_diagnostic PRIVATE src/guest_graphics_hooks.cpp src/game_patches.cpp src/nui_hooks.cpp src/nui_race_hooks.cpp src/pause_gesture.cpp)
     # The title's heap on o1heap (SFR_HOST_HEAP=1; docs/architecture-migration.md, phase 2).
     target_sources(sfr_cpu_diagnostic PRIVATE src/heap_hooks.cpp src/guest_heap.cpp)
     target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_o1heap)

@@ -202,7 +202,13 @@ private:
                     // The player slots key on 32 bits; v2's ids count up
                     // from a large base, so the low half stays distinct.
                     const uint32_t short_id = uint32_t(id) ? uint32_t(id) : uint32_t(id >> 32) | 1u;
-                    kinect_v2_body(mapped, short_id, index, frame.bodies.emplace_back());
+                    KinectBody& made = frame.bodies.emplace_back();
+                    kinect_v2_body(mapped, short_id, index, made);
+                    // The hands' state (open, a fist, lasso), which a v1 does not see.
+                    int32_t state = 0;
+                    if (SUCCEEDED(body->get_HandLeftState(&state))) made.hand_states[0] = uint8_t(state < 0 ? 0 : state);
+                    state = 0;
+                    if (SUCCEEDED(body->get_HandRightState(&state))) made.hand_states[1] = uint8_t(state < 0 ? 0 : state);
                 }
                 release(body);
             }

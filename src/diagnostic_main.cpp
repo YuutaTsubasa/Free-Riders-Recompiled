@@ -42,6 +42,7 @@
 #include "video_globals.h"
 #include "native_winsock.h"
 #include "native_notifications.h"
+#include "kinect_tuner.h"
 #include "notification_placement.h"
 #include "native_graphics.h"
 #include "guest_graphics.h"
@@ -296,6 +297,44 @@ static thread_local bool sampler_inline_mip_pending = false;
 static NativeWinsock* native_winsock = nullptr;
 static NativeNotifications* native_notifications = nullptr;
 static NotificationPlacement* notification_placement = nullptr;
+
+// Watches the adjustment window opened as the system's Kinect Guide; stopped
+// (stop_system_guide_watch) before the notifications it tells go away.
+static std::jthread system_guide_watch;
+
+KinectTuner show_system_guide(const char* why) {
+    const KinectTuner tuner = open_kinect_tuner();
+    if (tuner == KinectTuner::unavailable)
+        std::cerr << "NUI_KINECT_TUNER skipped by=" << why << " reason=no-window (no Kinect or webcam player, or it failed)\n";
+    if (tuner != KinectTuner::opened) return tuner;
+    const auto race_flag = [] {
+        return active_memory && active_memory->readable(0x83E52F8C, 4) ? active_memory->load<uint32_t>(0x83E52F8C) : 0u;
+    };
+    std::cerr << "NUI_SYSTEM_GUIDE open by=" << why << " racing=" << (race_flag() != 0) << '\n';
+    if (!native_notifications) return tuner;
+    constexpr uint32_t xn_sys_ui = 0x00000009;
+    // The previous window's watcher first: it follows only its own window,
+    // so it ends now and says nothing (this one is open), and its late
+    // "closed" cannot follow this window's "open".
+    stop_system_guide_watch();
+    native_notifications->publish(xn_sys_ui, 1);
+    const uint64_t mine = kinect_tuner_generation();
+    system_guide_watch = std::jthread([race_flag, mine](std::stop_token stop) {
+        while (!stop.stop_requested() && kinect_tuner_open() && kinect_tuner_generation() == mine)
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        // Stopped (a newer window, or the game ending) or replaced: the
+        // newer window, or nobody, owns the state now.
+        if (stop.stop_requested() || kinect_tuner_generation() != mine) return;
+        set_input_held(false);
+        if (native_notifications) native_notifications->publish_when_drained(xn_sys_ui, 0);
+        std::cerr << "NUI_KINECT_TUNER closed\nNUI_SYSTEM_GUIDE closed racing=" << (race_flag() != 0) << '\n';
+    });
+    return tuner;
+}
+void stop_system_guide_watch() {
+    system_guide_watch.request_stop();
+    if (system_guide_watch.joinable()) system_guide_watch.join();
+}
 static AssetFiles* asset_files = nullptr;
 static GuestFiles* guest_files = nullptr;
 static ContentFiles* content_files = nullptr;  // saves: mounted content packages
@@ -836,6 +875,13 @@ uint32_t relay_pad() { return relay_controller.load(std::memory_order_relaxed); 
 
 std::optional<GamepadState> nui_pad(uint32_t user) {
     return user == 0 ? input().current(0) : input().controller(user);
+}
+
+uint16_t nui_pad_buttons_through_hold() {
+    uint16_t buttons = 0;
+    for (uint32_t user = 0; user < 4; ++user)
+        if (const auto pad = input().pad_through_hold(user)) buttons |= pad->buttons;
+    return buttons;
 }
 
 GamepadState nui_gamepad() {
@@ -1750,6 +1796,23 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
                   << ctx.lr << std::dec << " result=0 backend=no-profiles\n";
         ctx.r3.u64 = 0;
         return;
+    }
+    // The Kinect troubleshooter or Kinect Guide, wherever the title asks
+    // for it (menus, the pause menu, the pause when the player is lost).
+    if (((address == 0x82ACBE5C && std::string_view(name) == "__imp__XamShowNuiTroubleshooterUI") ||
+         std::string_view(name) == "__imp__XamShowNuiGuideUI")) {
+        // The menu's Kinect adjustment: with a real Kinect, the preview
+        // window over the game's sensor stands in for the system's Kinect
+        // troubleshooter or Kinect Guide, with the webcam the webcam's
+        // adjustment window (kinect_tuner.h). The system UI is shown
+        // (XN_SYS_UI 1) until the window closes, then hidden.
+        const sfr::KinectTuner tuner = sfr::show_system_guide(name + 7);
+        if (tuner != sfr::KinectTuner::unavailable) {
+            std::cerr << "NUI_SYSTEM_UI " << std::string_view(name).substr(7) << " lr=0x" << std::hex << ctx.lr << std::dec
+                      << " result=0 backend=adjustment-window" << (tuner == sfr::KinectTuner::already_open ? " already-open" : "") << '\n';
+            ctx.r3.u64 = 0;
+            return;
+        }
     }
     if (address == 0x82ACBE5C && std::string_view(name) == "__imp__XamShowNuiTroubleshooterUI") {
         // (user index, 0, 0): the Kinect troubleshooter. There is no system
@@ -4574,6 +4637,14 @@ int main(int argc, char** argv) {
         sfr::NativeSyncObjects sync_objects;
         sfr::NativeNotifications notifications(memory, sync_objects);
         sfr::native_notifications = &notifications;
+        // Before `notifications` goes, the system guide's watcher stops
+        // without telling it anything (a window may still be open at exit).
+        struct GuideWatchStop {
+            ~GuideWatchStop() {
+                sfr::stop_system_guide_watch();
+                sfr::native_notifications = nullptr;
+            }
+        } guide_watch_stop;
         sfr::NotificationPlacement notification_placement;
         sfr::notification_placement = &notification_placement;
         sfr::GuestSyncObjects sync_adapter(memory, sync_objects);

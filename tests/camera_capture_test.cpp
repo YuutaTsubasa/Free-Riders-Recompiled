@@ -137,8 +137,26 @@ void phone_pictures_stand_upright() {
     require(sfr::camera_upright_rotation(270, true, 270) == 180, "a front camera the other way round is a half turn");
 }
 
+void controls_set_are_kept_per_camera() {
+    std::vector<sfr::SavedCameraControl> saved;
+    sfr::remember_camera_control(saved, {"USB Camera", sfr::CameraControl::exposure, {-7, false}});
+    sfr::remember_camera_control(saved, {"USB Camera", sfr::CameraControl::zoom, {0, true}});
+    sfr::remember_camera_control(saved, {"Phone", sfr::CameraControl::exposure, {-5, false}});
+    sfr::remember_camera_control(saved, {"USB Camera", sfr::CameraControl::exposure, {-8, false}});
+    require(saved.size() == 3, "a camera's setting is replaced, not added twice");
+    const auto read = sfr::parse_camera_controls(sfr::format_camera_controls(saved));
+    require(read.size() == 3 && read[0].device == "USB Camera" && read[0].control == sfr::CameraControl::exposure &&
+               read[0].value == sfr::CameraControlValue{-8, false},
+           "a held value comes back as it was written");
+    require(read[1].value.automatic && read[2].device == "Phone", "automatic, and the other camera, come back");
+    const auto rough = sfr::parse_camera_controls("Cam\tgain\t12\r\nbroken line\nCam\tfocus\t3\nCam\tzoom\tlots\n\tzoom\t1\n");
+    require(rough.size() == 1 && rough[0].control == sfr::CameraControl::gain && rough[0].value.value == 12,
+           "lines that cannot be read are skipped");
+}
+
 int main() {
     try {
+        controls_set_are_kept_per_camera();
         yuv420_turns_and_converts();
         phone_pictures_stand_upright();
         bgra_is_copied_with_opaque_alpha();

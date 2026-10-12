@@ -253,6 +253,70 @@ int main() {
             require(sfr::kinect_level(none) == 0.0f, "a frame without gravity is left alone");
         }
 
+        {
+            using sfr::KinectStep;
+            using sfr::KinectStepState;
+            const auto state = [](const sfr::KinectReadiness& r, KinectStep step) { return r.steps[size_t(step)]; };
+            sfr::KinectReadinessInput input;
+            auto r = sfr::kinect_readiness(input);
+            require(state(r, KinectStep::runtime) == KinectStepState::waiting && r.first_failed == KinectStep::count,
+                    "while the sensor opens every step waits");
+
+            input.failure = "no-runtime";
+            r = sfr::kinect_readiness(input);
+            require(r.first_failed == KinectStep::runtime && state(r, KinectStep::sensor) == KinectStepState::waiting,
+                    "without a runtime the runtime step fails and the sensor is not asked");
+            input.failure = "no-sensor";
+            r = sfr::kinect_readiness(input);
+            require(state(r, KinectStep::runtime) == KinectStepState::passed && r.first_failed == KinectStep::sensor,
+                    "a runtime without a sensor fails at the sensor");
+            input.failure = "initialize-0x80080014";
+            require(sfr::kinect_readiness(input).first_failed == KinectStep::sensor, "a sensor that will not start fails at the sensor");
+
+            input = {};
+            input.opened = true;
+            input.seconds_open = 1.0;
+            r = sfr::kinect_readiness(input);
+            require(state(r, KinectStep::sensor) == KinectStepState::passed &&
+                    state(r, KinectStep::frames) == KinectStepState::waiting && r.first_failed == KinectStep::count,
+                    "a sensor just opened waits for its first frame");
+            input.seconds_open = 4.0;
+            require(sfr::kinect_readiness(input).first_failed == KinectStep::frames,
+                    "an open sensor that sends nothing fails at the frames");
+            input.seconds_since_frame = 3.0;
+            input.seconds_open = 10.0;
+            require(sfr::kinect_readiness(input).first_failed == KinectStep::frames, "frames that stopped fail at the frames");
+            input.seconds_since_frame = 0.05;
+            r = sfr::kinect_readiness(input);
+            require(r.first_failed == KinectStep::body && !r.ready(), "frames with nobody in them fail at the body");
+            input.bodies = 1;
+            r = sfr::kinect_readiness(input);
+            require(r.ready() && r.first_failed == KinectStep::count, "a tracked body passes every step");
+        }
+
+        {
+            // The adjustment window's body: arms hanging below the shoulders,
+            // under the shoulder line, so no hand is raised as a menu cursor.
+            namespace joint = sfr::nui_joint;
+            sfr::KinectBody body;
+            body.joints[joint::hip_center] = {0.0f, 0.0f, 2.4f};
+            body.joints[joint::shoulder_center] = {0.0f, 0.5f, 2.4f};
+            body.joints[joint::shoulder_left] = {-0.18f, 0.5f, 2.4f};
+            body.joints[joint::shoulder_right] = {0.18f, 0.5f, 2.4f};
+            body.joints[joint::hand_right] = {0.3f, 0.9f, 2.0f};  // raised, reaching
+            body.joints[joint::hand_left] = {-0.2f, 0.7f, 2.1f};
+            body.joint_states[joint::hand_right] = 1;
+            sfr::kinect_arms_down(body);
+            for (uint32_t hand : {joint::hand_left, joint::wrist_left, joint::elbow_left,
+                                  joint::hand_right, joint::wrist_right, joint::elbow_right}) {
+                require(body.joints[hand][1] < 0.5f - 0.2f, "every arm point hangs below the shoulders");
+                require(body.joints[hand][2] == 2.4f && body.joint_states[hand] == 2, "at the body's depth, tracked");
+            }
+            require(body.joints[joint::hand_right][0] == 0.18f && body.joints[joint::hand_left][0] == -0.18f,
+                    "each hand below its own shoulder");
+            require(body.joints[joint::hand_right][1] < body.joints[joint::elbow_right][1], "the hand below the elbow");
+        }
+
         std::string why;
         if (!sfr::KinectSensor::supported())
             require(!sfr::KinectSensor::open(&why) && !why.empty(), "a platform without a runtime says why");

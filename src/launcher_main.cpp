@@ -77,14 +77,14 @@ enum Text {
     WindowSize, DesktopSize, Fullscreen, FullscreenHint, VSync, VSyncHint, RenderResolution, RenderResolutionHint, NativeResolution,
     Sound, SoundHint, Volume,
     SkipMovies, SkipMoviesHint,
-    VertexCache, VertexCacheHint, GpuPipeline, GpuPipelineHint, RaceEvery, RaceEveryHint,
+    VertexCache, VertexCacheHint, GpuPipeline, GpuPipelineHint, RaceEvery, RaceEveryHint, TitleStats, TitleStatsHint,
     CameraLabel, CameraHint, CameraHintOff, CameraHintPicture, CameraHintKinect, CameraOff, CameraPicture, CameraMotion, CameraDevice, CameraDeviceHint, CameraNone,
     CameraTest, CameraTesting, CameraWorks, CameraSilent, CameraClosed, CameraMirror, CameraMirrorHint,
     CameraKinect, KinectRow, KinectRowHint, KinectMissing,
     KinectNoRuntime, KinectNoSensor, KinectFailed, KinectDownload, KinectDownloadV2, KinectInstallHint,
     VoiceLabel, VoiceHint,
     KinectPreviewOpen, KinectPreviewClose,
-    CameraDebug, CameraDebugHint,
+    CameraDebug, CameraDebugHint, MenuSteady, MenuSteadyHint, MenuSteadyOff,
     ImageDirectory, ImageDirectoryHint, AssetDirectory, AssetDirectoryHint, Browse, Found, Missing, FilesHint,
     SaveDirectory, SaveDirectoryHint, SaveFound, SaveNone, SaveDefault, SaveOpen,
     StartGame, Quit, Defaults,
@@ -152,6 +152,9 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Draw every Nth race frame", "比賽中每 N 格繪製一次"},
     {"Above 1, a slower computer keeps the race at full speed with fewer frames drawn.",
      "大於 1 時，較慢的電腦也能維持比賽速度，但畫面較不流暢。"},
+    {"Performance in the window title", "標題顯示效能數字"},
+    {"The game window's title shows, every half second, the frame rate, the average and longest frame, the graphics, and how often the Kinect or webcam body arrives. Applies on the next game launch.",
+     "遊戲視窗的標題每半秒顯示 FPS、平均與最長畫格時間、繪圖後端與倍率，以及 Kinect 或 webcam 骨架每秒幾格。下次啟動遊戲時套用。"},
     {"Camera", "攝影機"},
     {"Motion tracks your body for Player 1. Controller input takes priority; after 1.5 seconds idle, fresh camera tracking resumes. Lost tracking falls back to the controller. Player 2 keeps its assigned controller.",
      "「體感」追蹤你的身體來控制 1P。操作手把時優先接手，停止操作 1.5 秒後恢復攝影機追蹤；失去追蹤時退回手把。2P 保留原本指定的手把。"},
@@ -195,6 +198,10 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Skeleton debug window", "骨架 Debug 視窗"},
     {"Shows only the skeleton received by the game, in front and side views, with no camera image. Closing this window does not stop the game. Changes apply on the next game launch.",
      "僅顯示遊戲收到的骨架，提供正面與側面視圖，不顯示攝影機影像。關閉此視窗不會停止遊戲。設定會在下次啟動遊戲時套用。"},
+    {"Menu cursor steadying", "選單游標穩定"},
+    {"A hand held still on a button still wanders a few millimetres, and the cursor with it. Movement inside this circle is ignored in the menus (never while racing); a larger circle is steadier but a little stickier. 0 turns it off.",
+     "手停在按鈕上時仍會晃動幾公釐，游標也跟著抖。在選單中（比賽時不作用），手在這個圓圈內的移動會被忽略；圈越大越穩，但會稍微黏手。設為 0 關閉。"},
+    {"Off", "關閉"},
     {"Game code image", "遊戲程式映像"},
     {"The game's decoded code and data (complete.txt, image.bin).", "解碼後的遊戲程式與資料（complete.txt、image.bin）。"},
     {"Game data", "遊戲資料"},
@@ -2278,6 +2285,19 @@ struct Launcher {
 #endif
             }
         }
+        if (settings.camera == "motion" || settings.camera == "kinect") {
+            const float slider_width = 220 * scale;
+            setting_row(tr(MenuSteady), tr(MenuSteadyHint), slider_width, scale, [&] {
+                int radius = int((std::min)(settings.menu_steady_radius, 30u));
+                char shown[32];
+                if (radius) std::snprintf(shown, sizeof shown, "%d mm", radius);
+                else std::snprintf(shown, sizeof shown, "%s", tr(MenuSteadyOff));
+                ImGui::SetNextItemWidth(slider_width);
+                bool moved = ImGui::SliderInt("##menu_steady", &radius, 0, 30, shown);
+                moved |= slider_steps(&radius, 0, 30, 1);
+                if (moved) settings.menu_steady_radius = uint32_t(std::clamp(radius, 0, 30));
+            });
+        }
         if (sfr::VoiceRecognizer::supported()) {
             settings_section(SectionVoice);
             setting_row(tr(VoiceLabel), tr(VoiceHint), switch_width, scale, [&] { toggle("##voice", &settings.voice); });
@@ -2288,6 +2308,10 @@ struct Launcher {
         const float switch_width = ImGui::GetFrameHeight() * 1.9f;
         setting_row(tr(VertexCache), tr(VertexCacheHint), switch_width, scale, [&] { toggle("##vertex", &settings.vertex_cache); });
         setting_row(tr(GpuPipeline), tr(GpuPipelineHint), switch_width, scale, [&] { toggle("##pipeline", &settings.gpu_pipeline); });
+#ifdef _WIN32
+        // Only the Windows game writes its title (window_title.cpp).
+        setting_row(tr(TitleStats), tr(TitleStatsHint), switch_width, scale, [&] { toggle("##title_stats", &settings.title_stats); });
+#endif
         const float slider_width = 220 * scale;
         setting_row(tr(RaceEvery), tr(RaceEveryHint), slider_width, scale, [&] {
             int every = int(settings.race_render_every);
