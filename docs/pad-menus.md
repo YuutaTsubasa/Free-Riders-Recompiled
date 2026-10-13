@@ -11,7 +11,7 @@
 | A | 說「ok」（選取目前的項目）；是非對話框選 ✓ |
 | B | 說「back」（返回）；是非對話框選 ✗ |
 | 十字鍵 | 說「up」「down」「left」「right」（轉動選單圓環、移動焦點） |
-| X | 說「next」（有 Next 按鈕的頁面用；教學關的分段選單不認它，用 A） |
+| X | 說「next」（有 Next 按鈕的頁面用；教學關的分段選單不認它，用 A）；是非對話框與單一按鈕對話框中和 A 一樣是確認（同 No Kinect Patch，Issue #109） |
 
 已驗證的流程（全程只用按鍵）：標題 START → Omochao 對話框 B（✗）→ Main Menu →
 A 進 Offline Mode → 十字鍵選 Time Attack → A → 選關卡 → A → 角色選擇。

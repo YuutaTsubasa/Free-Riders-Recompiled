@@ -65,11 +65,13 @@ uint32_t NuiSpeechEmulation::say(GuestMemory& memory, std::string_view word) {
 }
 
 int dialog_choice(uint16_t pressed, uint32_t layout) {
+    // X confirms as well, as in the No Kinect Patch (Issue #109).
+    const bool confirm=pressed & (gamepad_button::a | gamepad_button::x);
     if(layout==4) {
-        if(pressed & gamepad_button::a) return 0;
+        if(confirm) return 0;
         if(pressed & gamepad_button::b) return 1;
     }
-    if(layout==3 && (pressed & gamepad_button::a)) return 2;
+    if(layout==3 && confirm) return 2;
     return -1;
 }
 

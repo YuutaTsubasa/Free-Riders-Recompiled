@@ -131,6 +131,7 @@ ORIGINAL(822CD638)
 ORIGINAL(822CD960)
 ORIGINAL(822CD3F0)
 ORIGINAL(822CE118)
+ORIGINAL(822C8D88)
 ORIGINAL(822CB9B8)
 ORIGINAL(822B72E0)
 PPC_FUNC(__imp__sub_822C8958) {
@@ -466,6 +467,30 @@ void live_reader_scope() {
     require(mem().load<uint32_t>(other + 268) == 0x579B,
             "an exceptional guest exit must restore the reader scope");
 }
+// Tag Race holding hands (822C8D88): both players hold LT, asked about the
+// team's first two racers rather than one source.
+void hold_hands() {
+    constexpr uint32_t team = box + 0xb000, list = box + 0xb100, racers = box + 0xb200;
+    mem().store<uint32_t>(0x83E52FDC, team);
+    mem().store<uint32_t>(team + 20, 2);
+    mem().store<uint32_t>(team + 36, list);
+    mem().store<uint32_t>(team + 40, list + 8);
+    for (uint32_t i = 0; i < 2; ++i) {
+        mem().store<uint32_t>(list + i * 4, racers + i * 0x100);
+        mem().store<uint32_t>(racers + i * 0x100 + 108, 0);
+    }
+    first = {}; second = sfr::GamepadState{}; first.left_trigger = 255; frame();
+    reset_results(); require(invoke("sub_822C8D88") == 2 && mem().load<uint32_t>(selected + 20) == 8,
+                             "one player's LT alone must not hold hands");
+    second->left_trigger = 255; frame();
+    reset_results(); require(invoke("sub_822C8D88") == 1 && mem().load<uint32_t>(selected + 20) == (8u | 0x200u),
+                             "both players' LT must hold hands");
+    require(mem().load<uint32_t>(detector + 76) == 1, "the answer is kept at +76 as the original does");
+    mem().store<uint32_t>(racers + 0x100 + 108, 1);
+    reset_results(); require(invoke("sub_822C8D88") == 2, "a racer not riding cannot hold hands");
+    mem().store<uint32_t>(0x83E52FDC, 0);
+    first = {}; second = sfr::GamepadState{}; frame();
+}
 void independent_actions() {
     first = {}; second = sfr::GamepadState{}; frame();
     first.buttons = sfr::gamepad_button::a; frame();
@@ -497,6 +522,7 @@ void independent_actions() {
     first.thumb_lx = 0; first.thumb_ly = 0; frame();
     reset_results(); invoke("sub_822C9938", 0, 0);
     require(std::fabs(f(selected + 56) - 360.0f) < 0.01f, "releasing the stick must keep the turn so far");
+    hold_hands();
 }
 void lifecycle() {
     require(braking(0) && !braking(1), "establish both mappings");

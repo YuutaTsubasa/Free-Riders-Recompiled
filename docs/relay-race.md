@@ -10,10 +10,11 @@ somebody new to step in. With controllers that is a button press.
   racer. Up to four controllers (the keyboard counts as the first); one
   controller passed round works too.
 - **"Swap out with the next player"** (character select, and before the
-  boards): **A on any controller** is the swap. The racer walks out, a new
+  boards): **A or BACK on any controller** is the swap (BACK is the No Kinect
+  Patch's swap button, Issue #109). The racer walks out, a new
   person walks in and the title identifies them as a guest.
-- **In the race** the racer stops at a gate at the end of their leg: **A on
-  any controller** there is the swap, and the next racer starts.
+- **In the race** the racer stops at a gate at the end of their leg: **A or
+  BACK on any controller** there is the swap, and the next racer starts.
 - A second controller is not a second person in Relay Race (it takes its
   turn instead), so the single-team types (2, 3 or 4 Player Team) work with
   any number of controllers.

@@ -118,6 +118,8 @@ python scripts/prepare_recomp.py
 | 切換站姿 | V | Y |
 | 使用／搖晃道具 | F | RT |
 | 招式 | Q／E | LB／RB |
+| 牽手（Tag Race，兩位玩家都按住） | R | LT |
+| 換下一位選手（Relay Race） | Z 或 Tab | A 或 BACK |
 | 手部游標（只認 Kinect 的選單） | I J K L | 右類比 |
 
 Xbox 與 PlayStation 手把都能使用。Android 沒有連接手把時，畫面上的半透明觸控按鈕提供相同的

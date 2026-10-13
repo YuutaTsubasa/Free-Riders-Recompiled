@@ -41,7 +41,8 @@ void run() {
 
     require(sfr::dialog_choice(button::a, 4) == 0 && sfr::dialog_choice(button::b, 4) == 1, "A yes, B no");
     require(sfr::dialog_choice(button::a, 3) == 2 && sfr::dialog_choice(button::b, 3) == -1, "A takes the single button");
-    require(sfr::dialog_choice(button::x, 4) == -1 && sfr::dialog_choice(button::a, 5) == -1, "no choice otherwise");
+    require(sfr::dialog_choice(button::x, 4) == 0 && sfr::dialog_choice(button::x, 3) == 2, "X confirms as A does");
+    require(sfr::dialog_choice(button::y, 4) == -1 && sfr::dialog_choice(button::a, 5) == -1, "no choice otherwise");
 
     sfr::GuestMemory memory;
     sfr::NuiSpeechEmulation::write_words(memory);

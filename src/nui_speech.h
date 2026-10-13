@@ -46,7 +46,7 @@ public:
 
 // Slot a pressed button chooses in a hand-pointer dialog of the given layout
 // (823EF348: 4 = yes in slot 0 and no in slot 1, 3 = one button in slot 2),
-// or -1: A confirms, B declines a two-button dialog.
+// or -1: A or X confirms, B declines a two-button dialog.
 int dialog_choice(uint16_t pressed, uint32_t layout);
 
 // Items a pressed D-pad left (-1) or right (+1) turns a ring menu, or 0.
