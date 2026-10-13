@@ -10,9 +10,19 @@ namespace sfr {
 // settings.ini next to the launcher. The game reads all of it at startup
 // (environment variables and arguments), so it is fixed for a run.
 struct LauncherSettings {
-    uint32_t window_width = 1280, window_height = 720;
-    uint32_t render_scale = 100;     // percent of native 1280x720; SFR_RENDER_SCALE
-    bool fullscreen = false;
+    // 0 = not chosen yet: the launcher fills in the desktop size
+    // (apply_default_window_size); the game falls back to 1280x720 without it.
+    uint32_t window_width = 0, window_height = 0;
+    // The rendering resolution as a percent of the output (window, or the
+    // display in full screen) height: 100 draws as many lines as are shown.
+    // The game gets it as SFR_RENDER_SCALE, a percent of its 720 lines
+    // (internal_resolution). The old render_scale key (a percent of 1280x720)
+    // is ignored.
+    uint32_t resolution_scale = 100;
+    // Not saved: the desktop size the launcher sees (0 = unknown), which full
+    // screen shows the game at.
+    uint32_t display_width = 0, display_height = 0;
+    bool fullscreen = true;  // Borderless; false is Windowed
     bool vsync = false;
     bool audio = true;
     uint32_t volume = 100;           // percent
@@ -143,4 +153,38 @@ std::vector<std::pair<std::string, std::filesystem::path>> shader_tool_environme
 // Common window sizes offered in the list (the launcher adds the desktop's).
 struct WindowSize { uint32_t width, height; };
 std::vector<WindowSize> common_window_sizes();
+
+// Whether a window size is one the list offers: a common size or the
+// desktop's. Anything else is shown as "Custom" and kept as typed.
+bool is_listed_window_size(uint32_t width, uint32_t height, uint32_t desktop_width, uint32_t desktop_height);
+
+// Reads a window width or height typed by the player: digits only, at least
+// 160 and at most 16384 (a number outside the range is clamped to it). Empty
+// or non-numeric text is rejected and leaves value unchanged.
+bool parse_window_dimension(const std::string& text, uint32_t& value);
+
+// A window size not chosen yet (0) becomes the desktop's, and is the
+// player's choice from then on; the display size is recorded for full screen.
+// An unknown desktop leaves 1280x720.
+void apply_default_window_size(LauncherSettings& settings, uint32_t desktop_width, uint32_t desktop_height);
+
+// The resolution scale choices (percent of the output size: 0.25x to 3.0x in
+// steps of 0.25x, 25 to 300), in order. Anything else reads as 100.
+const std::vector<uint32_t>& resolution_scale_choices();
+
+// A choice as the slider shows it: "0.25x", "0.5x", "0.75x", "1.0x", "1.25x".
+std::string resolution_scale_label(uint32_t percent);
+
+// What the game draws for these settings: the output it is shown in (the
+// window, or the display in full screen), the SFR_RENDER_SCALE percent
+// asked for, round(output_height * resolution_scale / 720) within 25..800,
+// and the internal size that gives with the game's 1280x720 logical frame,
+// lowered as the game lowers it when a side would exceed 8192.
+struct InternalResolution {
+    uint32_t output_width, output_height;
+    uint32_t requested_percent, percent;
+    uint32_t logical_width, width, height;
+};
+InternalResolution internal_resolution(const LauncherSettings& settings);
+InternalResolution internal_resolution(const LauncherSettings& settings, uint32_t resolution_scale);
 }

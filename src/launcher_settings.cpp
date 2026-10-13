@@ -1,10 +1,13 @@
 #include "launcher_settings.h"
 #include "game_language.h"
+#include "render_scale.h"
 #include <algorithm>
 #include <charconv>
+#include <cstdio>
 #include <fstream>
 #include <sstream>
 #include <string_view>
+#include <tuple>
 
 namespace sfr {
 namespace {
@@ -39,11 +42,24 @@ void read_flag(const std::string& text, bool& out) {
     else if (text == "0" || text == "false") out = false;
 }
 
-uint32_t validated_render_scale(uint32_t scale) {
-    switch (scale) {
-    case 50: case 75: case 100: case 150: case 200: case 300: return scale;
-    default: return 100;
-    }
+uint32_t validated_resolution_scale(uint32_t scale) {
+    for (const uint32_t choice : resolution_scale_choices())
+        if (scale == choice) return scale;
+    return 100;
+}
+
+// The game's logical frame (the title's 1280x720 back buffer).
+constexpr uint32_t logical_width = 1280, logical_height = 720;
+
+bool valid_size(uint32_t width, uint32_t height) {
+    return width >= 160 && width <= 16384 && height >= 160 && height <= 16384;
+}
+
+// The window the game opens: the player's, else the desktop's, else 1280x720.
+std::pair<uint32_t, uint32_t> window_size(const LauncherSettings& s) {
+    if (valid_size(s.window_width, s.window_height)) return {s.window_width, s.window_height};
+    if (valid_size(s.display_width, s.display_height)) return {s.display_width, s.display_height};
+    return {logical_width, logical_height};
 }
 
 std::filesystem::path utf8_path(const std::string& text) {
@@ -67,10 +83,12 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         const std::string value = trim(std::string_view(line).substr(equals + 1));
         if (key == "window_width") read_number(value, 160, 16384, settings.window_width);
         else if (key == "window_height") read_number(value, 160, 16384, settings.window_height);
-        else if (key == "render_scale") {
+        // The old render_scale key (a percent of 1280x720) is not read: the
+        // same number means something else relative to the window.
+        else if (key == "resolution_scale") {
             uint32_t scale = 100;
-            read_number(value, 50, 300, scale);
-            settings.render_scale = validated_render_scale(scale);
+            read_number(value, 1, 1000, scale);
+            settings.resolution_scale = validated_resolution_scale(scale);
         }
         else if (key == "fullscreen") read_flag(value, settings.fullscreen);
         else if (key == "vsync") read_flag(value, settings.vsync);
@@ -124,7 +142,7 @@ std::string format_launcher_settings(const LauncherSettings& s) {
     out << "# Sonic Free Riders Recompiled launcher settings\n"
         << "window_width=" << s.window_width << '\n'
         << "window_height=" << s.window_height << '\n'
-        << "render_scale=" << validated_render_scale(s.render_scale) << '\n'
+        << "resolution_scale=" << validated_resolution_scale(s.resolution_scale) << '\n'
         << "fullscreen=" << s.fullscreen << '\n'
         << "vsync=" << s.vsync << '\n'
         << "audio=" << s.audio << '\n'
@@ -216,6 +234,8 @@ bool has_game_save(const std::filesystem::path& saves) {
 
 std::vector<std::pair<std::string, std::string>> game_environment(const LauncherSettings& s,
                                                                const std::filesystem::path& directory) {
+    const auto [window_width, window_height] = window_size(s);
+    const InternalResolution internal = internal_resolution(s);
     return {
         // Playing: no diagnostic time or call limits, no traces.
         {"SFR_CALL_BUDGET", "18446744073709551615"},
@@ -242,9 +262,11 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         {"SFR_VOICE_LANGUAGE", s.voice_language},
         {"SFR_VOLUME", std::to_string(s.volume)},
         {"SFR_SKIP_MOVIES", s.skip_movies ? "1" : ""},
-        {"SFR_WINDOW_WIDTH", std::to_string(s.window_width)},
-        {"SFR_WINDOW_HEIGHT", std::to_string(s.window_height)},
-        {"SFR_RENDER_SCALE", std::to_string(validated_render_scale(s.render_scale))},
+        {"SFR_WINDOW_WIDTH", std::to_string(window_width)},
+        {"SFR_WINDOW_HEIGHT", std::to_string(window_height)},
+        // The resolution scale of the output height, as the game's percent
+        // of its 720 lines (always set: an inherited value is overridden).
+        {"SFR_RENDER_SCALE", std::to_string(internal.requested_percent)},
         {"SFR_FULLSCREEN", s.fullscreen ? "1" : "0"},
         {"SFR_VSYNC", s.vsync ? "1" : "0"},
         {"SFR_GRAPHICS", s.vulkan ? "vulkan" : "d3d12"},
@@ -371,5 +393,82 @@ std::vector<std::pair<std::string, std::filesystem::path>> shader_tool_environme
 
 std::vector<WindowSize> common_window_sizes() {
     return {{960, 540}, {1280, 720}, {1600, 900}, {1920, 1080}, {2560, 1440}, {3840, 2160}};
+}
+
+bool is_listed_window_size(uint32_t width, uint32_t height, uint32_t desktop_width, uint32_t desktop_height) {
+    if (width == desktop_width && height == desktop_height) return true;
+    for (const auto& size : common_window_sizes())
+        if (size.width == width && size.height == height) return true;
+    return false;
+}
+
+bool parse_window_dimension(const std::string& text, uint32_t& value) {
+    if (text.empty()) return false;
+    uint64_t number = 0;
+    for (const char c : text) {
+        if (c < '0' || c > '9') return false;
+        number = std::min<uint64_t>(number * 10 + uint64_t(c - '0'), 1000000);
+    }
+    value = uint32_t(std::clamp<uint64_t>(number, 160, 16384));
+    return true;
+}
+
+void apply_default_window_size(LauncherSettings& settings, uint32_t desktop_width, uint32_t desktop_height) {
+    if (valid_size(desktop_width, desktop_height)) {
+        settings.display_width = desktop_width;
+        settings.display_height = desktop_height;
+    }
+    if (valid_size(settings.window_width, settings.window_height)) return;
+    const auto [width, height] = window_size(settings);
+    settings.window_width = width;
+    settings.window_height = height;
+}
+
+const std::vector<uint32_t>& resolution_scale_choices() {
+    static const std::vector<uint32_t> choices = [] {
+        std::vector<uint32_t> values;
+        for (uint32_t percent = 25; percent <= 300; percent += 25) values.push_back(percent);
+        return values;
+    }();
+    return choices;
+}
+
+std::string resolution_scale_label(uint32_t percent) {
+    // Two decimals only when needed: 0.25x, 0.5x, 0.75x, 1.0x, 1.25x.
+    char text[24];
+    if (percent % 10 == 0) std::snprintf(text, sizeof text, "%u.%ux", percent / 100, percent % 100 / 10);
+    else std::snprintf(text, sizeof text, "%u.%02ux", percent / 100, percent % 100);
+    return text;
+}
+
+InternalResolution internal_resolution(const LauncherSettings& s) {
+    return internal_resolution(s, s.resolution_scale);
+}
+
+InternalResolution internal_resolution(const LauncherSettings& s, uint32_t resolution_scale) {
+    InternalResolution r{};
+    // The frame is shown in the display in full screen (always on Android),
+    // otherwise in the window.
+#ifdef __ANDROID__
+    const bool fullscreen = true;
+#else
+    const bool fullscreen = s.fullscreen;
+#endif
+    std::tie(r.output_width, r.output_height) =
+        fullscreen && valid_size(s.display_width, s.display_height)
+            ? std::pair{s.display_width, s.display_height} : window_size(s);
+#ifdef __ANDROID__
+    if (r.output_height > r.output_width) std::swap(r.output_width, r.output_height);  // played in landscape
+#endif
+    // percent of 720 = output_height * (scale / 100) / 720 * 100.
+    const uint64_t scaled = uint64_t(r.output_height) * validated_resolution_scale(resolution_scale);
+    r.requested_percent = uint32_t(std::clamp<uint64_t>((scaled + logical_height / 2) / logical_height,
+                                                        render_scale::min_percent, render_scale::max_percent));
+    // The game's logical frame is always 1280x720; only its scale changes.
+    r.logical_width = logical_width;
+    r.percent = render_scale::fit_percent(r.requested_percent, r.logical_width, logical_height);
+    r.width = render_scale::scaled_extent(r.logical_width, r.percent);
+    r.height = render_scale::scaled_extent(logical_height, r.percent);
+    return r;
 }
 }

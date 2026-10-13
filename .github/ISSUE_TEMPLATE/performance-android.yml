@@ -8,7 +8,7 @@ body:
         Thank you for measuring. A phone or handheld is measured with the game's
         own diagnostic ZIP (docs/android-phone-diagnostics.md):
 
-        1. Play the same course for 30 to 60 seconds with **Rendering resolution**
+        1. Play the same course for 30 to 60 seconds with **Render Size**
            at 720p, close the game, and **Settings → Game files → Export diagnostic ZIP**.
         2. The same at 360p, exported before the next game starts (it replaces the log).
         3. Attach both ZIPs below and say which is which. If the device got hot,
