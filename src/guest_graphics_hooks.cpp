@@ -3,6 +3,7 @@
 #include "avatar_state.h"
 #include "avatar_transform.h"
 #include "guest_graphics.h"
+#include "aspect_settings.h"
 #include "native_graphics.h"
 #include "native_presentation.h"
 #include "native_raster_state.h"
@@ -1111,11 +1112,71 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     draw.shared.half_pixel_offset[0]=1.0f/float(logical_width);
     draw.shared.half_pixel_offset[1]=-1.0f/float(logical_height);
     draw.shared.alpha_threshold=state.alpha_reference.value_or(0.0f);
+    // Wider than 16:9 (aspect_settings.h): the frame's centered 16:9 area is
+    // center_width wide (1280 at a 720 height, whatever the frame's width).
+    const bool wide_frame=sfr::aspect::wider_than_16x9(logical_width,logical_height);
+    const float center_width=float(sfr::aspect::center_width(logical_height));
+    // The title lays its 2D out in a 1280x720 space (aspect_settings.h).
+    const float layout_width=float(sfr::aspect::title_layout_width);
+    const float layout_height=float(sfr::aspect::title_layout_height);
     // PA_CL_VTE_CNTL shadow (+10572, set by SetRenderState(VIEWPORTENABLE)):
     // without the viewport scale/offset bits the shader output is in pixels.
     if(!(memory.load<uint32_t>(uint64_t(device)+10572)&0x3F)) {
         draw.shared.screen_space_scale[0]=2.0f/float(logical_width);
         draw.shared.screen_space_scale[1]=-2.0f/float(logical_height);
+        // Ultrawide: pixel-space draws (movies, loading screens) laid out for a
+        // 1280-wide view were squeezed into the left part of that view, since
+        // the view sits in a wider framebuffer. A console maps pixels onto the
+        // viewport itself, so follow the viewport's width, as it does.
+        if(!presentation.target_is_surface() && wide_frame) {
+            const auto& viewport=presentation.raster_state().viewport();
+            if(viewport.x==0.0f && viewport.y==0.0f && viewport.width>=1.0f &&
+               viewport.width<float(logical_width) && viewport.height==float(logical_height))
+                draw.shared.screen_space_scale[0]=2.0f/viewport.width;
+        }
+    } else if(!presentation.target_is_surface() && wide_frame) {
+        // Orthographic (w == 1) 2D drawn through the viewport transform: keep
+        // its 16:9 shape instead of stretching it over the wide frame (a race's
+        // HUD). Perspective draws fill the view. Only the final pass onto the
+        // back buffer: the title's offscreen passes cover whole targets.
+        const bool ui_center=sfr::aspect::ui_center();
+        const uint32_t target=memory.load<uint32_t>(uint64_t(device)+0x3148);
+        // Only a view that fills the wide frame (a race): the 1280/880 views
+        // are presented as centered 16:9 already. A pass that samples a
+        // resolved framebuffer (the scene's composite) must stay full width.
+        const auto& view=presentation.raster_state().viewport();
+        // Slot 0 is the title's primary texture; the other slots keep the
+        // fetch constants of earlier draws, so they do not say what is sampled.
+        const uint32_t primary=draw.shared.texture_2d[0];
+        const bool samples_resolve=primary && graphics().renderer().is_resolved_texture(primary);
+        const bool full_view=view.x==0.0f && view.y==0.0f && view.width>=float(logical_width);
+        // A quad that covers the whole 1280x720 layout (a fade to black, a flash)
+        // must keep covering the whole wide frame.
+        bool fullscreen_quad=false;
+        if(draw.vertex_count>=3 && draw.stride>=8 && draw.stride<=32 &&
+           draw.vertices.size()>=size_t(draw.vertex_count)*draw.stride) {
+            float lo[2]={1e30f,1e30f},hi[2]={-1e30f,-1e30f};
+            for(uint32_t v=0;v<draw.vertex_count;++v) {
+                float xy[2];
+                std::memcpy(xy,draw.vertices.data()+size_t(v)*draw.stride,8);
+                for(int a=0;a<2;++a) { lo[a]=(std::min)(lo[a],xy[a]); hi[a]=(std::max)(hi[a],xy[a]); }
+            }
+            fullscreen_quad=lo[0]<=40.0f && hi[0]>=layout_width-40.0f && lo[1]<=40.0f && hi[1]>=layout_height-40.0f;
+        }
+        if(!fullscreen_quad && ui_center && full_view && !samples_resolve &&
+           target==sfr::GuestGraphics::color_handle) {
+            // Clip x scaled by center/width: the layout fills the centered 16:9 area.
+            draw.shared.screen_space_offset[1]=center_width/float(logical_width);
+        }
+    }
+
+    // Ultrawide: the title's 3D cameras are built for the wide frame at boot
+    // (the race needs that). While a 1280/880-wide view is on screen (menus,
+    // calibration), the scene they draw is the wide one squeezed into 16:9:
+    // widen x back by the ratio, which is the 16:9 crop of the same view.
+    if(wide_frame) {
+        const uint32_t view=graphics().last_view_width();
+        if(sfr::aspect::title_16x9_view(view)) draw.shared.projection_x_scale=float(logical_width)/center_width;
     }
 
     draw.blend=graphics().blend_control(0);
@@ -1164,8 +1225,79 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
             mode=mode==plume::RenderCullMode::BACK?plume::RenderCullMode::FRONT:plume::RenderCullMode::BACK;
         draw.cull=mode;
     }
+    // Menu backdrop (aspect_settings.h, SFR_MENU_BG): in the 1280/880-wide views
+    // (menus, calibration) the backdrop (the sky gradient, the light ribbons and
+    // the shade) and full-layout quads (fades) are drawn over the whole wide
+    // frame; everything else is drawn in the centered 16:9 area. The frame is then presented whole (present_front_buffer).
+    bool raster_swapped=false, raster_backdrop=false;
+    plume::RenderViewport saved_viewport{};
+    plume::RenderRect saved_scissor{};
+    const bool menu_bg=sfr::aspect::menu_backdrop();
+    {
+        const uint32_t view=graphics().last_view_width();
+        if(menu_bg && sfr::aspect::title_16x9_view(view) && wide_frame &&
+           memory.load<uint32_t>(uint64_t(device)+0x3148)==sfr::GuestGraphics::color_handle &&
+           !presentation.target_is_surface()) {
+            const uint32_t lr=uint32_t(ctx.lr);
+            // The title's 3D scene draws (call site 0x828097d8: the backdrop, and in
+            // the calibration also the cones and the player) use the whole frame; the
+            // cameras were built for it, so nothing is cut at the 16:9 edges.
+            bool backdrop=lr==0x828097d8u;
+            if(!backdrop && draw.vertex_count>=3 && draw.stride>=8 && draw.stride<=32 &&
+               draw.vertices.size()>=size_t(draw.vertex_count)*draw.stride) {
+                float lo[2]={1e30f,1e30f},hi[2]={-1e30f,-1e30f};
+                for(uint32_t v=0;v<draw.vertex_count;++v) {
+                    float xy[2];
+                    std::memcpy(xy,draw.vertices.data()+size_t(v)*draw.stride,8);
+                    for(int a=0;a<2;++a) { lo[a]=(std::min)(lo[a],xy[a]); hi[a]=(std::max)(hi[a],xy[a]); }
+                }
+                backdrop=lo[0]<=40.0f && hi[0]>=float(view)-40.0f && lo[1]<=40.0f && hi[1]>=layout_height-40.0f;
+                // The drifting light chips are small projected sprites of the same
+                // call site as the menu's ring and icons (which are 32 or 160 wide).
+                if(!backdrop && lr==0x824c1558u && hi[0]-lo[0]<=12.0f && hi[1]-lo[1]<=12.0f) backdrop=true;
+            }
+            saved_viewport=presentation.raster_state().viewport();
+            saved_scissor=presentation.raster_state().scissor();
+            auto viewport=saved_viewport;
+            auto scissor=saved_scissor;
+            raster_backdrop=backdrop;
+            // Every draw uses the whole wide frame, so what slides in from beyond the
+            // 16:9 layout (transitions) is not cut at its edge; the 2D layout is
+            // mapped into the centered area by the vertex shader instead, and
+            // perspective draws need no correction (the cameras suit the wide frame).
+            viewport.x=0.0f; viewport.width=float(logical_width);
+            draw.shared.projection_x_scale=0.0f;
+            if(saved_scissor.left<=0 && saved_scissor.right>=int32_t(view)) {
+                scissor.left=0; scissor.right=int32_t(logical_width);
+            } else {
+                const float k=center_width/float(view);
+                const float start=float((logical_width-uint32_t(center_width))/2);
+                scissor.left=int32_t(start+float(saved_scissor.left)*k);
+                scissor.right=int32_t(start+float(saved_scissor.right)*k);
+            }
+            const bool vte_off=(memory.load<uint32_t>(uint64_t(device)+10572)&0x3F)==0;
+            if(vte_off) {
+                // Pixel-space 2D: layout pixels (view wide) onto the centered 16:9 area.
+                draw.shared.screen_space_scale[0]=2.0f*center_width/(float(view)*float(logical_width));
+                draw.shared.screen_space_offset[0]=(float(logical_width)-center_width)/float(logical_width);
+            } else if(!backdrop) {
+                // Orthographic 2D through the viewport transform (w == 1 in the shader).
+                draw.shared.screen_space_offset[1]=center_width/float(logical_width);
+            }
+            try { const_cast<sfr::NativePresentation&>(presentation).set_raster_state(viewport,scissor); raster_swapped=true; }
+            catch(const std::exception&) { raster_swapped=false; }
+        }
+    }
+    {
+        const uint32_t note_view=graphics().last_view_width();
+        if(menu_bg && sfr::aspect::title_16x9_view(note_view) && wide_frame)
+            graphics().note_menu_bg_draw(raster_swapped,raster_swapped && raster_backdrop);
+    }
     const auto record_start=metrics_clock();
     graphics().renderer().draw(draw);
+    if(raster_swapped) {
+        try { const_cast<sfr::NativePresentation&>(presentation).set_raster_state(saved_viewport,saved_scissor); } catch(const std::exception&) {}
+    }
     if(frame_metrics) frame_record_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-record_start).count();
     ++frame_draws;
     // SFR_FRAME_DUMP=<present>: write the framebuffer every SFR_FRAME_DUMP_EVERY

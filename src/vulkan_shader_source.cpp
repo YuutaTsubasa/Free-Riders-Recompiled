@@ -140,7 +140,9 @@ std::optional<std::string> vulkan_shader_source(const std::string& hlsl) {
     // SharedConstants in native_renderer.h).
     text.insert(at + anchor.size(),
                 "#define g_ScreenSpaceScale vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 320, 8)\n"
-                "#define g_ResolvedTextureScale vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 328, 8)\n");
+                "#define g_ResolvedTextureScale vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 328, 8)\n"
+                "#define g_ScreenSpaceOffset vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 336, 8)\n"
+                "#define g_ProjectionXScale vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 344)\n");
 
     // The palette and the loop constants stay the constant buffers the
     // translator declares (vertex_palette.cpp, loop_constants.cpp): b3 and

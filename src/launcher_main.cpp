@@ -115,6 +115,7 @@ enum Text {
     SectionOnline, OnlineLabel, OnlineHint, OnlineHostLabel, OnlineHostHint, OnlineServerLabel, OnlineServerHint,
     OnlineNameLabel, OnlineNameHint,
     KinectSmoothLabel, KinectSmoothHint, KinectLeanLabel, KinectLeanHint, KinectCrouchLabel, KinectCrouchHint,
+    AspectModeLabel, AspectModeHint, AspectAuto, AspectOriginal,
     TextCount
 };
 
@@ -402,6 +403,11 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Crouch depth", "蹲下深度"},
     {"How far your hips must drop to count as a crouch. Raise it if you crouch by accident; lower it if crouches are missed.",
      "臀部要下降多少才算蹲下。若常誤判為蹲下就調高；若蹲下沒反應就調低。"},
+    {"Aspect Ratio", "畫面比例"},
+    {"Auto adapts the picture to the window or display. 16:9 keeps the original picture.",
+     "自動會依視窗或螢幕形狀調整畫面；原始則維持遊戲原本的 16:9 畫面。"},
+    {"Auto", "自動"},
+    {"16:9", "原始"},
 }};
 
 int language = 0;
@@ -1686,6 +1692,11 @@ struct Launcher {
         };
         const float combo_width = 300 * scale;
         const float switch_width = ImGui::GetFrameHeight() * 1.9f;
+        const auto aspect_name = [&](const std::string& ratio) {
+            if (ratio == "auto") return std::string(tr(AspectAuto));
+            if (ratio == "16:9") return std::string(tr(AspectOriginal));
+            return ratio;
+        };
         settings_section(SectionResolution);
 #ifndef __ANDROID__  // fullscreen phones have no adjustable output window
         setting_row(tr(WindowSize), tr(WindowResolutionHint), combo_width, scale, [&] {
@@ -1706,6 +1717,21 @@ struct Launcher {
 #else
         (void)name;
 #endif
+        // Aspect and output resolution are independent choices.
+        setting_row(tr(AspectModeLabel), tr(AspectModeHint), combo_width, scale, [&] {
+            ImGui::SetNextItemWidth(combo_width);
+            if (ImGui::BeginCombo("##aspect_ratio", aspect_name(settings.aspect_ratio).c_str())) {
+                for (const auto& ratio : sfr::aspect_ratio_choices()) {
+                    const bool chosen = ratio == settings.aspect_ratio;
+                    if (ImGui::Selectable(aspect_name(ratio).c_str(), chosen)) {
+                        settings.aspect_ratio = ratio;
+                        ::play(sfr::UiSound::confirm);
+                    }
+                    if (chosen) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+        });
         const auto render_name = [&](uint32_t percent) {
             char text[96];
             if (percent == 100)

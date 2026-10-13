@@ -1649,7 +1649,25 @@ void NativePresentation::draw_player_model(const AvatarFrameTransform& frame) {
     ++impl_->list_generation;
 }
 
-void NativePresentation::present(uint32_t area_width, uint32_t area_height) {
+std::pair<uint32_t, uint32_t> primary_display_size() {
+#ifdef _WIN32
+    // The monitor a full-screen window starts on (CW_USEDEFAULT windows open
+    // on the primary one). Only its shape is used, so DPI scaling is harmless.
+    MONITORINFO monitor{sizeof(monitor)};
+    if (GetMonitorInfoW(MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY), &monitor)) {
+        const RECT& r = monitor.rcMonitor;
+        if (r.right > r.left && r.bottom > r.top) return {uint32_t(r.right - r.left), uint32_t(r.bottom - r.top)};
+    }
+    return {0, 0};
+#else
+    if (!SDL_WasInit(SDL_INIT_VIDEO) && SDL_InitSubSystem(SDL_INIT_VIDEO) != 0) return {0, 0};
+    SDL_DisplayMode mode{};
+    if (SDL_GetDesktopDisplayMode(0, &mode) != 0 || mode.w <= 0 || mode.h <= 0) return {0, 0};
+    return {uint32_t(mode.w), uint32_t(mode.h)};
+#endif
+}
+
+void NativePresentation::present(uint32_t area_width, uint32_t area_height, float display_aspect) {
     impl_->refuse_during_gpu_wait();
     impl_->drain();
 
@@ -1748,7 +1766,15 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height) {
         // screens narrower than the game, very visibly so on a 20:9 phone.
         const float scale = (std::min)(float(out_width) / float(impl_->width),
                                        float(out_height) / float(impl_->height));
-        const float view_width = float(impl_->width) * scale, view_height = float(impl_->height) * scale;
+        float view_width = float(impl_->width) * scale, view_height = float(impl_->height) * scale;
+        if (part && display_aspect > 0.0f) {
+            // The part keeps the size it has inside the whole framebuffer as that
+            // is scaled into the window (the same as frames presented whole, so a
+            // window of another shape than the framebuffer does not make it jump),
+            // never more than the window holds.
+            view_height = (std::min)(view_height, float(out_width) / display_aspect);
+            view_width = view_height * display_aspect;
+        }
         const plume::RenderViewport viewport((float(out_width) - view_width) * 0.5f, (float(out_height) - view_height) * 0.5f,
                                              view_width, view_height);
         const plume::RenderRect scissor(0, 0, int32_t(out_width), int32_t(out_height));

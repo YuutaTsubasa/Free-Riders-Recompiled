@@ -139,7 +139,7 @@ fs::path extended_common_header() {
     const std::string anchor = "uint g_conditionalRenderingIndex : packoffset(c19.w);";
     const auto at = text.find(anchor);
     if (at == std::string::npos) failed("pinned shader_common.h lacks the shared constant block");
-    text.replace(at, anchor.size(), anchor.substr(0, anchor.size() - 1) + "; \\\n    float2 g_ScreenSpaceScale : packoffset(c20.x); \\\n    float2 g_ResolvedTextureScale : packoffset(c20.z);");
+    text.replace(at, anchor.size(), anchor.substr(0, anchor.size() - 1) + "; \\\n    float2 g_ScreenSpaceScale : packoffset(c20.x); \\\n    float2 g_ResolvedTextureScale : packoffset(c20.z); \\\n    float2 g_ScreenSpaceOffset : packoffset(c21.x); \\\n    float g_ProjectionXScale : packoffset(c21.z);");
     // Two more push-constant addresses, for SPIR-V: the skinning palette and
     // the loop constants. They used to be read out of the shared constants
     // with a 64-bit vk::RawBufferLoad of their own, which is an indirection
@@ -184,7 +184,9 @@ void add_screen_space_mapping(const fs::path& hlsl) {
     const auto at = text.rfind(anchor);
     if (at == std::string::npos) failed("translated vertex shader lacks its output epilogue");
     text.insert(at, "\tif (any(g_ScreenSpaceScale != 0.0)) output.oPos.xy = output.oPos.xy * g_ScreenSpaceScale"
-                    " + float2(-1.0, 1.0) * output.oPos.w;\n");
+                    " + float2(-1.0, 1.0) * output.oPos.w + g_ScreenSpaceOffset * output.oPos.w;\n"
+                    "\telse if (g_ScreenSpaceOffset.y != 0.0 && output.oPos.w == 1.0) output.oPos.x = output.oPos.x * g_ScreenSpaceOffset.y + g_ScreenSpaceOffset.x * output.oPos.w;\n"
+                    "\telse if (g_ProjectionXScale != 0.0 && output.oPos.w != 1.0) output.oPos.x *= g_ProjectionXScale;\n");
     std::ofstream(hlsl, std::ios::binary | std::ios::trunc) << text;
 }
 

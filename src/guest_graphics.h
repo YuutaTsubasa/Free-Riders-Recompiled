@@ -101,6 +101,23 @@ private:
     // is in that surface's pixels; origin-zero ones are in the framebuffer's
     // (set_viewport).
     bool viewport_surface_space_ = false;
+    // The width of the last view the title set on the back buffer (set_viewport).
+    uint32_t last_view_width_ = 0;
+    uint32_t menu_bg_swapped_ = 0, menu_bg_other_ = 0, menu_bg_backdrop_ = 0;
+    bool menu_bg_whole_ = false, menu_bg_backdrop_last_ = false;
+public:
+    // The aspect the title's 3D cameras should start from for the view being
+    // drawn: the framebuffer's when the view fills it, 16:9 for the 1280/880
+    // wide views. 0 when the framebuffer is not wider than 16:9.
+    [[nodiscard]] float camera_aspect();
+    [[nodiscard]] uint32_t last_view_width() const noexcept { return last_view_width_; }
+    // SFR_MENU_BG: a draw in a 1280/880-wide view was placed in the centered area
+    // (swapped) or went elsewhere (a surface the title composes later). The frame
+    // is presented whole only when every such draw was placed.
+    void note_menu_bg_draw(bool swapped,bool backdrop=false) noexcept {
+        (swapped ? menu_bg_swapped_ : menu_bg_other_)++;
+        if(backdrop) menu_bg_backdrop_++;
+    }
 };
 
 extern GuestGraphics* active_guest_graphics;

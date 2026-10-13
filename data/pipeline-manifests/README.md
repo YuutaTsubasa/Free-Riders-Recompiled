@@ -55,6 +55,11 @@ the records are byte for byte those of v0.6.9 (455 Vulkan, 465 D3D12). The
 `pipeline_manifest` test now loads these files, so a shader ABI change that
 leaves them behind fails there instead of preparing nothing at start.
 
+2026-10-13: both lists moved to shader ABI 12 (translated vertex shaders carry
+the ultrawide screen-space mapping). As for ABI 10 and 11, only the ABI field
+and checksum changed; the records are byte for byte those of ABI 11 (455
+Vulkan, 465 D3D12).
+
 To join several recorded lists, use `sfr_pipeline_manifest_merge <d3d12|vulkan>
 <output> <input>...` (tools/pipeline_manifest_merge.cpp). It decodes each input
 with the runtime's own validation, drops duplicates and keeps the first-seen

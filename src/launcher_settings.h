@@ -12,6 +12,9 @@ namespace sfr {
 struct LauncherSettings {
     uint32_t window_width = 1280, window_height = 720;
     uint32_t render_scale = 100;     // percent of native 1280x720; SFR_RENDER_SCALE
+    // Auto follows the window/display shape; 16:9 keeps the original picture.
+    // Neither changes the selected output resolution.
+    std::string aspect_ratio = "auto";  // "auto" or "16:9"
     bool fullscreen = false;
     bool vsync = false;
     bool audio = true;
@@ -143,4 +146,7 @@ std::vector<std::pair<std::string, std::filesystem::path>> shader_tool_environme
 // Common window sizes offered in the list (the launcher adds the desktop's).
 struct WindowSize { uint32_t width, height; };
 std::vector<WindowSize> common_window_sizes();
+
+// The aspect ratio choices, in the order the launcher lists them.
+const std::vector<std::string>& aspect_ratio_choices();
 }

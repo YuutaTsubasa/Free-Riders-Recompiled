@@ -1,4 +1,5 @@
 #include "guest_graphics.h"
+#include "aspect_settings.h"
 #include <cstdlib>
 #include <string>
 #include "guest_memory.h"
@@ -182,6 +183,30 @@ void GuestGraphics::present_front_buffer(uint32_t device) {
     const auto& viewport=impl_->presentation->raster_state().viewport();
     const bool back_buffer_sized=stretch && viewport.x==0 && viewport.y==0 &&
         uint32_t(viewport.width)==back_width && uint32_t(viewport.height)==back_height;
+    // Menu backdrop (aspect_settings.h, SFR_MENU_BG) draws the menus' backdrop
+    // over the whole frame and the rest in its centered 16:9 area
+    // (guest_graphics_hooks.cpp): present it whole.
+    if(aspect::menu_backdrop()) {
+        const bool whole=menu_bg_swapped_>0 && menu_bg_other_==0 &&
+            aspect::title_16x9_view(last_view_width_) &&
+            aspect::wider_than_16x9(impl_->presentation->width(),impl_->presentation->height());
+        menu_bg_whole_=whole;
+        menu_bg_backdrop_last_=menu_bg_backdrop_>0;
+        menu_bg_swapped_=menu_bg_other_=menu_bg_backdrop_=0;
+        if(whole) {
+            impl_->presentation->present(0,0);
+            return;
+        }
+    }
+    // Wider than 16:9: the title lays its 1280x720 (or 880x720) screens out in
+    // the left part of the wider framebuffer. Present that part as centered 16:9.
+    const uint32_t fb_width=impl_->presentation->width(),fb_height=impl_->presentation->height();
+    if(stretch && aspect::wider_than_16x9(fb_width,fb_height) && viewport.x==0 && viewport.y==0 &&
+       uint32_t(viewport.height)==fb_height && uint32_t(viewport.width)<fb_width &&
+       aspect::title_16x9_view(uint32_t(viewport.width))) {
+        impl_->presentation->present(uint32_t(viewport.width),uint32_t(viewport.height),16.0f/9.0f);
+        return;
+    }
     impl_->presentation->present(back_buffer_sized?back_width:0,back_buffer_sized?back_height:0);
 }
 uint32_t GuestGraphics::discard_commands(uint32_t device, uint32_t& discarded_bytes) {
@@ -514,6 +539,11 @@ uint32_t GuestGraphics::create_device(uint32_t adapter, uint32_t mode, uint32_t 
     }
     if (!words[0] || !words[1] || words[0] > 8192 || words[1] > 8192)
         unsupported(parameters, "unsupported presentation dimensions");
+    // Wider than 16:9 (aspect_settings.h): the logical back buffer takes the
+    // shape of the window/display (or SFR_ASPECT_WIDTH); the title's 1280x720
+    // request is kept in original mode or for a 16:9 or narrower window.
+    if (words[0] == aspect::title_layout_width && words[1] == aspect::title_layout_height)
+        words[0] = aspect::logical_width(words[0], words[1]);
     // With foreign render targets the title binds and unbinds the native back
     // buffer through its own SetRenderTarget, which reads surface fields
     // (+24, +28) that the native handles do not have. They are mapped larger
@@ -643,8 +673,27 @@ bool GuestGraphics::clear(uint32_t device, uint32_t rectangle_count, uint32_t re
         bottom=std::min<int64_t>(bottom,std::bit_cast<int32_t>(memory_.load<uint32_t>(device+0x3240)));
     }
     if (left>=right || top>=bottom) return false;
+    // Menu backdrop (aspect_settings.h): the 1280/880-wide views live in the
+    // centered 16:9 area of a wider frame (see guest_graphics_hooks.cpp).
+    // Whatever lies outside it is black, so the frame is cleared black first
+    // and the title's own clear is moved into the centered area.
+    const bool centered=aspect::menu_backdrop() && menu_bg_whole_ && aspect::title_16x9_view(last_view_width_) &&
+        aspect::wider_than_16x9(uint32_t(target_width),uint32_t(target_height)) && !impl_->presentation->target_is_surface();
+    const uint32_t center=aspect::center_width(uint32_t(target_height));
+    const double k=centered ? double(center)/double(last_view_width_) : 1.0;
+    const double start=centered ? double((uint32_t(target_width)-center)/2) : 0.0;
+    const auto place=[&](int64_t v){ return int64_t(start+double(v)*k+0.5); };
+    if (centered) {
+        NativeClear all=clear;
+        // Where a backdrop is drawn over the whole frame (menus), it blends with what
+        // lies under it: clear the whole frame with the title's colour so the
+        // centre and the sides match. Without one (a movie) the sides are black.
+        if(!menu_bg_backdrop_last_) all.color_value={0.0f,0.0f,0.0f,1.0f};
+        const std::vector<plume::RenderRect> whole{plume::RenderRect(0,0,int32_t(target_width),int32_t(target_height))};
+        impl_->presentation->clear(all,whole);
+    }
     std::vector<plume::RenderRect> clipped;
-    if (!rectangles) clipped.emplace_back(int32_t(left),int32_t(top),int32_t(right),int32_t(bottom));
+    if (!rectangles) clipped.emplace_back(int32_t(place(left)),int32_t(top),int32_t(place(right)),int32_t(bottom));
     else {
         if (rectangle_count>4096) unsupported(rectangle_count,"clear rectangle count exceeds supported bound");
         memory_.check(rectangles,uint64_t(rectangle_count)*16);
@@ -655,7 +704,7 @@ bool GuestGraphics::clear(uint32_t device, uint32_t rectangle_count, uint32_t re
             auto t=std::max<int64_t>(top,std::bit_cast<int32_t>(memory_.load<uint32_t>(p+4)));
             auto r=std::min<int64_t>(right,std::bit_cast<int32_t>(memory_.load<uint32_t>(p+8)));
             auto b=std::min<int64_t>(bottom,std::bit_cast<int32_t>(memory_.load<uint32_t>(p+12)));
-            if (l<r && t<b) clipped.emplace_back(int32_t(l),int32_t(t),int32_t(r),int32_t(b));
+            if (l<r && t<b) clipped.emplace_back(int32_t(place(l)),int32_t(t),int32_t(place(r)),int32_t(b));
         }
     }
     if (clipped.empty()) return false;

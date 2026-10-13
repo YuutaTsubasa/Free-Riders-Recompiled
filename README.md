@@ -202,7 +202,7 @@ The launcher groups settings by what you want to change:
 | Category | Settings |
 | --- | --- |
 | General | Launcher, game and voice languages, movies, restore defaults |
-| Graphics | Window and rendering resolutions, fullscreen, backend, VSync, expandable performance options |
+| Graphics | Window and rendering resolutions, aspect ratio, fullscreen, backend, VSync, expandable performance options |
 | Sound | Game volume and launcher sounds |
 | Controls | Each player's input source and controller, button/key bindings, Android touch and tilt |
 | Motion input | Kinect/webcam mode, device and preview, mirror, skeleton debug, voice commands |
@@ -213,6 +213,21 @@ The launcher groups settings by what you want to change:
 Window and rendering resolutions sit together under **Graphics > Resolution**:
 the first sets the output window size, while the second controls the pixels the
 game draws. Changes to game settings apply on the next game launch.
+
+The window size list also offers common ultrawide sizes (2560 x 720,
+2560 x 1080, 3440 x 1440, 5120 x 1440). One more option sits in the same group:
+
+- **Aspect Ratio** (`aspect_ratio`): **Auto** (default) adapts the picture to the
+  window or display; **16:9** keeps the original picture. Both preserve the
+  selected output resolution. With Auto and a window (or display, in full
+  screen) wider than 16:9, the race's 3D view is widened (hor+), the race HUD
+  stays in a centered 16:9 area, menu, title and calibration backdrops fill the
+  whole width, and movies keep their 16:9 shape with black bars. 16:9 keeps the
+  original behaviour untouched.
+
+The launcher sets `SFR_ASPECT_MODE`, clears `SFR_ASPECT_RATIO`, and passes the
+selected window dimensions unchanged. Older `aspect_mode=original` settings load
+as 16:9. Changes apply on the next game launch.
 
 ## How to Build
 

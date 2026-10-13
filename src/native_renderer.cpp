@@ -901,6 +901,9 @@ NativeRenderer::CachedVertices NativeRenderer::vertex_cache(GuestMemory& memory,
     return {entry.buffer.get(), {mapped, size_t(host_bytes)}};
 }
 uint64_t NativeRenderer::texture_generation() const noexcept { return impl_->texture_generation; }
+bool NativeRenderer::is_resolved_texture(uint32_t descriptor) const noexcept {
+    return descriptor < texture_capacity && impl_->resolved_texture_indices.test(descriptor);
+}
 
 std::span<uint8_t> NativeRenderer::vertex_space(uint64_t bytes, uint64_t index_bytes) {
     // The most a draw can add after its vertices (see draw()).

@@ -71,7 +71,9 @@ float figure(float2 p, float edge) {
 
 // The Pause Gesture's gauge at c (x, y, radius, 3 + progress).
 float3 gauge(float3 color, float2 image, float4 c, float2 pixel) {
-    const float2 d = (image - c.xy) * float2(16.0 / 9.0, 1.0);
+    // The image's own width / height (a frame wider than 16:9 keeps the gauge
+    // round): image coordinates span the frame, so a pixel's steps give it.
+    const float2 d = (image - c.xy) * float2(pixel.y / pixel.x, 1.0);
     const float r = length(d);
     const float edge = pixel.y;
     const float disc_alpha = 1.0 - smoothstep(c.z - edge, c.z + edge, r);
