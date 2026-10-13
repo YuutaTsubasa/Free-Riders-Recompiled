@@ -1,0 +1,13 @@
+{
+  "$schema": "https://recomp.fyi/schema/v1.json",
+  "game": "Sonic Free Riders",
+  "system": "Xbox 360",
+  "type": "recomp",
+  "original": { "region": "USA/Europe" },
+  "project": "Free Riders Recompiled",
+  "status": "playable",
+  "targets": ["Windows", "Linux", "Android"],
+  "toolchain": ["XenonRecomp", "XenosRecomp"],
+  "maintainers": [{ "name": "YuutaTsubasa", "link": "https://github.com/YuutaTsubasa" }],
+  "links": [{ "url": "https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases", "label": "Releases" }]
+}
