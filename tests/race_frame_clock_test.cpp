@@ -131,7 +131,7 @@ void race_present_limit_counts_only_the_race() {
     sfr::RacePresentLimit off(0);
     for (int i=0;i<1000;++i) require(!off.reached(true),"no limit never ends the run");
     sfr::RacePresentLimit limit(3);
-    for (int i=0;i<500;++i) require(!limit.reached(false),"menus and loading are not counted");
+    for (int i=0;i<500;++i) require(!limit.reached(false),"presents without a race object are not counted");
     require(!limit.reached(true) && !limit.reached(true),"the first race presents count");
     require(!limit.reached(false),"a present without the race flag is not counted");
     require(limit.reached(true),"the third race present ends the run");

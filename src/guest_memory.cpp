@@ -1051,7 +1051,7 @@ void install_watch_handler(GuestMemory* memory) {
 }
 }
 
-void GuestMemory::arm_watch(uint64_t first_page, uint64_t last_page) {
+void GuestMemory::arm_watch(uint64_t first_page, uint64_t last_page, bool precise) {
     install_watch_handler(this);
     // Protection works in host pages, which may hold several 4 KiB guest pages.
     const uint64_t per_host = page_size_ / fast_page_size;
@@ -1094,7 +1094,7 @@ void GuestMemory::arm_watch(uint64_t first_page, uint64_t last_page) {
             armed &= (watched_pages_[page] & watch_armed) != 0;
         }
         const bool wanted = !armed && committed &&
-                            !(fault_streaks_[first] >= 2 && epoch - fault_epochs_[first] < 300);
+                            (precise || !(fault_streaks_[first] >= 2 && epoch - fault_epochs_[first] < 300));
         if (wanted && run == UINT64_MAX) run = host;
         if (!wanted && run != UINT64_MAX) { protect_run(run, host); run = UINT64_MAX; }
     }
@@ -1148,14 +1148,14 @@ bool GuestMemory::handle_watch_fault(uintptr_t host_address) noexcept {
     return true;
 }
 
-void GuestMemory::watch_writes(uint64_t address, uint64_t size) {
+void GuestMemory::watch_writes(uint64_t address, uint64_t size, bool precise) {
     if (!size || address >= address_space_size || size > address_space_size - address) return;
     for (uint64_t page = address / fast_page_size; page <= (address + size - 1) / fast_page_size; ++page) {
         std::atomic_ref<uint8_t>(watched_pages_[page]).fetch_or(1, std::memory_order_relaxed);
         auto flag=std::atomic_ref<uint8_t>(fast_pages_[page]);
         if (flag.load(std::memory_order_relaxed)) flag.fetch_or(fast_watched, std::memory_order_relaxed);
     }
-    if (direct_guest_access) arm_watch(address / fast_page_size, (address + size - 1) / fast_page_size);
+    if (direct_guest_access) arm_watch(address / fast_page_size, (address + size - 1) / fast_page_size, precise);
 }
 
 void GuestMemory::enable_write_epochs() {
@@ -1174,6 +1174,35 @@ bool GuestMemory::written_since(uint64_t address, uint64_t size, uint32_t epoch)
         if (page_epochs_[page].load(std::memory_order_relaxed) >= epoch) return true;
     }
     return false;
+}
+
+void GuestMemory::enable_write_versions() {
+    if (!page_write_versions_)
+        page_write_versions_ = std::make_unique<std::atomic<uint64_t>[]>(address_space_size / fast_page_size);
+}
+
+std::vector<uint64_t> GuestMemory::capture_write_versions(uint64_t address, uint64_t size) const {
+    if (!page_write_versions_ || !size || address >= address_space_size || size > address_space_size - address) return {};
+    std::vector<uint64_t> result;
+    result.reserve((address + size - 1) / fast_page_size - address / fast_page_size + 1);
+    for (uint64_t page = address / fast_page_size; page <= (address + size - 1) / fast_page_size; ++page) {
+        const uint8_t bits = std::atomic_ref<uint8_t>(watched_pages_[page]).load(std::memory_order_relaxed);
+        if (!(bits & 1) || (direct_guest_access && !(bits & watch_armed))) return {};
+        result.push_back(page_write_versions_[page].load(std::memory_order_relaxed));
+    }
+    return result;
+}
+
+bool GuestMemory::matches_write_versions(uint64_t address, uint64_t size, std::span<const uint64_t> versions) const {
+    if (!page_write_versions_ || !size || address >= address_space_size || size > address_space_size - address) return false;
+    const uint64_t first = address / fast_page_size, last = (address + size - 1) / fast_page_size;
+    if (versions.size() != last - first + 1) return false;
+    for (uint64_t page = first; page <= last; ++page) {
+        const uint8_t bits = std::atomic_ref<uint8_t>(watched_pages_[page]).load(std::memory_order_relaxed);
+        if (!(bits & 1) || (direct_guest_access && !(bits & watch_armed)) ||
+            page_write_versions_[page].load(std::memory_order_relaxed) != versions[page - first]) return false;
+    }
+    return true;
 }
 
 bool GuestMemory::take_written(uint64_t address, uint64_t size) {

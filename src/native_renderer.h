@@ -1,8 +1,10 @@
 #pragma once
 #include "native_blend_control.h"
 #include "native_render_state.h"
+#include "native_formats.h"
 #include "shader_cache.h"
 #include "texture_fetch.h"
+#include "guest_constant_state.h"
 #include "plume_render_interface_types.h"
 #include <cstddef>
 #include <array>
@@ -13,6 +15,7 @@
 
 namespace plume { struct RenderShader; struct RenderBuffer; }
 namespace sfr {
+struct GuestBufferSnapshot;
 class GuestMemory;
 class NativeGraphics;
 class NativePresentation;
@@ -53,7 +56,16 @@ struct NativeDraw {
     std::span<const uint8_t> vertices;  // little-endian words
     // Or a buffer that already holds them (vertex_cache), vertex_count vertices
     // of stride bytes; vertices is then not read.
-    const plume::RenderBuffer* vertex_buffer = nullptr;
+    // Replace the complete binding when reusing a NativeDraw: a slice offset
+    // must never carry into the next legacy-cache or upload-ring draw.
+    struct VertexBufferBinding {
+        const plume::RenderBuffer* buffer = nullptr;
+        uint64_t offset = 0;
+    } vertex_buffer;
+    // Converted dynamic ring slice. Uploaded lazily inside draw(), after any
+    // capacity flush, then reused for this upload-ring lifetime.
+    std::shared_ptr<const GuestBufferSnapshot> vertex_snapshot;
+    uint64_t vertex_snapshot_offset = 0;
     // An indexed draw uploads the contiguous block of the stream its indices
     // reach and selects vertices from it, instead of gathering one vertex at a
     // time: the gather is by far a race frame's largest cost. Empty for an
@@ -66,6 +78,18 @@ struct NativeDraw {
     // Added to every index, so the block can start anywhere in the stream.
     int32_t base_vertex_location = 0;
     std::vector<plume::RenderInputElement> elements;
+    // Borrowed only until draw() returns. The decoded layout cache gives
+    // each version a unique identity, so stable layouts need no per-draw copy.
+    std::span<const plume::RenderInputElement> element_view;
+    uint64_t input_layout_identity = 0;
+    std::span<const plume::RenderInputElement> input_elements() const {
+        return input_layout_identity ? element_view : std::span<const plume::RenderInputElement>(elements);
+    }
+    void own_input_elements() {
+        if (input_layout_identity) elements.assign(element_view.begin(), element_view.end());
+        element_view = {};
+        input_layout_identity = 0;
+    }
     // Skinning palette (stream 1) for a vertex shader that fetches one, in
     // little-endian float4 rows; bound as the b3 constant buffer. Scratch of
     // the caller's, like vertices and indices.
@@ -79,16 +103,26 @@ struct NativeDraw {
     // Vulkan: the pixel shader's specialization constant (constant_id 0),
     // set in its pipeline; D3D12 links it into the shader instead.
     uint32_t pixel_spec_constants = 0;
-    std::array<uint32_t, 1024> vertex_constants{};  // 256 float4
-    std::array<uint32_t, 1024> pixel_constants{};
+    // Default zero constants for host-generated draws. Keeping views here
+    // avoids initializing/copying 8 KiB of unused arrays for every game draw
+    // and pipeline recipe. Callers own nonzero values until draw() returns.
+    static inline constexpr GuestConstantState::Values zero_constants{};
+    std::span<const uint32_t, 1024> vertex_constants{zero_constants};
+    std::span<const uint32_t, 1024> pixel_constants{zero_constants};
+    const GuestConstantState* vertex_constant_state = nullptr;
+    const GuestConstantState* pixel_constant_state = nullptr;
     // The game's constants as the device holds them (4 KiB each, big-endian,
-    // already checked), in place of the two arrays above: the renderer swaps
+    // already checked), in place of the two host views above: the renderer swaps
     // them straight into the upload ring. A copy into the arrays, a swap there
     // and a copy into the ring read and wrote each draw's 8 KiB three times,
     // which a 6 MB L3 felt (Issue #65). Empty: the arrays hold them.
+    // With versioned owners, nonempty sources select direct conversion only
+    // on an upload miss. Spans must remain valid until draw() returns; queued
+    // work retains immutable GPU offsets, never these guest pointers.
     std::span<const uint8_t> vertex_constants_source, pixel_constants_source;
     // Vertex loop constants i0..i15, unpacked to int4 (see loop_constants.h).
     std::array<int32_t, 64> loop_constants{};
+    const GuestShortConstantState* short_constant_state = nullptr;
     SharedConstants shared{};
     NativeBlendControl blend;
     uint8_t write_mask = 0xF;
@@ -159,12 +193,28 @@ public:
     struct CachedVertices {
         const plume::RenderBuffer* buffer = nullptr;
         std::span<uint8_t> fill;
+        uint64_t offset = 0;
     };
+    // source: the actual checked guest bytes that the caller will convert,
+    // within the physical range's E/A/C view. A source-view change retires the
+    // old allocation even when its original view has not been written.
     // bytes: the guest data watched; host_bytes: the buffer (layouts that
     // repack elements widen the vertices).
     // index: the buffer holds 32-bit indices (an index buffer) instead.
-    CachedVertices vertex_cache(GuestMemory& memory, uint32_t physical, uint64_t bytes, uint64_t host_bytes,
-                                uint64_t layout, bool index = false);
+    CachedVertices vertex_cache(GuestMemory& memory, uint32_t physical, const uint8_t* source,
+                                uint64_t bytes, uint64_t host_bytes, uint64_t layout, bool index = false);
+    struct CachedIndices {
+        const plume::RenderBuffer* buffer = nullptr;
+        IndexScan scan;
+    };
+    // Same guarded slice cache as vertex_cache, with R32 data and its exact
+    // scan published together. source is checked guest memory, not a length;
+    // count/width determine both extents. Restart draws retain their fallback.
+    CachedIndices index_cache(GuestMemory& memory, uint32_t physical, const uint8_t* source,
+                              uint32_t count, bool wide, uint32_t base);
+    // The raw 32-bit layout converted at Unlock, uploaded once for all slices.
+    // Retains old GPU allocations through completion of queued frames.
+    const plume::RenderBuffer* managed_vertex_buffer(const std::shared_ptr<const GuestBufferSnapshot>& snapshot);
     uint32_t draws() const noexcept;
     // Pipelines created since the last call, and the milliseconds spent
     // creating them: a draw that meets a state combination for the first time
@@ -182,9 +232,19 @@ public:
         uint64_t upload_submissions = 0, upload_peak_bytes = 0, upload_budget_drains = 0;
         double upload_wait_ms = 0;
         uint64_t constant_saved_bytes = 0; // Actual skipped writes when reuse is enabled.
+        uint64_t constant_written_bytes = 0; // Actual VS/PS ring writes in all modes, without the probe.
+        uint64_t direct_constant_read_bytes = 0; // Guest reads on versioned direct-upload misses.
+        uint64_t loop_constant_written_bytes = 0, loop_constant_saved_bytes = 0;
         // Resolves copied this frame: each ends the render pass, which a tiling
         // GPU pays for with a store and a reload of the whole color and depth.
         uint32_t resolve_copies = 0;
+        uint64_t draw_ring_bytes = 0; // Bytes reserved by draws, including alignment.
+        // Miss-only work: adjacent immutable vertex bindings skip map lookups.
+        uint64_t managed_vertex_lookups = 0, managed_vertex_allocations = 0;
+        uint64_t transient_vertex_lookups = 0;
+        uint64_t index_cache_allocations = 0, index_cache_decodes = 0;
+        // False means texture_milliseconds is unavailable, not zero cost.
+        bool texture_timers = false;
     };
     PipelineWork take_pipeline_work() noexcept;
     // Unchanged while texture() and sampler() would answer the same fetch
@@ -194,6 +254,10 @@ public:
     // Named outside for the resolve helpers in native_renderer.cpp.
     struct Impl;
 private:
+    struct IndexFill;
+    CachedVertices vertex_cache_impl(GuestMemory& memory, uint32_t physical, const uint8_t* source,
+                                     uint64_t bytes, uint64_t host_bytes, uint64_t layout,
+                                     bool index, IndexFill* indices);
     std::unique_ptr<Impl> impl_;
 };
 }

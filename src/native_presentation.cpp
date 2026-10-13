@@ -1823,6 +1823,7 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height) {
         impl_->rebuild_swap_chain = true;
         return;
 #endif
+        impl_->graphics->report_device_fault();
         throw std::runtime_error("failed to present native swap-chain texture");
     }
     if (!impl_->shown) {

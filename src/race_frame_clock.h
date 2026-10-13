@@ -65,10 +65,9 @@ private:
 };
 
 // SFR_PRESENT_LIMIT_RACING=N (guest_graphics_hooks.cpp): the run ends at the
-// Nth present with the title's race flag set, so the menus and the loading
-// screen, however long they take on a PC, are not counted. A limit counted
-// from the last SFR_SAY word includes the loading screen, which presents
-// hundreds of times a second on a fast PC and a few dozen on a slow one.
+// Nth present with the title's race object present. This legacy counter can
+// include loading and preparation: object creation is NOT the start of the
+// race clock. Preserve its meaning for historical logs, not scene alignment.
 class RacePresentLimit {
 public:
     explicit RacePresentLimit(uint32_t limit) : limit_(limit) {}

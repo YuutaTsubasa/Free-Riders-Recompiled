@@ -4,6 +4,9 @@
 #include <memory>
 #include "shader_cache.h"
 #include "texture_fetch.h"
+#include "guest_constant_state.h"
+#include "guest_buffer_state.h"
+#include "guest_texture_state.h"
 
 namespace sfr {
 class GuestMemory;
@@ -14,6 +17,8 @@ class NativeRenderer;
 struct NativeBlendControl;
 enum class RenderState : uint32_t;
 struct NativeRenderState;
+struct NativeStencilState;
+struct SharedConstants;
 enum class BlendRequest : uint32_t { enable = 0x3C, source = 0x48, destination = 0x4C, operation = 0x50 };
 struct BlendRequestUpdate { uint32_t requested, flags, effective; bool effective_updated; };
 enum class SamplerFilter : uint32_t { magnification = 0x10, minification = 0x14 };
@@ -75,10 +80,31 @@ public:
     void set_primitive_restart(uint32_t device, uint32_t value);
     const NativeRenderState& render_state() const;
     bool depth_enabled() const;
+    // Host pending bits survive original packet consumers clearing guest dirty
+    // words. Calls use the existing graphics serialization and never clear those
+    // guest bits, including the depth-control bit shared with depth setters.
+    static constexpr uint8_t stencil_control_pending = 1, stencil_refmask_pending = 2,
+                             stencil_all_pending = stencil_control_pending | stencil_refmask_pending;
+    void invalidate_stencil_state(uint8_t groups = stencil_all_pending) noexcept;
+    // 825084F8 selects DWORDs from source with an MSB-first mask, not a count.
+    void invalidate_stencil_packet(uint32_t source, uint64_t selected_words) noexcept;
+    // Prepare before consuming stencil_state(). Returns source bytes (0/4/8),
+    // excluding independent verifier reads; a mismatch leaves state untouched.
+    uint32_t prepare_stencil_state(bool verify = false);
+    const NativeStencilState& stencil_state() const;
     void set_texture(uint32_t device, uint32_t slot, uint32_t texture, uint64_t dirty_mask);
     uint32_t texture_binding(uint32_t slot) const;
     // The device's current fetch constant for a slot, as the GPU would read it.
     FetchWords texture_fetch(uint32_t slot) const;
+    // Called under the existing graphics serialization. Fetch publication and
+    // native descriptor validity have separate lifetimes.
+    void invalidate_texture_state() { texture_state_.invalidate_all(); }
+    const GuestTextureState& texture_state() const { return texture_state_; }
+    uint32_t prepare_texture_state(bool verify = false);
+    struct TextureStateWork {
+        uint32_t read_bytes = 0, refreshed_slots = 0, descriptor_lookups = 0, descriptor_hits = 0;
+    };
+    TextureStateWork prepare_texture_bindings(SharedConstants&, bool managed, bool verify);
     uint32_t create_shader(ShaderStage stage, uint32_t container);
     void attach_shader(uint32_t handle, uint32_t object);
     const NativeShaders& shaders() const;
@@ -87,6 +113,15 @@ public:
     void present_front_buffer(uint32_t device);
     // Native draws, created with the first draw.
     NativeRenderer& renderer();
+    GuestBufferState* buffers() { return buffers_.get(); }
+    // Serialized by the graphics hook lock. State storage outlives each draw;
+    // the renderer copies changed versions before enqueueing GPU commands.
+    GuestConstantState& constants(ShaderStage stage) { return constants_[stage == ShaderStage::pixel]; }
+    GuestShortConstantState& short_constants() { return short_constants_; }
+    void invalidate_constants() {
+        for (auto& state : constants_) state.invalidate();
+        short_constants_.invalidate();
+    }
     // Discards the packets written since the last reset; returns the new write pointer.
     uint32_t discard_commands(uint32_t device, uint32_t& discarded_bytes);
     bool owns_object(uint32_t address) const noexcept;
@@ -97,6 +132,10 @@ private:
     GuestMemory& memory_;
     NativeGraphics& graphics_;
     std::unique_ptr<Impl> impl_;
+    std::array<GuestConstantState, 2> constants_;
+    GuestShortConstantState short_constants_;
+    GuestTextureState texture_state_;
+    std::unique_ptr<GuestBufferState> buffers_;
     // The last viewport on one of the title's surfaces had an offset, so it
     // is in that surface's pixels; origin-zero ones are in the framebuffer's
     // (set_viewport).

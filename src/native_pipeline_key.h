@@ -1,6 +1,8 @@
 #pragma once
 #include "native_renderer.h"
+#include <algorithm>
 #include <cstring>
+#include <tuple>
 
 namespace sfr {
 // Reference serializer retained for same-binary performance comparisons.
@@ -13,7 +15,7 @@ inline void native_pipeline_key_legacy(const NativeDraw& draw, std::vector<uint8
     put(&draw.vertex_shader, sizeof(void*));
     put(&draw.pixel_shader, sizeof(void*));
     put(&draw.pixel_spec_constants, 4);
-    for (const auto& e : draw.elements) {
+    for (const auto& e : draw.input_elements()) {
         put(&e.semanticIndex, 4); put(&e.location, 4); put(&e.format, sizeof(e.format));
         put(&e.slotIndex, 4); put(&e.alignedByteOffset, 4);
         // The name by its address: every one comes from declaration_semantic's
@@ -51,14 +53,14 @@ inline void native_pipeline_key_bulk(const NativeDraw& draw, std::vector<uint8_t
     const size_t stencil_bytes = draw.stencil_enabled ? sizeof(draw.stencil_reference) +
         sizeof(draw.stencil_read_mask) + sizeof(draw.stencil_write_mask) +
         2 * stencil_face_bytes : 0;
-    key.resize(fixed_bytes + draw.elements.size() * element_bytes + stencil_bytes);
+    key.resize(fixed_bytes + draw.input_elements().size() * element_bytes + stencil_bytes);
     uint8_t* next = key.data();
     const auto put = [&]<typename T>(const T& value) {
         std::memcpy(next, &value, sizeof(value));
         next += sizeof(value);
     };
     put(draw.vertex_shader); put(draw.pixel_shader); put(draw.pixel_spec_constants);
-    for (const auto& e : draw.elements) {
+    for (const auto& e : draw.input_elements()) {
         put(e.semanticIndex); put(e.location); put(e.format); put(e.slotIndex); put(e.alignedByteOffset); put(e.semanticName);
     }
     put(draw.stride); put(draw.topology);
@@ -73,4 +75,47 @@ inline void native_pipeline_key_bulk(const NativeDraw& draw, std::vector<uint8_t
         }
     }
 }
+
+// Persistent pipeline state, following Unleashed's dirty pipeline selection.
+// Observe named fields, not padding or shader constants. Guest hooks still
+// validate guest state; this skips serialization and hashing when it is stable.
+inline auto native_pipeline_fixed_state(const NativeDraw& d) {
+    const auto face = [&](const auto& f) {
+        return std::tuple{d.stencil_enabled ? uint32_t(f.passOp) : 0u,
+            d.stencil_enabled ? uint32_t(f.failOp) : 0u,
+            d.stencil_enabled ? uint32_t(f.depthFailOp) : 0u,
+            d.stencil_enabled ? uint32_t(f.compareFunction) : 0u};
+    };
+    return std::tuple{d.vertex_shader, d.pixel_shader, d.pixel_spec_constants,
+        d.input_layout_identity, d.stride, d.topology,
+        d.blend.srcBlend, d.blend.dstBlend, d.blend.blendOp,
+        d.blend.srcBlendAlpha, d.blend.dstBlendAlpha, d.blend.blendOpAlpha, d.blend.blendEnabled,
+        d.write_mask, d.depth_enabled, d.depth_write, d.depth_function, d.cull, d.stencil_enabled,
+        d.stencil_enabled ? d.stencil_reference : uint8_t(0),
+        d.stencil_enabled ? d.stencil_read_mask : uint8_t(0),
+        d.stencil_enabled ? d.stencil_write_mask : uint8_t(0), face(d.stencil_front), face(d.stencil_back)};
+}
+class NativePipelineState {
+public:
+    bool update(const NativeDraw& draw) {
+        const auto next = native_pipeline_fixed_state(draw);
+        const auto elements = draw.input_elements();
+        const auto equal_element = [](const auto& a, const auto& b) {
+            return a.semanticName == b.semanticName && a.semanticIndex == b.semanticIndex &&
+                a.location == b.location && a.format == b.format && a.slotIndex == b.slotIndex &&
+                a.alignedByteOffset == b.alignedByteOffset;
+        };
+        if (valid_ && fixed_ == next && (draw.input_layout_identity ||
+            (elements_.size() == elements.size() && std::equal(elements_.begin(), elements_.end(), elements.begin(), equal_element))))
+            return false;
+        fixed_ = next;
+        if (!draw.input_layout_identity) elements_.assign(elements.begin(), elements.end());
+        valid_ = true;
+        return true;
+    }
+private:
+    decltype(native_pipeline_fixed_state(NativeDraw{})) fixed_{};
+    std::vector<plume::RenderInputElement> elements_;
+    bool valid_ = false;
+};
 }

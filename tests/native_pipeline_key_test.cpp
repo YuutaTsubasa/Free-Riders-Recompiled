@@ -12,10 +12,15 @@ int main(int argc, char** argv) {
     try {
         sfr::NativeDraw draw;
         std::vector<uint8_t> legacy, bulk;
+        sfr::NativePipelineState state;
+        std::vector<uint8_t> previous;
         const auto compare = [&] {
             sfr::native_pipeline_key_legacy(draw, legacy);
             sfr::native_pipeline_key_bulk(draw, bulk);
             require(!legacy.empty() && legacy == bulk, "bulk key matches existing pipeline identity byte for byte");
+            require(state.update(draw) == (previous != bulk), "persistent state detects exactly the canonical key changes");
+            previous = bulk;
+            require(!state.update(draw), "unchanged state needs no pipeline lookup");
         };
         compare();
         // Reuse the buffers across growth/shrink and stencil transitions.
@@ -43,7 +48,9 @@ int main(int argc, char** argv) {
         const auto baseline = bulk;
         draw.vertex_count = 777;
         draw.base_vertex_location = 31;
-        draw.vertex_constants[0] = 0xFFFFFFFF;
+        sfr::GuestConstantState::Values constants{};
+        constants[0] = 0xFFFFFFFF;
+        draw.vertex_constants = constants;
         draw.shared.alpha_threshold = 0.5f;
         compare();
         require(bulk == baseline, "per-draw data is not part of the pipeline identity");
@@ -104,6 +111,21 @@ int main(int argc, char** argv) {
         changes_identity([&] { draw.elements[0].slotIndex += 1; });
         changes_identity([&] { draw.elements[0].alignedByteOffset += 4; });
         changes_identity([&] { draw.elements[0].semanticName = "NORMAL"; });
+        // Cached layouts are immutable until the next cache lookup. Pipeline
+        // preparation borrows them synchronously; saved recipes take ownership.
+        const auto owned_key = bulk;
+        auto layout = draw.elements;
+        draw.element_view = layout;
+        draw.input_layout_identity = 1;
+        draw.elements.clear();
+        require(state.update(draw), "switching to a versioned layout updates the persistent state");
+        require(!state.update(draw), "stable layout identity bypasses element comparisons");
+        sfr::native_pipeline_key_bulk(draw, bulk);
+        require(bulk == owned_key, "borrowed and owned declarations select the same GPU pipeline");
+        draw.own_input_elements();
+        layout.clear();
+        sfr::native_pipeline_key_bulk(draw, bulk);
+        require(!draw.input_layout_identity && bulk == owned_key, "recipe owns its declaration after the cache is reused");
         if (argc > 1 && std::string_view(argv[1]) == "--bench") {
             // Diagnostic timing only; it never decides whether the test passes.
             uint64_t checksum = 0;

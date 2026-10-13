@@ -3,6 +3,7 @@
 #include "guest_memory.h"
 #include "native_graphics.h"
 #include "native_render_state.h"
+#include "original_stencil_setter_fixture.h"
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -339,6 +340,221 @@ void primitive_restart_guards_publish_no_guest_or_native_effects() {
     rejects([&] { imported.guest.set_primitive_restart(device, 0); });
     imported.preserved(imported_bytes, imported_native);
 }
+
+bool same_face(const plume::RenderStencilFaceDesc& a, const plume::RenderStencilFaceDesc& b) {
+    return a.passOp==b.passOp && a.failOp==b.failOp && a.depthFailOp==b.depthFailOp &&
+           a.compareFunction==b.compareFunction;
+}
+bool same_stencil(const sfr::NativeStencilState& a, const sfr::NativeStencilState& b) {
+    return a.control==b.control && a.refmask==b.refmask && a.enabled==b.enabled &&
+           a.reference==b.reference && a.read_mask==b.read_mask && a.write_mask==b.write_mask &&
+           same_face(a.front,b.front) && same_face(a.back,b.back);
+}
+void stencil_original_setters_decode_every_face_field() {
+    Fixture f;
+    using Op=plume::RenderStencilOp;
+    constexpr std::array comparisons{Compare::NEVER,Compare::LESS,Compare::EQUAL,Compare::LESS_EQUAL,
+        Compare::GREATER,Compare::NOT_EQUAL,Compare::GREATER_EQUAL,Compare::ALWAYS};
+    constexpr std::array operations{Op::KEEP,Op::ZERO,Op::REPLACE,Op::INCREMENT_AND_CLAMP,
+        Op::DECREMENT_AND_CLAMP,Op::INVERT,Op::INCREMENT_AND_WRAP,Op::DECREMENT_AND_WRAP};
+    struct Setter { uint32_t entry,mask,shift; uint64_t dirty; bool back; unsigned field; };
+    constexpr std::array setters{
+        Setter{0x824E71F0,0x00000700,8,0x800,false,0},
+        Setter{0x824E7220,0x00003800,11,0x20800,false,1},
+        Setter{0x824E7258,0x000E0000,17,0x20800,false,2},
+        Setter{0x824E7290,0x0001C000,14,0x800,false,3},
+        Setter{0x824E72C0,0x00700000,20,0x800,true,0},
+        Setter{0x824E72F0,0x03800000,23,0x20800,true,1},
+        Setter{0x824E7328,0xE0000000,29,0x20800,true,2},
+        Setter{0x824E7360,0x1C000000,26,0x800,true,3}};
+    constexpr uint32_t seed=0x96374D81;
+    for (const auto& setter : setters) for (uint32_t value=0; value<8; ++value) {
+        f.memory.store<uint32_t>(device+10548,seed);
+        f.memory.store<uint32_t>(device+10496,0xCAFEDCBA);
+        f.guest.invalidate_stencil_state();
+        require(f.guest.prepare_stencil_state(true)==8,"initial stencil reads exactly two words");
+        auto expected=f.guest.stencil_state();
+        auto& face=setter.back ? expected.back : expected.front;
+        switch (setter.field) {
+        case 0: face.compareFunction=comparisons[value]; break;
+        case 1: face.failOp=operations[value]; break;
+        case 2: face.depthFailOp=operations[value]; break;
+        case 3: face.passOp=operations[value]; break;
+        }
+        expected.control=(seed&~setter.mask)|(value<<setter.shift);
+        f.memory.store<uint64_t>(device+16,dirty_seed);
+        // Upper bits are intentionally nonzero: the original rotate/insert
+        // instructions select only the three encoded comparison/operation bits.
+        sfr::test::original_stencil_setter(f.memory,setter.entry,device,value|0xF0000008u);
+        require(f.memory.load<uint32_t>(device+10548)==expected.control &&
+                f.memory.load<uint64_t>(device+16)==(dirty_seed|setter.dirty),
+                "fixed original stencil opcode changes only its field and original dirty bits");
+        f.guest.invalidate_stencil_state(sfr::GuestGraphics::stencil_control_pending);
+        const auto before=f.bytes();
+        require(f.guest.prepare_stencil_state(true)==4 && same_stencil(f.guest.stencil_state(),expected),
+                "all front/back comparison and operation encodings match original setters independently");
+        require(f.bytes()==before,"stencil preparation leaves every guest device byte intact");
+    }
+    for (uint32_t value : {0u,1u,2u,3u,UINT32_MAX}) {
+        sfr::test::original_stencil_setter(f.memory,0x824E71B8,device,value);
+        f.guest.invalidate_stencil_state(sfr::GuestGraphics::stencil_control_pending);
+        f.guest.prepare_stencil_state(true);
+        require(bool(f.guest.stencil_state().control&0x80)==bool(value&1),
+                "original back-face enable consumes only the low bit");
+        if (!(value&1)) require(same_face(f.guest.stencil_state().front,f.guest.stencil_state().back),
+                               "disabled two-sided stencil mirrors the entire front descriptor");
+        for (uint32_t attachment : {0u,sfr::GuestGraphics::depth_handle}) {
+            f.memory.store<uint32_t>(device+12632,attachment);
+            sfr::test::original_stencil_setter(f.memory,0x824E7178,device,value);
+            f.guest.invalidate_stencil_state(sfr::GuestGraphics::stencil_control_pending);
+            f.guest.prepare_stencil_state(true);
+            require(f.guest.stencil_state().enabled==bool(attachment && (value&1)) &&
+                    f.memory.load<uint32_t>(device+12056)==value,
+                    "original enable keeps the full request but gates its low bit by attachment");
+        }
+    }
+}
+
+void stencil_original_byte_setters_preserve_neighbors() {
+    Fixture f;
+    f.guest.prepare_stencil_state();
+    constexpr std::array<uint32_t,3> entries{0x824E7390,0x824E73B0,0x824E73D0};
+    for (uint32_t field=0; field<entries.size(); ++field) for (uint32_t value=0; value<256; ++value) {
+        f.memory.store<uint32_t>(device+10496,0xD4C3B2A1);
+        f.guest.invalidate_stencil_state(sfr::GuestGraphics::stencil_refmask_pending);
+        f.guest.prepare_stencil_state();
+        auto expected=f.guest.stencil_state();
+        expected.refmask=(0xD4C3B2A1u&~(0xffu<<(field*8)))|(value<<(field*8));
+        if (field==0) expected.reference=uint8_t(value);
+        if (field==1) expected.read_mask=uint8_t(value);
+        if (field==2) expected.write_mask=uint8_t(value);
+        f.memory.store<uint64_t>(device+16,dirty_seed);
+        sfr::test::original_stencil_setter(f.memory,entries[field],device,0xA5A50000|value);
+        require(f.memory.load<uint32_t>(device+10496)==expected.refmask &&
+                f.memory.load<uint64_t>(device+16)==(dirty_seed|0x10000000),
+                "original byte store truncates inputs and preserves neighboring and reserved bytes");
+        f.guest.invalidate_stencil_state(sfr::GuestGraphics::stencil_refmask_pending);
+        require(f.guest.prepare_stencil_state(true)==4 && same_stencil(f.guest.stencil_state(),expected),
+                "every reference/read-mask/write-mask byte decodes independently");
+    }
+}
+
+void stencil_pending_packets_and_shared_depth_word() {
+    Fixture f(false);
+    f.guest.invalidate_stencil_state();
+    f.guest.invalidate_stencil_packet(device+10548,UINT64_MAX);
+    rejects([&] { f.guest.prepare_stencil_state(); });
+    rejects([&] { (void)f.guest.stencil_state(); });
+    f.create_device();
+    require(f.guest.prepare_stencil_state()==8 && f.guest.prepare_stencil_state()==0,
+            "fresh device starts with both words pending and consumes them once");
+    // The packet sender may clear guest dirty flags before native draw consumes
+    // the packet. Host pending state must survive that original protocol.
+    f.memory.store<uint32_t>(device+10548,0xE7D6C581);
+    f.memory.store<uint32_t>(device+10496,0xAC543210);
+    f.guest.invalidate_stencil_packet(device+10444,(uint64_t(1)<<50)|(uint64_t(1)<<37));
+    f.memory.store<uint64_t>(device+16,0);
+    require(f.guest.prepare_stencil_state(true)==8 &&
+            f.guest.stencil_state().control==0xE7D6C581 && f.guest.stencil_state().refmask==0xAC543210 &&
+            f.memory.load<uint64_t>(device+16)==0,
+            "nonadjacent MSB-first packet selections refresh both words after dirty is cleared");
+    struct Packet { uint32_t source; uint64_t selected; uint32_t bytes; };
+    constexpr std::array packets{
+        Packet{device+10548,1ull<<63,4}, Packet{device+10496,1ull<<63,4},
+        Packet{device+10548-252,1,4}, Packet{device+10496-252,1,4},
+        Packet{device+10548-256,1,0}, Packet{device+10496-256,1,0},
+        Packet{device+10548-1,UINT64_MAX,0}, Packet{device+10496-1,UINT64_MAX,0},
+        Packet{device+10548+4,UINT64_MAX,0}, Packet{UINT32_MAX-3,UINT64_MAX,0},
+        Packet{device+10444,1ull<<49,0}, Packet{device+10548,0,0}};
+    for (const auto& packet : packets) {
+        f.guest.invalidate_stencil_packet(packet.source,packet.selected);
+        require(f.guest.prepare_stencil_state()==packet.bytes,
+                "packet coverage respects selected bit, word63, word64, alignment and address bounds");
+    }
+    f.memory.store<uint32_t>(device+12632,sfr::GuestGraphics::depth_handle);
+    for (const auto [state,value] : {std::pair{State::depth_enable,1u},
+                                   std::pair{State::depth_write,1u},
+                                   std::pair{State::depth_function,6u}}) {
+        const auto old=f.guest.stencil_state();
+        f.guest.set_render_state(device,state,value);
+        require(f.guest.prepare_stencil_state(true)==4 &&
+                f.guest.stencil_state().control==f.memory.load<uint32_t>(device+10548) &&
+                same_face(f.guest.stencil_state().front,old.front) &&
+                same_face(f.guest.stencil_state().back,old.back) &&
+                f.guest.stencil_state().enabled==old.enabled,
+                "native depth setters notify the shared word without changing stencil faces");
+    }
+    f.guest.set_render_state(device,State::cull_mode,6);
+    require(f.guest.prepare_stencil_state()==0,"unrelated native state leaves stencil clean");
+    // Embedded shader / bulk replacement / reset hooks all use this same
+    // conservative notification API. Hook routing is separately source-audited;
+    // this fixture does not claim to execute those original bulk entrypoints.
+    for (uint32_t pattern : {0xFFFFFFFFu,0u,0x13579BDFu}) {
+        f.memory.store<uint32_t>(device+10548,pattern);
+        f.memory.store<uint32_t>(device+10496,~pattern);
+        f.guest.invalidate_stencil_state(); f.guest.invalidate_stencil_state();
+        f.memory.store<uint64_t>(device+16,0);
+        require(f.guest.prepare_stencil_state(true)==8 && f.guest.prepare_stencil_state()==0 &&
+                f.guest.stencil_state().control==pattern && f.guest.stencil_state().refmask==~pattern,
+                "bulk/reset/embedded notifications coalesce and preserve new source words");
+    }
+    Fixture fresh;
+    require(fresh.guest.prepare_stencil_state()==8 &&
+            fresh.guest.stencil_state().control==fresh.memory.load<uint32_t>(device+10548) &&
+            fresh.guest.stencil_state().refmask==fresh.memory.load<uint32_t>(device+10496),
+            "a new owner at the same guest device address does not inherit the prior snapshot");
+}
+
+void stencil_clean_reads_and_verifier_are_independent() {
+    Fixture f;
+    uint32_t control=0xA9876581, refmask=0xDE123456;
+    unsigned control_reads=0, refmask_reads=0;
+    f.memory.add_read_only_word(device+10548,[&] { ++control_reads; return control; });
+    f.memory.add_read_only_word(device+10496,[&] { ++refmask_reads; return refmask; });
+    require(f.guest.prepare_stencil_state()==8 && control_reads==1 && refmask_reads==1,
+            "first stencil preparation reads each source word exactly once");
+    const auto before=f.guest.stencil_state();
+    control^=1; refmask^=0xff;
+    require(f.guest.prepare_stencil_state()==0 && control_reads==1 && refmask_reads==1 &&
+            same_stencil(f.guest.stencil_state(),before),
+            "clean preparation reads neither source nor unnotified changes");
+    const auto mismatch=[&](uint32_t address) {
+        try { f.guest.prepare_stencil_state(true); }
+        catch (const sfr::RuntimeStop& error) {
+            require(error.category=="managed-stencil-state-mismatch" && error.address==address,
+                    "verifier reports the exact unnotified raw word");
+            require(same_stencil(f.guest.stencil_state(),before),
+                    "failed verification never partially publishes pending fields");
+            return;
+        }
+        throw std::runtime_error("stencil verifier adopted an unnotified source change");
+    };
+    mismatch(device+10548);
+    require(control_reads==2 && refmask_reads==2,"clean verifier independently reads both words");
+    f.guest.invalidate_stencil_state(sfr::GuestGraphics::stencil_control_pending);
+    mismatch(device+10496);
+    refmask=before.refmask;
+    require(f.guest.prepare_stencil_state(true)==4 && f.guest.stencil_state().control==control,
+            "mismatch retains pending control for a successful retry");
+    // The opposite partial update must also stay transactional.
+    const auto control_published=f.guest.stencil_state();
+    control^=0x80; refmask^=0xff00;
+    f.guest.invalidate_stencil_state(sfr::GuestGraphics::stencil_refmask_pending);
+    bool failed=false;
+    try { f.guest.prepare_stencil_state(true); }
+    catch (const sfr::RuntimeStop& error) {
+        failed=error.category=="managed-stencil-state-mismatch" && error.address==device+10548;
+    }
+    require(failed && same_stencil(f.guest.stencil_state(),control_published),
+            "pending refmask cannot conceal or partially publish past a clean control mismatch");
+    control=control_published.control;
+    require(f.guest.prepare_stencil_state(true)==4 && f.guest.stencil_state().refmask==refmask,
+            "mismatch also retains pending refmask for retry");
+    const auto reads=std::pair{control_reads,refmask_reads};
+    f.guest.invalidate_stencil_state(0xFC);
+    require(f.guest.prepare_stencil_state()==0 && reads==std::pair{control_reads,refmask_reads},
+            "unknown notification bits cannot trigger spurious source reads");
+}
 }
 
 int main() {
@@ -349,7 +565,11 @@ int main() {
                       invalid_inputs_and_depth_attachment_are_transactional,
                       guards_and_invalid_constant_publish_nothing,
                       primitive_restart_preserves_full_device_and_uses_only_low_bit,
-                      primitive_restart_guards_publish_no_guest_or_native_effects}) {
+                      primitive_restart_guards_publish_no_guest_or_native_effects,
+                      stencil_original_setters_decode_every_face_field,
+                      stencil_original_byte_setters_preserve_neighbors,
+                      stencil_pending_packets_and_shared_depth_word,
+                      stencil_clean_reads_and_verifier_are_independent}) {
         try { test(); } catch (const std::exception& error) { std::cerr << error.what() << '\n'; ++failures; }
     }
     if (failures) return 1;

@@ -12,6 +12,7 @@
 #include "plume_vulkan.h"
 #include "vulkan_shader_source.h"
 #include "guest_memory.h"
+#include "guest_buffer_state.h"
 #include "native_formats.h"
 #include "native_graphics.h"
 #include "native_presentation.h"
@@ -56,6 +57,16 @@ constexpr uint64_t palette_bytes = 1024 * 16;
 }
 
 uint64_t align(uint64_t value, uint64_t alignment) { return (value + alignment - 1) / alignment * alignment; }
+
+void describe_buffer(plume::RenderBuffer* buffer, const std::string& name, uint64_t bytes) {
+    buffer->setName(name);
+#ifdef _WIN32
+    static const bool trace = [] { const char* p = std::getenv("SFR_D3D12_DRED"); return p && *p != '0'; }();
+    if (trace && selected_graphics_backend() == GraphicsBackend::d3d12)
+        std::cerr << "NATIVE_BUFFER_ALLOCATION name=" << name << " address=0x" << std::hex
+                         << buffer->getDeviceAddress() << std::dec << " bytes=" << bytes << '\n';
+#endif
+}
 
 // Content hash of guest texture bytes (checked range, read directly).
 uint64_t content_hash(const uint8_t* data, uint64_t size) {
@@ -167,15 +178,22 @@ std::unique_ptr<plume::RenderPipeline> create_draw_pipeline(plume::RenderDevice&
         desc.renderTargetBlend[0] = draw.blend.description(draw.write_mask);
         desc.inputSlots = slots.data();
         desc.inputSlotsCount = uint32_t(slots.size());
-        desc.inputElements = draw.elements.data();
-        desc.inputElementsCount = uint32_t(draw.elements.size());
+        desc.inputElements = draw.input_elements().data();
+        desc.inputElementsCount = uint32_t(draw.input_elements().size());
         auto pipeline = device.createGraphicsPipeline(desc);
         if (!pipeline) return {};
         if (backend == GraphicsBackend::vulkan) {
             if (static_cast<plume::VulkanGraphicsPipeline*>(pipeline.get())->vk == VK_NULL_HANDLE) return {};
         }
 #ifdef _WIN32
-        else if (!static_cast<plume::D3D12GraphicsPipeline*>(pipeline.get())->d3d) return {};
+        else {
+            auto* native = static_cast<plume::D3D12GraphicsPipeline*>(pipeline.get());
+            if (!native->d3d) return {};
+            // Pinned Plume omits this descriptor field in its D3D12 factory.
+            // Publish it before either prewarm or live creation exposes the
+            // pipeline; Plume's draw-time memo then restores only changes.
+            native->stencilRef = draw.stencil_enabled ? draw.stencil_reference : 0;
+        }
 #endif
         return pipeline;
 }
@@ -273,6 +291,13 @@ struct NativeRenderer::Impl {
     // change drops every root argument).
     uint64_t bound_generation = ~0ull;
     const plume::RenderPipeline* bound_pipeline = nullptr;
+    NativePipelineState pipeline_state;
+    const plume::RenderPipeline* selected_pipeline = nullptr;
+    std::vector<uint8_t> selected_pipeline_key;
+    // Render-thread state only; list generation invalidates every binding.
+    std::array<std::pair<const plume::RenderBuffer*, uint64_t>, 5> bound_uniforms{};
+    std::tuple<const plume::RenderBuffer*, uint64_t, uint32_t, uint32_t> bound_vertices{};
+    std::tuple<const plume::RenderBuffer*, uint64_t, uint32_t> bound_indices{};
     NativeGraphics& graphics;
     NativePresentation& presentation;
     std::unique_ptr<plume::RenderPipelineLayout> layout;
@@ -298,7 +323,18 @@ struct NativeRenderer::Impl {
     };
     std::unique_ptr<ConstantReuseProbe> constant_reuse_probe;
     std::unique_ptr<std::array<NativeConstantUpload, 2>> constant_uploads;
+    std::array<VersionedConstantUpload, 2> versioned_constant_uploads;
+    VersionedLoopConstantUpload versioned_loop_upload;
+    std::unordered_map<uint64_t, uint64_t> transient_vertices; // version -> current ring offset
+    struct TransientVertexMemo {
+        uint64_t version = 0, offset = 0, frame = 0;
+    } transient_vertex_memo;
+    uint64_t transient_vertex_lookups = 0;
     uint64_t constant_saved_bytes = 0;
+    uint64_t constant_written_bytes = 0;
+    uint64_t direct_constant_read_bytes = 0;
+    uint64_t loop_constant_written_bytes = 0, loop_constant_saved_bytes = 0;
+    uint64_t draw_ring_bytes = 0;
     std::set<uint64_t> dynamic_ranges;  // physical starts of rewritten textures
     std::map<uint32_t, TextureRange> texture_ranges;  // by descriptor index
     // Destination address of a resolve to its descriptor index (the copy of
@@ -398,6 +434,14 @@ struct NativeRenderer::Impl {
     double pipeline_ms = 0;
     uint32_t ring_flushes = 0, textures_uploaded = 0, resolve_copies = 0;
     double texture_ms = 0;
+    const bool texture_timers = [] {
+        const char* value = std::getenv("SFR_TEXTURE_TIMERS");
+        return value && *value == '1';
+    }();
+    const bool texture_trace = [] {
+        const char* value = std::getenv("SFR_TEXTURE_TRACE");
+        return value && *value == '1';
+    }();
     // Two upload rings: while the GPU renders one frame from one, the next
     // frame fills the other (NativePresentation::after_flush).
     std::unique_ptr<plume::RenderBuffer> rings[2];
@@ -411,43 +455,51 @@ struct NativeRenderer::Impl {
     static constexpr std::array<uint64_t, 5> uniform_ranges{4096, 4096, 512, 16384, 256};
     static constexpr uint64_t uniform_slack = 32768;
     std::array<std::unique_ptr<plume::RenderDescriptorSet>, 2> uniform_sets;
-    // vertex_cache's entries, by guest address (first readable view), size
+    // vertex_cache's entries, by initial guest source address, size
     // and layout; buffers are never changed once filled, and ones dropped are
     // kept until the frames that may read them have finished.
     struct VertexKey {
-        uint32_t address; uint64_t bytes, layout;
+        uint32_t address; bool index; uint64_t bytes, layout;
         bool operator==(const VertexKey&) const = default;
     };
     struct VertexKeyHash {
         size_t operator()(const VertexKey& k) const noexcept {
-            return size_t((uint64_t(k.address) * 0x9E3779B97F4A7C15ull) ^ (k.bytes * 0xC2B2AE3D27D4EB4Full) ^ k.layout);
+            return size_t((uint64_t(k.address) * 0x9E3779B97F4A7C15ull) ^ (k.bytes * 0xC2B2AE3D27D4EB4Full) ^
+                          k.layout ^ (k.index ? 0xD6E8FEB86659FD93ull : 0));
         }
     };
     struct VertexEntry {
         std::unique_ptr<plume::RenderBuffer> buffer;
+        // The actual converted source is first, followed by its other readable
+        // aliases. Independently mapped views can contain different bytes.
         std::array<uint32_t, 3> views{};
         uint32_t view_count = 0;
         uint32_t epoch = 0;
+        bool index_ready = false;
         uint64_t last_frame = 0, size = 0;
         // Rewritten at consecutive lookups: with page protection recording
         // the writes (GuestMemory::direct_guest_access) each rewrite is a
         // fault, so a buffer the title fills every frame is copied without
         // being watched until dynamic_until.
         uint32_t rewrites = 0;
+        // Matches this immutable buffer, not a separate physical-key cache.
+        // Keep these fields in existing alignment gaps where possible.
+        IndexScan index_scan;
         uint64_t dynamic_until = 0;
     };
     std::unordered_map<VertexKey, VertexEntry, VertexKeyHash> vertex_entries;
-    // The entry's key by physical address, so a lookup finds a known buffer
+    // The entry's key by physical address. Hits compare the actual source,
     // without asking which of the three views are readable: for the views
     // that are not, readable() searched the committed regions, and every
     // cached draw asked it three times (Issue #65).
     struct PhysicalKey {
-        uint32_t physical; uint64_t bytes, layout;
+        uint32_t physical; bool index; uint64_t bytes, layout;
         bool operator==(const PhysicalKey&) const = default;
     };
     struct PhysicalKeyHash {
         size_t operator()(const PhysicalKey& k) const noexcept {
-            return size_t((uint64_t(k.physical) * 0x9E3779B97F4A7C15ull) ^ (k.bytes * 0xC2B2AE3D27D4EB4Full) ^ k.layout);
+            return size_t((uint64_t(k.physical) * 0x9E3779B97F4A7C15ull) ^ (k.bytes * 0xC2B2AE3D27D4EB4Full) ^
+                          k.layout ^ (k.index ? 0xD6E8FEB86659FD93ull : 0));
         }
     };
     std::unordered_map<PhysicalKey, VertexKey, PhysicalKeyHash> keys_by_physical;
@@ -466,8 +518,25 @@ struct NativeRenderer::Impl {
     std::array<VertexMemo, 4096> vertex_memo{};
     uint64_t vertex_generation = 1;
     std::vector<std::pair<uint64_t, std::unique_ptr<plume::RenderBuffer>>> retired_vertex_buffers;
+    struct ManagedVertexEntry {
+        std::unique_ptr<plume::RenderBuffer> buffer;
+        std::weak_ptr<const GuestBufferSnapshot> snapshot;
+        uint64_t frame = 0, bytes = 0;
+    };
+    std::unordered_map<uint64_t, ManagedVertexEntry> managed_vertices;
+    // Map nodes own the buffers and survive rehash; erase invalidates this
+    // borrowed last binding before destroying any node it could reference.
+    struct ManagedVertexMemo {
+        uint64_t version = 0;
+        ManagedVertexEntry* entry = nullptr;
+    } managed_vertex_memo;
+    uint64_t managed_vertex_lookups = 0, managed_vertex_allocations = 0;
+    uint64_t managed_vertex_bytes = 0;
     uint64_t cached_vertex_bytes = 0;
+    uint64_t index_cache_allocations = 0, index_cache_decodes = 0;
     void retire_vertices(VertexEntry& entry) {
+        entry.index_ready = false;
+        entry.index_scan = {};
         if (!entry.buffer) return;
         cached_vertex_bytes -= entry.size;
         retired_vertex_buffers.emplace_back(frame, std::move(entry.buffer));
@@ -716,6 +785,7 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
 
     // Vertex inputs the declaration does not provide read slot 15: zeros.
     impl_->zero_buffer = device.createBuffer(plume::RenderBufferDesc::VertexBuffer(256, plume::RenderHeapType::UPLOAD));
+    describe_buffer(impl_->zero_buffer.get(), "zero-vertex", 256);
     std::memset(impl_->zero_buffer->map(), 0, 256);
     impl_->zero_buffer->unmap();
 
@@ -729,6 +799,7 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
             ring_size + Impl::uniform_slack, plume::RenderBufferFlag::VERTEX | plume::RenderBufferFlag::CONSTANT |
                                                  plume::RenderBufferFlag::INDEX));
         if (!impl_->rings[i]) unsupported(0, "native upload ring creation failed");
+        describe_buffer(impl_->rings[i].get(), "draw-ring-" + std::to_string(i), ring_size + Impl::uniform_slack);
         impl_->rings_mapped[i] = static_cast<uint8_t*>(impl_->rings[i]->map());
         if (auto& set = impl_->uniform_sets[i])
             for (uint32_t b = 0; b < Impl::uniform_ranges.size(); ++b)
@@ -758,6 +829,10 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
         if (state->constant_reuse_probe) state->constant_reuse_probe->valid = false;
         if (state->constant_uploads)
             for (auto& upload : *state->constant_uploads) upload.reset();
+        for (auto& upload : state->versioned_constant_uploads) upload.reset();
+        state->versioned_loop_upload.reset();
+        state->transient_vertex_memo = {};
+        state->transient_vertices.clear();
         ++state->frame;
         ++state->texture_generation;
         state->ring_offset = 0;
@@ -775,6 +850,13 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
         state->released_texture_indices.clear();
         // Dropped vertex buffers outlive the frame in flight that may read them.
         std::erase_if(state->retired_vertex_buffers, [&](const auto& retired) { return retired.first + 2 < state->frame; });
+        std::erase_if(state->managed_vertices, [&](const auto& item) {
+            const auto& entry = item.second;
+            if (entry.frame + 3 >= state->frame || (!entry.snapshot.expired() && entry.frame + 600 >= state->frame)) return false;
+            state->managed_vertex_memo = {};
+            state->managed_vertex_bytes -= entry.bytes;
+            return true;
+        });
         // Ranges not drawn for ten seconds or so are forgotten.
         if (state->frame % 600 == 0 &&
             std::erase_if(state->vertex_entries, [&](auto& item) {
@@ -801,6 +883,7 @@ NativeRenderer::PipelineWork NativeRenderer::take_pipeline_work() noexcept {
         impl_->save_manifest();
     PipelineWork work{impl_->pipelines_created, impl_->pipeline_ms,
                             impl_->ring_flushes, impl_->textures_uploaded, impl_->texture_ms};
+    work.texture_timers = impl_->texture_timers;
     if (auto* probe = impl_->constant_reuse_probe.get()) {
         work.constant_upload_bytes = probe->uploaded;
         work.constant_reusable_bytes = probe->reusable;
@@ -817,6 +900,18 @@ NativeRenderer::PipelineWork NativeRenderer::take_pipeline_work() noexcept {
     }
     work.constant_saved_bytes = impl_->constant_saved_bytes;
     impl_->constant_saved_bytes = 0;
+    work.constant_written_bytes = impl_->constant_written_bytes;
+    impl_->constant_written_bytes = 0;
+    work.direct_constant_read_bytes = std::exchange(impl_->direct_constant_read_bytes, 0);
+    work.loop_constant_written_bytes = std::exchange(impl_->loop_constant_written_bytes, 0);
+    work.loop_constant_saved_bytes = std::exchange(impl_->loop_constant_saved_bytes, 0);
+    work.draw_ring_bytes = impl_->draw_ring_bytes;
+    impl_->draw_ring_bytes = 0;
+    work.managed_vertex_lookups = std::exchange(impl_->managed_vertex_lookups, 0);
+    work.managed_vertex_allocations = std::exchange(impl_->managed_vertex_allocations, 0);
+    work.transient_vertex_lookups = std::exchange(impl_->transient_vertex_lookups, 0);
+    work.index_cache_allocations = std::exchange(impl_->index_cache_allocations, 0);
+    work.index_cache_decodes = std::exchange(impl_->index_cache_decodes, 0);
     work.resolve_copies = impl_->resolve_copies;
     impl_->resolve_copies = 0;
     impl_->pipelines_created = 0;
@@ -827,14 +922,59 @@ NativeRenderer::PipelineWork NativeRenderer::take_pipeline_work() noexcept {
     return work;
 }
 
+struct NativeRenderer::IndexFill {
+    const uint8_t* source;
+    uint32_t count, base;
+    bool wide;
+    IndexScan scan;
+};
+NativeRenderer::CachedIndices NativeRenderer::index_cache(GuestMemory& memory, uint32_t physical,
+                                                         const uint8_t* source, uint32_t count,
+                                                         bool wide, uint32_t base) {
+    if (!source || !count) return {};
+    // Preserve the draw-slice/base/width identity and R32 base-in-data format.
+    // The explicit index kind also separates it from a full-width vertex hash.
+    const uint64_t layout = (1ull << 63) | (uint64_t(base) << 1) | (wide ? 1u : 0u);
+    IndexFill fill{source, count, base, wide, {}};
+    const auto cached = vertex_cache_impl(memory, physical, source, uint64_t(count) * (wide ? 4 : 2),
+                                          uint64_t(count) * 4, layout, true, &fill);
+    return {cached.buffer, fill.scan};
+}
 NativeRenderer::CachedVertices NativeRenderer::vertex_cache(GuestMemory& memory, uint32_t physical,
-                                                            uint64_t bytes, uint64_t host_bytes, uint64_t layout,
-                                                            bool index) {
+                                                            const uint8_t* source, uint64_t bytes,
+                                                            uint64_t host_bytes, uint64_t layout, bool index) {
+    return vertex_cache_impl(memory, physical, source, bytes, host_bytes, layout, index, nullptr);
+}
+NativeRenderer::CachedVertices NativeRenderer::vertex_cache_impl(GuestMemory& memory, uint32_t physical,
+                                                                 const uint8_t* source, uint64_t bytes,
+                                                                 uint64_t host_bytes, uint64_t layout,
+                                                                 bool index, IndexFill* indices) {
     constexpr uint64_t budget = 512ull << 20;  // host-visible memory for cached vertices
+    if (!source || !bytes) return {};
+    // The caller already selected and checked the source. Preserve that exact
+    // view rather than infer it again from the physical key or alias priority.
+    const uint64_t source_address = reinterpret_cast<uintptr_t>(source) - reinterpret_cast<uintptr_t>(memory.base());
     memory.enable_write_epochs();
     std::array<uint32_t, 3> views{};
     uint32_t view_count = 0;
-    const Impl::PhysicalKey physical_key{physical, bytes, layout};
+    const auto collect_views = [&] {
+        // Same-source hits reuse this validation: physical and bytes are
+        // already part of their key. Only a new source needs alias discovery.
+        constexpr uint64_t guest_size = 0x100000000ull;
+        if (source_address >= guest_size || bytes > guest_size - source_address) return false;
+        const std::array<uint64_t, 3> candidates{
+            uint64_t(physical) + 0xE0000000u - 0x1000u,
+            uint64_t(physical) | 0xA0000000u, uint64_t(physical) | 0xC0000000u};
+        if (std::find(candidates.begin(), candidates.end(), source_address) == candidates.end()) return false;
+        if (!memory.readable(source_address, bytes)) return false;
+        views[0] = uint32_t(source_address);
+        view_count = 1;
+        for (const uint64_t candidate : candidates)
+            if (candidate != source_address && candidate + bytes <= guest_size && memory.readable(candidate, bytes))
+                views[view_count++] = uint32_t(candidate);
+        return true;
+    };
+    const Impl::PhysicalKey physical_key{physical, index, bytes, layout};
     Impl::VertexEntry* known = nullptr;
     auto& memo = impl_->vertex_memo[Impl::PhysicalKeyHash{}(physical_key) % impl_->vertex_memo.size()];
     if (memo.generation == impl_->vertex_generation && memo.key == physical_key && memo.entry->view_count)
@@ -844,17 +984,14 @@ NativeRenderer::CachedVertices NativeRenderer::vertex_cache(GuestMemory& memory,
                 found != impl_->vertex_entries.end() && found->second.view_count)
             known = &found->second;
     if (!known) {
-        for (uint64_t candidate : {uint64_t(physical) + 0xE0000000u - 0x1000u, uint64_t(physical) | 0xA0000000u,
-                                   uint64_t(physical) | 0xC0000000u})
-            if (candidate + bytes <= 0x100000000ull && memory.readable(candidate, bytes)) views[view_count++] = uint32_t(candidate);
-        if (!view_count || !bytes) return {};
+        if (!collect_views()) return {};
         if (impl_->keys_by_physical.size() >= 262144) {
             impl_->keys_by_physical.clear();
             ++impl_->vertex_generation;
         }
-        impl_->keys_by_physical[physical_key] = Impl::VertexKey{views[0], bytes, layout};
+        impl_->keys_by_physical[physical_key] = Impl::VertexKey{views[0], index, bytes, layout};
     }
-    auto& entry = known ? *known : impl_->vertex_entries[Impl::VertexKey{views[0], bytes, layout}];
+    auto& entry = known ? *known : impl_->vertex_entries[Impl::VertexKey{views[0], index, bytes, layout}];
     memo = {physical_key, &entry, impl_->vertex_generation};
     const uint32_t now = memory.write_epoch();
     entry.last_frame = impl_->frame;
@@ -863,12 +1000,18 @@ NativeRenderer::CachedVertices NativeRenderer::vertex_cache(GuestMemory& memory,
             if (memory.written_since(entry.views[i], bytes, entry.epoch)) return true;
         return false;
     };
-    if (!entry.view_count) {
-        // New: watch every view, and see whether it stays unwritten.
+    if (!entry.view_count || entry.views[0] != source_address) {
+        // A newly readable preferred alias (or an explicitly chosen other
+        // view) need not write any old watched page. Retire before changing
+        // the source; queued draws must retain their old bytes and scan.
+        impl_->retire_vertices(entry);
+        if (!view_count && !collect_views()) return {};
         entry.views = views;
         entry.view_count = view_count;
         for (uint32_t i = 0; i < view_count; ++i) memory.watch_writes(views[i], bytes);
         entry.epoch = now;
+        // Preserve any dynamic cooldown; the new source still needs the
+        // ordinary later-epoch admission before it can get an allocation.
         return {};
     }
     if (impl_->frame < entry.dynamic_until) return {};
@@ -885,20 +1028,75 @@ NativeRenderer::CachedVertices NativeRenderer::vertex_cache(GuestMemory& memory,
         return {};
     }
     entry.rewrites = 0;
-    if (entry.buffer) return {entry.buffer.get(), {}};
+    if (entry.buffer) {
+        if (!indices) return {entry.buffer.get(), {}};
+        if (entry.index_ready) {
+            indices->scan = entry.index_scan;
+            return {entry.buffer.get(), {}};
+        }
+        // A low-level fill that never published a scan cannot be exposed as
+        // a hit or overwritten while an earlier draw could still reference it.
+        impl_->retire_vertices(entry);
+    }
     if (entry.epoch >= now || impl_->cached_vertex_bytes + host_bytes > budget) return {};
     // Unwritten for a whole frame: keep it. Stores from here on (including
     // later in this frame) show as written at the next lookup.
+    entry.index_ready = false;
+    entry.index_scan = {};
     entry.buffer = impl_->graphics.device().createBuffer(
         plume::RenderBufferDesc::UploadBuffer(host_bytes, index ? plume::RenderBufferFlag::INDEX
                                                                 : plume::RenderBufferFlag::VERTEX));
     if (!entry.buffer) return {};
+    describe_buffer(entry.buffer.get(), std::string(index ? "index-cache-" : "vertex-cache-") + std::to_string(physical), host_bytes);
     auto* mapped = static_cast<uint8_t*>(entry.buffer->map());
     if (!mapped) { entry.buffer.reset(); return {}; }
     impl_->cached_vertex_bytes += host_bytes;
     entry.size = host_bytes;
     entry.epoch = now;
+    if (indices) {
+        ++impl_->index_cache_allocations;
+        try {
+            const auto scan = decode_indices(indices->source, indices->count, indices->wide,
+                                             indices->base, false, reinterpret_cast<uint32_t*>(mapped));
+            entry.index_scan = scan;
+            entry.index_ready = true;
+            indices->scan = scan;
+            ++impl_->index_cache_decodes;
+        } catch (...) {
+            impl_->retire_vertices(entry);
+            throw;
+        }
+    }
     return {entry.buffer.get(), {mapped, size_t(host_bytes)}};
+}
+const plume::RenderBuffer* NativeRenderer::managed_vertex_buffer(const std::shared_ptr<const GuestBufferSnapshot>& snapshot) {
+    if (!snapshot || snapshot->words.empty() || snapshot->transient) return nullptr;
+    auto& memo = impl_->managed_vertex_memo;
+    if (memo.entry && memo.version == snapshot->version) {
+        memo.entry->frame = impl_->frame;
+        return memo.entry->buffer.get();
+    }
+    ++impl_->managed_vertex_lookups;
+    if (auto found = impl_->managed_vertices.find(snapshot->version); found != impl_->managed_vertices.end()) {
+        found->second.frame = impl_->frame;
+        memo = {snapshot->version, &found->second};
+        return found->second.buffer.get();
+    }
+    if (impl_->managed_vertex_bytes + snapshot->words.size() > (128ull << 20)) return nullptr;
+    auto buffer = impl_->graphics.device().createBuffer(
+        plume::RenderBufferDesc::UploadBuffer(snapshot->words.size(), plume::RenderBufferFlag::VERTEX));
+    if (!buffer) return nullptr;
+    describe_buffer(buffer.get(), "managed-vb-" + std::to_string(snapshot->version) + "-" + std::to_string(snapshot->physical), snapshot->words.size());
+    auto* mapped = static_cast<uint8_t*>(buffer->map());
+    if (!mapped) return nullptr;
+    std::memcpy(mapped, snapshot->words.data(), snapshot->words.size());
+    const auto* result = buffer.get();
+    impl_->managed_vertex_bytes += snapshot->words.size();
+    const auto stored = impl_->managed_vertices.emplace(snapshot->version,
+        Impl::ManagedVertexEntry{std::move(buffer), snapshot, impl_->frame, snapshot->words.size()}).first;
+    memo = {snapshot->version, &stored->second};
+    ++impl_->managed_vertex_allocations;
+    return result;
 }
 uint64_t NativeRenderer::texture_generation() const noexcept { return impl_->texture_generation; }
 
@@ -1109,25 +1307,30 @@ void NativeRenderer::materialize_aliases(const void* surface) {
 }
 
 uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
-    // Timed as a whole: the lookup, the content hash that decides whether the
-    // guest changed it, and the upload when it did.
-    const auto texture_start = std::chrono::steady_clock::now();
+    // Explicit diagnostics time the whole call, including hits and uploads.
+    // Ordinary play must not query the clock even on a hot cache return.
     struct TextureTimer {
         Impl& impl; std::chrono::steady_clock::time_point start;
+        explicit TextureTimer(Impl& owner) : impl(owner),
+            start(owner.texture_timers ? std::chrono::steady_clock::now() :
+                                        std::chrono::steady_clock::time_point{}) {}
         ~TextureTimer() {
+            if (!impl.texture_timers) return;
             impl.texture_ms += std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - start).count();
         }
-    } texture_timer{*impl_, texture_start};
+    } texture_timer{*impl_};
     const auto fetch = decode_texture_fetch(words);
     if (!fetch.base_address) return null_2d;
     // What the title resolved out of the framebuffer is served from the copy
     // taken then, whatever the guest memory at that address holds.
     if (auto resolved = impl_->resolved_targets.find(fetch.base_address); resolved != impl_->resolved_targets.end()) {
-        static std::set<uint32_t> sampled;
-        if (sampled.insert(fetch.base_address).second)
-            std::cerr << "NATIVE_RESOLVED_SAMPLED base=0x" << std::hex << fetch.base_address << std::dec
-                      << " descriptor=" << resolved->second << '\n';
+        if (impl_->texture_trace) {
+            static std::set<uint32_t> sampled;
+            if (sampled.insert(fetch.base_address).second)
+                std::cerr << "NATIVE_RESOLVED_SAMPLED base=0x" << std::hex << fetch.base_address << std::dec
+                          << " descriptor=" << resolved->second << '\n';
+        }
         return resolved->second;
     }
     // SFR_TEXTURE_SURVEY=N reports the first N distinct texture addresses a
@@ -1368,114 +1571,205 @@ void NativeRenderer::draw(const NativeDraw& draw) {
         std::cerr << "NATIVE_PIPELINE_KEY bulk=" << bulk_key << " verify=" << verify << '\n';
         return verify;
     }();
-    static thread_local std::vector<uint8_t> key;
-    if (bulk_key) native_pipeline_key_bulk(draw, key);
-    else native_pipeline_key_legacy(draw, key);
-    if (verify_key) {
+    const bool pipeline_changed = impl_->pipeline_state.update(draw);
+    if (verify_key && !pipeline_changed && impl_->selected_pipeline) {
         static thread_local std::vector<uint8_t> reference;
-        if (bulk_key) native_pipeline_key_legacy(draw, reference);
-        else native_pipeline_key_bulk(draw, reference);
-        if (key != reference) unsupported(0, "pipeline key serializer mismatch");
-        static thread_local uint64_t verified = 0;
-        if (++verified == 1 || verified % 100000 == 0)
-            std::cerr << "NATIVE_PIPELINE_KEY verified=" << verified << '\n';
+        native_pipeline_key_bulk(draw, reference);
+        if (reference != impl_->selected_pipeline_key)
+            unsupported(0, "persistent pipeline state missed a draw-state change");
     }
-    auto& pipeline = impl_->pipelines[key];  // copies the key only when inserting
-    const std::array<plume::RenderInputSlot, 2> slots{plume::RenderInputSlot(0, draw.stride),
-                                                       plume::RenderInputSlot(zero_slot, 0)};
-    std::optional<PipelineRecipe> recipe;
-    std::vector<uint8_t> recipe_key;
-    if (!pipeline && !impl_->learned_manifest.empty() && draw.vertex_entry && draw.pixel_entry) {
-        try {
-            recipe.emplace();
-            recipe->vertex = pipeline_shader_id(draw.vertex_entry->source);
-            recipe->pixel = pipeline_shader_id(draw.pixel_entry->source);
-            recipe->pixel_link_constants = draw.pixel_link_constants;
-            recipe->state = draw;
-            recipe_key = pipeline_recipe_key(*recipe);
-            if (const auto found = impl_->recipe_pipelines.find(recipe_key); found != impl_->recipe_pipelines.end()) {
-                pipeline = found->second;
-                ++impl_->prewarm_hits;
-                std::cerr << "PIPELINE_PREWARM hit=" << impl_->prewarm_hits << '\n';
-            }
-        } catch (const std::invalid_argument& error) {
-            std::cerr << "PIPELINE_MANIFEST unrecordable=" << error.what() << '\n';
-            recipe.reset();
+    if (pipeline_changed || !impl_->selected_pipeline || verify_key) {
+        auto& key = impl_->selected_pipeline_key;
+        if (bulk_key) native_pipeline_key_bulk(draw, key);
+        else native_pipeline_key_legacy(draw, key);
+        if (verify_key) {
+            static thread_local std::vector<uint8_t> reference;
+            if (bulk_key) native_pipeline_key_legacy(draw, reference);
+            else native_pipeline_key_bulk(draw, reference);
+            if (key != reference) unsupported(0, "pipeline key serializer mismatch");
+            static thread_local uint64_t verified = 0;
+            if (++verified == 1 || verified % 100000 == 0)
+                std::cerr << "NATIVE_PIPELINE_KEY verified=" << verified << '\n';
         }
-    }
-    if (!pipeline) {
-        const auto pipeline_start = std::chrono::steady_clock::now();
-        pipeline = create_draw_pipeline(device, impl_->layout.get(), draw, impl_->graphics.backend());
-        if (!pipeline) unsupported(0, "native graphics pipeline creation failed");
-        ++impl_->pipelines_created;
-        impl_->pipeline_ms += std::chrono::duration<double, std::milli>(
-            std::chrono::steady_clock::now() - pipeline_start).count();
-        if (recipe) {
-            impl_->recipe_pipelines.emplace(recipe_key, pipeline);
-            if (impl_->recipes.size() < pipeline_manifest_max_recipes) {
-                // Round-trip removes per-draw pointers, spans and constants;
-                // only immutable owned pipeline state is retained.
-                const auto encoded = encode_pipeline_manifest(std::span(&*recipe, 1), uint32_t(impl_->graphics.backend()));
-                auto clean = decode_pipeline_manifest(encoded, uint32_t(impl_->graphics.backend()));
-                impl_->recipes.insert_or_assign(recipe_key, std::move(clean.front()));
-                impl_->manifest_dirty = true;
+        auto& pipeline = impl_->pipelines[key];  // copies the key only when inserting
+        std::optional<PipelineRecipe> recipe;
+        std::vector<uint8_t> recipe_key;
+        if (!pipeline && !impl_->learned_manifest.empty() && draw.vertex_entry && draw.pixel_entry) {
+            try {
+                recipe.emplace();
+                recipe->vertex = pipeline_shader_id(draw.vertex_entry->source);
+                recipe->pixel = pipeline_shader_id(draw.pixel_entry->source);
+                recipe->pixel_link_constants = draw.pixel_link_constants;
+                recipe->state = draw;
+                recipe->state.own_input_elements();
+                recipe_key = pipeline_recipe_key(*recipe);
+                if (const auto found = impl_->recipe_pipelines.find(recipe_key); found != impl_->recipe_pipelines.end()) {
+                    pipeline = found->second;
+                    ++impl_->prewarm_hits;
+                    std::cerr << "PIPELINE_PREWARM hit=" << impl_->prewarm_hits << '\n';
+                }
+            } catch (const std::invalid_argument& error) {
+                std::cerr << "PIPELINE_MANIFEST unrecordable=" << error.what() << '\n';
+                recipe.reset();
             }
         }
+        if (!pipeline) {
+            const auto pipeline_start = std::chrono::steady_clock::now();
+            pipeline = create_draw_pipeline(device, impl_->layout.get(), draw, impl_->graphics.backend());
+            if (!pipeline) unsupported(0, "native graphics pipeline creation failed");
+            ++impl_->pipelines_created;
+            impl_->pipeline_ms += std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - pipeline_start).count();
+            if (recipe) {
+                impl_->recipe_pipelines.emplace(recipe_key, pipeline);
+                if (impl_->recipes.size() < pipeline_manifest_max_recipes) {
+                    // Round-trip removes per-draw pointers, spans and constants;
+                    // only immutable owned pipeline state is retained.
+                    const auto encoded = encode_pipeline_manifest(std::span(&*recipe, 1), uint32_t(impl_->graphics.backend()));
+                    auto clean = decode_pipeline_manifest(encoded, uint32_t(impl_->graphics.backend()));
+                    impl_->recipes.insert_or_assign(recipe_key, std::move(clean.front()));
+                    impl_->manifest_dirty = true;
+                }
+            }
+        }
+        impl_->selected_pipeline = pipeline.get();
     }
+    const auto* pipeline = impl_->selected_pipeline;
 
     // Per-draw upload: vertices, then the three constant buffers (256-aligned).
     // Per-draw data lives in a persistent upload ring that is recycled after
     // the frame's command list completes.
-    const uint64_t vertex_bytes = draw.vertex_buffer ? 0 : draw.vertices.size();  // in the ring
+    const plume::RenderBuffer* vertex_buffer = draw.vertex_buffer.buffer;
+    uint64_t vertex_buffer_offset = draw.vertex_buffer.offset;
+    uint64_t vertex_bytes = vertex_buffer ? 0 : draw.vertices.size();
+    if (draw.vertex_snapshot && (!draw.vertex_snapshot->version ||
+        draw.vertex_snapshot_offset > draw.vertex_snapshot->words.size() ||
+        uint64_t(draw.vertex_count) * draw.stride > draw.vertex_snapshot->words.size() - draw.vertex_snapshot_offset))
+        unsupported(0, "dynamic vertex slice exceeds its completed snapshot");
+    const auto resolve_vertices = [&] {
+        if (!draw.vertex_snapshot) return;
+        const auto& snapshot = *draw.vertex_snapshot;
+        vertex_buffer = nullptr;
+        vertex_bytes = snapshot.words.size();
+        auto& memo = impl_->transient_vertex_memo;
+        if (memo.version != snapshot.version || memo.frame != impl_->frame) {
+            ++impl_->transient_vertex_lookups;
+            if (const auto found = impl_->transient_vertices.find(snapshot.version); found != impl_->transient_vertices.end())
+                memo = {snapshot.version, found->second, impl_->frame};
+            else return; // Do not publish a missing allocation before the upload.
+        }
+        vertex_buffer = impl_->rings[impl_->ring_index].get();
+        vertex_buffer_offset = memo.offset + draw.vertex_snapshot_offset;
+        vertex_bytes = 0;
+    };
+    resolve_vertices();
+    if (draw.vertex_constant_state && draw.pixel_constant_state &&
+        (!draw.vertex_constants_source.empty() || !draw.pixel_constants_source.empty()) &&
+        (draw.vertex_constants_source.size() != 4096 || draw.pixel_constants_source.size() != 4096))
+        unsupported(0, "versioned direct constants require complete VS and PS source spans");
     // A kept index buffer is bound as it is; otherwise the indices follow
     // the draw's data in the ring.
     const plume::RenderBuffer* const index_buffer = draw.index_buffer;
     const uint64_t index_bytes = (index_buffer ? draw.index_count : draw.indices.size()) * sizeof(uint32_t);
     const uint64_t ring_index_bytes = index_buffer ? 0 : index_bytes;
-    const uint64_t vs_rel = align(vertex_bytes, 256), ps_rel = vs_rel + 4096,
-                   shared_rel = ps_rel + 4096, palette_rel = shared_rel + 512,
-                   loop_rel = palette_rel + (draw.palette.empty() ? 0 : palette_bytes),
-                   index_rel = align(loop_rel + 256, 256), total = index_rel + ring_index_bytes;
+    // Like Unleashed's dirty-stage uploads, an unchanged stage keeps its
+    // existing allocation. Do not advance the ring over an unused 4 KiB slot.
+    // Recalculate after a flush: all cached offsets belong to the old ring.
+    struct UploadLayout { uint64_t vs, ps, shared, palette, loop, index, total; };
+    const auto upload_layout = [&] {
+        const bool managed = draw.vertex_constant_state && draw.pixel_constant_state;
+        const auto stage_bytes = [&](size_t stage, const GuestConstantState* state) -> uint64_t {
+            return managed && impl_->versioned_constant_uploads[stage].matches(state, state->version()) ? 0 : 4096;
+        };
+        UploadLayout layout{};
+        layout.vs = align(vertex_bytes, 256);
+        layout.ps = layout.vs + stage_bytes(0, draw.vertex_constant_state);
+        layout.shared = layout.ps + stage_bytes(1, draw.pixel_constant_state);
+        layout.palette = layout.shared + 512;
+        layout.loop = layout.palette + (draw.palette.empty() ? 0 : palette_bytes);
+        const auto* short_state = draw.short_constant_state;
+        const bool loop_reused = short_state && impl_->versioned_loop_upload.matches(short_state, short_state->version());
+        layout.index = align(layout.loop + (loop_reused ? 0 : 256), 256);
+        layout.total = layout.index + ring_index_bytes;
+        return layout;
+    };
+    auto allocation = upload_layout();
+    uint64_t total = allocation.total;
     if (total > ring_size) unsupported(uint32_t(total), "draw data exceeds the upload ring");
     // Vertices already written in place by the caller (vertex_space), which
     // also made room for the rest of this draw.
     const bool in_place = vertex_bytes && draw.vertices.data() == impl_->reserved &&
         impl_->reserved_ring == impl_->ring_index && impl_->reserved_offset == impl_->ring_offset;
     impl_->reserved = nullptr;
-    if (!in_place && impl_->ring_offset + total > ring_size) { ++impl_->ring_flushes; impl_->presentation.flush(); }
+    if (!in_place && impl_->ring_offset + total > ring_size) {
+        ++impl_->ring_flushes;
+        impl_->presentation.flush();
+        resolve_vertices();
+        allocation = upload_layout();
+        total = allocation.total;
+        if (total > ring_size) unsupported(uint32_t(total), "draw data exceeds a fresh upload ring");
+    }
+    const uint64_t vs_rel = allocation.vs, ps_rel = allocation.ps, shared_rel = allocation.shared,
+                   palette_rel = allocation.palette, loop_rel = allocation.loop, index_rel = allocation.index;
     const uint64_t base_offset = impl_->ring_offset;
     impl_->ring_offset = align(base_offset + total, 256);
+    impl_->draw_ring_bytes += impl_->ring_offset - base_offset;
     auto* upload = impl_->rings[impl_->ring_index].get();
     uint8_t* mapped = impl_->rings_mapped[impl_->ring_index] + base_offset;
-    if (!in_place) std::memcpy(mapped, draw.vertices.data(), vertex_bytes);
+    if (draw.vertex_snapshot && vertex_bytes) {
+        // Allocate only once per completed slice per ring lifetime. Uploading
+        // here, after capacity flush, prevents recycling a slice while the
+        // draw that first requested it is still being prepared.
+        std::memcpy(mapped, draw.vertex_snapshot->words.data(), vertex_bytes);
+        impl_->transient_vertices.emplace(draw.vertex_snapshot->version, base_offset);
+        impl_->transient_vertex_memo = {draw.vertex_snapshot->version, base_offset, impl_->frame};
+        vertex_buffer = upload;
+        vertex_buffer_offset = base_offset + draw.vertex_snapshot_offset;
+    } else if (!in_place) std::memcpy(mapped, draw.vertices.data(), vertex_bytes);
     // The game's constants straight from the device, unless an option below
     // compares or reuses whole arrays (then swapped into them first).
     const bool constant_sources = draw.vertex_constants_source.size() == 4096 &&
                                   draw.pixel_constants_source.size() == 4096;
-    if (constant_sources && (impl_->constant_reuse_probe || impl_->constant_uploads)) {
-        auto& arrays = const_cast<NativeDraw&>(draw);
-        swap_words_into({reinterpret_cast<uint8_t*>(arrays.vertex_constants.data()), 4096}, draw.vertex_constants_source);
-        swap_words_into({reinterpret_cast<uint8_t*>(arrays.pixel_constants.data()), 4096}, draw.pixel_constants_source);
+    auto vs_values = draw.vertex_constants, ps_values = draw.pixel_constants;
+    const bool managed_constants = draw.vertex_constant_state && draw.pixel_constant_state;
+    if (constant_sources && (impl_->constant_reuse_probe || (impl_->constant_uploads && !managed_constants))) {
+        static thread_local std::array<GuestConstantState::Values, 2> arrays;
+        swap_words_into({reinterpret_cast<uint8_t*>(arrays[0].data()), 4096}, draw.vertex_constants_source);
+        swap_words_into({reinterpret_cast<uint8_t*>(arrays[1].data()), 4096}, draw.pixel_constants_source);
+        vs_values = arrays[0]; ps_values = arrays[1];
     }
     if (auto* probe = impl_->constant_reuse_probe.get()) {
-        const std::array<const std::array<uint32_t, 1024>*, 2> stages{
-            &draw.vertex_constants, &draw.pixel_constants};
+        const std::array<std::span<const uint32_t, 1024>, 2> stages{vs_values, ps_values};
         for (size_t stage = 0; stage < stages.size(); ++stage) {
-            const auto& current = *stages[stage];
-            probe->uploaded += sizeof(current);
-            if (probe->valid && std::memcmp(probe->previous[stage].data(), current.data(), sizeof(current)) == 0)
-                probe->reusable += sizeof(current);
+            const auto current = stages[stage];
+            probe->uploaded += current.size_bytes();
+            if (probe->valid && std::memcmp(probe->previous[stage].data(), current.data(), current.size_bytes()) == 0)
+                probe->reusable += current.size_bytes();
             else
-                probe->previous[stage] = current;
+                std::memcpy(probe->previous[stage].data(), current.data(), current.size_bytes());
         }
         probe->valid = true;
     }
     uint64_t vs_offset = base_offset + vs_rel, ps_offset = base_offset + ps_rel;
-    if (auto* constants = impl_->constant_uploads.get()) {
+    const uint64_t saved_before = impl_->constant_saved_bytes;
+    if (managed_constants) {
+        const auto upload_stage = [&](size_t stage, const GuestConstantState& state,
+                                      std::span<const uint8_t> source, uint64_t offset, uint8_t* destination) {
+            auto& cache = impl_->versioned_constant_uploads[stage];
+            const auto result = constant_sources
+                ? cache.upload_source(&state, state.version(), source, offset, destination)
+                : cache.upload(&state, state.version(), state.values(), offset, destination);
+            if(constant_sources && !result.reused) impl_->direct_constant_read_bytes += 4096;
+            impl_->constant_saved_bytes += result.reused ? 4096 : 0;
+            return result.offset;
+        };
+        vs_offset = upload_stage(0, *draw.vertex_constant_state, draw.vertex_constants_source, vs_offset, mapped + vs_rel);
+        ps_offset = upload_stage(1, *draw.pixel_constant_state, draw.pixel_constants_source, ps_offset, mapped + ps_rel);
+    } else if (auto* constants = impl_->constant_uploads.get()) {
         // A hit references an immutable slot from this same ring lifetime.
         // Keep the allocation layout unchanged, including the unused slots.
-        const auto vs = (*constants)[0].upload(draw.vertex_constants, vs_offset, mapped + vs_rel);
-        const auto ps = (*constants)[1].upload(draw.pixel_constants, ps_offset, mapped + ps_rel);
+        const auto vs = (*constants)[0].upload(vs_values, vs_offset, mapped + vs_rel);
+        const auto ps = (*constants)[1].upload(ps_values, ps_offset, mapped + ps_rel);
         vs_offset = vs.offset;
         ps_offset = ps.offset;
         impl_->constant_saved_bytes += (uint64_t(vs.reused) + uint64_t(ps.reused)) * 4096;
@@ -1486,6 +1780,7 @@ void NativeRenderer::draw(const NativeDraw& draw) {
         std::memcpy(mapped + vs_rel, draw.vertex_constants.data(), 4096);
         std::memcpy(mapped + ps_rel, draw.pixel_constants.data(), 4096);
     }
+    impl_->constant_written_bytes += 8192 - (impl_->constant_saved_bytes - saved_before);
     std::memcpy(mapped + shared_rel, &draw.shared, sizeof(draw.shared));
     if (impl_->presentation.width() != impl_->presentation.render_width() ||
         impl_->presentation.height() != impl_->presentation.render_height()) {
@@ -1504,7 +1799,17 @@ void NativeRenderer::draw(const NativeDraw& draw) {
     if (!draw.palette.empty())
         std::memcpy(mapped + palette_rel, draw.palette.data(),
                     (std::min)(size_t(palette_bytes), draw.palette.size()));
-    std::memcpy(mapped + loop_rel, draw.loop_constants.data(), sizeof(draw.loop_constants));
+    uint64_t loop_offset = base_offset + loop_rel;
+    if (const auto* short_state = draw.short_constant_state) {
+        const auto result = impl_->versioned_loop_upload.upload(
+            short_state, short_state->version(), short_state->loop_values(), loop_offset, mapped + loop_rel);
+        loop_offset = result.offset;
+        impl_->loop_constant_saved_bytes += result.reused ? 256 : 0;
+        impl_->loop_constant_written_bytes += result.reused ? 0 : 256;
+    } else {
+        std::memcpy(mapped + loop_rel, draw.loop_constants.data(), sizeof(draw.loop_constants));
+        impl_->loop_constant_written_bytes += 256;
+    }
     if (ring_index_bytes) std::memcpy(mapped + index_rel, draw.indices.data(), ring_index_bytes);
     const uint64_t shared_offset = base_offset + shared_rel;
 
@@ -1513,25 +1818,27 @@ void NativeRenderer::draw(const NativeDraw& draw) {
     // frame's locals once this call returns. impl's bound_* fields are the
     // render thread's alone.
     const bool palette_bound = !draw.palette.empty();
-    const bool stencil_enabled = draw.stencil_enabled;
-    const uint8_t stencil_reference = draw.stencil_reference;
     const uint32_t stride = draw.stride, vertex_count = draw.vertex_count;
-    const uint32_t vertex_view_bytes = uint32_t(draw.vertex_buffer ? uint64_t(draw.vertex_count) * draw.stride
+    const uint32_t vertex_view_bytes = uint32_t(vertex_buffer ? uint64_t(draw.vertex_count) * draw.stride
                                                                    : draw.vertices.size());
-    const plume::RenderBuffer* const vertex_buffer = draw.vertex_buffer;
     const uint32_t index_count = uint32_t(index_bytes / sizeof(uint32_t));
     const int32_t base_vertex_location = draw.base_vertex_location;
-    impl_->presentation.record_async([impl = impl_.get(), pipeline = pipeline.get(), palette_bound, stencil_enabled,
-                                      stencil_reference, stride, vertex_count, vertex_view_bytes, vertex_buffer,
+    impl_->presentation.record_async([impl = impl_.get(), pipeline, palette_bound,
+                                      stride, vertex_count, vertex_view_bytes, vertex_buffer, vertex_buffer_offset,
                                       index_count, base_vertex_location, index_bytes, index_buffer, vulkan,
                                       upload, base_offset, vs_offset, ps_offset,
-                                      palette_rel, loop_rel, index_rel, shared_offset](plume::RenderCommandList& list,
+                                      palette_rel, loop_offset, index_rel, shared_offset](plume::RenderCommandList& list,
                                                                                    uint64_t generation) {
         const std::array<plume::RenderInputSlot, 2> slots{plume::RenderInputSlot(0, stride),
                                                            plume::RenderInputSlot(zero_slot, 0)};
         const bool fresh = impl->bound_generation != generation;
         if (fresh) {
             impl->bound_generation = generation;
+            // These bindings are conditional below. The first draw on a new
+            // command list may omit them, so a later draw must not reuse the
+            // previous list's memo even if its buffer and offset are identical.
+            impl->bound_indices = {};
+            impl->bound_uniforms[3] = {};
             list.setGraphicsPipelineLayout(impl->layout.get());
             if (vulkan) {
                 list.setGraphicsDescriptorSet(impl->textures.get(), 0);
@@ -1549,38 +1856,39 @@ void NativeRenderer::draw(const NativeDraw& draw) {
             list.setPipeline(pipeline);
             impl->bound_pipeline = pipeline;
         }
-#ifdef _WIN32
-        // Plume's D3D12 backend sets the pipeline's stencil reference at each
-        // draw but never stores RenderGraphicsPipelineDesc::stencilReference,
-        // so it is always 0: a HUD gauge's mask wrote 0 and its fill (drawn
-        // where the stencil equals 1) covered the whole gauge. Set it here.
-        // (Vulkan keeps it in the pipeline.)
-        if (stencil_enabled && !vulkan)
-            static_cast<plume::D3D12CommandList&>(list).d3d->OMSetStencilRef(stencil_reference);
-#endif
-        if (vulkan) {
+        const std::array<uint64_t, 5> uniform_offsets{vs_offset, ps_offset, shared_offset,
+            base_offset + palette_rel, loop_offset};
+        bool uniforms_changed = fresh;
+        for (size_t i = 0; i < uniform_offsets.size(); ++i)
+            uniforms_changed |= impl->bound_uniforms[i] != std::pair<const plume::RenderBuffer*, uint64_t>{upload, uniform_offsets[i]};
+        if (vulkan && uniforms_changed) {
             // Set 2 at this draw's offsets in its ring (Impl::uniform_ranges).
             const uint32_t offsets[Impl::uniform_ranges.size()] = {
                 uint32_t(vs_offset), uint32_t(ps_offset), uint32_t(shared_offset),
-                uint32_t(base_offset + palette_rel), uint32_t(base_offset + loop_rel)};
+                uint32_t(base_offset + palette_rel), uint32_t(loop_offset)};
             const auto* set = static_cast<const plume::VulkanDescriptorSet*>(
                 impl->uniform_sets[upload == impl->rings[0].get() ? 0 : 1].get());
             vkCmdBindDescriptorSets(static_cast<plume::VulkanCommandList&>(list).vk, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                     static_cast<const plume::VulkanPipelineLayout*>(impl->layout.get())->vk, 2, 1, &set->vk,
                                     uint32_t(Impl::uniform_ranges.size()), offsets);
-        } else {
-            list.setGraphicsRootDescriptor(plume::RenderBufferReference(upload, vs_offset), 0);
-            list.setGraphicsRootDescriptor(plume::RenderBufferReference(upload, ps_offset), 1);
-            list.setGraphicsRootDescriptor(plume::RenderBufferReference(upload, shared_offset), 2);
-            if (palette_bound)
-                list.setGraphicsRootDescriptor(plume::RenderBufferReference(upload, base_offset + palette_rel), 3);
-            list.setGraphicsRootDescriptor(plume::RenderBufferReference(upload, base_offset + loop_rel), 4);
+        }
+        for (uint32_t i = 0; i < uniform_offsets.size(); ++i) {
+            if (!vulkan && i == 3 && !palette_bound) continue;
+            const std::pair<const plume::RenderBuffer*, uint64_t> binding{upload, uniform_offsets[i]};
+            if (!vulkan && (fresh || impl->bound_uniforms[i] != binding))
+                list.setGraphicsRootDescriptor(plume::RenderBufferReference(upload, uniform_offsets[i]), i);
+            impl->bound_uniforms[i] = binding;
         }
         const plume::RenderVertexBufferView vertices(
-            vertex_buffer ? plume::RenderBufferReference(const_cast<plume::RenderBuffer*>(vertex_buffer), 0)
+            vertex_buffer ? plume::RenderBufferReference(const_cast<plume::RenderBuffer*>(vertex_buffer), vertex_buffer_offset)
                           : plume::RenderBufferReference(upload, base_offset),
             vertex_view_bytes);
-        list.setVertexBuffers(0, &vertices, 1, &slots[0]);
+        const auto vertex_binding = std::tuple{vertex_buffer ? vertex_buffer : upload,
+            vertex_buffer ? vertex_buffer_offset : base_offset, vertex_view_bytes, stride};
+        if (fresh || impl->bound_vertices != vertex_binding) {
+            list.setVertexBuffers(0, &vertices, 1, &slots[0]);
+            impl->bound_vertices = vertex_binding;
+        }
         // An indexed draw selects its vertices from the uploaded block; the
         // base location puts that block back where the stream holds it.
         if (index_bytes) {
@@ -1588,7 +1896,12 @@ void NativeRenderer::draw(const NativeDraw& draw) {
                 index_buffer ? plume::RenderBufferReference(const_cast<plume::RenderBuffer*>(index_buffer), 0)
                              : plume::RenderBufferReference(upload, base_offset + index_rel),
                 uint32_t(index_bytes), plume::RenderFormat::R32_UINT);
-            list.setIndexBuffer(&view);
+            const auto index_binding = std::tuple{index_buffer ? index_buffer : upload,
+                index_buffer ? uint64_t(0) : base_offset + index_rel, uint32_t(index_bytes)};
+            if (fresh || impl->bound_indices != index_binding) {
+                list.setIndexBuffer(&view);
+                impl->bound_indices = index_binding;
+            }
             list.drawIndexedInstanced(index_count, 1, 0, base_vertex_location, 0);
         } else {
             list.drawInstanced(vertex_count, 1, 0, 0);

@@ -170,6 +170,45 @@ void null_binding_never_accesses_texture_dirty_word() {
         f.native_bindings(0xff);
     }
 }
+void prepared_fetches_consume_only_sampled_dirty_bits_and_cover_null_writers() {
+    Fixture f;
+    for (uint32_t slot = 0; slot < 26; ++slot)
+        for (uint32_t word = 0; word < 6; ++word)
+            f.memory.store<uint32_t>(device + fetch(slot) + word*4, 0);
+    constexpr uint64_t unrelated = (1ull<<63) | (1ull<<56) | mask(25) | 1;
+    f.memory.store<uint64_t>(device + 24, unrelated | 0xffff0000ull);
+    require(f.guest.prepare_texture_state() == 384, "first preparation reads all sixteen sampled fetches");
+    require(f.memory.load<uint64_t>(device + 24) == unrelated, "fetch preparation preserves all unrelated dirty bits");
+    require(f.guest.prepare_texture_state(true) == 0, "clean verified fetches require no conversion reads");
+
+    f.memory.store<uint32_t>(device + fetch(15) + 20, 0x76543210);
+    f.memory.store<uint64_t>(device + 24, unrelated | mask(15));
+    require(f.guest.prepare_texture_state(true) == 24 && f.guest.texture_state().slot(15).words[5] == 0x76543210,
+            "the final sampled slot refreshes independently from its guest dirty bit");
+    require(f.memory.load<uint64_t>(device + 24) == unrelated, "high sampled slot consumes only its own dirty bit");
+
+    f.memory.store<uint32_t>(device + fetch(0), 3);
+    f.memory.store<uint64_t>(device + 24, unrelated | mask(0));
+    require(f.guest.prepare_texture_state() == 24, "test publishes a nonzero fetch type");
+    const auto version = f.guest.texture_state().slot(0).version;
+    f.guest.set_texture(device, 0, 0, mask(0));
+    require(f.memory.load<uint64_t>(device + 24) == unrelated, "NULL setter still never marks guest dirty");
+    require(f.guest.prepare_texture_state(true) == 24 && f.guest.texture_state().slot(0).words[0] == 0 &&
+            f.guest.texture_state().slot(0).version != version,
+            "NULL's native invalidation publishes its changed fetch even without guest dirty");
+
+    f.memory.store<uint32_t>(device + fetch(25), 3);
+    f.guest.set_texture(device, 25, 0, mask(25));
+    require(f.guest.prepare_texture_state(true) == 0 && f.memory.load<uint64_t>(device + 24) == unrelated,
+            "unsampled high slot neither refreshes sampled records nor consumes its guest dirty bit");
+    f.memory.store<uint32_t>(device + fetch(2) + 12, 0x12345678);
+    rejects([&] { f.guest.prepare_texture_state(true); });
+    require(f.memory.load<uint64_t>(device + 24) == unrelated, "missing-writer verification preserves unrelated dirty state");
+    f.guest.invalidate_texture_state();
+    require(f.guest.prepare_texture_state(true) == 384 && f.guest.texture_state().slot(2).words[3] == 0x12345678,
+            "explicit reset rebuilds the source shadow after an untracked write");
+    require(f.guest.prepare_texture_state(true) == 0, "rebuilt shadow returns to the clean path");
+}
 }
 
 void real_texture_merges_the_original_fetch_constant_and_retires_the_old_one() {
@@ -223,7 +262,8 @@ int main() {
                       all_slots_clear_only_fetch_type_and_retain_independent_null_identity,
                       invalid_device_slot_mask_and_resource_leave_both_representations_unchanged,
                       both_outputs_are_preflighted_before_guest_or_native_publication,
-                      null_binding_never_accesses_texture_dirty_word}) {
+                      null_binding_never_accesses_texture_dirty_word,
+                      prepared_fetches_consume_only_sampled_dirty_bits_and_cover_null_writers}) {
         try { test(); } catch (const std::exception& error) { std::cerr << error.what() << '\n'; ++failures; }
     }
     if (failures) return 1;

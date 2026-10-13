@@ -17,6 +17,7 @@
 #include <cmath>
 #include <limits>
 #include <optional>
+#include <set>
 #include <iostream>
 #include <utility>
 #include <vector>
@@ -113,8 +114,17 @@ struct GuestGraphics::Impl {
     std::unique_ptr<NativeShaders> shaders;
     std::array<std::optional<NativeBlendControl>, 4> blend_controls;
     NativeRenderState render_state;
+    NativeStencilState stencil_state;
+    uint8_t stencil_pending = stencil_all_pending;
     std::array<std::optional<uint32_t>, 26> texture_bindings;
     std::unique_ptr<NativeRenderer> renderer;
+    struct TextureMemo {
+        FetchWords words{};
+        uint64_t version = 0, generation = ~uint64_t(0);
+        uint32_t texture = 0, sampler = 0;
+        bool managed = false;
+    };
+    std::array<TextureMemo, GuestTextureState::sampled_slots> texture_memo;
 };
 NativeRenderer& GuestGraphics::renderer() {
     if(!impl_) unsupported(device_address,"native guest device is not created");
@@ -155,7 +165,9 @@ void GuestGraphics::select_target(uint32_t device) {
     else native.set_target(key, width, height, native.width(), native.height());
 }
 GuestGraphics::GuestGraphics(GuestMemory& memory, NativeGraphics& graphics)
-    : memory_(memory), graphics_(graphics) {}
+    : memory_(memory), graphics_(graphics) {
+    if (managed_buffers_enabled()) buffers_ = std::make_unique<GuestBufferState>(memory);
+}
 GuestGraphics::~GuestGraphics() = default;
 bool GuestGraphics::created() const noexcept { return bool(impl_); }
 bool GuestGraphics::owns_object(uint32_t address) const noexcept {
@@ -418,6 +430,7 @@ void GuestGraphics::set_render_state(uint32_t device, RenderState state, uint32_
     memory_.store<uint32_t>(device + offset, cache);
     memory_.store<uint64_t>(device + 16, dirty);
     impl_->render_state = next;
+    if (offset == 0x2934) invalidate_stencil_state(stencil_control_pending);
 }
 void GuestGraphics::set_primitive_restart(uint32_t device, uint32_t value) {
     if (!impl_ || device != device_address)
@@ -443,6 +456,74 @@ bool GuestGraphics::depth_enabled() const {
     if (attachment && attachment != depth_handle && !foreign_render_targets)
         unsupported(attachment, "unknown native depth attachment for effective state");
     return *impl_->render_state.depth_enable_requested && attachment != 0;
+}
+void GuestGraphics::invalidate_stencil_state(uint8_t groups) noexcept {
+    if (impl_) impl_->stencil_pending |= groups & stencil_all_pending;
+}
+void GuestGraphics::invalidate_stencil_packet(uint32_t source, uint64_t selected_words) noexcept {
+    uint8_t groups = 0;
+    constexpr std::array<uint32_t, 2> offsets{10548, 10496};
+    for (size_t i = 0; i < offsets.size(); ++i) {
+        const uint64_t target = uint64_t(device_address) + offsets[i];
+        if (source > target) continue;
+        const uint64_t delta = target - source;
+        if (delta < 64 * 4 && !(delta & 3) && (selected_words & (uint64_t(1) << (63 - delta / 4))))
+            groups |= uint8_t(1u << i);
+    }
+    if (groups) invalidate_stencil_state(groups);
+}
+uint32_t GuestGraphics::prepare_stencil_state(bool verify) {
+    if (!impl_) unsupported(device_address, "native device is not created");
+    const uint8_t pending = impl_->stencil_pending;
+    if (!pending && !verify) return 0;
+    auto next = impl_->stencil_state;
+    uint32_t read_bytes = 0;
+    if (pending & stencil_control_pending) {
+        const uint32_t control = memory_.load<uint32_t>(device_address + 10548);
+        using Compare = plume::RenderComparisonFunction;
+        using Op = plume::RenderStencilOp;
+        static constexpr std::array comparisons{Compare::NEVER, Compare::LESS, Compare::EQUAL, Compare::LESS_EQUAL,
+                                                Compare::GREATER, Compare::NOT_EQUAL, Compare::GREATER_EQUAL, Compare::ALWAYS};
+        static constexpr std::array operations{Op::KEEP, Op::ZERO, Op::REPLACE, Op::INCREMENT_AND_CLAMP,
+                                              Op::DECREMENT_AND_CLAMP, Op::INVERT, Op::INCREMENT_AND_WRAP, Op::DECREMENT_AND_WRAP};
+        const auto face = [&](uint32_t shift) {
+            return plume::RenderStencilFaceDesc{operations[(control >> (shift + 6)) & 7],
+                                                operations[(control >> (shift + 3)) & 7],
+                                                operations[(control >> (shift + 9)) & 7],
+                                                comparisons[(control >> shift) & 7]};
+        };
+        next.control = control;
+        next.enabled = (control & 1) != 0;
+        next.front = face(8);
+        next.back = (control & 0x80) ? face(20) : next.front;
+        read_bytes += 4;
+    }
+    if (pending & stencil_refmask_pending) {
+        next.refmask = memory_.load<uint32_t>(device_address + 10496);
+        next.reference = uint8_t(next.refmask);
+        next.read_mask = uint8_t(next.refmask >> 8);
+        next.write_mask = uint8_t(next.refmask >> 16);
+        read_bytes += 4;
+    }
+    if (verify) {
+        // Only explicitly pending words were refreshed above. A changed clean
+        // word must fail instead of being silently adopted by the verifier.
+        const uint32_t control = memory_.load<uint32_t>(device_address + 10548);
+        const uint32_t refmask = memory_.load<uint32_t>(device_address + 10496);
+        if (control != next.control || refmask != next.refmask)
+            throw RuntimeStop("managed-stencil-state-mismatch",
+                              device_address + (control != next.control ? 10548 : 10496),
+                              "untracked stencil writer; disable SFR_MANAGED_STENCIL_STATE until this route is hooked");
+    }
+    // Commit only after all source reads and verification succeed. Neither
+    // preparation nor invalidation alters any guest dirty word.
+    impl_->stencil_state = next;
+    impl_->stencil_pending = 0;
+    return read_bytes;
+}
+const NativeStencilState& GuestGraphics::stencil_state() const {
+    if (!impl_) unsupported(device_address, "native device is not created");
+    return impl_->stencil_state;
 }
 void GuestGraphics::set_texture(uint32_t device, uint32_t slot, uint32_t texture, uint64_t dirty_mask) {
     if (!impl_ || device != device_address)
@@ -483,6 +564,9 @@ void GuestGraphics::set_texture(uint32_t device, uint32_t slot, uint32_t texture
     memory_.store<uint32_t>(binding, texture);
     if (old && fence) memory_.store<uint32_t>(uint64_t(old) + 8, fence);
     impl_->texture_bindings[slot] = texture;
+    // NULL intentionally does not set the original dirty bit. Track its
+    // successful shadow mutation without changing that guest-side contract.
+    texture_state_.invalidate_slot(slot);
 }
 FetchWords GuestGraphics::texture_fetch(uint32_t slot) const {
     if (!impl_ || slot >= 26) unsupported(slot, "fetch slot outside the original 26-slot domain");
@@ -490,6 +574,77 @@ FetchWords GuestGraphics::texture_fetch(uint32_t slot) const {
     for (uint32_t i = 0; i < 6; ++i)
         words[i] = memory_.load<uint32_t>(uint64_t(device_address) + 0x480 + 24 * slot + i * 4);
     return words;
+}
+uint32_t GuestGraphics::prepare_texture_state(bool verify) {
+    if (!impl_) unsupported(device_address, "texture state requested before device creation");
+    const uint64_t dirty = memory_.load<uint64_t>(device_address + 24);
+    const uint64_t consumed = dirty & GuestTextureState::dirty_mask;
+    // Preflight both the source and dirty-word publication before modifying
+    // the host snapshot. Clean draws never read the fetch-word array.
+    if (texture_state_.pending_mask(dirty) || verify)
+        memory_.check(device_address + 0x480, GuestTextureState::source_bytes);
+    if (consumed) memory_.check_write(device_address + 24, 8);
+    const std::span<const uint8_t, GuestTextureState::source_bytes> source(
+        memory_.base() + device_address + 0x480, GuestTextureState::source_bytes);
+    const uint32_t bytes = texture_state_.prepare(dirty, source);
+    if (consumed) memory_.store<uint64_t>(device_address + 24, dirty & ~consumed);
+    if (verify) {
+        const uint32_t word = texture_state_.first_mismatch(source);
+        if (word != GuestTextureState::source_bytes / 4) {
+            const uint32_t address = device_address + 0x480 + word * 4;
+            const uint32_t expected = memory_.load<uint32_t>(address);
+            const uint32_t cached = texture_state_.slot(word / 6).words[word % 6];
+            throw RuntimeStop("managed-texture-state-mismatch", address,
+                "untracked fetch writer at slot=" + std::to_string(word / 6) +
+                " word=" + std::to_string(word % 6) + " cached=" + std::to_string(cached) +
+                " actual=" + std::to_string(expected) + "; disable SFR_MANAGED_TEXTURE_STATE");
+        }
+    }
+    return bytes;
+}
+GuestGraphics::TextureStateWork GuestGraphics::prepare_texture_bindings(
+    SharedConstants& shared, bool managed, bool verify) {
+    TextureStateWork work;
+    if (managed) {
+        work.read_bytes = prepare_texture_state(verify);
+        work.refreshed_slots = work.read_bytes / sizeof(FetchWords);
+    }
+    auto& native = renderer();
+    for (uint32_t slot = 0; slot < GuestTextureState::sampled_slots; ++slot) {
+        FetchWords legacy_words;
+        if (!managed) { legacy_words = texture_fetch(slot); work.read_bytes += sizeof(FetchWords); }
+        const auto& snapshot = texture_state_.slot(slot);
+        const auto& words = managed ? snapshot.words : legacy_words;
+        shared.texture_2d_array[slot] = 1;
+        shared.texture_cube[slot] = 2;
+        auto& memo = impl_->texture_memo[slot];
+        // Earlier slots may themselves publish a new descriptor/generation.
+        // Read the current generation for each slot, not once before the loop.
+        if (memo.managed == managed && memo.generation == native.texture_generation() &&
+            (managed ? memo.version == snapshot.version : memo.words == words)) {
+            shared.texture_2d[slot] = memo.texture;
+            shared.sampler[slot] = memo.sampler;
+            ++work.descriptor_hits;
+            continue;
+        }
+        // NULL bindings leave type0 with a valid base; preserve Xenos' legacy
+        // sampling behavior rather than treating the binding pointer as truth.
+        const uint32_t type = words[0] & 3;
+        const bool sampled = (type == 2 || type == 0) && (words[1] & ~0xFFFu);
+        if (!sampled && (words[0] || words[1])) {
+            static std::set<std::array<uint32_t,2>> unbound;
+            if (unbound.size() < 32 && unbound.insert({words[0], words[1]}).second)
+                std::cerr << "NATIVE_TEXTURE_UNBOUND slot=" << slot << " type=" << type
+                          << std::hex << " word0=0x" << words[0] << " word1=0x" << words[1]
+                          << " base=0x" << (words[1] & ~0xFFFu) << std::dec << '\n';
+        }
+        shared.texture_2d[slot] = sampled ? native.texture(memory_, words) : 0;
+        shared.sampler[slot] = sampled ? native.sampler(words) : 0;
+        work.descriptor_lookups += sampled;
+        memo = {words, snapshot.version, native.texture_generation(),
+                shared.texture_2d[slot], shared.sampler[slot], managed};
+    }
+    return work;
 }
 uint32_t GuestGraphics::texture_binding(uint32_t slot) const {
     if (!impl_ || slot >= impl_->texture_bindings.size() || !impl_->texture_bindings[slot])

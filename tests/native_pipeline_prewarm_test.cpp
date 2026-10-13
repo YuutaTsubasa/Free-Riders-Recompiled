@@ -291,6 +291,38 @@ void run() {
     const auto refreshed = sfr::load_pipeline_manifest_file(stale_local, backend);
     require(refreshed.size() == 1 && sfr::pipeline_recipe_key(refreshed.front()) == sfr::pipeline_recipe_key(known),
             "renderer destruction replaces the full stale local manifest with the valid bundled recipe only");
+    // A prepared pipeline must carry its dynamic stencil reference through the
+    // shared factory. EQUAL against a nonzero clear fails if reference defaults
+    // to zero, while the work counter proves this draw used the prepared PSO.
+    auto stencil_recipe = known;
+    stencil_recipe.state.stencil_enabled = true;
+    stencil_recipe.state.stencil_reference = 1;
+    stencil_recipe.state.stencil_front.compareFunction =
+        stencil_recipe.state.stencil_back.compareFunction = plume::RenderComparisonFunction::EQUAL;
+    const auto stencil_manifest = directory / "stencil.manifest";
+    const std::array stencil_recipes{stencil_recipe};
+    require(sfr::save_pipeline_manifest_file(stencil_manifest, stencil_recipes, backend),
+            "nonzero stencil recipe is saved");
+    environment("SFR_PIPELINE_MANIFEST", stencil_manifest.string());
+    environment("SFR_PIPELINE_MANIFEST_LOCAL", (directory / "stencil-local.manifest").string());
+    {
+        sfr::NativePresentation presentation(graphics, 16, 16);
+        std::unique_ptr<plume::RenderShader> vertex, pixel;
+        sfr::NativeRenderer renderer(graphics, presentation);
+        renderer.prepare_pipelines();
+        require(renderer.take_pipeline_work().created == 0, "stencil preparation is excluded from gameplay counts");
+        vertex = live_shader(graphics, *vertex_entry);
+        pixel = live_shader(graphics, *pixel_entry);
+        auto draw = stencil_recipe.state;
+        draw.vertex_count = 3;
+        draw.vertex_shader = vertex.get(); draw.pixel_shader = pixel.get();
+        draw.vertex_entry = vertex_entry; draw.pixel_entry = pixel_entry;
+        presentation.clear(sfr::NativeClear{.color=true, .stencil=true,
+            .color_value={0,0,0,1}, .stencil_value=1});
+        renderer.draw(draw);
+        require(renderer.take_pipeline_work().created == 0, "nonzero reference draw reuses the prepared pipeline");
+        expect_color(presentation.readback_color(), false);
+    }
     // Both missing and malformed optional manifests leave on-demand rendering
     // available. Use separate missing local files so learned data cannot hide it.
     for (const bool corrupt : {false, true}) {

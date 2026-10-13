@@ -14,6 +14,14 @@ struct NativeCullState {
     bool front_counter_clockwise;
     bool operator==(const NativeCullState&) const = default;
 };
+// The two guest stencil words and their decoded values. Attachment-dependent
+// enablement remains a draw-time decision; queued draws copy these values.
+struct NativeStencilState {
+    uint32_t control = 0, refmask = 0;
+    bool enabled = false;
+    uint8_t reference = 0, read_mask = 0xFF, write_mask = 0xFF;
+    plume::RenderStencilFaceDesc front{}, back{};
+};
 // Unset fields must be supplied by original state calls before PSO/shader use.
 struct NativeRenderState {
     std::optional<bool> alpha_test_enabled;

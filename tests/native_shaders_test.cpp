@@ -118,6 +118,9 @@ void lifetime(const char* pack) {
                 shaders.attach(first, object + 0x1000);
                 require(shaders.handle_of(object) == first && shaders.handle_of(object + 0x1000) == first,
                         "independent guest objects can share one immutable shader");
+                const auto pair = shaders.resolve_objects(0x71600000, object, object + 0x1000);
+                require(pair.vertex == first && pair.pixel == first,
+                        "actual object resolution consumes the attached immutable handles");
             } else if (handle != first) {
                 second = handle;
                 // Original creation just allocated a new object at the same
@@ -125,6 +128,9 @@ void lifetime(const char* pack) {
                 shaders.attach(second, object);
                 require(shaders.handle_of(object) == second && shaders.handle_of(object + 0x1000) == first,
                         "recycled guest address must replace only its own shader binding");
+                const auto pair = shaders.resolve_objects(0x71600000, object, object + 0x1000);
+                require(pair.vertex == second && pair.pixel == first,
+                        "actual attach generation invalidates the same numeric bound pair");
             }
         }
         at += size + dxil + spirv;
@@ -140,6 +146,45 @@ void lifetime(const char* pack) {
     rejects([&] { shaders.attach(0, object); });
     rejects([&] { shaders.attach(first, object + 1); });
     require(shaders.handle_of(object) == first, "invalid attaches preserve the current mapping");
+    // This exercises object-to-handle resolution only; either immutable stage
+    // may occupy either test slot. Bytecode and alpha specialization are still
+    // validated by the draw consumer, not by this ownership memo.
+    constexpr uint32_t owner = 0x71600000;
+    using Bindings = sfr::NativeShaderObjectMemo::Bindings;
+    const uint32_t other_vs = object + 0x2000, other_ps = object + 0x3000;
+    const uint32_t unknown = object + 0x4000;
+    shaders.attach(second, other_vs);
+    shaders.attach(second, other_ps);
+    const auto original = shaders.resolve_objects(owner, object, object + 0x1000);
+    require(original == Bindings{first, first} &&
+            shaders.resolve_objects(owner, object, object + 0x1000) == original,
+            "actual manager repeatedly resolves the same published pair");
+    require(shaders.resolve_objects(owner, other_vs, object + 0x1000) == Bindings{second, first},
+            "actual manager handles a VS-only binding change");
+    require(shaders.resolve_objects(owner, other_vs, other_ps) == Bindings{second, second},
+            "actual manager handles a PS-only binding change");
+    require(shaders.resolve_objects(owner, object, object + 0x1000) == original,
+            "actual manager handles A to B to A");
+    const sfr::NativeShader* const queued = &shaders.get(original.vertex);
+    shaders.attach(second, object);
+    require(shaders.resolve_objects(owner, object, object + 0x1000) == Bindings{second, first} &&
+            &shaders.get(original.vertex) == queued && shaders.get(original.vertex).entry != nullptr,
+            "reattachment changes future resolution while prior native shader ownership survives");
+    require(shaders.resolve_objects(owner + 0x10000, object, object + 0x1000) == Bindings{second, first},
+            "device owner change preserves correct attached handles");
+    require(!shaders.resolve_objects(owner, 0, object + 0x1000) &&
+            !shaders.resolve_objects(owner, object, 0) &&
+            !shaders.resolve_objects(owner, unknown, object + 0x1000) &&
+            !shaders.resolve_objects(owner, object, unknown),
+            "null and unknown bindings remain invalid only when resolution is consumed");
+    require(shaders.resolve_objects(owner, object, object + 0x1000) == Bindings{second, first},
+            "invalid consumed pairs do not poison later valid draws");
+    shaders.attach(first, unknown);
+    require(shaders.resolve_objects(owner, object, unknown) == Bindings{second, first},
+            "unknown object becomes consumable after actual attach");
+    sfr::NativeShaders fresh(memory, graphics);
+    require(!fresh.resolve_objects(owner, object, unknown),
+            "a new manager with the same device and guest object addresses inherits no old binding");
     std::cout << "Shader lifetime: address reuse, shared stages and 2100 reloads passed\n";
 }
 }

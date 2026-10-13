@@ -3,6 +3,7 @@
 #include "avatar_state.h"
 #include "avatar_transform.h"
 #include "guest_graphics.h"
+#include "guest_buffer_audit.h"
 #include "native_graphics.h"
 #include "native_presentation.h"
 #include "native_raster_state.h"
@@ -16,6 +17,8 @@
 #include "wait_trace.h"
 #include "race_frame_clock.h"
 #include "title_stats.h"
+#include "race_progress_probe.h"
+#include "race_gameplay_progress.h"
 #include <map>
 #include <plume_render_interface.h>
 #include <algorithm>
@@ -47,6 +50,29 @@
 PPC_FUNC_IMPL(__imp__sub_824ED770);
 PPC_FUNC_IMPL(__imp__sub_824ED588);
 PPC_FUNC_IMPL(__imp__sub_82500B38);
+PPC_FUNC_IMPL(__imp__sub_824EB758);
+PPC_FUNC_IMPL(__imp__sub_824EB830);
+PPC_FUNC_IMPL(__imp__sub_824EBD08);
+PPC_FUNC_IMPL(__imp__sub_824EBB00);
+PPC_FUNC_IMPL(__imp__sub_82503C78);
+PPC_FUNC_IMPL(__imp__sub_82504318);
+PPC_FUNC_IMPL(__imp__sub_82508738);
+PPC_FUNC_IMPL(__imp__sub_82508890);
+PPC_FUNC_IMPL(__imp__sub_825084F8);
+PPC_FUNC_IMPL(__imp__sub_824E7178);
+PPC_FUNC_IMPL(__imp__sub_824E71B8);
+PPC_FUNC_IMPL(__imp__sub_824E71F0);
+PPC_FUNC_IMPL(__imp__sub_824E7220);
+PPC_FUNC_IMPL(__imp__sub_824E7258);
+PPC_FUNC_IMPL(__imp__sub_824E7290);
+PPC_FUNC_IMPL(__imp__sub_824E72C0);
+PPC_FUNC_IMPL(__imp__sub_824E72F0);
+PPC_FUNC_IMPL(__imp__sub_824E7328);
+PPC_FUNC_IMPL(__imp__sub_824E7360);
+PPC_FUNC_IMPL(__imp__sub_824E7390);
+PPC_FUNC_IMPL(__imp__sub_824E73B0);
+PPC_FUNC_IMPL(__imp__sub_824E73D0);
+PPC_FUNC_IMPL(__imp__sub_824E9B48);
 
 namespace sfr {
 bool graphics_trace() {
@@ -56,10 +82,140 @@ bool graphics_trace() {
 }
 
 namespace {
+// Diagnostic combinations need hashing and retained history for every draw.
+// Ordinary play and frame-only benchmarks do not request that work.
+static const bool draw_signature_trace=[] {
+    const char* value=std::getenv("SFR_DRAW_SIGNATURE_TRACE");
+    return value && *value=='1';
+}();
+
 sfr::GuestGraphics& graphics() {
     if (!sfr::active_guest_graphics)
         throw sfr::RuntimeStop("native-graphics",0,"native guest graphics owner is unavailable");
     return *sfr::active_guest_graphics;
+}
+
+// Kept opt-in until update coverage has passed real races and scene resets.
+static const bool managed_constants=[] {
+    const char* value=std::getenv("SFR_MANAGED_CONSTANTS");
+    return value && *value!='0';
+}();
+static const bool verify_managed_constants=[] {
+    const char* value=std::getenv("SFR_VERIFY_MANAGED_CONSTANTS");
+    return value && *value!='0';
+}();
+// Alternative for grouped A/B only: skip the CPU shadow in ordinary play,
+// but read/convert a whole changed stage when its immutable GPU slot is made.
+static const bool direct_constant_upload=[] {
+    const char* value=std::getenv("SFR_DIRECT_CONSTANT_UPLOAD");
+    return managed_constants && value && *value!='0';
+}();
+static const bool managed_texture_state=[] {
+    const char* value=std::getenv("SFR_MANAGED_TEXTURE_STATE");
+    return value && *value!='0';
+}();
+static const bool verify_managed_texture_state=[] {
+    const char* value=std::getenv("SFR_VERIFY_MANAGED_TEXTURE_STATE");
+    return value && *value!='0';
+}();
+static const bool managed_stencil_state=[] {
+    const char* value=std::getenv("SFR_MANAGED_STENCIL_STATE");
+    return value && *value!='0';
+}();
+static const bool verify_managed_stencil_state=[] {
+    const char* value=std::getenv("SFR_VERIFY_MANAGED_STENCIL_STATE");
+    return value && *value!='0';
+}();
+
+void update_constants(PPCContext& ctx,uint8_t* base,sfr::ShaderStage stage,PPCFunc* original) {
+    const uint32_t device=ctx.r3.u32, first=ctx.r4.u32, count=ctx.r6.u32;
+    original(ctx,base); // retain guest shadow, dirty masks and the original ABI
+    if(managed_constants && device==sfr::GuestGraphics::device_address) {
+        if(first>256 || count>256-first)
+            throw sfr::RuntimeStop("managed-constants",first,"float constant range exceeds stage");
+        graphics().constants(stage).invalidate(first*4,count*4);
+    }
+}
+SFR_GRAPHICS_HOOK(sub_824EB758) {
+    sfr::enter_function(ctx,"sub_824EB758",0x824EB758);
+    update_constants(ctx,base,sfr::ShaderStage::vertex,__imp__sub_824EB758);
+}
+SFR_GRAPHICS_HOOK(sub_824EB830) {
+    sfr::enter_function(ctx,"sub_824EB830",0x824EB830);
+    update_constants(ctx,base,sfr::ShaderStage::pixel,__imp__sub_824EB830);
+}
+void bind_shader_constants(PPCContext& ctx,uint8_t* base,PPCFunc* original,uint32_t records_field) {
+    const uint32_t device=ctx.r3.u32, shader=ctx.r4.u32;
+    // The original's optional record stream may write any device shadow at
+    // +1152+record.offset, not just this shader's float registers. Preserve
+    // it verbatim, conservatively dirty the prepared shadow groups when records exist.
+    // VS owns its copied shader header at +872 (records relative to +872,
+    // pointer at +892); PS uses the header at +40 (pointer at +60).
+    const bool embedded=(managed_constants || managed_texture_state || managed_stencil_state) && shader &&
+        sfr::active_memory->load<uint32_t>(uint64_t(shader)+records_field);
+    original(ctx,base);
+    if(embedded && device==sfr::GuestGraphics::device_address) {
+        if(managed_constants) graphics().invalidate_constants();
+        if(managed_texture_state) graphics().invalidate_texture_state();
+        if(managed_stencil_state) graphics().invalidate_stencil_state();
+    }
+}
+SFR_GRAPHICS_HOOK(sub_824EBD08) {
+    sfr::enter_function(ctx,"sub_824EBD08",0x824EBD08);
+    bind_shader_constants(ctx,base,__imp__sub_824EBD08,892);
+}
+SFR_GRAPHICS_HOOK(sub_824EBB00) {
+    sfr::enter_function(ctx,"sub_824EBB00",0x824EBB00);
+    bind_shader_constants(ctx,base,__imp__sub_824EBB00,60);
+}
+
+// Original state-block paths can clear fetch words or replace texture and
+// constant dirty words. Packet helpers' callers can clear bits after return.
+// Host invalidations survive those clears; preserve every original side effect.
+void preserve_state_invalidation(PPCContext& ctx,uint8_t* base,PPCFunc* original,bool constants) {
+    const uint32_t device=ctx.r3.u32;
+    original(ctx,base);
+    if(device==sfr::GuestGraphics::device_address) {
+        if(managed_texture_state) graphics().invalidate_texture_state();
+        if(constants && managed_constants) graphics().invalidate_constants();
+        if(constants && managed_stencil_state) graphics().invalidate_stencil_state();
+    }
+}
+SFR_GRAPHICS_HOOK(sub_82503C78) {
+    sfr::enter_function(ctx,"sub_82503C78",0x82503C78);
+    preserve_state_invalidation(ctx,base,__imp__sub_82503C78,true);
+}
+SFR_GRAPHICS_HOOK(sub_82504318) {
+    sfr::enter_function(ctx,"sub_82504318",0x82504318);
+    preserve_state_invalidation(ctx,base,__imp__sub_82504318,true);
+}
+SFR_GRAPHICS_HOOK(sub_82508738) {
+    sfr::enter_function(ctx,"sub_82508738",0x82508738);
+    preserve_state_invalidation(ctx,base,__imp__sub_82508738,false);
+}
+// Other original packet consumers clear float/short dirty masks after these
+// helpers return. Preserve their packet writes and retain host pending work
+// before the outer caller clears those masks, even if native draws were idle.
+SFR_GRAPHICS_HOOK(sub_82508890) {
+    sfr::enter_function(ctx,"sub_82508890",0x82508890);
+    const uint32_t device=ctx.r3.u32, source=ctx.r6.u32;
+    const uint64_t dirty=ctx.r4.u64;
+    __imp__sub_82508890(ctx,base);
+    if(managed_constants && device==sfr::GuestGraphics::device_address) {
+        if(source==device+1920) graphics().constants(sfr::ShaderStage::vertex).invalidate_mask(dirty);
+        else if(source==device+6016) graphics().constants(sfr::ShaderStage::pixel).invalidate_mask(dirty);
+    }
+}
+SFR_GRAPHICS_HOOK(sub_825084F8) {
+    sfr::enter_function(ctx,"sub_825084F8",0x825084F8);
+    const uint32_t device=ctx.r3.u32, source=ctx.r6.u32, selector=ctx.r5.u32;
+    const uint64_t selected_words=ctx.r4.u64;
+    __imp__sub_825084F8(ctx,base);
+    if(managed_constants && device==sfr::GuestGraphics::device_address &&
+       source==device+10112 && selector==18688)
+        graphics().short_constants().invalidate();
+    if(managed_stencil_state && device==sfr::GuestGraphics::device_address)
+        graphics().invalidate_stencil_packet(source,selected_words);
 }
 
 // Writes what the window shows as a BMP (BGRA rows, top first): the
@@ -221,6 +377,16 @@ void set_render_state(PPCContext& ctx, const char* name, uint32_t address, sfr::
               << " offset=0x" << static_cast<uint32_t>(state) << " value=0x" << ctx.r4.u32
               << std::dec << " retained=1 lr=0x" << std::hex << ctx.lr << std::dec << '\n';
 }
+void forward_stencil_state(PPCContext& ctx,uint8_t* base,const char* name,uint32_t address,
+                           PPCFunc* original,uint8_t groups) {
+    sfr::enter_function(ctx,name,address);
+    const uint32_t device=ctx.r3.u32;
+    // Keep requested values, packed-field writes, dirty bits and binding
+    // lifetimes in the original; only publish host pending work afterward.
+    original(ctx,base);
+    if(managed_stencil_state && device==sfr::GuestGraphics::device_address)
+        graphics().invalidate_stencil_state(groups);
+}
 void set_blend_request(PPCContext& ctx, const char* name, uint32_t address, sfr::BlendRequest request) {
     sfr::enter_function(ctx,name,address);
     if (!sfr::is_native_render_state_entry(address) || !sfr::active_memory)
@@ -258,6 +424,9 @@ SFR_GRAPHICS_HOST_HOOK(sub_824F4CF0) {
     const uint64_t lr=ctx.lr;
     ctx.r3.u64=sfr::GuestGraphics::device_address;
     __imp__sub_82500B38(ctx,base);
+    graphics().invalidate_constants();
+    graphics().invalidate_texture_state();
+    graphics().invalidate_stencil_state();
     ctx.lr=lr;
     ctx.r3.u64=0;
     std::cerr << "NATIVE_CREATE_DEVICE device=0x" << std::hex << sfr::GuestGraphics::device_address
@@ -298,6 +467,9 @@ SFR_GRAPHICS_HOST_HOOK(sub_824F4858) {
     const uint64_t lr=ctx.lr;
     ctx.r3.u64=device;
     __imp__sub_82500B38(ctx,base);
+    graphics().invalidate_constants();
+    graphics().invalidate_texture_state();
+    graphics().invalidate_stencil_state();
     ctx.lr=lr;
     ctx.r3.u64=0;
     std::cerr << "NATIVE_DEVICE_RESET parameters=0x" << std::hex << parameters << std::dec << " result=0\n";
@@ -319,6 +491,7 @@ static uint32_t frame_draws=0, frame_textured_draws=0, foreign_draws=0;
 // How much vertex data one frame gathers, and its largest single draw: the
 // gather is the renderer's main cost, so the present line carries both.
 static uint64_t frame_vertex_bytes=0;
+static uint64_t frame_constant_read_bytes=0, frame_managed_constant_draws=0;
 // Separate cached source bytes from conversion work. Repack bytes describe
 // expanded output, so they are not added to the source-byte total.
 static uint64_t frame_vertex_cached_bytes=0, frame_vertex_swap_bytes=0, frame_vertex_repack_bytes=0;
@@ -337,16 +510,24 @@ static uint64_t frame_indices=0;
 static double frame_index_ms=0, frame_cut_ms=0, frame_gather_ms=0;
 // The rest of a draw: its two constant blocks, and recording it.
 static double frame_constants_ms=0, frame_record_ms=0, frame_draw_ms=0;
+static uint64_t frame_short_constant_read_bytes=0;
+static uint64_t frame_stencil_state_read_bytes=0;
+static uint64_t frame_texture_fetch_read_bytes=0, frame_texture_fetch_refreshed_slots=0;
+static uint64_t frame_texture_descriptor_lookups=0, frame_texture_descriptor_hits=0;
 
-// Detailed per-draw timings and stream sets are useful for a benchmark, but
-// are observation only. Normal launcher play has graphics tracing disabled;
-// capture tools explicitly opt in to consecutive frame metrics.
+// Consecutive frame metrics and per-draw diagnostics have separate costs.
+// The latter measured about 6% on the target i5, so benchmarking frames alone
+// must not silently enable thousands of clock queries and stream-set lookups.
 static const bool frame_metrics=[] {
     const char* setting=std::getenv("SFR_FRAME_METRICS");
     return setting ? *setting!='0' : sfr::graphics_trace();
 }();
+static const bool draw_timers=frame_metrics && [] {
+    const char* setting=std::getenv("SFR_DRAW_TIMERS");
+    return setting ? *setting!='0' : sfr::graphics_trace();
+}();
 static auto metrics_clock() {
-    return frame_metrics ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    return draw_timers ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
 }
 
 // SFR_SKIP_DRAWS=1 drops every draw before any work, including gathering its
@@ -460,6 +641,18 @@ static const auto process_start=std::chrono::steady_clock::now();
 static std::vector<std::pair<uint32_t,uint32_t>> frame_callbacks;
 
 SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
+    if(sfr::buffer_audit_enabled()) sfr::audit_buffer_frame(sfr::present_count.load());
+    if(auto* buffers=graphics().buffers(); buffers && frame_metrics && sfr::present_count%120==0) {
+        const auto c=buffers->counters();
+        std::cerr << "MANAGED_BUFFERS frame=" << sfr::present_count << " published=" << c.published
+            << " converted_bytes=" << c.converted_bytes << " hits=" << c.hits << " missing=" << c.missing
+            << " invalidated=" << c.invalidated << " rejected=" << c.rejected
+            << " range_published=" << c.range_published << " range_bytes=" << c.range_bytes
+            << " prepared=" << c.prepared << " prepared_bytes=" << c.prepared_bytes
+            << " prepared_hits=" << c.prepared_hits
+            << " entry_lookups=" << c.entry_lookups << " range_lookups=" << c.range_lookups
+            << " recipe_lookups=" << c.recipe_lookups << '\n';
+    }
     sfr::enter_function(ctx,"sub_824E65A0",0x824E65A0);
     // Preload in the menu; actual geometry is drawn in the Avatar's pass.
     graphics().presentation().prepare_player_model();
@@ -553,6 +746,7 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
                 << " present_avg_ms=" << summary.present/count << " pacing_avg_ms=" << summary.pacing/count
                 << " main_queued_avg_ms=" << summary.queued/count << " main_blocked_avg_ms=" << summary.blocked/count
                 << " gpu_wait_avg_ms=" << summary.gpu_wait/count << " pipeline_total_ms=" << summary.pipelines
+                << " texture_timers=" << pipeline_work.texture_timers
                 << " texture_total_ms=" << summary.textures << " draws_avg=" << summary.draws/count << '\n';
             std::cerr << log.str();
             summary={};
@@ -569,12 +763,28 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
         for(const auto& [page,count]:pages) std::cerr << " 0x" << page << ':' << std::dec << count << std::hex;
         std::cerr << std::dec << '\n';
     }
+    std::optional<sfr::GameplayProgress> gameplay;
+    if (sfr::gameplay_progress_enabled()) {
+        const uint32_t live_object = sfr::active_memory && sfr::active_memory->readable(0x83E52F8C, 4) ?
+            sfr::active_memory->load<uint32_t>(0x83E52F8C) : 0;
+        gameplay = sfr::gameplay_progress_snapshot(live_object);
+    }
     if(frame_metrics) {
     uint64_t main_ready_ns=execution_work[0].main_ready_unowned_ns;
     for(const auto ns:execution_work[0].main_ready_by_owner_ns) main_ready_ns+=ns;
     std::ostringstream present_log;
     present_log << "NATIVE_PRESENT source=0x824e65a0 device=0x" << std::hex << ctx.r3.u32
               << " lr=0x" << ctx.lr << std::dec << " frame=" << sfr::present_count.load() << " draws=" << frame_draws
+              << " draw_timers=" << draw_timers
+              << " constant_read_bytes=" << frame_constant_read_bytes+pipeline_work.direct_constant_read_bytes
+              << " direct_constant_read_bytes=" << pipeline_work.direct_constant_read_bytes
+              << " short_constant_read_bytes=" << frame_short_constant_read_bytes
+              << " stencil_state_read_bytes=" << frame_stencil_state_read_bytes
+              << " texture_fetch_read_bytes=" << frame_texture_fetch_read_bytes
+              << " texture_fetch_refreshed_slots=" << frame_texture_fetch_refreshed_slots
+              << " texture_descriptor_lookups=" << frame_texture_descriptor_lookups
+              << " texture_descriptor_hits=" << frame_texture_descriptor_hits
+              << " managed_constant_draws=" << frame_managed_constant_draws
               << " textured=" << frame_textured_draws << " foreign=" << foreign_draws
               << " vertex_bytes=" << frame_vertex_bytes << " cached_draws=" << frame_cached_draws
               << " indexed_draws=" << frame_indexed_draws << " kept_index_draws=" << frame_kept_index_draws
@@ -593,11 +803,15 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
               << " constant_upload_bytes=" << pipeline_work.constant_upload_bytes
               << " constant_reusable_bytes=" << pipeline_work.constant_reusable_bytes
               << " constant_saved_bytes=" << pipeline_work.constant_saved_bytes
+              << " constant_written_bytes=" << pipeline_work.constant_written_bytes
+              << " loop_constant_written_bytes=" << pipeline_work.loop_constant_written_bytes
+              << " loop_constant_saved_bytes=" << pipeline_work.loop_constant_saved_bytes
               << " upload_submissions=" << pipeline_work.upload_submissions
               << " upload_wait_ms=" << pipeline_work.upload_wait_ms
               << " upload_peak_bytes=" << pipeline_work.upload_peak_bytes
               << " upload_budget_drains=" << pipeline_work.upload_budget_drains
-              << " textures=" << pipeline_work.textures << " texture_ms=" << pipeline_work.texture_milliseconds
+              << " textures=" << pipeline_work.textures << " texture_timers=" << pipeline_work.texture_timers
+              << " texture_ms=" << pipeline_work.texture_milliseconds
               << " frame_ms=" << frame_ms << " pacing_ms=" << pacing_ms
               << " present_ms=" << present_ms << " main_queued_ms="
               << double(queued_ns)/1e6
@@ -613,10 +827,19 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
 #endif
     for(size_t core=0;core<6;++core)
         present_log << " core" << core << "_holders=" << permit_holders(execution_work[core+1].held_ns);
-    // [83E52F8C] is the title's race flag (docs/pad-menus.md): a benchmark
-    // (scripts/benchmark.ps1) measures only the frames of a race.
+    // [83E52F8C] is the race object pointer. Preserve this legacy field;
+    // nonzero includes loading/preparation and does not establish race start.
     const bool racing=sfr::active_memory && sfr::active_memory->readable(0x83E52F8C,4) &&
                       sfr::active_memory->load<uint32_t>(0x83E52F8C)!=0;
+    // Explicit diagnostic only. Raw controller/configuration fields aid scene
+    // mapping; they do not yet classify gameplay or change stop conditions.
+    static const bool race_probe = [] {
+        const char* value = std::getenv("SFR_RACE_PROGRESS");
+        return value && *value == '1';
+    }();
+    if (race_probe && sfr::active_memory)
+        sfr::write_race_progress_probe(present_log, sfr::read_race_progress_probe(*sfr::active_memory));
+    if (gameplay) sfr::write_gameplay_progress(present_log, *gameplay);
     // Seconds to a tenth of a millisecond, however long the run.
     present_log << " racing=" << racing << " presented=1 seconds=" << std::fixed << std::setprecision(4)
               << std::chrono::duration<double>(frame_end-process_start).count() << '\n';
@@ -635,6 +858,11 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
     }
     frame_draws=frame_textured_draws=foreign_draws=0;
     frame_vertex_bytes=0;
+    frame_constant_read_bytes=frame_managed_constant_draws=0;
+    frame_short_constant_read_bytes=0;
+    frame_stencil_state_read_bytes=0;
+    frame_texture_fetch_read_bytes=frame_texture_fetch_refreshed_slots=0;
+    frame_texture_descriptor_lookups=frame_texture_descriptor_hits=0;
     frame_vertex_cached_bytes=frame_vertex_swap_bytes=frame_vertex_repack_bytes=0;
     frame_vertex_swap_ms=frame_vertex_repack_ms=0;
     frame_cached_draws=0;
@@ -702,13 +930,25 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
     const uint32_t said_at=sfr::say_done_present.load();
     if(after_say && said_at && uint32_t(sfr::present_count.load()-said_at)>=after_say)
         throw sfr::RuntimeStop("present-limit",after_say,"SFR_PRESENT_LIMIT_AFTER_SAY reached");
-    // SFR_PRESENT_LIMIT_RACING=N ends the run at the Nth present of a race (the
-    // title's race flag, as racing= above): unlike a limit after the last word,
-    // the loading screen is not counted, so every run races as many frames.
+    // Legacy object-presence limit, matching racing= above. It can count
+    // loading/preparation and must not be interpreted as gameplay progress.
     static sfr::RacePresentLimit racing_limit([]{ const char* t=std::getenv("SFR_PRESENT_LIMIT_RACING"); return t?uint32_t(std::strtoul(t,nullptr,10)):0u; }());
     if(racing_limit.reached(sfr::active_memory && sfr::active_memory->readable(0x83E52F8C,4) &&
                             sfr::active_memory->load<uint32_t>(0x83E52F8C)!=0))
         throw sfr::RuntimeStop("present-limit",racing_limit.counted(),"SFR_PRESENT_LIMIT_RACING reached");
+    static const uint32_t gameplay_limit = [] {
+        const char* value = std::getenv("SFR_GAMEPLAY_TICK_LIMIT");
+        return value ? uint32_t(std::strtoul(value, nullptr, 10)) : 0u;
+    }();
+    if (gameplay_limit && gameplay) {
+        if (gameplay->state == sfr::GameplayState::invalid ||
+            gameplay->state == sfr::GameplayState::unsupported)
+            throw sfr::RuntimeStop("gameplay-progress-invalid", gameplay->tick, gameplay->reason);
+        if (gameplay->state == sfr::GameplayState::outside)
+            throw sfr::RuntimeStop("gameplay-progress-ended", gameplay->tick, gameplay->reason);
+        if (sfr::gameplay_limit_reached(*gameplay, gameplay_limit))
+            throw sfr::RuntimeStop("gameplay-limit", gameplay->tick, "SFR_GAMEPLAY_TICK_LIMIT reached");
+    }
 }
 
 // DrawVerticesUP(device, primitive, vertex count, data, stride). The original
@@ -728,16 +968,18 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     struct DrawTimer {
         std::chrono::steady_clock::time_point start;
         ~DrawTimer() {
-            if(frame_metrics) frame_draw_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+            if(draw_timers) frame_draw_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
         }
     } draw_timer{draw_start};
     if(device!=sfr::GuestGraphics::device_address) throw sfr::RuntimeStop("native-draw",device,"draw on a non-native device");
-    // Reused: its two constant arrays are four kilobytes each, and zeroing
-    // them and rebuilding the element list for every draw is a frame's worth
-    // of work at eight hundred draws. Everything below assigns what it needs;
-    // these three are the only fields a draw may leave alone.
+    // Reuse scratch storage. Constants and cached vertex layouts are views;
+    // explicitly reset optional bindings before choosing this draw's path.
     static thread_local sfr::NativeDraw draw;
     draw.elements.clear();
+    draw.element_view={};
+    draw.input_layout_identity=0;
+    draw.vertex_snapshot.reset();
+    draw.vertex_snapshot_offset=0;
     draw.palette={};
     draw.shared={};
     draw.cull=plume::RenderCullMode::NONE;
@@ -801,10 +1043,11 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     swapped[1]=&draw.shared.swapped_blend_weights;
     // DEC3N (signed normalized 10:10:10) has no D3D12 format: each such
     // element is converted to four SNORM16 components appended to its vertex.
-    // Declarations have at most 16 elements. Reuse the small offset list
-    // instead of allocating/freeing it for each skinned draw.
-    static thread_local std::vector<uint32_t> dec3n_offsets;
-    dec3n_offsets.clear();
+    // Borrow a cached declaration's offsets; only the scalar fallback needs
+    // its own list. Neither path allocates a list on every skinned draw.
+    static thread_local std::vector<uint32_t> decoded_offsets;
+    decoded_offsets.clear();
+    std::span<const uint32_t> dec3n_offsets;
     static thread_local sfr::NativeVertexLayoutCache layout_cache;
     static const bool cache_layout=[] { const char* t=std::getenv("SFR_VERTEX_LAYOUT_CACHE"); return !t || *t!='0'; }();
     static const bool verify_layout=[] { const char* t=std::getenv("SFR_VERTEX_LAYOUT_VERIFY"); return t && *t=='1'; }();
@@ -823,7 +1066,8 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
         }
     }
     if(layout && !verify_layout) {
-        draw.elements=layout->elements;
+        draw.element_view=layout->elements;
+        draw.input_layout_identity=layout->identity;
         dec3n_offsets=layout->dec3n_offsets;
         for(uint32_t usage=0;usage<8;++usage)
             if(swapped[usage]) *swapped[usage]=layout->swapped[usage];
@@ -847,8 +1091,8 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
         uint32_t element_offset=offset;
         if(type==dec3n) {
             if(offset+4>stride) throw sfr::RuntimeStop("native-draw",offset,"vertex element exceeds the stride");
-            element_offset=stride+8*uint32_t(dec3n_offsets.size());
-            dec3n_offsets.push_back(offset);
+            element_offset=stride+8*uint32_t(decoded_offsets.size());
+            decoded_offsets.push_back(offset);
         }
         // Vulkan wants an attribute's offset aligned to its component size.
         // Desktop drivers fetch an under-aligned one anyway; an Adreno need
@@ -867,19 +1111,38 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
         draw.elements.emplace_back(semantic,input.index,location,format->format,0,element_offset);
         if(format->swapped_pairs && input.usage<8 && swapped[input.usage]) *swapped[input.usage]|=1u<<input.index;
     }
+    if(!layout || verify_layout) dec3n_offsets=decoded_offsets;
     // SFR_VERTEX_CACHE=1: vertices read in place from a GPU buffer (the
     // physical address is known) are kept from frame to frame while nothing
     // stores to them (NativeRenderer::vertex_cache).
     static const bool vertex_cache=[]{ const char* t=std::getenv("SFR_VERTEX_CACHE"); return t && *t!='0'; }();
     const uint32_t wide=stride+8*uint32_t(dec3n_offsets.size());
     sfr::NativeRenderer::CachedVertices cached;
+    // Bind the immutable resource version in the declaration's host format.
+    // Expanded layouts carry a converted offset rather than a guest byte delta.
     if(vertex_cache && source_physical) {
+        if(auto* buffers=graphics().buffers()) {
+            static const bool verify=[] { const char* p=std::getenv("SFR_VERIFY_MANAGED_BUFFERS"); return p && *p!='0'; }();
+            const uint32_t resource=memory.load<uint32_t>(uint64_t(device)+12636);
+            const auto view=buffers->vertices(resource,source_physical,vertices.size(),stride,dec3n_offsets,verify,vertices.data());
+            if(view.snapshot) {
+                if(view.snapshot->transient) {
+                    draw.vertex_snapshot=view.snapshot;
+                    draw.vertex_snapshot_offset=view.offset;
+                } else {
+                    cached.buffer=graphics().renderer().managed_vertex_buffer(view.snapshot);
+                    if(cached.buffer) cached.offset=view.offset;
+                }
+            }
+        }
+    }
+    if(!cached.buffer && !draw.vertex_snapshot && vertex_cache && source_physical) {
         uint64_t layout=stride;
         for(const uint32_t offset:dec3n_offsets) layout=layout*1000003u+offset+1;
-        cached=graphics().renderer().vertex_cache(memory,source_physical,vertices.size(),uint64_t(count)*wide,layout);
+        cached=graphics().renderer().vertex_cache(memory,source_physical,vertices.data(),vertices.size(),uint64_t(count)*wide,layout);
     }
-    draw.vertex_buffer=cached.buffer;
-    if(cached.buffer && cached.fill.empty()) {
+    draw.vertex_buffer={cached.buffer,cached.offset};
+    if(draw.vertex_snapshot || (cached.buffer && cached.fill.empty())) {
         // Already in its buffer, in host form.
         if(frame_metrics) frame_vertex_cached_bytes+=vertices.size();
         draw.vertices={};
@@ -900,7 +1163,7 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
         sfr::swap_words_into(host,vertices);
         if(frame_metrics) {
             frame_vertex_swap_bytes+=vertices.size();
-            frame_vertex_swap_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-swap_start).count();
+            if(draw_timers) frame_vertex_swap_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-swap_start).count();
         }
         draw.vertices=host;
     }
@@ -939,7 +1202,7 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
         draw.stride=wide;
         if(frame_metrics) {
             frame_vertex_repack_bytes+=repacked.size();
-            frame_vertex_repack_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-repack_start).count();
+            if(draw_timers) frame_vertex_repack_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-repack_start).count();
         }
     }
     }
@@ -953,7 +1216,7 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     }
 
     if(layout && verify_layout) {
-        bool same=draw.elements.size()==layout->elements.size() && dec3n_offsets==layout->dec3n_offsets;
+        bool same=draw.elements.size()==layout->elements.size() && std::ranges::equal(dec3n_offsets,layout->dec3n_offsets);
         for(size_t i=0;same && i<draw.elements.size();++i) {
             const auto& a=draw.elements[i]; const auto& b=layout->elements[i];
             same=std::strcmp(a.semanticName,b.semanticName)==0 && a.semanticIndex==b.semanticIndex &&
@@ -970,10 +1233,11 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     // Shaders: objects at +12872 (VS) and +12868 (PS) map to native shaders.
     const auto& shaders=graphics().shaders();
     const uint32_t vs_object=memory.load<uint32_t>(uint64_t(device)+12872), ps_object=memory.load<uint32_t>(uint64_t(device)+12868);
-    if(!shaders.owns_object(vs_object) || !shaders.owns_object(ps_object))
+    const auto shader_bindings=shaders.resolve_objects(device,vs_object,ps_object);
+    if(!shader_bindings)
         throw sfr::RuntimeStop("native-draw",vs_object,"draw shaders are not native-backed");
-    const auto& vs=shaders.get(shaders.handle_of(vs_object));
-    const auto& ps=shaders.get(shaders.handle_of(ps_object));
+    const auto& vs=shaders.get(shader_bindings.vertex);
+    const auto& ps=shaders.get(shader_bindings.pixel);
     const bool vulkan=sfr::selected_graphics_backend()==sfr::GraphicsBackend::vulkan;
     if(vs.entry->code(vulkan).empty() || ps.entry->code(vulkan).empty()) {
         // The pinned translator rejected one of the shaders (see RUNTIME_SHADER).
@@ -1047,63 +1311,103 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
         return std::span<const uint8_t>(memory.base()+uint64_t(device)+offset,4096);
     };
     const auto constants_start=metrics_clock();
-    draw.vertex_constants_source=constants(1920);
-    draw.pixel_constants_source=constants(6016);
+    const auto vs_source=constants(1920), ps_source=constants(6016);
     static const bool constant_arrays=[]{
         const char* dump=std::getenv("SFR_DRAW_DUMP");
         return (dump && std::strtol(dump,nullptr,10)>0) || flat_trace_enabled();
     }();
-    if(constant_arrays) {
-        sfr::swap_words_into({reinterpret_cast<uint8_t*>(draw.vertex_constants.data()),4096},draw.vertex_constants_source);
-        sfr::swap_words_into({reinterpret_cast<uint8_t*>(draw.pixel_constants.data()),4096},draw.pixel_constants_source);
-    }
-    if(frame_metrics) frame_constants_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-constants_start).count();
-    // Loop constants i0..i15 (+10140, one packed register each: count, start
-    // and step as signed bytes) for a shader whose loops count with them.
-    for(uint32_t i=0;i<16;++i) {
-        const uint32_t packed=memory.load<uint32_t>(uint64_t(device)+10140+i*4);
-        for(uint32_t c=0;c<4;++c) draw.loop_constants[i*4+c]=int8_t(packed>>(8*c));
-    }
-    // Samplers s0..s15 read fetch constants 0..15 as the GPU does, not the
-    // binding table: SetTexture(NULL) only clears the fetch type to 0
-    // ("invalid texture") and leaves the rest of the constant. Xenos still
-    // samples such a constant (Xenia's gpu_allow_invalid_fetch_constants), and
-    // the effect framework commits NULL for samplers the game binds directly.
-    // The same fetch words get the same texture and sampler until the
-    // renderer's texture state moves: a race frame's draws bind mostly the
-    // same textures, and looking each slot up again was a millisecond a frame.
-    struct SlotMemo { std::array<uint32_t,6> words{}; uint64_t generation=~uint64_t(0); uint32_t texture=0, sampler=0; };
-    static thread_local std::array<SlotMemo,16> memo;
-    const uint64_t generation=graphics().renderer().texture_generation();
-    for(uint32_t slot=0;slot<16;++slot) {
-        const auto words=graphics().texture_fetch(slot);
-        draw.shared.texture_2d_array[slot]=1;
-        draw.shared.texture_cube[slot]=2;
-        auto& remembered=memo[slot];
-        if(remembered.generation==generation && std::equal(words.begin(),words.end(),remembered.words.begin())) {
-            draw.shared.texture_2d[slot]=remembered.texture;
-            draw.shared.sampler[slot]=remembered.sampler;
-            continue;
+    // NativeDraw is reused. Sources denote the direct path even when a managed
+    // owner is present; never carry spans or owners over from another path.
+    draw.vertex_constant_state=nullptr; draw.pixel_constant_state=nullptr;
+    draw.vertex_constants_source={}; draw.pixel_constants_source={};
+    draw.vertex_constants=sfr::NativeDraw::zero_constants;
+    draw.pixel_constants=sfr::NativeDraw::zero_constants;
+    if(managed_constants && device==sfr::GuestGraphics::device_address) {
+        auto& vs=graphics().constants(sfr::ShaderStage::vertex);
+        auto& ps=graphics().constants(sfr::ShaderStage::pixel);
+        // Inline setters (for example 8243D728's VS c204..c207) bypass the
+        // public API but still mark these masks. Consume them as the original
+        // DrawVertices/DrawIndexedVertices did, without touching other dirty
+        // state at +16/+24/+32. Shader-embedded writes also need the bind hook:
+        // their original setter explicitly clears the corresponding masks.
+        const uint64_t vs_dirty=memory.load<uint64_t>(device);
+        const uint64_t ps_dirty=memory.load<uint64_t>(uint64_t(device)+8);
+        vs.invalidate_mask(vs_dirty); ps.invalidate_mask(ps_dirty);
+        const std::span<const uint8_t,4096> vs_bytes(vs_source.data(),4096), ps_bytes(ps_source.data(),4096);
+        if(!direct_constant_upload || verify_managed_constants || constant_arrays) {
+            // Verification keeps a sparse, independent oracle. The full direct
+            // source read must not adopt unflagged writes into that oracle.
+            frame_constant_read_bytes+=vs.prepare(vs_bytes)+ps.prepare(ps_bytes);
+            draw.vertex_constants=vs.values(); draw.pixel_constants=ps.values();
+        } else {
+            vs.publish_version(); ps.publish_version();
         }
-        const uint32_t type=words[0]&3;
-        const bool sampled=(type==2 || type==0) && (words[1]&~0xFFFu);
-        // A slot the draw reads as unbound although a constant is there: the
-        // first few are reported so a missing render-target texture shows up.
-        if(!sampled && (words[0]||words[1])) {
-            static std::set<std::array<uint32_t,2>> unbound;
-            if(unbound.size()<32 && unbound.insert({words[0],words[1]}).second)
-                std::cerr << "NATIVE_TEXTURE_UNBOUND slot=" << slot << " type=" << type
-                          << std::hex << " word0=0x" << words[0] << " word1=0x" << words[1]
-                          << " base=0x" << (words[1]&~0xFFFu) << std::dec << '\n';
+        if(verify_managed_constants) {
+            const uint32_t vi=vs.first_mismatch(vs_bytes), pi=ps.first_mismatch(ps_bytes);
+            if(vi!=1024 || pi!=1024)
+                throw sfr::RuntimeStop("managed-constants-mismatch",device+(vi!=1024?1920+vi*4:6016+pi*4),
+                    "untracked constant writer; disable SFR_MANAGED_CONSTANTS until this route is hooked");
         }
-        draw.shared.texture_2d[slot]=sampled?graphics().renderer().texture(memory,words):0;
-        draw.shared.sampler[slot]=sampled?graphics().renderer().sampler(words):0;
-        // Taken after the lookups, which may themselves move the state.
-        remembered={words,graphics().renderer().texture_generation(),draw.shared.texture_2d[slot],draw.shared.sampler[slot]};
+        // Consume guest events only after successful preparation/verification.
+        if(vs_dirty) memory.store<uint64_t>(device,0);
+        if(ps_dirty) memory.store<uint64_t>(uint64_t(device)+8,0);
+        draw.vertex_constant_state=&vs; draw.pixel_constant_state=&ps;
+        if(direct_constant_upload) {
+            draw.vertex_constants_source=vs_source;
+            draw.pixel_constants_source=ps_source;
+        }
+        ++frame_managed_constant_draws;
+    } else {
+        draw.vertex_constants_source=vs_source;
+        draw.pixel_constants_source=ps_source;
+        frame_constant_read_bytes+=8192;
     }
-    // Bool constants (register 0x4900 at +10112): VS b0.. in word 0, PS b128.. in word 4.
-    draw.shared.booleans=(memory.load<uint32_t>(uint64_t(device)+10112)&0xFFFF) |
-                         ((memory.load<uint32_t>(uint64_t(device)+10112+16)&0xFFFF)<<16);
+    if(constant_arrays && !draw.vertex_constant_state) {
+        static thread_local std::array<sfr::GuestConstantState::Values,2> arrays;
+        sfr::swap_words_into({reinterpret_cast<uint8_t*>(arrays[0].data()),4096},draw.vertex_constants_source);
+        sfr::swap_words_into({reinterpret_cast<uint8_t*>(arrays[1].data()),4096},draw.pixel_constants_source);
+        draw.vertex_constants=arrays[0]; draw.pixel_constants=arrays[1];
+    }
+    if(draw_timers) frame_constants_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-constants_start).count();
+    // Bool and loop setters share device+32 bit56. Consume the entire native
+    // group together; shader-embedded records and reset invalidate it too.
+    draw.short_constant_state=nullptr;
+    if(managed_constants) {
+        auto& short_state=graphics().short_constants();
+        const uint64_t dirty=memory.load<uint64_t>(uint64_t(device)+32);
+        short_state.invalidate_mask(dirty);
+        memory.check(uint64_t(device)+10112,sfr::GuestShortConstantState::source_bytes);
+        const std::span<const uint8_t,sfr::GuestShortConstantState::source_bytes> source(
+            memory.base()+uint64_t(device)+10112,sfr::GuestShortConstantState::source_bytes);
+        frame_short_constant_read_bytes+=short_state.prepare(source);
+        if(verify_managed_constants) {
+            const uint32_t offset=short_state.first_mismatch(source);
+            if(offset!=sfr::GuestShortConstantState::source_bytes)
+                throw sfr::RuntimeStop("managed-short-constants-mismatch",device+10112+offset,
+                    "untracked bool/loop writer; disable SFR_MANAGED_CONSTANTS until this route is hooked");
+        }
+        if(dirty&sfr::GuestShortConstantState::dirty_mask)
+            memory.store<uint64_t>(uint64_t(device)+32,dirty&~sfr::GuestShortConstantState::dirty_mask);
+        draw.short_constant_state=&short_state;
+        draw.shared.booleans=short_state.booleans();
+    } else {
+        // 824EB9C8's update-form store starts i0 at +10144 (not +10140).
+        // Four signed bytes per packed register, including embedded writers.
+        for(uint32_t i=0;i<16;++i) {
+            const uint32_t packed=memory.load<uint32_t>(uint64_t(device)+10144+i*4);
+            for(uint32_t c=0;c<4;++c) draw.loop_constants[i*4+c]=int8_t(packed>>(8*c));
+        }
+        // Preserve all 16 bits of each stage, including b15 and PS b143.
+        draw.shared.booleans=(memory.load<uint32_t>(uint64_t(device)+10112)&0xFFFF) |
+                             ((memory.load<uint32_t>(uint64_t(device)+10128)&0xFFFF)<<16);
+        frame_short_constant_read_bytes+=72;
+    }
+    const auto texture_work=graphics().prepare_texture_bindings(
+        draw.shared,managed_texture_state,verify_managed_texture_state);
+    frame_texture_fetch_read_bytes+=texture_work.read_bytes;
+    frame_texture_fetch_refreshed_slots+=texture_work.refreshed_slots;
+    frame_texture_descriptor_lookups+=texture_work.descriptor_lookups;
+    frame_texture_descriptor_hits+=texture_work.descriptor_hits;
     const auto& presentation=graphics().presentation();
     // In the space the viewport is in: the framebuffer's, or a render
     // surface's when the pass names it by its own pixels.
@@ -1113,7 +1417,8 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     draw.shared.alpha_threshold=state.alpha_reference.value_or(0.0f);
     // PA_CL_VTE_CNTL shadow (+10572, set by SetRenderState(VIEWPORTENABLE)):
     // without the viewport scale/offset bits the shader output is in pixels.
-    if(!(memory.load<uint32_t>(uint64_t(device)+10572)&0x3F)) {
+    const bool vte_off=(memory.load<uint32_t>(uint64_t(device)+10572)&0x3F)==0;
+    if(vte_off) {
         draw.shared.screen_space_scale[0]=2.0f/float(logical_width);
         draw.shared.screen_space_scale[1]=-2.0f/float(logical_height);
     }
@@ -1131,13 +1436,24 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     draw.depth_enabled=state.depth_enable_requested.value_or(false) && depth_bound;
     draw.depth_write=draw.depth_enabled && state.depth_write_enabled.value_or(false);
     draw.depth_function=state.depth_function.value_or(plume::RenderComparisonFunction::LESS_EQUAL);
-    // Stencil: the setters are not bridged, so it is read from the device's
-    // register shadows, RB_DEPTHCONTROL (+10548) and RB_STENCILREFMASK
-    // (+10496). The title writes a HUD gauge's shape into the stencil and
-    // draws the fill where it is set; without the test the gauge was full.
-    {
+    // Prepared stencil is copied into this draw; effective enablement still
+    // follows its live attachment. The original 8-byte source path remains
+    // the default until managed writer coverage and benefit are established.
+    if(managed_stencil_state) {
+        frame_stencil_state_read_bytes+=graphics().prepare_stencil_state(verify_managed_stencil_state);
+        const auto& stencil=graphics().stencil_state();
+        draw.stencil_enabled=depth_bound && stencil.enabled;
+        if(draw.stencil_enabled) {
+            draw.stencil_front=stencil.front;
+            draw.stencil_back=stencil.back;
+            draw.stencil_reference=stencil.reference;
+            draw.stencil_read_mask=stencil.read_mask;
+            draw.stencil_write_mask=stencil.write_mask;
+        }
+    } else {
         const uint32_t control=memory.load<uint32_t>(uint64_t(device)+10548);
         const uint32_t refmask=memory.load<uint32_t>(uint64_t(device)+10496);
+        frame_stencil_state_read_bytes+=8;
         draw.stencil_enabled=depth_bound && (control&1);
         if(draw.stencil_enabled) {
             using Compare=plume::RenderComparisonFunction;
@@ -1166,7 +1482,7 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     }
     const auto record_start=metrics_clock();
     graphics().renderer().draw(draw);
-    if(frame_metrics) frame_record_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-record_start).count();
+    if(draw_timers) frame_record_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-record_start).count();
     ++frame_draws;
     // SFR_FRAME_DUMP=<present>: write the framebuffer every SFR_FRAME_DUMP_EVERY
     // draws of that one frame, to see which draw changes what is on screen.
@@ -1204,7 +1520,7 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
         std::cerr << " ps_c0..c3=";
         for(uint32_t i=0;i<16;++i) std::cerr << (i?",":"") << std::bit_cast<float>(draw.pixel_constants[i]);
         std::cerr << " elements=";
-        for(const auto& e:draw.elements) if(e.slotIndex==0) std::cerr << e.semanticName << e.semanticIndex << "@" << e.location << "/s" << e.slotIndex << "+" << e.alignedByteOffset << ";";
+        for(const auto& e:draw.input_elements()) if(e.slotIndex==0) std::cerr << e.semanticName << e.semanticIndex << "@" << e.location << "/s" << e.slotIndex << "+" << e.alignedByteOffset << ";";
         std::cerr << '\n';
     }
     static const bool frame_trace=std::getenv("SFR_FRAME_TRACE")!=nullptr;
@@ -1226,7 +1542,8 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
         for(size_t i=0;i<4;++i) record.constant[i]=std::bit_cast<float>(draw.pixel_constants[i]);
         flat_current.push_back(record);
     }
-    // Each combination is logged once. Every draw asks, so a hashed set:
+    if (!draw_signature_trace) return;
+    // Each combination is logged once when explicitly requested. A hashed set:
     // the ordered set's tree walk and node allocations cost about 0.06 ms of
     // an i5-3470 race frame (Issue #65).
     // In front of it, the combination last seen in each of 1024 slots: the
@@ -1294,6 +1611,7 @@ static bool position_out_of_reach(uint32_t device, std::span<const uint8_t> vert
 
 SFR_GRAPHICS_HOOK(sub_824F5288) {
     sfr::enter_function(ctx,"sub_824F5288",0x824F5288);
+    if(sfr::buffer_audit_enabled()) sfr::audit_buffer_draw(*sfr::active_memory,ctx.r3.u32,false,true);
     const uint32_t count=ctx.r5.u32, stride=ctx.r7.u32;
     const auto vertices=guest_bytes(ctx.r6.u32,uint64_t(count)*stride);
     if(position_out_of_reach(ctx.r3.u32,vertices,count,stride)) {
@@ -1340,6 +1658,7 @@ static Stream0 stream0(uint32_t device) {
 // (word 0: byte address | type 3).
 SFR_GRAPHICS_HOOK(sub_824F52D0) {
     sfr::enter_function(ctx,"sub_824F52D0",0x824F52D0);
+    if(sfr::buffer_audit_enabled()) sfr::audit_buffer_draw(*sfr::active_memory,ctx.r3.u32,false,false);
     auto& memory=*sfr::active_memory;
     const uint32_t device=ctx.r3.u32, primitive=ctx.r4.u32, start=ctx.r5.u32, count=ctx.r6.u32;
     const auto stream=stream0(device);
@@ -1399,48 +1718,20 @@ static void gather_vertices(uint8_t* destination,const uint8_t* source,const uin
 // scan) and copying 3 MB a frame of them into the upload ring cost about
 // 0.5 ms of an i5-3470 race frame and flushed its caches (Issue #65). A kept
 // buffer is decoded once, straight into the GPU buffer; its range (lowest and
-// highest index) is kept here. Not for primitive restart, whose strips are
-// rebuilt. A CPU-side copy of the decoded indices was measured and was slower:
+// highest index) shares that entry's lifetime. Not for primitive restart,
+// whose strips are rebuilt. A CPU-side copy of the decoded indices was slower:
 // reading it cold cost more than decoding. SFR_INDEX_CACHE=0 turns it off.
-struct KeptIndexKey {
-    uint32_t physical,count,base; bool wide;
-    bool operator==(const KeptIndexKey&) const = default;
-};
-struct KeptIndexKeyHash {
-    size_t operator()(const KeptIndexKey& k) const noexcept {
-        return size_t((uint64_t(k.physical)*0x9E3779B97F4A7C15ull)^(uint64_t(k.count)*0xC2B2AE3D27D4EB4Full)^
-                      (uint64_t(k.base)<<17)^(k.wide?1:0));
-    }
-};
-struct KeptIndices {
-    const plume::RenderBuffer* buffer=nullptr;
-    sfr::IndexScan scan;
-};
+using KeptIndices = sfr::NativeRenderer::CachedIndices;
 static KeptIndices kept_indices(sfr::GuestMemory& memory,uint32_t physical,const uint8_t* bytes,uint32_t count,
                                 bool wide,uint32_t base) {
     static const bool enabled=[]{ const char* t=std::getenv("SFR_INDEX_CACHE"); return !t || *t!='0'; }();
     if(!enabled) return {};
-    static std::unordered_map<KeptIndexKey,sfr::IndexScan,KeptIndexKeyHash> scans;
-    if(scans.size()>=65536) scans.clear();  // the buffers stay; their next fill records the range again
-    const KeptIndexKey key{physical,count,base,wide};
-    // A layout no vertex format uses (its top bit), with what makes the
-    // decoded words differ for the same guest bytes.
-    const uint64_t layout=(1ull<<63)|(uint64_t(base)<<1)|(wide?1u:0u);
-    const auto cached=graphics().renderer().vertex_cache(memory,physical,uint64_t(count)*(wide?4:2),
-                                                         uint64_t(count)*4,layout,true);
-    if(!cached.buffer) return {};
-    if(!cached.fill.empty()) {
-        const auto scan=sfr::decode_indices(bytes,count,wide,base,false,reinterpret_cast<uint32_t*>(cached.fill.data()));
-        scans[key]=scan;
-        return {cached.buffer,scan};
-    }
-    const auto found=scans.find(key);
-    if(found==scans.end()) return {};
-    return {cached.buffer,found->second};
+    return graphics().renderer().index_cache(memory,physical,bytes,count,wide,base);
 }
 
 SFR_GRAPHICS_HOOK(sub_824F56E8) {
     sfr::enter_function(ctx,"sub_824F56E8",0x824F56E8);
+    if(sfr::buffer_audit_enabled()) sfr::audit_buffer_draw(*sfr::active_memory,ctx.r3.u32,true,false);
     if(skip_draws() || !rendering_this_frame()) return;
     auto& memory=*sfr::active_memory;
     const uint32_t device=ctx.r3.u32, base_vertex=ctx.r5.u32, start=ctx.r6.u32, count=ctx.r7.u32;
@@ -1457,7 +1748,7 @@ SFR_GRAPHICS_HOOK(sub_824F56E8) {
     const auto stream=stream0(device);
     if(!stream.stride) { note_empty_stream(0x824F5570); return; }
     const uint32_t vertex_count=stream.size/stream.stride;
-    if(frame_metrics && frame_streams.emplace(stream.physical,stream.size).second) frame_stream_bytes+=stream.size;
+    if(draw_timers && frame_streams.emplace(stream.physical,stream.size).second) frame_stream_bytes+=stream.size;
     const uint32_t restart=wide?0xFFFFFFFFu:0xFFFFu;
     const bool restart_enabled=graphics().render_state().primitive_restart_enabled.value_or(false);
     // One range check for the whole index buffer, then plain big-endian reads:
@@ -1482,7 +1773,7 @@ SFR_GRAPHICS_HOOK(sub_824F56E8) {
     const uint32_t lowest=scan.lowest, highest=scan.highest;
     if(lowest<=highest && highest>=vertex_count)
         throw sfr::RuntimeStop("native-draw",highest,"index exceeds the stream 0 vertex buffer");
-    if(frame_metrics) frame_index_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-index_start).count();
+    if(draw_timers) frame_index_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-index_start).count();
     if(lowest>highest) return;  // restart indices only
     // Only the vertices the indices reach are located and checked: the title
     // binds streams of megabytes and draws small pieces of them, and checking
@@ -1503,7 +1794,7 @@ SFR_GRAPHICS_HOOK(sub_824F56E8) {
             // indices keep their stream numbering; the base vertex location
             // moves the block back to the start.
             const std::span<const uint8_t> window(used_bytes,size_t(used));
-            if(frame_metrics) frame_gather_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-copy_start).count();
+            if(draw_timers) frame_gather_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-copy_start).count();
             if(kept.buffer) native_draw(ctx,0x824F56E8,device,primitive,uint32_t(block),window,stream.stride,{},
                                         -int32_t(lowest),stream.physical+lowest*stream.stride,kept.buffer,count);
             else native_draw(ctx,0x824F56E8,device,primitive,uint32_t(block),window,stream.stride,order,
@@ -1528,7 +1819,7 @@ SFR_GRAPHICS_HOOK(sub_824F56E8) {
         }
         order=std::move(list);
         primitive=4;
-        if(frame_metrics) frame_cut_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-cut_start).count();
+        if(draw_timers) frame_cut_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-cut_start).count();
     }
     if(order.empty()) return;
     // The vertices are gathered in index order rather than uploaded whole with
@@ -1539,7 +1830,7 @@ SFR_GRAPHICS_HOOK(sub_824F56E8) {
     for(auto& vertex:order) vertex-=lowest;  // numbered from the checked range
     const std::span<uint8_t> gathered=byte_scratch(order.size()*stream.stride);
     gather_vertices(gathered.data(),used_bytes,order.data(),order.size(),stream.stride);
-    if(frame_metrics) frame_gather_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-gather_start).count();
+    if(draw_timers) frame_gather_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-gather_start).count();
     native_draw(ctx,0x824F56E8,device,primitive,uint32_t(order.size()),gathered,stream.stride);
 }
 
@@ -1687,6 +1978,48 @@ SFR_GRAPHICS_HOOK(sub_824E6E68) { set_render_state(ctx,"sub_824E6E68",0x824E6E68
 SFR_GRAPHICS_HOOK(sub_824E70D0) { set_render_state(ctx,"sub_824E70D0",0x824E70D0,sfr::RenderState::depth_enable); }
 SFR_GRAPHICS_HOOK(sub_824E7140) { set_render_state(ctx,"sub_824E7140",0x824E7140,sfr::RenderState::depth_function); }
 SFR_GRAPHICS_HOOK(sub_824E7110) { set_render_state(ctx,"sub_824E7110",0x824E7110,sfr::RenderState::depth_write); }
+SFR_GRAPHICS_HOOK(sub_824E7178) {
+    forward_stencil_state(ctx,base,"sub_824E7178",0x824E7178,__imp__sub_824E7178,sfr::GuestGraphics::stencil_control_pending);
+}
+SFR_GRAPHICS_HOOK(sub_824E71B8) {
+    forward_stencil_state(ctx,base,"sub_824E71B8",0x824E71B8,__imp__sub_824E71B8,sfr::GuestGraphics::stencil_control_pending);
+}
+SFR_GRAPHICS_HOOK(sub_824E71F0) {
+    forward_stencil_state(ctx,base,"sub_824E71F0",0x824E71F0,__imp__sub_824E71F0,sfr::GuestGraphics::stencil_control_pending);
+}
+SFR_GRAPHICS_HOOK(sub_824E7220) {
+    forward_stencil_state(ctx,base,"sub_824E7220",0x824E7220,__imp__sub_824E7220,sfr::GuestGraphics::stencil_control_pending);
+}
+SFR_GRAPHICS_HOOK(sub_824E7258) {
+    forward_stencil_state(ctx,base,"sub_824E7258",0x824E7258,__imp__sub_824E7258,sfr::GuestGraphics::stencil_control_pending);
+}
+SFR_GRAPHICS_HOOK(sub_824E7290) {
+    forward_stencil_state(ctx,base,"sub_824E7290",0x824E7290,__imp__sub_824E7290,sfr::GuestGraphics::stencil_control_pending);
+}
+SFR_GRAPHICS_HOOK(sub_824E72C0) {
+    forward_stencil_state(ctx,base,"sub_824E72C0",0x824E72C0,__imp__sub_824E72C0,sfr::GuestGraphics::stencil_control_pending);
+}
+SFR_GRAPHICS_HOOK(sub_824E72F0) {
+    forward_stencil_state(ctx,base,"sub_824E72F0",0x824E72F0,__imp__sub_824E72F0,sfr::GuestGraphics::stencil_control_pending);
+}
+SFR_GRAPHICS_HOOK(sub_824E7328) {
+    forward_stencil_state(ctx,base,"sub_824E7328",0x824E7328,__imp__sub_824E7328,sfr::GuestGraphics::stencil_control_pending);
+}
+SFR_GRAPHICS_HOOK(sub_824E7360) {
+    forward_stencil_state(ctx,base,"sub_824E7360",0x824E7360,__imp__sub_824E7360,sfr::GuestGraphics::stencil_control_pending);
+}
+SFR_GRAPHICS_HOOK(sub_824E7390) {
+    forward_stencil_state(ctx,base,"sub_824E7390",0x824E7390,__imp__sub_824E7390,sfr::GuestGraphics::stencil_refmask_pending);
+}
+SFR_GRAPHICS_HOOK(sub_824E73B0) {
+    forward_stencil_state(ctx,base,"sub_824E73B0",0x824E73B0,__imp__sub_824E73B0,sfr::GuestGraphics::stencil_refmask_pending);
+}
+SFR_GRAPHICS_HOOK(sub_824E73D0) {
+    forward_stencil_state(ctx,base,"sub_824E73D0",0x824E73D0,__imp__sub_824E73D0,sfr::GuestGraphics::stencil_refmask_pending);
+}
+SFR_GRAPHICS_HOOK(sub_824E9B48) {
+    forward_stencil_state(ctx,base,"sub_824E9B48",0x824E9B48,__imp__sub_824E9B48,sfr::GuestGraphics::stencil_control_pending);
+}
 SFR_GRAPHICS_HOOK(sub_824E69A8) { set_render_state(ctx,"sub_824E69A8",0x824E69A8,sfr::RenderState::cull_mode); }
 SFR_GRAPHICS_HOOK(sub_824E6A40) { set_blend_request(ctx,"sub_824E6A40",0x824E6A40,sfr::BlendRequest::enable); }
 SFR_GRAPHICS_HOOK(sub_824E6B60) { set_blend_request(ctx,"sub_824E6B60",0x824E6B60,sfr::BlendRequest::source); }

@@ -128,7 +128,9 @@ public:
     // Decommit/release mark each native replacement range after preflight and
     // before discarding it; invalidation remains conservative on native failure.
     // Recommit of unchanged backing and decommit without native work do not mark.
-    void watch_writes(uint64_t address, uint64_t size);
+    // Completed dynamic buffer updates need a precise guard even on hot pages.
+    // Ordinary caches retain the default fault cooldown.
+    void watch_writes(uint64_t address, uint64_t size, bool precise = false);
     // SFR_DIRECT_MEMORY builds: generated code reads and writes guest memory
     // as base + address, as Unleashed and Marathon Recompiled do, so none of
     // the per-access paths above see its stores. Write watches then use the
@@ -157,6 +159,12 @@ public:
     void advance_write_epoch() noexcept { write_epoch_.fetch_add(1, std::memory_order_relaxed); }
     uint32_t write_epoch() const noexcept { return write_epoch_.load(std::memory_order_relaxed); }
     bool written_since(uint64_t address, uint64_t size, uint32_t epoch) const;
+    // Exact per-page write versions for immutable resource snapshots. Enable
+    // before guest workers start. Unlike frame epochs these distinguish two
+    // writes in the same frame, even if another cache rearms the page.
+    void enable_write_versions();
+    std::vector<uint64_t> capture_write_versions(uint64_t address, uint64_t size) const;
+    bool matches_write_versions(uint64_t address, uint64_t size, std::span<const uint64_t> versions) const;
     // The fast paths of load and store for a caller that handles byte order
     // itself: a pointer to the range when it lies in one fast page (and, for
     // a write, no reservation is live and no pending I/O pins it), else null
@@ -255,7 +263,7 @@ private:
     std::unique_ptr<std::atomic<uint32_t>[]> page_epochs_;
     // watched_pages_ bit 2 (direct_guest_access): the page is protected.
     static constexpr uint8_t watch_armed = 4;
-    void arm_watch(uint64_t first_page, uint64_t last_page);
+    void arm_watch(uint64_t first_page, uint64_t last_page, bool precise = false);
     // Per page: the write epoch of its last fault and how many faults came
     // within a few epochs of each other. A page the title rewrites every frame
     // (a ring the GPU reads from) is left open for a while instead of faulting
@@ -267,6 +275,7 @@ private:
     void note_watched_write(uint64_t page) const {
         std::atomic_ref<uint8_t>(watched_pages_[page]).fetch_or(2, std::memory_order_relaxed);
         if (page_epochs_) page_epochs_[page].store(write_epoch_.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        if (page_write_versions_) page_write_versions_[page].fetch_add(1, std::memory_order_relaxed);
     }
     // A wholly committed page that holds an import variable or computed word:
     // a load that touches neither reads it directly. The title reads words
@@ -315,6 +324,7 @@ private:
     std::unique_ptr<uint8_t[]> fast_pages_;
     // Per page: bit 0 watched, bit 1 written since last taken.
     std::unique_ptr<uint8_t[]> watched_pages_;
+    std::unique_ptr<std::atomic<uint64_t>[]> page_write_versions_;
     void mark_written(uint64_t address, uint64_t size) const;
     struct Region { uint64_t address, size; };
     // The committed region holding address, or null. committed_ is sorted

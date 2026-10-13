@@ -3596,9 +3596,8 @@ static bool original_packet_writer(uint32_t address) {
     case 0x824EB830:
     case 0x824EB908:
     case 0x824EB968:
-    // Integer (loop) constants into the +10140 / +10204 shadows. Translated
-    // shaders use only the integer constants embedded in the shader, so the
-    // native draw does not read these yet.
+    // Integer (loop) constants into the +10144 / +10208 shadows. The native
+    // vertex loop buffer uses +10144; bool and loop setters share +32 bit56.
     case 0x824EB9C8:
     case 0x824EBA20:
     // GetDisplayMode: width/height/format from the presentation parameters the

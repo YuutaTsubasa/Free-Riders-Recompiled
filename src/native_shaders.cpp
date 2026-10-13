@@ -4,6 +4,8 @@
 #include "runtime_shader_cache.h"
 #include <plume_render_interface.h>
 #include <algorithm>
+#include <atomic>
+#include <limits>
 #include <span>
 #include <unordered_map>
 #include <vector>
@@ -14,6 +16,15 @@ constexpr uint32_t handle_base=0x71800000, handle_stride=0x1000, maximum_shaders
 [[noreturn]] void unsupported(uint32_t address,const char* detail) {
     throw RuntimeStop("native-shader",address,detail);
 }
+uint64_t next_manager_identity() {
+    static std::atomic<uint64_t> next{0};
+    auto previous = next.load(std::memory_order_relaxed);
+    do {
+        if (previous == (std::numeric_limits<uint64_t>::max)())
+            unsupported(0,"native shader manager identity exhausted");
+    } while (!next.compare_exchange_weak(previous, previous + 1, std::memory_order_relaxed));
+    return previous + 1;
+}
 }
 struct NativeShaders::Impl {
     GuestMemory& memory;
@@ -23,6 +34,9 @@ struct NativeShaders::Impl {
     // bytes and stage. Guest heap addresses do not identify shader contents.
     std::unordered_map<const ShaderCacheEntry*, uint32_t> handles_by_entry;
     std::unordered_map<uint32_t, uint32_t> handles_by_object;
+    const uint64_t identity = next_manager_identity();
+    uint64_t object_generation = 1;
+    NativeShaderObjectMemo object_memo;
     Impl(GuestMemory& m,NativeGraphics& g) : memory(m),graphics(g) { shaders.reserve(maximum_shaders); }
 };
 NativeShader::~NativeShader() = default;
@@ -97,11 +111,14 @@ size_t NativeShaders::size() const noexcept { return impl_->shaders.size(); }
 void NativeShaders::attach(uint32_t handle, uint32_t object) {
     if(!owns(handle)) unsupported(handle,"attaching an unknown native shader");
     if(!object || (object&3)) unsupported(object,"invalid original shader object");
+    if(impl_->object_generation == (std::numeric_limits<uint64_t>::max)())
+        unsupported(object,"native shader object generation exhausted");
     // Called only after the original constructor successfully allocated a
     // fresh guest object. A previous scene can have freed this same address.
     // Replace its association, retaining immutable native stages because
     // cached pipelines and commands in flight can still reference them.
     impl_->handles_by_object.insert_or_assign(object,handle);
+    ++impl_->object_generation;
 }
 bool NativeShaders::owns_object(uint32_t object) const noexcept {
     return impl_->handles_by_object.contains(object);
@@ -110,5 +127,12 @@ uint32_t NativeShaders::handle_of(uint32_t object) const {
     const auto found=impl_->handles_by_object.find(object);
     if(found==impl_->handles_by_object.end()) unsupported(object,"original shader object has no native shader");
     return found->second;
+}
+NativeShaderObjectMemo::Bindings NativeShaders::resolve_objects(uint32_t device, uint32_t vertex, uint32_t pixel) const {
+    return impl_->object_memo.resolve(impl_->identity, impl_->object_generation, device, vertex, pixel,
+        [&](uint32_t object) {
+            const auto found = impl_->handles_by_object.find(object);
+            return found == impl_->handles_by_object.end() ? 0u : found->second;
+        });
 }
 }

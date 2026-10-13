@@ -5,6 +5,7 @@
 
 namespace sfr {
 struct NativeVertexLayout {
+    uint64_t identity = 0; // Unique immutable decoded version, never a guest pointer.
     std::vector<plume::RenderInputElement> elements;
     std::vector<uint32_t> dec3n_offsets;
     std::array<uint32_t, 8> swapped{};

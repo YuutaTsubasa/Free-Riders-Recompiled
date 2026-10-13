@@ -41,6 +41,7 @@ public:
     // until presentation shows it). Null on Windows.
     [[nodiscard]] void* host_window() const noexcept;
     void wait_idle(const std::function<bool()>& cancelled = {});
+    void report_device_fault();
 
 private:
     struct Impl;

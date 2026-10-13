@@ -2,6 +2,7 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <span>
 
 namespace sfr {
 class NativeConstantUpload {
@@ -11,11 +12,11 @@ public:
     // The caller resets at every upload-ring flush, before storage can be
     // overwritten or a different ring becomes current. Never inspect GPU memory.
     void reset() noexcept { valid_ = false; }
-    Result upload(const Constants& values, uint64_t offset, uint8_t* destination) {
-        if (valid_ && std::memcmp(previous_.data(), values.data(), sizeof(values)) == 0)
+    Result upload(std::span<const uint32_t, 1024> values, uint64_t offset, uint8_t* destination) {
+        if (valid_ && std::memcmp(previous_.data(), values.data(), sizeof(previous_)) == 0)
             return {offset_, true};
-        std::memcpy(destination, values.data(), sizeof(values));
-        previous_ = values;
+        std::memcpy(destination, values.data(), sizeof(previous_));
+        std::memcpy(previous_.data(), values.data(), sizeof(previous_));
         offset_ = offset;
         valid_ = true;
         return {offset, false};

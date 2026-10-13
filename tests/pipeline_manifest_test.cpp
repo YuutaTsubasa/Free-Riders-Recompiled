@@ -125,7 +125,9 @@ int main(int argc, char** argv) {
         same.state.elements[0].semanticName = semantic.c_str();
         same.state.vertices = vertex;
         same.state.vertex_count = 42;
-        same.state.vertex_constants[0] = 123;
+        sfr::GuestConstantState::Values constants{};
+        constants[0] = 123;
+        same.state.vertex_constants = constants;
         require(sfr::pipeline_recipe_key(same) == baseline, "keys ignore addresses and per-draw data");
         const sfr::PipelineRecipe duplicates[]{recipe, same, recipe};
         const auto deduped = sfr::decode_pipeline_manifest(sfr::encode_pipeline_manifest(duplicates, 0), 0);

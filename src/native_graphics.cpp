@@ -184,6 +184,14 @@ void NativeGraphics::initialize() {
     std::cerr << "NATIVE_GRAPHICS_INITIALIZE backend=" << name << '\n';
 
 #ifdef _WIN32
+    if (const char* value = std::getenv("SFR_D3D12_DRED"); backend == GraphicsBackend::d3d12 && value && *value != '0') {
+        Microsoft::WRL::ComPtr<ID3D12DeviceRemovedExtendedDataSettings> settings;
+        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&settings)))) {
+            settings->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            settings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            std::cerr << "NATIVE_GRAPHICS_DRED enabled=1\n";
+        }
+    }
     auto render_interface = backend == GraphicsBackend::vulkan ? plume::CreateVulkanInterface() : plume::CreateD3D12Interface();
 #else
     // SDL2 gives the Vulkan instance extensions for a window only.
@@ -273,6 +281,46 @@ void NativeGraphics::initialize() {
 
 bool NativeGraphics::initialized() const noexcept {
     return impl_ != nullptr;
+}
+
+void NativeGraphics::report_device_fault() {
+#ifdef _WIN32
+    if (!impl_ || impl_->backend != GraphicsBackend::d3d12) return;
+    auto* device = static_cast<plume::D3D12Device*>(impl_->device.get())->d3d;
+    std::cerr << "NATIVE_GRAPHICS_DEVICE_REMOVED reason=" << hex(device->GetDeviceRemovedReason()) << '\n';
+    Microsoft::WRL::ComPtr<ID3D12DeviceRemovedExtendedData> dred;
+    if (FAILED(device->QueryInterface(IID_PPV_ARGS(&dred)))) return;
+    D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT breadcrumbs{};
+    if (SUCCEEDED(dred->GetAutoBreadcrumbsOutput(&breadcrumbs))) {
+        unsigned seen = 0;
+        for (auto* node = breadcrumbs.pHeadAutoBreadcrumbNode; node && seen++ < 64; node = node->pNext) {
+            const uint32_t done = node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0;
+            std::cerr << "NATIVE_GRAPHICS_DRED completed=" << done << " total=" << node->BreadcrumbCount;
+            if (node->pCommandHistory && done < node->BreadcrumbCount)
+                std::cerr << " next_op=" << uint32_t(node->pCommandHistory[done]);
+            std::cerr << '\n';
+        }
+    }
+    D3D12_DRED_PAGE_FAULT_OUTPUT fault{};
+    if (SUCCEEDED(dred->GetPageFaultAllocationOutput(&fault))) {
+        std::cerr << "NATIVE_GRAPHICS_DRED page_fault=0x" << std::hex << fault.PageFaultVA << std::dec << '\n';
+        const auto allocations = [](const char* state, const D3D12_DRED_ALLOCATION_NODE* node) {
+            unsigned seen = 0;
+            for (; node && seen++ < 64; node = node->pNext) {
+                std::cerr << "NATIVE_GRAPHICS_DRED allocation=" << state << " type=" << uint32_t(node->AllocationType)
+                          << " name=";
+                if (node->ObjectNameA) std::cerr << node->ObjectNameA;
+                else if (node->ObjectNameW) {
+                    for (const wchar_t* p = node->ObjectNameW; *p; ++p)
+                        std::cerr << (*p < 128 ? char(*p) : '?');
+                } else std::cerr << "(unnamed)";
+                std::cerr << '\n';
+            }
+        };
+        allocations("live", fault.pHeadExistingAllocationNode);
+        allocations("freed", fault.pHeadRecentFreedAllocationNode);
+    }
+#endif
 }
 
 void* NativeGraphics::host_window() const noexcept {

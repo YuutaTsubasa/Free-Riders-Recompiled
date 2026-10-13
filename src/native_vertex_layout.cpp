@@ -1,4 +1,5 @@
 #include "native_vertex_layout.h"
+#include <atomic>
 #include <algorithm>
 #include <cstring>
 #include <iostream>
@@ -96,6 +97,8 @@ const NativeVertexLayout& NativeVertexLayoutCache::get(uint32_t identity, uint32
     }
     // Decode before replacing anything: failure leaves the old entries valid.
     auto decoded = decode_native_vertex_layout(bytes, stride);
+    static std::atomic<uint64_t> next_identity{0};
+    decoded.identity = next_identity.fetch_add(1, std::memory_order_relaxed) + 1;
     auto& entry = entries_[next_];
     entry.layout = std::move(decoded);
     std::copy(bytes.begin(), bytes.end(), entry.bytes.begin());

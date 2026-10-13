@@ -1,6 +1,7 @@
 #pragma once
 #include "plume_render_interface_types.h"
 #include "texture_fetch.h"
+#include "word_swap.h"
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -33,11 +34,6 @@ std::optional<DeclarationFormat> declaration_format(uint32_t type);
 
 // Guest vertex data is big-endian 32-bit words; the host reads little-endian.
 uint32_t format_component_bytes(plume::RenderFormat format);
-void swap_words(std::span<uint8_t> bytes);
-// swap_words from one buffer into another of the same size: one pass where a
-// copy and an in-place swap took two. The destination may be write-combined
-// (the renderer's upload ring); it is only written.
-void swap_words_into(std::span<uint8_t> to, std::span<const uint8_t> from);
 // Decodes count big-endian indices (two or four bytes each) into out as
 // base + index. A primitive-restart index (all ones, when restart is on)
 // is written as it is and left out of lowest/highest, which cover the
