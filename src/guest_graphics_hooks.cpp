@@ -1167,6 +1167,51 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
            target==sfr::GuestGraphics::color_handle) {
             // Clip x scaled by center/width: the layout fills the centered 16:9 area.
             draw.shared.screen_space_offset[1]=center_width/float(logical_width);
+            // HUD anchoring (SFR_UI_ALIGN=edge, or SFR_HUD_ANCHOR=1): HUD sprites of the
+            // groups the user picked (hud_capture maps of a race) go to the left or
+            // right edge of the wide frame instead of staying in the centered 16:9
+            // area. Rectangles are in the title's 1280x720 layout, which does not
+            // depend on the frame's width; a sprite belongs to one when its center
+            // lies inside. The shift is the margin beside the centered area,
+            // (width - center) / 2 pixels, i.e. 1 - center/width in clip space, so a
+            // sprite keeps its distance to its own edge at any width (vertical
+            // position is left as the title has it).
+            if(sfr::aspect::hud_anchor() && draw.vertex_count>=3 && draw.stride>=8 && draw.stride<=32 &&
+               draw.vertices.size()>=size_t(draw.vertex_count)*draw.stride) {
+                float lo[2]={1e30f,1e30f},hi[2]={-1e30f,-1e30f};
+                for(uint32_t v=0;v<draw.vertex_count;++v) {
+                    float xy[2];
+                    std::memcpy(xy,draw.vertices.data()+size_t(v)*draw.stride,8);
+                    for(int a=0;a<2;++a) { lo[a]=(std::min)(lo[a],xy[a]); hi[a]=(std::max)(hi[a],xy[a]); }
+                }
+                const float w=hi[0]-lo[0],h=hi[1]-lo[1];
+                const float cx=(lo[0]+hi[0])*0.5f,cy=(lo[1]+hi[1])*0.5f;
+                // Title layout coordinates (0..1280 x 0..720), the same at any frame
+                // width.
+                struct Zone { float x0,y0,x1,y1; int side; };
+                static const Zone zones[]={
+                    {1130.0f, 310.0f,layout_width, 650.0f, +1},  // bottom right: speed gauge and its effects
+                    {   0.0f, 300.0f, 235.0f, 660.0f, -1},  // left: the rank effects stack
+                    {  0.0f,   0.0f, 430.0f, 205.0f, -1},  // top left: rings, LV, skills
+                    {105.0f, 450.0f, 285.0f, 550.0f, -1},  // left: rank (12th)
+                    { -5.0f, 570.0f, 312.0f, 725.0f, -1},  // bottom left: LAP, RECORD
+                    {945.0f,  35.0f,1210.0f, 300.0f, +1},  // top right: map and marker
+                    {940.0f, 365.0f,1172.0f, 470.0f, +1},  // right: AIR and its points
+                    {1020.0f,596.0f,layout_width, 750.0f, +1},  // bottom right: SPEED
+                };
+                // The Kinect overlay icon is the runtime's own, not the title's HUD.
+                const bool kinect_icon=cx>=380.0f && cx<=428.0f && cy>=28.0f && cy<=116.0f && w<=60.0f;
+                // Sprites may reach a little beyond the layout (the speed gauge's
+                // effects: up to 55 past its right edge); whole-screen ones stay put.
+                if(!kinect_icon && lo[0]>=-8.0f && hi[0]<=layout_width+55.0f && w<=450.0f && h<=445.0f) {
+                    for(const Zone& zone : zones) {
+                        if(cx>=zone.x0 && cx<=zone.x1 && cy>=zone.y0 && cy<=zone.y1) {
+                            draw.shared.screen_space_offset[0]=float(zone.side)*(1.0f-center_width/float(logical_width));
+                            break;
+                        }
+                    }
+                }
+            }
         }
     }
 

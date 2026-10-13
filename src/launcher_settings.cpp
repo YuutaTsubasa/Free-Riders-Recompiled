@@ -80,6 +80,7 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         // Before the ratio list: aspect_mode was auto or original.
         else if (key == "aspect_mode" && !ratio_seen && (value == "auto" || value == "original"))
             settings.aspect_ratio = value == "original" ? "16:9" : "auto";
+        else if (key == "ui_align" && (value == "edge" || value == "center")) settings.ui_align = value;
         else if (key == "fullscreen") read_flag(value, settings.fullscreen);
         else if (key == "vsync") read_flag(value, settings.vsync);
         else if (key == "audio") read_flag(value, settings.audio);
@@ -134,6 +135,7 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "window_height=" << s.window_height << '\n'
         << "render_scale=" << validated_render_scale(s.render_scale) << '\n'
         << "aspect_ratio=" << (s.aspect_ratio == "16:9" ? "16:9" : "auto") << '\n'
+        << "ui_align=" << (s.ui_align == "center" ? "center" : "edge") << '\n'
         << "fullscreen=" << s.fullscreen << '\n'
         << "vsync=" << s.vsync << '\n'
         << "audio=" << s.audio << '\n'
@@ -258,6 +260,8 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         {"SFR_ASPECT_MODE", original ? "original" : "auto"},
         // Clear any inherited fixed ratio; Auto follows the window or display.
         {"SFR_ASPECT_RATIO", ""},
+        // The alignment only means something in auto mode.
+        {"SFR_UI_ALIGN", !original && s.ui_align == "center" ? "center" : "edge"},
         {"SFR_FULLSCREEN", s.fullscreen ? "1" : "0"},
         {"SFR_VSYNC", s.vsync ? "1" : "0"},
         {"SFR_GRAPHICS", s.vulkan ? "vulkan" : "d3d12"},

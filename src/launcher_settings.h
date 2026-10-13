@@ -13,8 +13,10 @@ struct LauncherSettings {
     uint32_t window_width = 1280, window_height = 720;
     uint32_t render_scale = 100;     // percent of native 1280x720; SFR_RENDER_SCALE
     // Auto follows the window/display shape; 16:9 keeps the original picture.
-    // Neither changes the selected output resolution.
+    // Neither changes the selected output resolution. Alignment affects the
+    // race HUD in Auto and is ignored with 16:9.
     std::string aspect_ratio = "auto";  // "auto" or "16:9"
+    std::string ui_align = "edge";      // "edge" or "center"
     bool fullscreen = false;
     bool vsync = false;
     bool audio = true;

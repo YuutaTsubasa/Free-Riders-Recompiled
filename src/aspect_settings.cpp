@@ -64,7 +64,8 @@ uint32_t decide_width(uint32_t guest_width, uint32_t guest_height) {
             const uint32_t width = width_for_ratio(guest_width, guest_height, num, den,
                                                    std::min<uint32_t>(4096, most));
             std::cerr << "NATIVE_ASPECT mode=auto ratio=" << num << ':' << den << " logical_width=" << width
-                      << " was=" << guest_width << " menu_bg=" << menu_backdrop() << '\n';
+                      << " was=" << guest_width << " ui_align=" << (hud_anchor() ? "edge" : "center")
+                      << " menu_bg=" << menu_backdrop() << '\n';
             return width;
         }
         std::cerr << "NATIVE_ASPECT invalid SFR_ASPECT_RATIO=" << ratio << " (deriving it)\n";
@@ -99,8 +100,8 @@ uint32_t decide_width(uint32_t guest_width, uint32_t guest_height) {
     width = std::clamp<uint32_t>(width, guest_width, std::min<uint32_t>(4096, most));
     if (!wider_than_16x9(width, guest_height)) width = guest_width;
     std::cerr << "NATIVE_ASPECT mode=auto source=" << source << ' ' << out_width << 'x' << out_height
-              << " logical_width=" << width << " was=" << guest_width
-              << " menu_bg=" << menu_backdrop() << '\n';
+              << " logical_width=" << width << " was=" << guest_width << " ui_align="
+              << (hud_anchor() ? "edge" : "center") << " menu_bg=" << menu_backdrop() << '\n';
     return width;
 }
 
@@ -109,6 +110,15 @@ uint32_t decide_width(uint32_t guest_width, uint32_t guest_height) {
 bool original_mode() {
     static const bool original = lower_env("SFR_ASPECT_MODE") == "original";
     return original;
+}
+
+bool hud_anchor() {
+    static const bool on = [] {
+        if (original_mode()) return false;
+        if (const int explicit_switch = switch_env("SFR_HUD_ANCHOR"); explicit_switch >= 0) return explicit_switch == 1;
+        return lower_env("SFR_UI_ALIGN") != "center";
+    }();
+    return on;
 }
 
 bool ui_center() {

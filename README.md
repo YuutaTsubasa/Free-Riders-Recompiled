@@ -202,7 +202,7 @@ The launcher groups settings by what you want to change:
 | Category | Settings |
 | --- | --- |
 | General | Launcher, game and voice languages, movies, restore defaults |
-| Graphics | Window and rendering resolutions, aspect ratio, fullscreen, backend, VSync, expandable performance options |
+| Graphics | Window and rendering resolutions, aspect ratio and UI alignment, fullscreen, backend, VSync, expandable performance options |
 | Sound | Game volume and launcher sounds |
 | Controls | Each player's input source and controller, button/key bindings, Android touch and tilt |
 | Motion input | Kinect/webcam mode, device and preview, mirror, skeleton debug, voice commands |
@@ -215,7 +215,7 @@ the first sets the output window size, while the second controls the pixels the
 game draws. Changes to game settings apply on the next game launch.
 
 The window size list also offers common ultrawide sizes (2560 x 720,
-2560 x 1080, 3440 x 1440, 5120 x 1440). One more option sits in the same group:
+2560 x 1080, 3440 x 1440, 5120 x 1440). Two more options sit in the same group:
 
 - **Aspect Ratio** (`aspect_ratio`): **Auto** (default) adapts the picture to the
   window or display; **16:9** keeps the original picture. Both preserve the
@@ -224,8 +224,12 @@ The window size list also offers common ultrawide sizes (2560 x 720,
   stays in a centered 16:9 area, menu, title and calibration backdrops fill the
   whole width, and movies keep their 16:9 shape with black bars. 16:9 keeps the
   original behaviour untouched.
+- **UI Alignment Mode** (`ui_align`): **Edge** (default) places the race HUD's side
+  groups at the screen edges; **Center** keeps the HUD centered. The row is only
+  shown with Auto; with 16:9 it is hidden, the original behaviour is untouched and
+  the stored choice is preserved. Menu content stays centered.
 
-The launcher sets `SFR_ASPECT_MODE`, clears `SFR_ASPECT_RATIO`, and passes the
+The launcher sets `SFR_ASPECT_MODE` and `SFR_UI_ALIGN`, clears `SFR_ASPECT_RATIO`, and passes the
 selected window dimensions unchanged. Older `aspect_mode=original` settings load
 as 16:9. Changes apply on the next game launch.
 

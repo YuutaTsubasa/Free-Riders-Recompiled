@@ -116,6 +116,7 @@ enum Text {
     OnlineNameLabel, OnlineNameHint,
     KinectSmoothLabel, KinectSmoothHint, KinectLeanLabel, KinectLeanHint, KinectCrouchLabel, KinectCrouchHint,
     AspectModeLabel, AspectModeHint, AspectAuto, AspectOriginal,
+    UiAlignLabel, UiAlignHint, UiAlignEdge, UiAlignCenter,
     TextCount
 };
 
@@ -408,6 +409,11 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
      "自動會依視窗或螢幕形狀調整畫面；原始則維持遊戲原本的 16:9 畫面。"},
     {"Auto", "自動"},
     {"16:9", "原始"},
+    {"UI Alignment Mode", "介面對齊"},
+    {"Edge places the race HUD's side groups at the screen edges; Center keeps the HUD centered. Only used with Auto.",
+     "外緣會把比賽 HUD 的左右群組放在螢幕邊緣；中央則讓 HUD 集中在畫面中央。僅在比例為自動時有效。"},
+    {"Edge", "外緣"},
+    {"Center", "中央"},
 }};
 
 int language = 0;
@@ -1676,6 +1682,7 @@ struct Launcher {
     }
 
     void display_settings() {
+        const bool original = settings.aspect_ratio == "16:9";
         std::vector<sfr::WindowSize> sizes = sfr::common_window_sizes();
         const auto has = [&](uint32_t w, uint32_t h) {
             return std::any_of(sizes.begin(), sizes.end(), [&](const auto& s) { return s.width == w && s.height == h; });
@@ -1732,6 +1739,25 @@ struct Launcher {
                 ImGui::EndCombo();
             }
         });
+        // The alignment only exists with Auto; with the original picture the
+        // row is hidden and the stored choice is kept untouched.
+        if (!original) {
+            setting_row(tr(UiAlignLabel), tr(UiAlignHint), combo_width, scale, [&] {
+                const bool center = settings.ui_align == "center";
+                ImGui::SetNextItemWidth(combo_width);
+                if (ImGui::BeginCombo("##ui_align", tr(center ? UiAlignCenter : UiAlignEdge))) {
+                    for (const bool want_center : {false, true}) {
+                        const bool chosen = want_center == center;
+                        if (ImGui::Selectable(tr(want_center ? UiAlignCenter : UiAlignEdge), chosen)) {
+                            settings.ui_align = want_center ? "center" : "edge";
+                            ::play(sfr::UiSound::confirm);
+                        }
+                        if (chosen) ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+            });
+        }
         const auto render_name = [&](uint32_t percent) {
             char text[96];
             if (percent == 100)

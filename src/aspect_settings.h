@@ -7,9 +7,9 @@
 // environment the launcher hands over:
 //   SFR_ASPECT_MODE = auto (default, also when absent) | original
 //     auto: the logical back buffer takes the shape of the window (or of the
-//       display in full screen): the race's 3D is widened (hor+), the menus'
-//       backdrop fills the width, and the race HUD and the rest of the 16:9
-//       screens stay in a centered 16:9 area. A window that
+//       display in full screen): the race's 3D is widened (hor+), the HUD is
+//       laid out per SFR_UI_ALIGN, the menus' backdrop fills the width and the
+//       rest of the 16:9 screens stays in a centered 16:9 area. A window that
 //       is 16:9 or narrower keeps the title's own 16:9 back buffer.
 //     original: the title's own 16:9 back buffer and presentation, untouched
 //       (every override below is ignored).
@@ -18,8 +18,12 @@
 //     even(round(720 * num / den)), whatever the window's or display's shape;
 //     a window of another shape is letterboxed (black bars, proportions kept).
 //     Absent or invalid: the shape of the window/display is used (auto).
+//   SFR_UI_ALIGN = edge (default) | center
+//     edge: the race HUD's side groups go to the left/right edges of the frame.
+//     center: the whole HUD stays in the centered 16:9 area.
 // Explicit overrides (auto mode only):
 //   SFR_ASPECT_WIDTH=<n>  forces the logical width (1280..8192).
+//   SFR_HUD_ANCHOR=0|1    HUD edge anchoring (otherwise from SFR_UI_ALIGN).
 //   SFR_MENU_BG=0|1       menus' backdrop over the whole frame (default 1).
 //   SFR_UI_CENTER=0|1     race HUD in the centered 16:9 area (default 1).
 namespace sfr::aspect {
@@ -29,6 +33,7 @@ inline constexpr uint32_t title_layout_width = 1280;
 inline constexpr uint32_t title_layout_height = 720;
 
 [[nodiscard]] bool original_mode();
+[[nodiscard]] bool hud_anchor();
 [[nodiscard]] bool ui_center();
 [[nodiscard]] bool menu_backdrop();
 
