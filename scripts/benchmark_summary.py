@@ -2,8 +2,9 @@
 """Sums up the race frames of benchmark runs (scripts/benchmark.ps1).
 
 Each run is a game log, stderr of sfr_cpu_diagnostic, with one NATIVE_PRESENT
-line a frame. Only the frames of the race count (racing=1), less the first
---skip of them (the countdown, and shaders and pipelines made on first use).
+line a frame. The legacy racing=1 field means the race object exists, and
+can include loading/preparation. Skip counts these records, not simulation
+ticks; equal legacy windows do not establish equal gameplay progress.
 A frame's time is the gap between its present and the one before.
 
     python scripts/benchmark_summary.py out/bench/<run> [--skip 600]
@@ -45,13 +46,21 @@ def holder_ms(text, guest):
     return 0.0
 
 
+def present_record(line):
+    # A present is emitted as one string, but another thread's partially
+    # written diagnostic can precede it on the same physical stderr line.
+    # Discard that prefix before parsing fields (it may also contain frame=).
+    start = line.find('NATIVE_PRESENT ')
+    return line[start:] if start >= 0 else ''
+
+
 def read_run(path, skip, timeline=None, fixed_step=False, draws=None):
     """The measured race frames of one log, and how the run ended.
 
-    timeline, when given, receives (seconds since the race began, frame ms)
-    for every race frame, the skipped ones too. With fixed_step (benchmark.ps1
-    -FixedStep: one original frame per present) the race's own time is the
-    race frame's number over 60, the same in every run, not the wall clock.
+    timeline, when given, receives (seconds since race-object presence, frame ms)
+    for every race-object present, the skipped ones too. With fixed_step the
+    coordinate is the legacy record index divided by 60, NOT a measured
+    simulation clock. Loading/preparation can differ between these windows.
     draws, when given, receives each timeline entry's draw count beside it."""
     frames, racing_seen, stop = [], 0, None
     previous = race_start = None
@@ -63,6 +72,7 @@ def read_run(path, skip, timeline=None, fixed_step=False, draws=None):
             if line.startswith('HANG_REPORT') and not stop:
                 stop = line.strip()
                 continue
+            line = present_record(line)
             if not PRESENT.match(line):
                 continue
             fields = dict(FIELD.findall(line))
@@ -82,6 +92,9 @@ def read_run(path, skip, timeline=None, fixed_step=False, draws=None):
                 continue
             frame = {'ms': gap_ms, 'draws': int(fields.get('draws', 0)),
                      'pipelines': int(fields.get('pipelines', 0)), 'pipeline_ms': float(fields.get('pipeline_ms', 0))}
+            # Old logs have no switch and always time draws. A disabled timer
+            # is unavailable data, not evidence that drawing costs zero.
+            frame['draw_timers'] = fields.get('draw_timers', '1') != '0'
             for name in AVERAGED:
                 frame[name] = float(fields.get(name, 0))
             frame['main_held_ms'] = holder_ms(fields.get('holders', ''), 1)
@@ -105,7 +118,8 @@ def read_reasons(path, skip=0):
             if match:
                 names[int(match.group(1), 16)] = (match.group(2), match.group(3) or '')
                 continue
-            if not line.startswith('NATIVE_PRESENT') or ' racing=1 ' not in line:
+            line = present_record(line)
+            if not line or ' racing=1 ' not in line:
                 continue
             racing_seen += 1
             if racing_seen <= skip:
@@ -165,6 +179,7 @@ def describe(frames):
         'p99_ms': percentile(times, 0.99),
         'fps': 1000 * len(times) / sum(times),
         'draws': statistics.median(f['draws'] for f in frames),
+        'draw_timers': all(f.get('draw_timers', True) for f in frames),
     }
     for name in AVERAGED + ('main_held_ms',):
         result[name] = statistics.fmean(f[name] for f in frames)
@@ -316,7 +331,7 @@ def method_lines(settings, info=None):
     configs = (info.get('configs') or '').split()
     lines = ['### How it was measured', '', '| Item | Value |', '| --- | --- |',
              f"| Scenario | {SCENARIOS.get(scenario, scenario or 'not recorded (an older benchmark.ps1: a race)')} |",
-             '| Fixed step | ' + ('on: each frame advances the race 1/60 s, so every run draws the same race frames' if fixed == 'True' else
+             '| Fixed step | ' + ('on: fixed simulation step; legacy present indices still need scene/progress alignment' if fixed == 'True' else
                               'off: the race follows elapsed time, so a faster setting cuts each second of race into more frames' if fixed == 'False' else
                               'not recorded (an older benchmark.ps1: off)') + ' |']
     if configs:
@@ -325,16 +340,15 @@ def method_lines(settings, info=None):
     from_warmup = warmup_limit(info, 'race_frames_from_warmup')
     longer = warmup_limit(info, 'after_say_from_warmup')
     if from_warmup:
-        lines.append(f'| Each run ends | at race frame {from_warmup[0]} (race frames only; the warm-up ran {from_warmup[1]} fps,'
-                     f' so this is 90 seconds of race) |')
+        lines.append(f'| Each run ends | at race-object present {from_warmup[0]} (warm-up {from_warmup[1]} fps; gameplay duration unverified) |')
     elif settings.get('race_frames'):
-        lines.append(f"| Each run ends | at race frame {settings['race_frames']} (race frames only) |")
+        lines.append(f"| Each run ends | at race-object present {settings['race_frames']} (may include loading/preparation) |")
     elif settings.get('after_say'):
         count = longer[0] if longer else settings['after_say']
         lines.append(f"| Each run ends | {count} frames after the last menu word (the loading screen counts too) |")
-    lines.append('')
+    lines += ['', 'Legacy `racing=1` means the race object exists. Equal record windows do not establish equal gameplay progress; loading/preparation may be included.', '']
     if scenario == 'solo' and fixed == 'True':
-        lines.append('Use this kind of run to judge whether a change helps: no rivals or items, the same frames every run. For the frame rate a player gets, see the race (without `-FixedStep`).')
+        lines.append('Solo fixed-step removes rivals and items, but a performance comparison still requires verified scene/progress alignment. Free Race gameplay is a separate acceptance case.')
     elif scenario in (None, 'race') and fixed != 'True':
         lines.append('These numbers are the frame rate a player gets. To judge whether a change helps, use `-Scenario solo -FixedStep`: rivals and items differ every run and hide small differences.')
     else:
@@ -404,7 +418,8 @@ def summarise(directory, skip, window_start=20.0, window_end=75.0):
             stats['race_seconds'] = timeline[-1][0] if timeline else 0
             rows.append((config, repeat, stats, ended))
             per_run.append(f'| {config} | {repeat} | ' +
-                           ' | '.join(fmt.format(stats[key]) for key, _, fmt in COLUMNS) + f' | {ended} |')
+                           ' | '.join('n/a' if key == 'draw_ms' and not stats['draw_timers'] else fmt.format(stats[key])
+                                      for key, _, fmt in COLUMNS) + f' | {ended} |')
     whole = compare(rows)
     details = [folded(f"Every run ({len(rows)} run{'' if len(rows) == 1 else 's'})", '\n'.join(per_run))]
     window = race_window(rows, window_start, window_end)
@@ -415,9 +430,9 @@ def summarise(directory, skip, window_start=20.0, window_end=75.0):
                 stats['window_fps'] = window_fps(stats['timeline'], start, end)
         span = (f'race seconds {start:.0f}–{end:.0f}, race frames {start * 60:.0f}–{end * 60:.0f}' if fixed_step
                 else f'race seconds {start:.0f}–{end:.0f}')
-        lines += ['', f'### The same stretch of race ({span})', '',
-                  'Every run counts only the frames of this stretch, so a faster setting does not gain from measuring more of the lighter early race.',
-                  'This table decides. Only its mean fps and round ratios are of this stretch; median, P95 and frames over 50 ms are of the whole run.'
+        lines += ['', f'### Nominal race-object window ({span}; gameplay alignment unverified)', '',
+                  'This legacy coordinate starts at object presence, not a verified race-start event. Equal windows can contain different loading/preparation and gameplay work.',
+                  'Only mean fps and round ratios use this nominal window; median, P95 and frames over 50 ms are of the whole run.'
                   ' The whole-run comparison is folded at the end.', '',
                   compare([r for r in rows if not r[2] or r[2].get('window_fps')], metric='window_fps')]
         details.append(folded('The whole run (every race frame of each run)', whole))
@@ -561,6 +576,12 @@ def frame_parts(stats):
 def breakdown_table(rows):
     """Each setting's median frame split into PARTS, in ms and as a share of the frame."""
     good, _ = valid_runs(rows)
+    untimed = sorted({config for config, _, stats in good if not stats.get('draw_timers', True)})
+    if untimed:
+        return ("### Where the main thread's frame goes\n\n"
+                "Draw timers were disabled for " + ', '.join(untimed) +
+                "; drawing and game-code CPU time cannot be separated. "
+                "Use -DetailedDrawMetrics in a separate diagnostic run. Overall frame times remain available.")
     by_config = {}
     for config, _, stats in good:
         by_config.setdefault(config, []).append(frame_parts(stats))
@@ -647,7 +668,7 @@ def bottleneck(rows, capped=False):
                + (f' (Already past {reached[-1]} fps.)' if reached else ''))
     else:
         gap = f'A frame takes {frame:.1f} ms now, past {TARGETS[-1]} fps.'
-    which = 'same stretch of race' if metric == 'window_fps' else 'whole run'
+    which = 'nominal race-object window (alignment unverified)' if metric == 'window_fps' else 'whole run'
     return '\n'.join(['### What limits this PC', '',
                       f'| | baseline | skip-draws (no drawing: the CPU\'s ceiling) | render-50 (half resolution) |',
                       '| --- | ---: | ---: | ---: |',
@@ -711,7 +732,7 @@ def ablation_table(rows):
             reading = f'{meaning}: {saved:.1f} ms' if saved > 0 else f'{-saved:.1f} ms slower instead'
         lines.append(f'| {config} | {change} | {ms:.1f} | {-saved:+.1f} ms | {" ".join(f"{r:.2f}" for r in ratios) or "-"} | {reading} |')
     lines += ['', f'Noise threshold: a difference under {noise * 100:.0f}% (half the baseline\'s spread, at least 2%) does not count.'
-              + (' From the fps of the same stretch of race.' if metric == 'window_fps' else ' From whole-run fps (no common stretch of race).')]
+              + (' From nominal-window fps; gameplay alignment is unverified.' if metric == 'window_fps' else ' From whole-run fps (no common stretch of race).')]
     return '\n'.join(lines)
 
 
@@ -719,9 +740,8 @@ SLOW_BLOCK = 30  # race frames a stretch: half a second of race with a fixed ste
 
 
 def slow_stretches(rows, skip, top=8):
-    """The heaviest stretches of the race in the baseline runs, by race frame (a fixed
-    step only: then frame N is the same moment of the race in every run and on every PC,
-    so the author can go to it). A stretch counts where most runs agree it is slow."""
+    """Heavy blocks by legacy race-object index, not verified scene identity.
+    Common blocks may aid diagnosis but require semantic alignment first."""
     good, _ = valid_runs(rows)
     runs = [stats for config, _, stats in good if config == 'baseline']
     if len(runs) < 2:
@@ -744,10 +764,10 @@ def slow_stretches(rows, skip, top=8):
             found.append((ms, block, heavy, statistics.median(blocks[block][1] for blocks, _ in per_run)))
     whole = statistics.median(mean for _, mean in per_run)
     lines = ['### The slowest stretches of the race', '',
-             f'With a fixed step, race frame N is the same moment in every run and on every PC: the same save reaches the same scene at that frame.'
-             f' In blocks of {SLOW_BLOCK} frames (half a second), these are the blocks at least 25% heavier than the race average ({whole:.1f} ms) in most baseline runs; adjacent blocks are merged.', '']
+             'Legacy record indices are not verified simulation ticks or scene identity.'
+             f' In blocks of {SLOW_BLOCK} records, these are the blocks at least 25% heavier than the recorded average ({whole:.1f} ms) in most baseline runs; adjacent blocks are merged.', '']
     if not found:
-        return '\n'.join(lines + ['No stretch is heavy in most runs: the slow frames are scattered, not one scene.'])
+        return '\n'.join(lines + ['No stretch is heavy in most runs at the same legacy indices. Without scene alignment this does not establish random stalls or exclude a repeatable heavy scene.'])
     # Neighbouring stretches are one scene: one row each, ranked by its heaviest stretch.
     scenes = []
     for ms, block, heavy, drawn in sorted(found, key=lambda f: f[1]):

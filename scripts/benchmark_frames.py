@@ -55,6 +55,19 @@ def summarize(lines, first, last):
         raise ValueError('no consecutive frame intervals in the selected window')
     fields = ('draws', 'draw_ms', 'pipeline_ms', 'texture_ms', 'present_ms', 'gpu_wait_ms',
               'main_queued_ms', 'main_ready_unowned_ms', 'pacing_ms')
+    texture_enabled = []
+    for row in measured:
+        switch = row.get('texture_timers', '1')
+        if switch not in ('0', '1'):
+            raise ValueError(f"invalid texture_timers value: {switch!r}")
+        texture_enabled.append(switch == '1')
+    texture_timers = ('mixed' if any(texture_enabled) and not all(texture_enabled) else
+                      bool(texture_enabled and all(texture_enabled)))
+    metrics = {k: distribution([float(r[k]) for r in measured if k in r]) for k in fields}
+    # Legacy logs lack the switch and always timed textures. Explicitly disabled
+    # or mixed windows cannot produce a meaningful texture-time distribution.
+    if texture_timers != True or any('texture_ms' not in r for r in measured):
+        metrics['texture_ms'] = None
     return dict(first_frame=rows[0]['frame'], last_frame=rows[-1]['frame'],
                 intervals=len(intervals), missing_intervals=gaps,
                 fps=1000 / statistics.mean(intervals), frame_ms=distribution(intervals),
@@ -62,7 +75,7 @@ def summarize(lines, first, last):
                 over_16_667_ms=sum(v > 1000 / 60 for v in intervals),
                 over_33_333_ms=sum(v > 1000 / 30 for v in intervals),
                 pipeline_compile_frames=sum(float(r.get('pipeline_ms', 0)) > 0 for r in measured),
-                metrics={k: distribution([float(r[k]) for r in measured if k in r]) for k in fields})
+                texture_timers=texture_timers, metrics=metrics)
 
 
 def main():

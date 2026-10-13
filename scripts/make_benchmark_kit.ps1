@@ -81,7 +81,7 @@ function Copy-Into([string]$relative, [string[]]$exclude = @()) {
 
 Copy-Into 'run_benchmark.bat' | Out-Null
 try { (& git -C $root rev-parse --short HEAD 2>$null) | Set-Content -LiteralPath (Join-Path $Destination 'commit.txt') -Encoding ASCII } catch { }
-foreach ($file in 'benchmark.ps1', 'benchmark_all.ps1', 'hardware_probe.ps1', 'benchmark_summary.py', 'profile_summary.py', 'anonymize_benchmark.py', 'benchmark_report.py', 'play.ps1') {
+foreach ($file in 'benchmark.ps1', 'benchmark_all.ps1', 'hardware_probe.ps1', 'benchmark_summary.py', 'benchmark_frames.py', 'benchmark_gameplay.py', 'profile_summary.py', 'anonymize_benchmark.py', 'benchmark_report.py', 'play.ps1') {
     Copy-Into "scripts/$file" | Out-Null
 }
 Copy-Into 'out/build/host' @('*.pdb', '*.ilk', '*.obj', '*.map', 'settings.ini') | Out-Null

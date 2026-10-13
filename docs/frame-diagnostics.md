@@ -1,5 +1,18 @@
 # 單色畫面與卡頓的診斷
 
+`SFR_DRAW_SIGNATURE_TRACE=1` 才會記錄首次出現的 `NATIVE_DRAW source=...` 繪製組合。
+預設不建立組合歷史或逐筆查表；這個選項獨立於 `SFR_TRACE_GRAPHICS`，只供診斷，
+正式效能比較須關閉。其他故障記錄（例如 `NATIVE_DRAW_SKIPPED`）不受此選項影響。
+
+`SFR_TEXTURE_TIMERS=1` 才會計時每次貼圖查找（包含命中、內容檢查及上傳）；
+預設不讀取這些時鐘。`NATIVE_PRESENT` / `NATIVE_FRAME_SUMMARY` 的 `texture_timers=0`
+表示 `texture_ms` / `texture_total_ms` 未量測，數字0不表示沒有成本。
+`SFR_TEXTURE_TRACE=1` 才會維護首次取用歷史並輸出 `NATIVE_RESOLVED_SAMPLED`。
+兩個選項都是獨立opt-in，不受 `SFR_TRACE_GRAPHICS` 或 `SFR_DRAW_TIMERS` 隱式開啟；
+如需細部貼圖時間，須另外明確指定。貼圖上傳、更新偵測及故障記錄不受影響。
+`benchmark.ps1 -DetailedDrawMetrics` 會明確指定貼圖與繪製計時，普通測量不指定貼圖計時；
+舊執行檔原本會持續計時貼圖，缺少 availability 欄位的舊log仍按歷史契約解讀。
+
 2026-10-05。玩家回報比賽中偶爾閃一幀「米色」的畫面，以及偶爾整個遊戲停一兩秒。
 
 ## 單色畫面（已修正）

@@ -42,6 +42,38 @@ class BenchmarkFramesTests(unittest.TestCase):
             summarize(['NATIVE_PRESENT frame=1 seconds=1 draws=1',
                        'NATIVE_PRESENT frame=2 seconds=0 draws=1'], 1, 2)
 
+    def test_texture_time_is_available_for_legacy_and_enabled_logs(self):
+        for switch in ('', ' texture_timers=1'):
+            with self.subTest(switch=switch):
+                lines = [f'NATIVE_PRESENT frame=1 seconds=1.000 draws=1 texture_ms=2',
+                         f'NATIVE_PRESENT frame=2 seconds=1.020 draws=1{switch} texture_ms=4']
+                result = summarize(lines, 1, 2)
+                self.assertIs(result['texture_timers'], True)
+                self.assertEqual(result['metrics']['texture_ms']['mean'], 4)
+
+    def test_disabled_and_mixed_texture_timers_are_unavailable(self):
+        cases = [([' texture_timers=0 texture_ms=0'], False),
+                 ([' texture_timers=1 texture_ms=3', ' texture_timers=0 texture_ms=0'], 'mixed')]
+        for rows, availability in cases:
+            with self.subTest(availability=availability):
+                lines = ['NATIVE_PRESENT frame=1 seconds=1.000 draws=1 texture_ms=2']
+                for frame, fields in enumerate(rows, 2):
+                    lines.append(f'NATIVE_PRESENT frame={frame} seconds={1 + .02 * (frame - 1):.3f} draws=1{fields}')
+                result = summarize(lines, 1, len(lines))
+                self.assertEqual(result['texture_timers'], availability)
+                self.assertIsNone(result['metrics']['texture_ms'])
+                self.assertAlmostEqual(result['fps'], 50)
+
+    def test_rejects_unknown_texture_timer_state_and_missing_texture_sample(self):
+        with self.assertRaisesRegex(ValueError, 'invalid texture_timers'):
+            summarize(['NATIVE_PRESENT frame=1 seconds=1.000 draws=1 texture_ms=2',
+                       'NATIVE_PRESENT frame=2 seconds=1.020 draws=1 texture_timers=maybe texture_ms=4'], 1, 2)
+        result = summarize(['NATIVE_PRESENT frame=1 seconds=1.000 draws=1 texture_ms=2',
+                            'NATIVE_PRESENT frame=2 seconds=1.020 draws=1 texture_timers=1 texture_ms=4',
+                            'NATIVE_PRESENT frame=3 seconds=1.040 draws=1 texture_timers=1'], 1, 3)
+        self.assertIs(result['texture_timers'], True)
+        self.assertIsNone(result['metrics']['texture_ms'])
+
 
 if __name__ == '__main__':
     unittest.main()

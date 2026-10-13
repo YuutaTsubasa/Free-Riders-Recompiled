@@ -24,6 +24,34 @@ def write_log(directory, name, frame_ms, menu=3, race=6, stop='STOP present-limi
     (Path(directory) / name).write_text(''.join(lines), encoding='utf-8')
 
 
+class DrawTimerAvailabilityTests(unittest.TestCase):
+    def test_prefixed_present_is_counted_without_import_fields(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / 'baseline-1.log'
+            path.write_text(present(0, 0, 0) + present(1, .02, 1) +
+                            'RESULT NtCreateEvent frame=999 racing=0 seconds=999 type=0' +
+                            present(2, .04, 1) + present(3, .06, 1) + 'STOP present-limit test\n')
+            timeline = []
+            frames, raced, ended = bench.read_run(path, 0, timeline=timeline, fixed_step=True)
+            self.assertEqual(raced, 3)
+            self.assertEqual(ended, 'present-limit')
+            self.assertEqual(len(timeline), 3)
+            self.assertAlmostEqual(bench.describe(frames)['fps'], 50)
+
+    def test_disabled_timers_do_not_turn_into_zero_cost_or_game_code(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / 'baseline-1.log'
+            path.write_text(''.join(present(i, i * .02, 1, draw_timers=0, draw_ms=0)
+                                    for i in range(1, 10)) + 'STOP present-limit @0x0: done\n')
+            frames, _, _ = bench.read_run(path, 0)
+            stats = bench.describe(frames)
+            self.assertFalse(stats['draw_timers'])
+            self.assertAlmostEqual(stats['fps'], 50)
+            report, _ = bench.summarise(Path(root), 0)
+            self.assertIn('n/a', report)
+            self.assertIn('drawing and game-code CPU time cannot be separated', report)
+
+
 def write_race(directory, name, frame_ms, race_frames=2400, **fields):
     """A log of race_frames race frames of frame_ms each, after a short menu: every run
     of a benchmark has as many race frames, so a faster one is a shorter race."""
@@ -225,14 +253,16 @@ class MethodTest(unittest.TestCase):
             table, _ = bench.summarise(directory, 0)
             self.assertIn('### How it was measured', table)
             self.assertIn('solo (Time Attack, no rivals)', table)
-            self.assertIn('each frame advances the race 1/60 s', table)
+            self.assertIn('fixed simulation step; legacy present indices still need scene/progress alignment', table)
             # The counted runs ended where the warm-up said, not at the configured 5400.
-            self.assertIn('| Each run ends | at race frame 2430 (race frames only; the warm-up ran 27 fps', table)
+            self.assertIn('| Each run ends | at race-object present 2430 (warm-up 27 fps; gameplay duration unverified)', table)
             self.assertNotIn('race frame 5400', table)
             self.assertIn('race frames 1200–4500', table)
             # What decides is open; every run and the whole-run comparison are folded after it.
             open_part, details = table.split('### Details', 1)
-            self.assertIn('### The same stretch of race', open_part)
+            self.assertIn('### Nominal race-object window', open_part)
+            self.assertNotIn('This table decides', table)
+            self.assertNotIn('the same moment in every run', table)
             self.assertNotIn('<details>', open_part)
             self.assertIn('<summary>Every run (2 runs)</summary>', details)
             self.assertIn('<summary>The whole run (every race frame of each run)</summary>', details)
@@ -414,7 +444,7 @@ class BenchmarkSummaryTest(unittest.TestCase):
                 write_race(directory, f'skip-draws-{n}.log', 7, race_frames=4200)
                 write_race(directory, f'render-50-{n}.log', 8, race_frames=4200)
             table, _ = bench.summarise(directory, skip=0)
-            self.assertIn('### The same stretch of race (race seconds 10–29)', table)
+            self.assertIn('### Nominal race-object window (race seconds 10–29; gameplay alignment unverified)', table)
             self.assertIn('A frame takes 8.0 ms now, past 120 fps.', table)
 
     def test_the_gap_is_to_120_fps_once_past_60(self):

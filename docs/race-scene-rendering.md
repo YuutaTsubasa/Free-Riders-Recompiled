@@ -14,6 +14,9 @@
 之後（[guest_graphics_hooks.cpp](../src/guest_graphics_hooks.cpp) 的 `824FAB08`），
 `NATIVE_RESOLVED_SAMPLED` 開始出現，比賽畫面就完整顯示了。
 
+Codex 版本自2026-10-13起須明確設定 `SFR_TEXTURE_TRACE=1` 才輸出這項診斷；
+普通遊玩不維護首次取用歷史，解析複本的取樣行為相同。
+
 ## 一格比賽畫面的結構
 
 | 繪製 | 目標 | 內容 |

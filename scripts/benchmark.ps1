@@ -11,8 +11,9 @@
 # -Scenario race (the default) is a Free Race with rivals and items: the frame rate a
 # player gets. -Scenario solo is a Time Attack, the player alone on the course, so no
 # rival or item makes one run heavier than another. -FixedStep steps the race one
-# original frame (1/60 s) per present, as the desktop launcher does (SFR_REALTIME_RACE=0),
-# so every run draws the same race frames whatever the PC's speed (docs/benchmark.md).
+# original frame (1/60 s) per update, as the desktop launcher does (SFR_REALTIME_RACE=0).
+# Equal legacy present counts still need scene/progress verification: the race
+# object exists during loading/preparation too (docs/codex-i5-60hz-workflow.md).
 #
 # Build first: scripts\build_tools.ps1 -Diagnostic. The game runs with the
 # explicit elapsed-time defaults: no Kinect, normal sound,
@@ -28,7 +29,9 @@ param(
     # is World Grand Prix, Time Attack, ...), then course, character and gear: it has no rules page.
     [string]$Say = 'ok@580,ok@930,ok@1280,start@1630,ok@1830,left@2030,ok@2230,ok@2530,ok@2830,ok@3130,right@3430,ok@3730',
     [ValidateSet('race', 'solo')][string]$Scenario = 'race',
-    [switch]$FixedStep,               # one original frame per present (SFR_REALTIME_RACE=0): every run the same race frames
+    [switch]$FixedStep,               # fixed simulation step; does not verify legacy present-window scene alignment
+    [ValidateSet(0, 5400)][int]$GameplayTicks = 0, # complete300 countdown +5100 racing ticks; supported solo contract only
+    [switch]$TargetAdmission,        # wrapper: idle CPU and no other game before each semantic launch
     [ValidateRange(0, 10000000)][int]$RaceFrames = 0,  # race presents a run (SFR_PRESENT_LIMIT_RACING); 0: from -RaceSeconds
     [int]$PresentLimit = 15600,
     [switch]$NoStretch,               # the words by presents alone and the run ends at -PresentLimit (it cannot finish on a PC that presents fast)
@@ -39,6 +42,7 @@ param(
     [ValidateRange(1, 120)][int]$TimeoutMinutes = 25,
     [ValidateSet('d3d12', 'vulkan')][string]$Backend = 'd3d12',
     [switch]$NoAudio,                 # explicit diagnostic, recorded in metadata
+    [switch]$DetailedDrawMetrics,     # per-draw timers and stream sets; off for low-overhead frame comparisons
     [switch]$AllowDiagnosticRendering, # required for omitted-draw comparisons
     [int]$ScreenshotEvery = 0,         # a screenshot every N presents in every run (a diagnostic: it slows the run)
     [switch]$NoWarmup,                # the first run fills the shader caches
@@ -47,6 +51,8 @@ param(
     [switch]$Capped,                  # 60 fps as when playing, not as fast as it goes
     [switch]$ColdPipelines,           # every run starts without pipeline-cache: a new player's first race
     [switch]$KeepSaves,               # keep each run's copy of the save (save-<run>; 23 MB each), to see what the game wrote
+    [switch]$StopOnFailure,           # unattended suites must not continue after an incomplete/crashed run
+    [switch]$NoShareArchive,          # leave uncompressed local results only
     [string]$ImageDirectory = '',     # the game folders, when they are not where this checkout keeps them
     [string]$AssetDirectory = '',
     [string]$SaveDirectory = '',
@@ -69,6 +75,12 @@ try {
 $Stretch = -not $NoStretch
 $SoloSay = 'ok@580,ok@930,ok@1280,start@1630,ok@1830,right@2030,ok@2230,ok@2530,ok@2830,right@3130,ok@3430'
 if ($Scenario -eq 'solo' -and -not $PSBoundParameters.ContainsKey('Say')) { $Say = $SoloSay }
+if ($GameplayTicks -and ($Scenario -ne 'solo' -or -not $FixedStep -or -not $Stretch -or
+    $RaceFrames -gt 0 -or $PSBoundParameters.ContainsKey('AfterSay') -or
+    ($PSBoundParameters.ContainsKey('PresentLimit') -and $PresentLimit -ne 0) -or
+    $NoAudio -or $DetailedDrawMetrics -or $Capped -or $AllowDiagnosticRendering -or $ColdPipelines -or $FixedOrder)) {
+    throw 'GameplayTicks requires solo FixedStep, normal full rendering/audio, warm pipelines and rotating order; legacy stop/diagnostic options cannot be mixed.'
+}
 $root = Split-Path -Parent $PSScriptRoot
 # A kit keeps its own DXC next to the scripts (run_benchmark.bat sets this too); without it nothing is drawn
 if (-not $env:SFR_DXC_LIBRARY -and (Test-Path -LiteralPath (Join-Path $root 'dxc\dxcompiler.dll'))) { $env:SFR_DXC_LIBRARY = Join-Path $root 'dxc' }
@@ -114,6 +126,22 @@ foreach ($path in $image, $assets) {
 # What each setting changes from the launcher's defaults.
 $settings = @{
     'baseline'     = @{}
+    'draw-timers'  = @{ SFR_DRAW_TIMERS = '1' }              # quantify instrumentation cost against baseline
+    'managed-constants' = @{ SFR_MANAGED_CONSTANTS = '1'; SFR_MANAGED_TEXTURE_STATE = '1'; SFR_MANAGED_STENCIL_STATE = '1' }
+    'managed-buffers' = @{ SFR_MANAGED_CONSTANTS = '1'; SFR_MANAGED_BUFFERS = '1'; SFR_MANAGED_TEXTURE_STATE = '1'; SFR_MANAGED_STENCIL_STATE = '1' }
+    'direct-constants' = @{ SFR_MANAGED_CONSTANTS = '1'; SFR_MANAGED_TEXTURE_STATE = '1'; SFR_MANAGED_STENCIL_STATE = '1'; SFR_DIRECT_CONSTANT_UPLOAD = '1' }
+    'direct-buffers' = @{ SFR_MANAGED_CONSTANTS = '1'; SFR_MANAGED_BUFFERS = '1'; SFR_MANAGED_TEXTURE_STATE = '1'; SFR_MANAGED_STENCIL_STATE = '1'; SFR_DIRECT_CONSTANT_UPLOAD = '1' }
+    'verify-direct' = @{ SFR_MANAGED_CONSTANTS = '1'; SFR_MANAGED_BUFFERS = '1'; SFR_MANAGED_TEXTURE_STATE = '1'; SFR_MANAGED_STENCIL_STATE = '1'; SFR_DIRECT_CONSTANT_UPLOAD = '1'; SFR_VERIFY_MANAGED_BUFFERS = '1'; SFR_VERIFY_MANAGED_CONSTANTS = '1'; SFR_VERIFY_MANAGED_TEXTURE_STATE = '1'; SFR_VERIFY_MANAGED_STENCIL_STATE = '1'; SFR_D3D12_DRED = '1' }
+    'verify-buffers' = @{ SFR_MANAGED_CONSTANTS = '1'; SFR_MANAGED_BUFFERS = '1'; SFR_MANAGED_TEXTURE_STATE = '1'; SFR_MANAGED_STENCIL_STATE = '1'; SFR_VERIFY_MANAGED_BUFFERS = '1'; SFR_VERIFY_MANAGED_CONSTANTS = '1'; SFR_VERIFY_MANAGED_TEXTURE_STATE = '1'; SFR_VERIFY_MANAGED_STENCIL_STATE = '1'; SFR_D3D12_DRED = '1' }
+    'verify-constants' = @{ SFR_MANAGED_CONSTANTS = '1'; SFR_MANAGED_TEXTURE_STATE = '1'; SFR_MANAGED_STENCIL_STATE = '1'; SFR_VERIFY_MANAGED_CONSTANTS = '1'; SFR_VERIFY_MANAGED_TEXTURE_STATE = '1'; SFR_VERIFY_MANAGED_STENCIL_STATE = '1' } # correctness only
+    'resource-audit' = @{ SFR_BUFFER_AUDIT = '1'; SFR_MANAGED_CONSTANTS = '1'; SFR_MANAGED_TEXTURE_STATE = '1'; SFR_MANAGED_STENCIL_STATE = '1'; SFR_VERIFY_MANAGED_CONSTANTS = '1'; SFR_VERIFY_MANAGED_TEXTURE_STATE = '1'; SFR_VERIFY_MANAGED_STENCIL_STATE = '1' } # correctness/lifecycle only
+    'codex-before' = @{ SFR_EXE = 'sfr_cpu_diagnostic_before.exe' }
+    'codex-control' = @{ SFR_EXE = 'sfr_cpu_diagnostic_before.exe' } # identical-binary noise control
+    'codex-after' = @{ SFR_MANAGED_CONSTANTS = '1'; SFR_MANAGED_TEXTURE_STATE = '1'; SFR_MANAGED_STENCIL_STATE = '1' }
+    'semantic-before' = @{ SFR_EXE = 'sfr_cpu_diagnostic_before.exe' }
+    'semantic-control' = @{ SFR_EXE = 'sfr_cpu_diagnostic_before.exe' }
+    'semantic-after' = @{}
+    'semantic-verify' = @{ SFR_VERIFY_MANAGED_CONSTANTS = '1'; SFR_VERIFY_MANAGED_TEXTURE_STATE = '1'; SFR_VERIFY_MANAGED_STENCIL_STATE = '1'; SFR_D3D12_DRED = '1' }
     'sequential'   = @{ SFR_HOST_PROCESSORS = 'sequential' }   # the old processor order
     'serial'       = @{ SFR_PARALLEL_WORKER = '0' }            # guest threads one at a time
     'all'          = @{ SFR_PARALLEL_WORKER = 'all' }          # every guest thread in parallel (experimental)
@@ -169,6 +197,18 @@ foreach ($name in $Configs) {
         throw "Setting '$name' needs $($settings[$name]['SFR_EXE']) in $host_dir (copy that build's sfr_cpu_diagnostic.exe to it)"
     }
 }
+if (@($Configs | Where-Object { $settings[$_]['SFR_DIRECT_CONSTANT_UPLOAD'] -eq '1' }).Count -and
+    -not (Test-ProgramText $exe 'SFR_DIRECT_CONSTANT_UPLOAD')) {
+    throw "$exe does not support SFR_DIRECT_CONSTANT_UPLOAD: rebuild or use a complete direct-upload kit. No comparison started."
+}
+if (@($Configs | Where-Object { $settings[$_]['SFR_MANAGED_STENCIL_STATE'] -eq '1' }).Count -and
+    -not (Test-ProgramText $exe 'SFR_MANAGED_STENCIL_STATE')) {
+    throw "$exe does not support SFR_MANAGED_STENCIL_STATE: rebuild or use a complete stencil-state kit. No comparison started."
+}
+if (@($Configs | Where-Object { $settings[$_]['SFR_VERIFY_MANAGED_STENCIL_STATE'] -eq '1' }).Count -and
+    -not (Test-ProgramText $exe 'SFR_VERIFY_MANAGED_STENCIL_STATE')) {
+    throw "$exe does not support SFR_VERIFY_MANAGED_STENCIL_STATE: rebuild or use a complete stencil-state kit. No comparison started."
+}
 
 # Two different executables must differ: copying the same build under both names compares
 # a program with itself (a whole benchmark wasted before anyone notices).
@@ -198,11 +238,30 @@ $base = [ordered]@{
     SFR_GAME_LANGUAGE = 'en'; SFR_PLAYER1_INPUT = 'keyboard'; SFR_PLAYER2_INPUT = 'off'
     # Since v0.4.3 the per-frame NATIVE_PRESENT line is only written when asked for (tracing is off here)
     SFR_FRAME_METRICS = '1'
+    SFR_DRAW_TIMERS = $(if ($DetailedDrawMetrics) { '1' } else { '0' })
     SFR_WINDOW_WIDTH = '1280'; SFR_WINDOW_HEIGHT = '720'; SFR_FULLSCREEN = '0'; SFR_VSYNC = '0'
     SFR_NUI_HAND_CENTRED = '1'; SFR_SAY = $Say; SFR_PRESENT_LIMIT = "$PresentLimit"
     # The menus take time on the wall clock: on a fast PC a script by presents alone speaks too early
     # and a run may never reach the race (8 of 19 on a Ryzen AI MAX+ 395).
     SFR_SAY_MIN_SECONDS = '2'
+}
+# New builds time texture lookups only when explicitly requested. Leave the
+# low-overhead environment unset: legacy builds always timed them regardless.
+if ($DetailedDrawMetrics) { $base['SFR_TEXTURE_TIMERS'] = '1' }
+if ($GameplayTicks) {
+    foreach ($name in $Configs) {
+        if ($name -notin @('semantic-before','semantic-control','semantic-after','semantic-verify')) {
+            throw 'GameplayTicks requires semantic-before/control/after/verify configurations.'
+        }
+    }
+    foreach ($key in 'SFR_MANAGED_CONSTANTS','SFR_MANAGED_TEXTURE_STATE','SFR_MANAGED_STENCIL_STATE','SFR_GAMEPLAY_METRICS') {
+        $base[$key]='1'
+    }
+    foreach ($key in 'SFR_MANAGED_BUFFERS','SFR_DIRECT_CONSTANT_UPLOAD','SFR_PRESENT_LIMIT',
+                    'SFR_PRESENT_LIMIT_AFTER_SAY','SFR_PRESENT_LIMIT_RACING','SFR_TEXTURE_TIMERS',
+                    'SFR_TEXTURE_TRACE','SFR_DRAW_SIGNATURE_TRACE') { $base[$key]='0' }
+    $base['SFR_GAMEPLAY_TICK_LIMIT']="$GameplayTicks"
+    $base['SFR_ASPECT_MODE']='original'; $base['SFR_UI_ALIGN']='edge'; $base['SFR_RENDER_SCALE']='100'
 }
 if ($Stretch) {
     # Loading takes seconds, not presents (a PC presents hundreds of frames a second while the title
@@ -216,7 +275,7 @@ if ($Stretch) {
     # in a short race, so after the warm-up the counted runs get as many presents as
     # -RaceSeconds of its race, when that is more (below).
     $base['SFR_SAY_REFERENCE_FPS'] = "$ReferenceFps"
-    $base['SFR_PRESENT_LIMIT_AFTER_SAY'] = "$AfterSay"
+    if (-not $GameplayTicks) { $base['SFR_PRESENT_LIMIT_AFTER_SAY'] = "$AfterSay" }
     if (-not $PSBoundParameters.ContainsKey('PresentLimit')) { $base['SFR_PRESENT_LIMIT'] = '0' }
     if (-not $PSBoundParameters.ContainsKey('TimeoutMinutes')) { $TimeoutMinutes = 10 }
 }
@@ -241,13 +300,12 @@ Get-ChildItem -LiteralPath $fixture -Recurse -File | ForEach-Object {
     [ordered]@{ path = $_.FullName.Substring($fixture.Length); sha256 = (Get-BenchmarkSha256 $_.FullName) }
 } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Out 'fixture-hashes.json') -Encoding UTF8
 
-# A build that counts the race's own presents (SFR_PRESENT_LIMIT_RACING) ends every run after
-# as many of them, the loading screen not counted (the limit after the last word counts it,
-# and it presents hundreds of times a second on a fast PC). Every program of the comparison
-# must know it, or a run would never end; -AfterSay given keeps the old limit.
+# Legacy race-object-presence counter (SFR_PRESENT_LIMIT_RACING). It can include
+# loading/preparation, so equal counts do not prove equal gameplay progress.
+# Every compared program must support it; -AfterSay keeps the alternative limit.
 $programs = @($exe) + @($Configs | Where-Object { $settings.Contains($_) -and $settings[$_].ContainsKey('SFR_EXE') } |
     ForEach-Object { Join-Path $host_dir $settings[$_]['SFR_EXE'] } | Where-Object { Test-Path -LiteralPath $_ })
-$RacingLimit = $Stretch -and -not $PSBoundParameters.ContainsKey('AfterSay') -and
+$RacingLimit = -not $GameplayTicks -and $Stretch -and -not $PSBoundParameters.ContainsKey('AfterSay') -and
     -not @($programs | Where-Object { -not (Test-ProgramText $_ 'SFR_PRESENT_LIMIT_RACING') }).Count
 if ($RacingLimit) {
     # With -FixedStep a race second is 60 presents on any PC; otherwise the warm-up says how many
@@ -299,7 +357,7 @@ Write-Output "PC: $power, power plan '$plan', $idle% busy before the start"
   "cold_pipelines=$([bool]$ColdPipelines)", "os=$([Environment]::OSVersion.VersionString)",
   "configs=$($Configs -join ',') repeats=$Repeats present_limit=$($base.SFR_PRESENT_LIMIT) after_say=$($base.SFR_PRESENT_LIMIT_AFTER_SAY) race_frames=$($base.SFR_PRESENT_LIMIT_RACING) scenario=$Scenario fixed_step=$([bool]$FixedStep) reference_fps=$($base.SFR_SAY_REFERENCE_FPS) stretch=$([bool]$Stretch) capped=$([bool]$Capped)",
   "say=$Say", "order=$(if ($FixedOrder) { 'fixed' } else { 'turning' })", "realtime_race=$($base.SFR_REALTIME_RACE)", "realtime_ui=1",
-  "audio=$($base.SFR_AUDIO)", "backend=$Backend", "diagnostic_rendering=$([bool]$AllowDiagnosticRendering)") | Set-Content -LiteralPath (Join-Path $Out 'info.txt') -Encoding UTF8
+  "audio=$($base.SFR_AUDIO)", "backend=$Backend", "draw_timers=$($base.SFR_DRAW_TIMERS)", "diagnostic_rendering=$([bool]$AllowDiagnosticRendering)") | Set-Content -LiteralPath (Join-Path $Out 'info.txt') -Encoding UTF8
 # The executables an exe-a / exe-b comparison ran: which file, how big, when it was built.
 foreach ($name in $Configs) {
     if ($settings[$name].ContainsKey('SFR_EXE')) {
@@ -330,19 +388,42 @@ for ($r = 1; $r -le $Repeats; ++$r) {
 }
 
 function Start-Run([string]$name, [int]$repeat) {
+    $admission=$null
+    if ($GameplayTicks -and $TargetAdmission) {
+        $waitStarted=Get-Date
+        $quietSamples=0
+        while ($quietSamples -lt 2) {
+            $games=@(Get-Process -Name 'sfr_cpu_diagnostic*','FreeRidersRecompiled' -ErrorAction SilentlyContinue)
+            $cpu=(Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor -Filter "Name='_Total'" -ErrorAction Stop).PercentProcessorTime
+            if ($null -eq $cpu) { throw 'Cannot verify target load before launch.' }
+            if (-not $games.Count -and $cpu -le 20) { $quietSamples++ } else { $quietSamples=0 }
+            if ($quietSamples -lt 2) { Start-Sleep -Seconds 5 }
+        }
+        $admission=@{cpu_percent=[int]$cpu; game_processes=0; admitted=$true; waited_seconds=((Get-Date)-$waitStarted).TotalSeconds}
+    }
     Get-ChildItem Env:SFR_* | ForEach-Object { [Environment]::SetEnvironmentVariable($_.Name, $null) }
     foreach ($key in $base.Keys) { Set-Item "Env:$key" $base[$key] }
     foreach ($key in 'SFR_DXC_LIBRARY','SFR_SHADER_PACK') {
         if ($originalEnvironment.ContainsKey($key)) { Set-Item "Env:$key" $originalEnvironment[$key] }
     }
     if (-not $env:SFR_DXC_LIBRARY -and (Test-Path -LiteralPath (Join-Path $root 'dxc/dxcompiler.dll'))) { $env:SFR_DXC_LIBRARY = Join-Path $root 'dxc' }
-    $changes = if ($name -eq 'warmup') { @{} } else { $settings[$name] }
+    $changes = if ($name -eq 'warmup') {
+        if ($GameplayTicks) { $settings[$Configs[0]] } else { @{} }
+    } else { $settings[$name] }
     $program = $exe
     foreach ($key in $changes.Keys) {
         if ($key -eq 'SFR_EXE') {
             $program = Join-Path $host_dir $changes[$key]
             if (-not (Test-Path -LiteralPath $program)) { throw "Missing $program (copy that build's sfr_cpu_diagnostic.exe to it)" }
         } else { Set-Item "Env:$key" $changes[$key] }
+    }
+    if ($env:SFR_DRAW_TIMERS -eq '0' -and -not (Test-ProgramText $program 'SFR_DRAW_TIMERS')) {
+        throw "$program cannot disable draw timers. Rebuild, or use -DetailedDrawMetrics for every compared build."
+    }
+    if ($GameplayTicks) {
+        foreach ($marker in 'SFR_GAMEPLAY_METRICS','SFR_GAMEPLAY_TICK_LIMIT','solo_fixed_v1') {
+            if (-not (Test-ProgramText $program $marker)) { throw "$program lacks supported semantic gameplay observer: $marker" }
+        }
     }
     # What a player gets: the recorded pipeline list shipped in data\pipeline-manifests,
     # prepared before the first frame. A checkout does not put it beside the shader
@@ -376,7 +457,7 @@ function Start-Run([string]$name, [int]$repeat) {
     $log = Join-Path $Out "$label.log"
     $effective = [ordered]@{}
     Get-ChildItem Env:SFR_* | Sort-Object Name | ForEach-Object { $effective[$_.Name] = $_.Value }
-    [ordered]@{ executable = $program; sha256 = (Get-BenchmarkSha256 $program); settings = $effective } |
+    [ordered]@{ executable = $program; sha256 = (Get-BenchmarkSha256 $program); settings = $effective; admission=$admission } |
         ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $Out "$label.json") -Encoding UTF8
     $arguments = @("`"$image`"", "`"$assets`"", '--game-region=ntsc-us')
     return Start-Process -FilePath $program -ArgumentList $arguments -WorkingDirectory $root -WindowStyle Hidden -PassThru `
@@ -390,7 +471,10 @@ function Get-RaceFps([string]$logPath) {
     try {
         $first = $null; $last = $null; $count = 0
         while ($null -ne ($line = $reader.ReadLine())) {
-            if (-not $line.StartsWith('NATIVE_PRESENT ') -or -not $line.Contains(' racing=1 ')) { continue }
+            $presentStart = $line.IndexOf('NATIVE_PRESENT ', [StringComparison]::Ordinal)
+            if ($presentStart -lt 0) { continue }
+            $line = $line.Substring($presentStart)
+            if (-not $line.Contains(' racing=1 ')) { continue }
             if ($line -match ' seconds=([0-9.]+)') {
                 $seconds = [double]$Matches[1]
                 if ($null -eq $first) { $first = $seconds }
@@ -419,6 +503,7 @@ function Get-RaceFps([string]$logPath) {
         $eta = if ($index -gt 1) { ' (left: about ' + [int](($elapsed.TotalMinutes / ($index - 1)) * ($runs.Count - $index + 1)) + ' min)' } else { '' }
         Write-Output ("[{0}/{1}] {2}, run {3}{4}" -f $index, $runs.Count, $name, $repeat, $eta)
         $process = Start-Run $name $repeat
+        if ($GameplayTicks) { $null=$process.Handle }
         if ($index -eq 1) { Write-Output '  (the game runs hidden; Ctrl+C here stops it and the benchmark)' }
         # A second at a time: one long WaitForExit holds Ctrl+C until it returns.
         $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
@@ -429,6 +514,13 @@ function Get-RaceFps([string]$logPath) {
             $process.WaitForExit()
             Add-Content -LiteralPath (Join-Path $Out "$name-$repeat.log") -Value 'STOP benchmark-timeout: host deadline reached'
         }
+        if ($GameplayTicks) {
+            $metadataPath=Join-Path $Out "$name-$repeat.json"
+            $metadata=Get-Content -Raw -LiteralPath $metadataPath | ConvertFrom-Json
+            $metadata | Add-Member -NotePropertyName exit_code -NotePropertyValue $process.ExitCode
+            $metadata | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $metadataPath -Encoding UTF8
+            if ($process.ExitCode -ne 3) { throw "Unexpected semantic process exit: $($process.ExitCode). Log retained." }
+        }
         # The run's own copy of the save has done its job (the next run starts from the
         # fixture again); 25 of them would be 600 MB. fixture\ keeps what every run started from.
         if (-not $KeepSaves) {
@@ -437,6 +529,31 @@ function Get-RaceFps([string]$logPath) {
             catch { Write-Warning "Could not remove ${used}: $($_.Exception.Message)" }
         }
         $raced = Select-String -LiteralPath (Join-Path $Out "$name-$repeat.log") -SimpleMatch ' racing=1 ' -Quiet
+        if ($GameplayTicks) {
+            $validator=Join-Path $PSScriptRoot 'benchmark_gameplay.py'
+            $validated=$false
+            foreach ($python in @(@('py','-3'), @('python'))) {
+                if (-not (Get-Command $python[0] -ErrorAction SilentlyContinue)) { continue }
+                $rest=@($python | Select-Object -Skip 1)
+                & $python[0] @rest $validator (Join-Path $Out "$name-$repeat.log") --limit $GameplayTicks --output (Join-Path $Out "$name-$repeat-progress.json") *> (Join-Path $Out "$name-$repeat-validation.txt")
+                if ($LASTEXITCODE -ne 0) { throw "Semantic progress validation failed: $name-$repeat. See validation log in $Out." }
+                $validated=$true; break
+            }
+            if (-not $validated) { throw 'Python 3 is required for semantic progress validation.' }
+            $raced=$true
+        } elseif ($StopOnFailure) {
+            $raceCount = 0; $lastStop = ''; $fault = $false
+            foreach ($line in [IO.File]::ReadLines((Join-Path $Out "$name-$repeat.log"))) {
+                $presentStart = $line.IndexOf('NATIVE_PRESENT ', [StringComparison]::Ordinal)
+                if ($presentStart -ge 0 -and $line.Substring($presentStart).Contains(' racing=1 ')) { ++$raceCount }
+                if ($line.StartsWith('STOP ')) { $lastStop = $line }
+                if ($line -match 'managed-[a-z0-9-]+-mismatch|^HANG_REPORT|NATIVE_GRAPHICS_DRED page_fault=') { $fault = $true }
+            }
+            if ($fault -or $lastStop -notmatch '^STOP present-limit\b' -or -not $raced -or
+                ($RaceFrames -gt 0 -and $raceCount -ne $RaceFrames)) {
+                throw "Incomplete or failed run: $name-$repeat ($raceCount racing frames; $lastStop). Logs kept in $Out."
+            }
+        }
         if ($name -ne 'warmup' -and -not $raced) {
             Write-Warning "$name never reached the race in run $repeat (the log is $name-$repeat.log): its other runs are skipped."
             $dead[$name] = $repeat
@@ -455,7 +572,7 @@ function Get-RaceFps([string]$logPath) {
                 Write-Output ("  the warm-up raced at {0:0.#} fps: every run gets {1} race presents ({2} seconds)" -f $fps, $needed, $RaceSeconds)
                 Add-Content -LiteralPath (Join-Path $Out 'info.txt') -Encoding UTF8 -Value "race_frames_from_warmup=$needed warmup_fps=$([math]::Round($fps, 1))"
             }
-        } elseif ($name -eq 'warmup' -and -not $RacingLimit -and $Stretch -and $RaceSeconds -gt 0 -and -not $PSBoundParameters.ContainsKey('AfterSay')) {
+        } elseif (-not $GameplayTicks -and $name -eq 'warmup' -and -not $RacingLimit -and $Stretch -and $RaceSeconds -gt 0 -and -not $PSBoundParameters.ContainsKey('AfterSay')) {
             # A fast PC plays -AfterSay presents in a short race (4200 at 300 fps are 14 seconds), too
             # short for the summary's common stretch of race (docs/benchmark.md): the counted runs get
             # as many presents as -RaceSeconds of the warm-up's race, when that is more.
@@ -476,23 +593,24 @@ if ($Configs -contains 'profile' -and (Test-Path -LiteralPath $map)) { Copy-Item
 # The py launcher first: 'python' may be the Microsoft Store's stand-in,
 # which runs nothing.
 $summary = Join-Path $PSScriptRoot 'benchmark_summary.py'
-foreach ($python in @(@('py', '-3'), @('python'))) {
+if (-not $GameplayTicks) { foreach ($python in @(@('py', '-3'), @('python'))) {
     if (-not (Get-Command $python[0] -ErrorAction SilentlyContinue)) { continue }
     $rest = @($python | Select-Object -Skip 1)
     & $python[0] @rest $summary $Out --skip $Skip
     if ($Configs -contains 'profile') { & $python[0] @rest (Join-Path $PSScriptRoot 'profile_summary.py') $Out }
     if (Test-Path -LiteralPath (Join-Path $Out 'summary.md')) { break }
-}
+} }
 # What goes to someone else is a copy without the user name, the language and
 # country, the profile id and the screenshots (scripts\anonymize_benchmark.py);
 # the folder itself stays as it is, for you.
-foreach ($python in @(@('py', '-3'), @('python'))) {
+if (-not $GameplayTicks -and -not $NoShareArchive) { foreach ($python in @(@('py', '-3'), @('python'))) {
     if (-not (Get-Command $python[0] -ErrorAction SilentlyContinue)) { continue }
     $rest = @($python | Select-Object -Skip 1)
     & $python[0] @rest (Join-Path $PSScriptRoot 'anonymize_benchmark.py') $Out --also $env:COMPUTERNAME --also $env:USERNAME
     if (Get-ChildItem -Path "$Out-shareable*.zip" -ErrorAction SilentlyContinue) { break }
-}
-if (Test-Path -LiteralPath (Join-Path $Out 'summary.md')) { Write-Output "Logs and summary.md are in $Out" }
+} }
+if ($GameplayTicks) { Write-Output "Semantic progress logs are in $Out; suite metadata validation is separate." }
+elseif (Test-Path -LiteralPath (Join-Path $Out 'summary.md')) { Write-Output "Logs and summary.md are in $Out" }
 else { Write-Output "No Python ran the summary; the logs are in $Out (python scripts\benchmark_summary.py `"$Out`")" }
 } finally {
     if ($process -and -not $process.HasExited) { $process.Kill(); $process.WaitForExit() }
