@@ -1035,8 +1035,9 @@ SFR_MENU_HOOK(sub_82494658) {
     ++input_frames;
     // Relay Race: "Swap out with the next player" (the menu manager's +0x68
     // bit 0x8) waits for the racer to leave the sensor and somebody new to
-    // step in. A on any controller is that swap, and the controller that
-    // pressed it drives the next racer.
+    // step in. A or BACK (the No Kinect Patch's swap, Issue #109) on any
+    // controller is that swap, and the controller that pressed it drives the
+    // next racer.
     {
         static sfr::NuiPadEdges relay_edges[4];
         uint16_t relay_pressed[4]{};
@@ -1065,12 +1066,13 @@ SFR_MENU_HOOK(sub_82494658) {
         const bool wants_swap=relay && ((racing && gate_armed) ||
             (menu_manager && input_frames-menu_manager_frame<=2 && (memory.load<uint32_t>(menu_manager+0x68)&8)));
         if(wants_swap && !relay_out.load(std::memory_order_relaxed)) {
+            constexpr uint16_t swap_buttons=sfr::gamepad_button::a | sfr::gamepad_button::back;
             for(uint32_t user=0; user<4; ++user) {
-                if(!(relay_pressed[user] & sfr::gamepad_button::a)) continue;
+                if(!(relay_pressed[user] & swap_buttons)) continue;
                 relay_next_pad.store(user,std::memory_order_relaxed);
                 relay_out.store(45,std::memory_order_relaxed);
                 gate_armed=false;
-                pressed&=~sfr::gamepad_button::a;  // the swap, not an "ok"
+                pressed&=uint16_t(~swap_buttons);  // the swap, not an "ok"
                 std::cerr << "NUI_RELAY_SWAP out controller=" << user << '\n';
                 break;
             }
@@ -1087,12 +1089,13 @@ SFR_MENU_HOOK(sub_82494658) {
     // run the pause menu (the first pad's are heard the whole race as well).
     namespace pad=sfr::gamepad_button;
     if(racing) spoken|=uint16_t(second_pressed & (pad::start|pad::a|pad::b|pad::x|pad::dpad_up|pad::dpad_down));
-    // A (and B for a yes/no dialog) of an open hand-pointer dialog are the
+    // A and X (and B for a yes/no dialog) of an open hand-pointer dialog are the
     // dialog's (823EF348 below). Spoken as well, one press both answered the
     // pause menu's Retry confirmation by voice and chose "yes" again: the
     // confirmation came back during the restart and stayed on screen.
     if(dialog_seen && input_frames-dialog_frame<=2)
-        spoken&=uint16_t(~(sfr::gamepad_button::a | (dialog_layout==4 ? sfr::gamepad_button::b : 0)));
+        spoken&=uint16_t(~(sfr::gamepad_button::a | sfr::gamepad_button::x |
+                           (dialog_layout==4 ? sfr::gamepad_button::b : 0)));
     // B of a menu with a back button is that button's (824578F0 below).
     if((pressed & sfr::gamepad_button::b) && menu_manager && input_frames-menu_manager_frame<=2) {
         bool back=false;

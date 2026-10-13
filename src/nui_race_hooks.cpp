@@ -890,6 +890,46 @@ RACE_DETECTOR(822CE118, {
     }
 })
 
+// Holding hands (Tag Race): both players holding LT, as in the No Kinect
+// Patch (Issue #109). The original asks about the team, not one source: the
+// first two racers of [83E52FDC] (+36 begin, +40 end), each with racer +108
+// at 0 or 3, and one's hand within reach of the other's (+20 bit 0x200 of
+// the result, the answer kept at +76).
+PPC_FUNC_IMPL(__imp__sub_822C8D88);
+SFR_INPUT_HOOK(sub_822C8D88) {
+    sfr::enter_function(ctx, "sub_822C8D88", 0x822C8D88);
+    if (!pad_racing() || !two_players || camera_player(0) || camera_player(1)) {
+        __imp__sub_822C8D88(ctx, base);
+        return;
+    }
+    const uint32_t detector = ctx.r3.u32, results = ctx.r5.u32;
+    const auto racer_ready = [&](uint32_t index) {
+        const uint32_t team = memory().load<uint32_t>(0x83E52FDC);
+        if (!team || int32_t(memory().load<uint32_t>(team + 20)) <= int32_t(index)) return false;
+        const uint32_t begin = memory().load<uint32_t>(team + 36), end = memory().load<uint32_t>(team + 40);
+        if (end <= begin || (end - begin) / 4 <= index) return false;
+        const uint32_t racer = memory().load<uint32_t>(begin + index * 4);
+        if (!racer) return false;
+        const uint32_t state = memory().load<uint32_t>(racer + 108);
+        return state == 0 || state == 3;
+    };
+    uint32_t result = 2;
+    if (racer_ready(0) && racer_ready(1) && race[input_player(0, true)].body().left_trigger &&
+        race[input_player(1, true)].body().left_trigger) {
+        set_bits(entry(results) + 20, 0x200);
+        result = 1;
+    }
+    {
+        static uint32_t last = 0;
+        if (result != last) {
+            last = result;
+            std::cerr << "NUI_TAG_HANDS held=" << (result == 1) << '\n';
+        }
+    }
+    memory().store<uint32_t>(detector + 76, result);
+    ctx.r3.u64 = result;
+}
+
 // The detector at 821A2484 (original 822CB9B8) uses the one at 821A2344
 // (822C8958) while the pad drives the race.
 PPC_FUNC_IMPL(__imp__sub_822C8958);

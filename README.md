@@ -248,6 +248,8 @@ beside itself. Linux and Android builds, and what each step does, are in
 | Switch stance | V | Y |
 | Use / shake an item | F | RT |
 | Skills | Q / E | LB / RB |
+| Hold hands (Tag Race, both players) | R | LT |
+| Swap in the next racer (Relay Race) | Z or Tab | A or BACK |
 | Hand cursor (Kinect-only menus) | I J K L | Right stick |
 
 Xbox and PlayStation controllers both work. On Android, translucent touch

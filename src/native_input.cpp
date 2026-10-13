@@ -107,13 +107,16 @@ GamepadState scripted_gamepad(const std::string& script, double seconds) {
             {"rup", {1, 2}}, {"rdown", {1, 3}}, {"rleft", {1, 0}}, {"rright", {1, 1}}};
         const auto stick = std::find_if(std::begin(sticks), std::end(sticks),
                                         [&](const auto& item) { return name == item.first; });
-        if (button == std::end(names) && stick == std::end(sticks))
+        // Triggers: lt and rt (fully pulled).
+        const bool trigger = name == "lt" || name == "rt";
+        if (button == std::end(names) && stick == std::end(sticks) && !trigger)
             throw RuntimeStop("input-script", 0, "unknown button: " + name);
         const size_t plus = entry.find('+', at);
         const double start = std::stod(entry.substr(at + 1, plus == std::string::npos ? std::string::npos : plus - at - 1));
         const double duration = plus == std::string::npos ? 0.25 : std::stod(entry.substr(plus + 1));
         if (seconds < start || seconds >= start + duration) continue;
         if (button != std::end(names)) { state.buttons |= button->second; continue; }
+        if (trigger) { (name == "lt" ? state.left_trigger : state.right_trigger) = 255; continue; }
         const auto [side, direction] = stick->second;
         int16_t& x = side ? state.thumb_rx : state.thumb_lx;
         int16_t& y = side ? state.thumb_ry : state.thumb_ly;
