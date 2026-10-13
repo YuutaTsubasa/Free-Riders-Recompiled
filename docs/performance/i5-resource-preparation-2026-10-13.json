@@ -1,0 +1,1249 @@
+{
+  "schema": "resource_preparation_evidence_v1",
+  "source_report_sha256": "E3B1EA3B936E1D73C68C37DD938E78ABEA7CAC3D469D6EEA45A8CDEAEF6B7A8D",
+  "scope": "Development snapshots 4e72384 to 201b50f only; not upstream/main versus this PR, and not the total resource rewrite.",
+  "development_build_labels": {
+    "before": "4e72384",
+    "after": "201b50f"
+  },
+  "hardware": {
+    "cpu": "Intel Core i5-3470",
+    "gpu": "AMD Radeon RX 480",
+    "memory": "DDR3-1333"
+  },
+  "mode": {
+    "backend": "D3D12",
+    "width": 1280,
+    "height": 720,
+    "render_percent": 100,
+    "audio": true,
+    "fixed_step": true,
+    "managed_constants": true,
+    "managed_texture_state": true,
+    "managed_stencil_state": true,
+    "managed_buffers": false,
+    "direct_constant_upload": false
+  },
+  "protocol": "gameplay_v1",
+  "valid": true,
+  "runs": [
+    {
+      "stage": "verify",
+      "config": "semantic-verify",
+      "repeat": 1,
+      "valid": true,
+      "exit_code": 3,
+      "sha256": "E809EBC4FE2731D3B952761175AC60A1BAE48010C9567AC3052ED6394B5CAD82",
+      "texture_timing": "disabled",
+      "progress_valid": true,
+      "contract": "solo_fixed_v1",
+      "simulation_ticks": 5400,
+      "countdown": {
+        "frames": 300,
+        "fps": 46.05833533815032,
+        "mean_ms": 21.711596666666665,
+        "p95_ms": 24.3469,
+        "p99_ms": 51.6294,
+        "max_ms": 237.861,
+        "over_33_33": 6
+      },
+      "racing": {
+        "frames": 5100,
+        "fps": 49.2778962501607,
+        "mean_ms": 20.293074098039217,
+        "p95_ms": 25.0828,
+        "p99_ms": 50.9333,
+        "max_ms": 283.629,
+        "over_33_33": 108
+      },
+      "combined": {
+        "frames": 5400,
+        "fps": 49.0872690914068,
+        "mean_ms": 20.37188090740741,
+        "p95_ms": 25.0557,
+        "p99_ms": 51.2163,
+        "max_ms": 283.629,
+        "over_33_33": 114
+      },
+      "race_window": {
+        "start_tick": 1200,
+        "end_tick": 4500,
+        "frames": 3300,
+        "fps": 48.72865801616924,
+        "mean_ms": 20.521804636363637,
+        "p95_ms": 25.3315,
+        "p99_ms": 50.1515,
+        "max_ms": 257.866,
+        "over_33_33": 70
+      },
+      "observed_game_config": [
+        1,
+        2,
+        1,
+        0,
+        3,
+        60,
+        0
+      ]
+    },
+    {
+      "stage": "control",
+      "config": "semantic-before",
+      "repeat": 1,
+      "valid": true,
+      "exit_code": 3,
+      "sha256": "CF9E2E3A463F0A4FDC4880E3D8E001E7BB34E2A5956FC9839FF6BD07441A3465",
+      "texture_timing": "enabled (legacy marker absent)",
+      "progress_valid": true,
+      "contract": "solo_fixed_v1",
+      "simulation_ticks": 5400,
+      "countdown": {
+        "frames": 300,
+        "fps": 45.144293350507425,
+        "mean_ms": 22.151194,
+        "p95_ms": 24.3138,
+        "p99_ms": 69.156,
+        "max_ms": 262.45,
+        "over_33_33": 6
+      },
+      "racing": {
+        "frames": 5100,
+        "fps": 51.46860190789687,
+        "mean_ms": 19.42932123529412,
+        "p95_ms": 24.0035,
+        "p99_ms": 50.8509,
+        "max_ms": 264.503,
+        "over_33_33": 90
+      },
+      "combined": {
+        "frames": 5400,
+        "fps": 51.07112390278833,
+        "mean_ms": 19.580536388888888,
+        "p95_ms": 24.0187,
+        "p99_ms": 51.369,
+        "max_ms": 264.503,
+        "over_33_33": 96
+      },
+      "race_window": {
+        "start_tick": 1200,
+        "end_tick": 4500,
+        "frames": 3300,
+        "fps": 50.972411270443125,
+        "mean_ms": 19.61845584848485,
+        "p95_ms": 24.5027,
+        "p99_ms": 50.8509,
+        "max_ms": 264.503,
+        "over_33_33": 58
+      },
+      "observed_game_config": [
+        1,
+        2,
+        1,
+        0,
+        3,
+        60,
+        0
+      ]
+    },
+    {
+      "stage": "control",
+      "config": "semantic-control",
+      "repeat": 1,
+      "valid": true,
+      "exit_code": 3,
+      "sha256": "CF9E2E3A463F0A4FDC4880E3D8E001E7BB34E2A5956FC9839FF6BD07441A3465",
+      "texture_timing": "enabled (legacy marker absent)",
+      "progress_valid": true,
+      "contract": "solo_fixed_v1",
+      "simulation_ticks": 5400,
+      "countdown": {
+        "frames": 300,
+        "fps": 44.669599742071775,
+        "mean_ms": 22.386589666666666,
+        "p95_ms": 26.8256,
+        "p99_ms": 69.0964,
+        "max_ms": 225.391,
+        "over_33_33": 10
+      },
+      "racing": {
+        "frames": 5100,
+        "fps": 51.76739625841704,
+        "mean_ms": 19.317177843137255,
+        "p95_ms": 23.7397,
+        "p99_ms": 52.8867,
+        "max_ms": 330.01,
+        "over_33_33": 89
+      },
+      "combined": {
+        "frames": 5400,
+        "fps": 51.31441693681593,
+        "mean_ms": 19.487700722222222,
+        "p95_ms": 23.8419,
+        "p99_ms": 53.5751,
+        "max_ms": 330.01,
+        "over_33_33": 99
+      },
+      "race_window": {
+        "start_tick": 1200,
+        "end_tick": 4500,
+        "frames": 3300,
+        "fps": 50.97210279668775,
+        "mean_ms": 19.618574575757577,
+        "p95_ms": 24.1714,
+        "p99_ms": 53.2828,
+        "max_ms": 259.605,
+        "over_33_33": 61
+      },
+      "observed_game_config": [
+        1,
+        2,
+        1,
+        0,
+        3,
+        60,
+        0
+      ]
+    },
+    {
+      "stage": "control",
+      "config": "semantic-before",
+      "repeat": 2,
+      "valid": true,
+      "exit_code": 3,
+      "sha256": "CF9E2E3A463F0A4FDC4880E3D8E001E7BB34E2A5956FC9839FF6BD07441A3465",
+      "texture_timing": "enabled (legacy marker absent)",
+      "progress_valid": true,
+      "contract": "solo_fixed_v1",
+      "simulation_ticks": 5400,
+      "countdown": {
+        "frames": 300,
+        "fps": 44.52492968623104,
+        "mean_ms": 22.459328,
+        "p95_ms": 23.9357,
+        "p99_ms": 71.6824,
+        "max_ms": 420.557,
+        "over_33_33": 7
+      },
+      "racing": {
+        "frames": 5100,
+        "fps": 51.84290287076619,
+        "mean_ms": 19.289043333333332,
+        "p95_ms": 23.6547,
+        "p99_ms": 50.016,
+        "max_ms": 277.652,
+        "over_33_33": 92
+      },
+      "combined": {
+        "frames": 5400,
+        "fps": 51.37381213114828,
+        "mean_ms": 19.46517025925926,
+        "p95_ms": 23.6891,
+        "p99_ms": 50.1494,
+        "max_ms": 420.557,
+        "over_33_33": 99
+      },
+      "race_window": {
+        "start_tick": 1200,
+        "end_tick": 4500,
+        "frames": 3300,
+        "fps": 51.30628084260554,
+        "mean_ms": 19.49079106060606,
+        "p95_ms": 24.0269,
+        "p99_ms": 51.8972,
+        "max_ms": 250.795,
+        "over_33_33": 58
+      },
+      "observed_game_config": [
+        1,
+        2,
+        1,
+        0,
+        3,
+        60,
+        0
+      ]
+    },
+    {
+      "stage": "control",
+      "config": "semantic-control",
+      "repeat": 2,
+      "valid": true,
+      "exit_code": 3,
+      "sha256": "CF9E2E3A463F0A4FDC4880E3D8E001E7BB34E2A5956FC9839FF6BD07441A3465",
+      "texture_timing": "enabled (legacy marker absent)",
+      "progress_valid": true,
+      "contract": "solo_fixed_v1",
+      "simulation_ticks": 5400,
+      "countdown": {
+        "frames": 300,
+        "fps": 47.49005858943508,
+        "mean_ms": 21.057038666666667,
+        "p95_ms": 22.6294,
+        "p99_ms": 46.3736,
+        "max_ms": 256.812,
+        "over_33_33": 4
+      },
+      "racing": {
+        "frames": 5100,
+        "fps": 51.49157118418031,
+        "mean_ms": 19.42065423529412,
+        "p95_ms": 23.7045,
+        "p99_ms": 56.75,
+        "max_ms": 253.998,
+        "over_33_33": 98
+      },
+      "combined": {
+        "frames": 5400,
+        "fps": 51.25165647014644,
+        "mean_ms": 19.511564481481482,
+        "p95_ms": 23.6956,
+        "p99_ms": 56.75,
+        "max_ms": 256.812,
+        "over_33_33": 102
+      },
+      "race_window": {
+        "start_tick": 1200,
+        "end_tick": 4500,
+        "frames": 3300,
+        "fps": 50.91094985720844,
+        "mean_ms": 19.642139909090908,
+        "p95_ms": 24.4247,
+        "p99_ms": 57.5978,
+        "max_ms": 253.998,
+        "over_33_33": 69
+      },
+      "observed_game_config": [
+        1,
+        2,
+        1,
+        0,
+        3,
+        60,
+        0
+      ]
+    },
+    {
+      "stage": "compare",
+      "config": "semantic-before",
+      "repeat": 1,
+      "valid": true,
+      "exit_code": 3,
+      "sha256": "CF9E2E3A463F0A4FDC4880E3D8E001E7BB34E2A5956FC9839FF6BD07441A3465",
+      "texture_timing": "enabled (legacy marker absent)",
+      "progress_valid": true,
+      "contract": "solo_fixed_v1",
+      "simulation_ticks": 5400,
+      "countdown": {
+        "frames": 300,
+        "fps": 47.54215685865896,
+        "mean_ms": 21.033963666666665,
+        "p95_ms": 24.032,
+        "p99_ms": 49.799,
+        "max_ms": 258.692,
+        "over_33_33": 5
+      },
+      "racing": {
+        "frames": 5100,
+        "fps": 51.615863971835466,
+        "mean_ms": 19.37388862745098,
+        "p95_ms": 23.952,
+        "p99_ms": 52.5879,
+        "max_ms": 264.914,
+        "over_33_33": 96
+      },
+      "combined": {
+        "frames": 5400,
+        "fps": 51.371318778743436,
+        "mean_ms": 19.46611501851852,
+        "p95_ms": 23.9546,
+        "p99_ms": 52.5879,
+        "max_ms": 264.914,
+        "over_33_33": 101
+      },
+      "race_window": {
+        "start_tick": 1200,
+        "end_tick": 4500,
+        "frames": 3300,
+        "fps": 50.862375585388946,
+        "mean_ms": 19.660898424242426,
+        "p95_ms": 24.4177,
+        "p99_ms": 54.9906,
+        "max_ms": 264.914,
+        "over_33_33": 65
+      },
+      "observed_game_config": [
+        1,
+        2,
+        1,
+        0,
+        3,
+        60,
+        0
+      ]
+    },
+    {
+      "stage": "compare",
+      "config": "semantic-after",
+      "repeat": 1,
+      "valid": true,
+      "exit_code": 3,
+      "sha256": "E809EBC4FE2731D3B952761175AC60A1BAE48010C9567AC3052ED6394B5CAD82",
+      "texture_timing": "disabled",
+      "progress_valid": true,
+      "contract": "solo_fixed_v1",
+      "simulation_ticks": 5400,
+      "countdown": {
+        "frames": 300,
+        "fps": 44.320483662937875,
+        "mean_ms": 22.562930666666666,
+        "p95_ms": 27.2135,
+        "p99_ms": 70.8153,
+        "max_ms": 275.337,
+        "over_33_33": 10
+      },
+      "racing": {
+        "frames": 5100,
+        "fps": 51.60165282522312,
+        "mean_ms": 19.379224215686275,
+        "p95_ms": 23.7979,
+        "p99_ms": 54.2177,
+        "max_ms": 282.495,
+        "over_33_33": 98
+      },
+      "combined": {
+        "frames": 5400,
+        "fps": 51.13494837013636,
+        "mean_ms": 19.556096796296295,
+        "p95_ms": 24.025,
+        "p99_ms": 55.7562,
+        "max_ms": 282.495,
+        "over_33_33": 108
+      },
+      "race_window": {
+        "start_tick": 1200,
+        "end_tick": 4500,
+        "frames": 3300,
+        "fps": 50.889172163722755,
+        "mean_ms": 19.650545636363635,
+        "p95_ms": 24.4003,
+        "p99_ms": 57.7815,
+        "max_ms": 282.495,
+        "over_33_33": 69
+      },
+      "observed_game_config": [
+        1,
+        2,
+        1,
+        0,
+        3,
+        60,
+        0
+      ]
+    },
+    {
+      "stage": "compare",
+      "config": "semantic-before",
+      "repeat": 2,
+      "valid": true,
+      "exit_code": 3,
+      "sha256": "CF9E2E3A463F0A4FDC4880E3D8E001E7BB34E2A5956FC9839FF6BD07441A3465",
+      "texture_timing": "enabled (legacy marker absent)",
+      "progress_valid": true,
+      "contract": "solo_fixed_v1",
+      "simulation_ticks": 5400,
+      "countdown": {
+        "frames": 300,
+        "fps": 42.970114357081506,
+        "mean_ms": 23.271988333333333,
+        "p95_ms": 27.5813,
+        "p99_ms": 59.571,
+        "max_ms": 458.983,
+        "over_33_33": 12
+      },
+      "racing": {
+        "frames": 5100,
+        "fps": 51.631991060173846,
+        "mean_ms": 19.36783725490196,
+        "p95_ms": 23.8871,
+        "p99_ms": 51.6063,
+        "max_ms": 282.75,
+        "over_33_33": 92
+      },
+      "combined": {
+        "frames": 5400,
+        "fps": 51.06017638936501,
+        "mean_ms": 19.584734537037036,
+        "p95_ms": 24.2117,
+        "p99_ms": 52.3272,
+        "max_ms": 458.983,
+        "over_33_33": 104
+      },
+      "race_window": {
+        "start_tick": 1200,
+        "end_tick": 4500,
+        "frames": 3300,
+        "fps": 51.0276773983042,
+        "mean_ms": 19.59720784848485,
+        "p95_ms": 24.8127,
+        "p99_ms": 54.6635,
+        "max_ms": 282.75,
+        "over_33_33": 64
+      },
+      "observed_game_config": [
+        1,
+        2,
+        1,
+        0,
+        3,
+        60,
+        0
+      ]
+    },
+    {
+      "stage": "compare",
+      "config": "semantic-after",
+      "repeat": 2,
+      "valid": true,
+      "exit_code": 3,
+      "sha256": "E809EBC4FE2731D3B952761175AC60A1BAE48010C9567AC3052ED6394B5CAD82",
+      "texture_timing": "disabled",
+      "progress_valid": true,
+      "contract": "solo_fixed_v1",
+      "simulation_ticks": 5400,
+      "countdown": {
+        "frames": 300,
+        "fps": 47.38202617800088,
+        "mean_ms": 21.105049333333334,
+        "p95_ms": 24.0411,
+        "p99_ms": 46.4544,
+        "max_ms": 208.073,
+        "over_33_33": 5
+      },
+      "racing": {
+        "frames": 5100,
+        "fps": 51.56150291048103,
+        "mean_ms": 19.39431443137255,
+        "p95_ms": 23.9677,
+        "p99_ms": 51.7816,
+        "max_ms": 318.136,
+        "over_33_33": 97
+      },
+      "combined": {
+        "frames": 5400,
+        "fps": 51.310060630400116,
+        "mean_ms": 19.48935525925926,
+        "p95_ms": 23.9752,
+        "p99_ms": 51.7816,
+        "max_ms": 318.136,
+        "over_33_33": 102
+      },
+      "race_window": {
+        "start_tick": 1200,
+        "end_tick": 4500,
+        "frames": 3300,
+        "fps": 51.30466184847071,
+        "mean_ms": 19.491406121212123,
+        "p95_ms": 24.5886,
+        "p99_ms": 50.5455,
+        "max_ms": 288.302,
+        "over_33_33": 61
+      },
+      "observed_game_config": [
+        1,
+        2,
+        1,
+        0,
+        3,
+        60,
+        0
+      ]
+    },
+    {
+      "stage": "compare",
+      "config": "semantic-before",
+      "repeat": 3,
+      "valid": true,
+      "exit_code": 3,
+      "sha256": "CF9E2E3A463F0A4FDC4880E3D8E001E7BB34E2A5956FC9839FF6BD07441A3465",
+      "texture_timing": "enabled (legacy marker absent)",
+      "progress_valid": true,
+      "contract": "solo_fixed_v1",
+      "simulation_ticks": 5400,
+      "countdown": {
+        "frames": 300,
+        "fps": 45.80721870157271,
+        "mean_ms": 21.830620333333332,
+        "p95_ms": 23.1029,
+        "p99_ms": 68.6836,
+        "max_ms": 239.854,
+        "over_33_33": 8
+      },
+      "racing": {
+        "frames": 5100,
+        "fps": 51.78441488492115,
+        "mean_ms": 19.31082937254902,
+        "p95_ms": 23.8023,
+        "p99_ms": 54.711,
+        "max_ms": 260.546,
+        "over_33_33": 100
+      },
+      "combined": {
+        "frames": 5400,
+        "fps": 51.411720184564764,
+        "mean_ms": 19.45081775925926,
+        "p95_ms": 23.8023,
+        "p99_ms": 56.2636,
+        "max_ms": 260.546,
+        "over_33_33": 108
+      },
+      "race_window": {
+        "start_tick": 1200,
+        "end_tick": 4500,
+        "frames": 3300,
+        "fps": 50.95100498556819,
+        "mean_ms": 19.626698242424244,
+        "p95_ms": 24.6319,
+        "p99_ms": 58.6145,
+        "max_ms": 260.546,
+        "over_33_33": 70
+      },
+      "observed_game_config": [
+        1,
+        2,
+        1,
+        0,
+        3,
+        60,
+        0
+      ]
+    },
+    {
+      "stage": "compare",
+      "config": "semantic-after",
+      "repeat": 3,
+      "valid": true,
+      "exit_code": 3,
+      "sha256": "E809EBC4FE2731D3B952761175AC60A1BAE48010C9567AC3052ED6394B5CAD82",
+      "texture_timing": "disabled",
+      "progress_valid": true,
+      "contract": "solo_fixed_v1",
+      "simulation_ticks": 5400,
+      "countdown": {
+        "frames": 300,
+        "fps": 47.14243016713248,
+        "mean_ms": 21.212313333333334,
+        "p95_ms": 24.0691,
+        "p99_ms": 46.7805,
+        "max_ms": 258.332,
+        "over_33_33": 5
+      },
+      "racing": {
+        "frames": 5100,
+        "fps": 51.652931012907445,
+        "mean_ms": 19.359985588235293,
+        "p95_ms": 24.0042,
+        "p99_ms": 50.7242,
+        "max_ms": 267.311,
+        "over_33_33": 85
+      },
+      "combined": {
+        "frames": 5400,
+        "fps": 51.37982396425494,
+        "mean_ms": 19.462892685185185,
+        "p95_ms": 24.0398,
+        "p99_ms": 50.7242,
+        "max_ms": 267.311,
+        "over_33_33": 90
+      },
+      "race_window": {
+        "start_tick": 1200,
+        "end_tick": 4500,
+        "frames": 3300,
+        "fps": 51.11617100621944,
+        "mean_ms": 19.563280666666667,
+        "p95_ms": 24.3526,
+        "p99_ms": 49.4698,
+        "max_ms": 264.167,
+        "over_33_33": 55
+      },
+      "observed_game_config": [
+        1,
+        2,
+        1,
+        0,
+        3,
+        60,
+        0
+      ]
+    },
+    {
+      "stage": "compare",
+      "config": "semantic-before",
+      "repeat": 4,
+      "valid": true,
+      "exit_code": 3,
+      "sha256": "CF9E2E3A463F0A4FDC4880E3D8E001E7BB34E2A5956FC9839FF6BD07441A3465",
+      "texture_timing": "enabled (legacy marker absent)",
+      "progress_valid": true,
+      "contract": "solo_fixed_v1",
+      "simulation_ticks": 5400,
+      "countdown": {
+        "frames": 300,
+        "fps": 47.87395515292354,
+        "mean_ms": 20.88818433333333,
+        "p95_ms": 23.0673,
+        "p99_ms": 49.3562,
+        "max_ms": 203.595,
+        "over_33_33": 5
+      },
+      "racing": {
+        "frames": 5100,
+        "fps": 51.81826828541409,
+        "mean_ms": 19.298213411764706,
+        "p95_ms": 23.8452,
+        "p99_ms": 49.9887,
+        "max_ms": 249.859,
+        "over_33_33": 90
+      },
+      "combined": {
+        "frames": 5400,
+        "fps": 51.582166565183364,
+        "mean_ms": 19.38654512962963,
+        "p95_ms": 23.8123,
+        "p99_ms": 49.9887,
+        "max_ms": 249.859,
+        "over_33_33": 95
+      },
+      "race_window": {
+        "start_tick": 1200,
+        "end_tick": 4500,
+        "frames": 3300,
+        "fps": 51.27317444938764,
+        "mean_ms": 19.503376,
+        "p95_ms": 24.5971,
+        "p99_ms": 50.8447,
+        "max_ms": 249.859,
+        "over_33_33": 57
+      },
+      "observed_game_config": [
+        1,
+        2,
+        1,
+        0,
+        3,
+        60,
+        0
+      ]
+    },
+    {
+      "stage": "compare",
+      "config": "semantic-after",
+      "repeat": 4,
+      "valid": true,
+      "exit_code": 3,
+      "sha256": "E809EBC4FE2731D3B952761175AC60A1BAE48010C9567AC3052ED6394B5CAD82",
+      "texture_timing": "disabled",
+      "progress_valid": true,
+      "contract": "solo_fixed_v1",
+      "simulation_ticks": 5400,
+      "countdown": {
+        "frames": 300,
+        "fps": 45.66154028612678,
+        "mean_ms": 21.900268666666665,
+        "p95_ms": 23.671,
+        "p99_ms": 67.3399,
+        "max_ms": 250.303,
+        "over_33_33": 8
+      },
+      "racing": {
+        "frames": 5100,
+        "fps": 51.777911970784004,
+        "mean_ms": 19.313254666666666,
+        "p95_ms": 23.8731,
+        "p99_ms": 51.0,
+        "max_ms": 265.365,
+        "over_33_33": 91
+      },
+      "combined": {
+        "frames": 5400,
+        "fps": 51.39544368769983,
+        "mean_ms": 19.456977666666667,
+        "p95_ms": 23.8562,
+        "p99_ms": 53.4478,
+        "max_ms": 265.365,
+        "over_33_33": 99
+      },
+      "race_window": {
+        "start_tick": 1200,
+        "end_tick": 4500,
+        "frames": 3300,
+        "fps": 51.38082238954773,
+        "mean_ms": 19.462514484848484,
+        "p95_ms": 24.3857,
+        "p99_ms": 53.5914,
+        "max_ms": 265.365,
+        "over_33_33": 59
+      },
+      "observed_game_config": [
+        1,
+        2,
+        1,
+        0,
+        3,
+        60,
+        0
+      ]
+    },
+    {
+      "stage": "compare",
+      "config": "semantic-before",
+      "repeat": 5,
+      "valid": true,
+      "exit_code": 3,
+      "sha256": "CF9E2E3A463F0A4FDC4880E3D8E001E7BB34E2A5956FC9839FF6BD07441A3465",
+      "texture_timing": "enabled (legacy marker absent)",
+      "progress_valid": true,
+      "contract": "solo_fixed_v1",
+      "simulation_ticks": 5400,
+      "countdown": {
+        "frames": 300,
+        "fps": 45.29739643248577,
+        "mean_ms": 22.076324,
+        "p95_ms": 24.1889,
+        "p99_ms": 67.5069,
+        "max_ms": 268.132,
+        "over_33_33": 8
+      },
+      "racing": {
+        "frames": 5100,
+        "fps": 52.067871164300946,
+        "mean_ms": 19.205701666666666,
+        "p95_ms": 23.4876,
+        "p99_ms": 49.5638,
+        "max_ms": 268.876,
+        "over_33_33": 82
+      },
+      "combined": {
+        "frames": 5400,
+        "fps": 51.639074081298055,
+        "mean_ms": 19.365180685185184,
+        "p95_ms": 23.5807,
+        "p99_ms": 49.6321,
+        "max_ms": 268.876,
+        "over_33_33": 90
+      },
+      "race_window": {
+        "start_tick": 1200,
+        "end_tick": 4500,
+        "frames": 3300,
+        "fps": 51.29875833500671,
+        "mean_ms": 19.493649212121213,
+        "p95_ms": 24.1747,
+        "p99_ms": 52.54,
+        "max_ms": 268.876,
+        "over_33_33": 57
+      },
+      "observed_game_config": [
+        1,
+        2,
+        1,
+        0,
+        3,
+        60,
+        0
+      ]
+    },
+    {
+      "stage": "compare",
+      "config": "semantic-after",
+      "repeat": 5,
+      "valid": true,
+      "exit_code": 3,
+      "sha256": "E809EBC4FE2731D3B952761175AC60A1BAE48010C9567AC3052ED6394B5CAD82",
+      "texture_timing": "disabled",
+      "progress_valid": true,
+      "contract": "solo_fixed_v1",
+      "simulation_ticks": 5400,
+      "countdown": {
+        "frames": 300,
+        "fps": 45.137759765738636,
+        "mean_ms": 22.154400333333335,
+        "p95_ms": 25.9492,
+        "p99_ms": 66.9757,
+        "max_ms": 244.721,
+        "over_33_33": 10
+      },
+      "racing": {
+        "frames": 5100,
+        "fps": 51.88668433637519,
+        "mean_ms": 19.27276743137255,
+        "p95_ms": 23.7345,
+        "p99_ms": 53.3313,
+        "max_ms": 267.274,
+        "over_33_33": 87
+      },
+      "combined": {
+        "frames": 5400,
+        "fps": 51.45923427096569,
+        "mean_ms": 19.43285814814815,
+        "p95_ms": 24.0389,
+        "p99_ms": 55.0531,
+        "max_ms": 267.274,
+        "over_33_33": 97
+      },
+      "race_window": {
+        "start_tick": 1200,
+        "end_tick": 4500,
+        "frames": 3300,
+        "fps": 51.451582848309265,
+        "mean_ms": 19.43574803030303,
+        "p95_ms": 24.4253,
+        "p99_ms": 53.3313,
+        "max_ms": 267.274,
+        "over_33_33": 57
+      },
+      "observed_game_config": [
+        1,
+        2,
+        1,
+        0,
+        3,
+        60,
+        0
+      ]
+    },
+    {
+      "stage": "compare",
+      "config": "semantic-before",
+      "repeat": 6,
+      "valid": true,
+      "exit_code": 3,
+      "sha256": "CF9E2E3A463F0A4FDC4880E3D8E001E7BB34E2A5956FC9839FF6BD07441A3465",
+      "texture_timing": "enabled (legacy marker absent)",
+      "progress_valid": true,
+      "contract": "solo_fixed_v1",
+      "simulation_ticks": 5400,
+      "countdown": {
+        "frames": 300,
+        "fps": 45.76452801806613,
+        "mean_ms": 21.850984666666665,
+        "p95_ms": 23.4916,
+        "p99_ms": 70.3357,
+        "max_ms": 253.828,
+        "over_33_33": 7
+      },
+      "racing": {
+        "frames": 5100,
+        "fps": 52.29698397725312,
+        "mean_ms": 19.121561588235295,
+        "p95_ms": 23.3752,
+        "p99_ms": 49.9331,
+        "max_ms": 263.442,
+        "over_33_33": 81
+      },
+      "combined": {
+        "frames": 5400,
+        "fps": 51.88553000917571,
+        "mean_ms": 19.273196203703705,
+        "p95_ms": 23.3851,
+        "p99_ms": 50.1354,
+        "max_ms": 263.442,
+        "over_33_33": 88
+      },
+      "race_window": {
+        "start_tick": 1200,
+        "end_tick": 4500,
+        "frames": 3300,
+        "fps": 51.54669988944154,
+        "mean_ms": 19.39988403030303,
+        "p95_ms": 23.833,
+        "p99_ms": 52.4947,
+        "max_ms": 263.442,
+        "over_33_33": 56
+      },
+      "observed_game_config": [
+        1,
+        2,
+        1,
+        0,
+        3,
+        60,
+        0
+      ]
+    },
+    {
+      "stage": "compare",
+      "config": "semantic-after",
+      "repeat": 6,
+      "valid": true,
+      "exit_code": 3,
+      "sha256": "E809EBC4FE2731D3B952761175AC60A1BAE48010C9567AC3052ED6394B5CAD82",
+      "texture_timing": "disabled",
+      "progress_valid": true,
+      "contract": "solo_fixed_v1",
+      "simulation_ticks": 5400,
+      "countdown": {
+        "frames": 300,
+        "fps": 44.68801398198581,
+        "mean_ms": 22.377365,
+        "p95_ms": 26.3854,
+        "p99_ms": 71.1161,
+        "max_ms": 257.189,
+        "over_33_33": 10
+      },
+      "racing": {
+        "frames": 5100,
+        "fps": 51.86734039643384,
+        "mean_ms": 19.279955215686275,
+        "p95_ms": 23.6669,
+        "p99_ms": 50.4525,
+        "max_ms": 271.982,
+        "over_33_33": 96
+      },
+      "combined": {
+        "frames": 5400,
+        "fps": 51.40850688417647,
+        "mean_ms": 19.452033537037035,
+        "p95_ms": 23.758,
+        "p99_ms": 52.0921,
+        "max_ms": 271.982,
+        "over_33_33": 106
+      },
+      "race_window": {
+        "start_tick": 1200,
+        "end_tick": 4500,
+        "frames": 3300,
+        "fps": 51.238947264153474,
+        "mean_ms": 19.51640409090909,
+        "p95_ms": 24.2387,
+        "p99_ms": 50.2131,
+        "max_ms": 271.982,
+        "over_33_33": 66
+      },
+      "observed_game_config": [
+        1,
+        2,
+        1,
+        0,
+        3,
+        60,
+        0
+      ]
+    }
+  ],
+  "paired_ratios": {
+    "control": {
+      "countdown": {
+        "paired_fps_ratios": [
+          0.9894849697889818,
+          1.0665948025993397
+        ],
+        "pairs": 2,
+        "complete": true,
+        "median_ratio": 1.0280398861941609,
+        "min_ratio": 0.9894849697889818,
+        "max_ratio": 1.0665948025993397,
+        "max_absolute_deviation_from_one": 0.0665948025993397
+      },
+      "racing": {
+        "paired_fps_ratios": [
+          1.0058053714195474,
+          0.9932231478730719
+        ],
+        "pairs": 2,
+        "complete": true,
+        "median_ratio": 0.9995142596463096,
+        "min_ratio": 0.9932231478730719,
+        "max_ratio": 1.0058053714195474,
+        "max_absolute_deviation_from_one": 0.0067768521269281345
+      },
+      "combined": {
+        "paired_fps_ratios": [
+          1.0047638081059407,
+          0.9976222192604669
+        ],
+        "pairs": 2,
+        "complete": true,
+        "median_ratio": 1.0011930136832037,
+        "min_ratio": 0.9976222192604669,
+        "max_ratio": 1.0047638081059407,
+        "max_absolute_deviation_from_one": 0.004763808105940681
+      },
+      "race_window": {
+        "paired_fps_ratios": [
+          0.9999939482212498,
+          0.9922946863638418
+        ],
+        "pairs": 2,
+        "complete": true,
+        "median_ratio": 0.9961443172925457,
+        "min_ratio": 0.9922946863638418,
+        "max_ratio": 0.9999939482212498,
+        "max_absolute_deviation_from_one": 0.007705313636158229
+      }
+    },
+    "compare": {
+      "countdown": {
+        "paired_fps_ratios": [
+          0.9322354430553288,
+          1.1026739604241311,
+          1.029148494569349,
+          0.9537866704405421,
+          0.9964758092226103,
+          0.9764771083041575
+        ],
+        "pairs": 6,
+        "complete": true,
+        "median_ratio": 0.9864764587633839,
+        "min_ratio": 0.9322354430553288,
+        "max_ratio": 1.1026739604241311,
+        "max_absolute_deviation_from_one": 0.10267396042413113
+      },
+      "racing": {
+        "paired_fps_ratios": [
+          0.999724674828264,
+          0.9986347969883504,
+          0.9974609373823013,
+          0.9992211952277562,
+          0.9965201798369282,
+          0.9917845438083742
+        ],
+        "pairs": 6,
+        "complete": true,
+        "median_ratio": 0.9980478671853259,
+        "min_ratio": 0.9917845438083742,
+        "max_ratio": 0.999724674828264,
+        "max_absolute_deviation_from_one": 0.00821545619162578
+      },
+      "combined": {
+        "paired_fps_ratios": [
+          0.9953987864390804,
+          1.0048939165256614,
+          0.9993795924315444,
+          0.9963800885089312,
+          0.9965173695785242,
+          0.9908062397181857
+        ],
+        "pairs": 6,
+        "complete": true,
+        "median_ratio": 0.9964487290437277,
+        "min_ratio": 0.9908062397181857,
+        "max_ratio": 1.0048939165256614,
+        "max_absolute_deviation_from_one": 0.00919376028181429
+      },
+      "race_window": {
+        "paired_fps_ratios": [
+          1.0005268448047382,
+          1.0054281218407113,
+          1.0032416636472241,
+          1.0020994982525677,
+          1.0029791074533332,
+          0.9940296347593902
+        ],
+        "pairs": 6,
+        "complete": true,
+        "median_ratio": 1.0025393028529503,
+        "min_ratio": 0.9940296347593902,
+        "max_ratio": 1.0054281218407113,
+        "max_absolute_deviation_from_one": 0.005970365240609787
+      }
+    }
+  },
+  "statistical_thresholds": {
+    "control/semantic-before/countdown": {
+      "replicates": 2,
+      "expected_replicates": 2,
+      "worst_replicate_p95_ms": 24.3138,
+      "worst_replicate_p99_ms": 71.6824,
+      "statistical_target_met": false
+    },
+    "control/semantic-before/racing": {
+      "replicates": 2,
+      "expected_replicates": 2,
+      "worst_replicate_p95_ms": 24.0035,
+      "worst_replicate_p99_ms": 50.8509,
+      "statistical_target_met": false
+    },
+    "control/semantic-before/combined": {
+      "replicates": 2,
+      "expected_replicates": 2,
+      "worst_replicate_p95_ms": 24.0187,
+      "worst_replicate_p99_ms": 51.369,
+      "statistical_target_met": false
+    },
+    "control/semantic-control/countdown": {
+      "replicates": 2,
+      "expected_replicates": 2,
+      "worst_replicate_p95_ms": 26.8256,
+      "worst_replicate_p99_ms": 69.0964,
+      "statistical_target_met": false
+    },
+    "control/semantic-control/racing": {
+      "replicates": 2,
+      "expected_replicates": 2,
+      "worst_replicate_p95_ms": 23.7397,
+      "worst_replicate_p99_ms": 56.75,
+      "statistical_target_met": false
+    },
+    "control/semantic-control/combined": {
+      "replicates": 2,
+      "expected_replicates": 2,
+      "worst_replicate_p95_ms": 23.8419,
+      "worst_replicate_p99_ms": 56.75,
+      "statistical_target_met": false
+    },
+    "compare/semantic-before/countdown": {
+      "replicates": 6,
+      "expected_replicates": 6,
+      "worst_replicate_p95_ms": 27.5813,
+      "worst_replicate_p99_ms": 70.3357,
+      "statistical_target_met": false
+    },
+    "compare/semantic-before/racing": {
+      "replicates": 6,
+      "expected_replicates": 6,
+      "worst_replicate_p95_ms": 23.952,
+      "worst_replicate_p99_ms": 54.711,
+      "statistical_target_met": false
+    },
+    "compare/semantic-before/combined": {
+      "replicates": 6,
+      "expected_replicates": 6,
+      "worst_replicate_p95_ms": 24.2117,
+      "worst_replicate_p99_ms": 56.2636,
+      "statistical_target_met": false
+    },
+    "compare/semantic-after/countdown": {
+      "replicates": 6,
+      "expected_replicates": 6,
+      "worst_replicate_p95_ms": 27.2135,
+      "worst_replicate_p99_ms": 71.1161,
+      "statistical_target_met": false
+    },
+    "compare/semantic-after/racing": {
+      "replicates": 6,
+      "expected_replicates": 6,
+      "worst_replicate_p95_ms": 24.0042,
+      "worst_replicate_p99_ms": 54.2177,
+      "statistical_target_met": false
+    },
+    "compare/semantic-after/combined": {
+      "replicates": 6,
+      "expected_replicates": 6,
+      "worst_replicate_p95_ms": 24.0398,
+      "worst_replicate_p99_ms": 55.7562,
+      "statistical_target_met": false
+    }
+  },
+  "displayed_60hz_verified": false,
+  "input_latency_verified": false,
+  "heavy_free_race_verified": false,
+  "limitations": [
+    "Verification and two control pairs were reused after an interruption before comparison; these controls do not prove quiet/noise throughout the later comparisons.",
+    "Pre-run load admission is not continuous load monitoring.",
+    "Present intervals do not separate CPU work, GPU work, scheduling or display latency.",
+    "The earlier legacy 38.38 to 60.13 FPS result had unequal loading/preparation workloads and is not accepted as a gameplay gain.",
+    "No trustworthy game CPU-function ranking was retained in the diagnostic trace.",
+    "The new upstream integration has focused local correctness checks, but no new target performance comparison."
+  ]
+}
