@@ -15,10 +15,12 @@ struct LauncherSettings {
     uint32_t window_width = 0, window_height = 0;
     // The rendering resolution as a percent of the output (window, or the
     // display in full screen) height: 100 draws as many lines as are shown.
-    // The game gets it as SFR_RENDER_SCALE, a percent of its 720 lines
-    // (internal_resolution). The old render_scale key (a percent of 1280x720)
-    // is ignored.
-    uint32_t resolution_scale = 100;
+    // 0 is Original, the game's own 720 lines whatever the output, which is
+    // what every earlier version drew and stays the default: a higher one
+    // costs a handheld or a phone its frame rate. The game gets it as
+    // SFR_RENDER_SCALE, a percent of its 720 lines (internal_resolution). The
+    // old render_scale key (a percent of 1280x720) is converted.
+    uint32_t resolution_scale = 0;
     // Not saved: the desktop size the launcher sees (0 = unknown), which full
     // screen shows the game at.
     uint32_t display_width = 0, display_height = 0;
@@ -26,7 +28,11 @@ struct LauncherSettings {
     // Auto follows the window/display shape; 16:9 keeps the original picture.
     // Neither changes the selected output resolution. Alignment affects the
     // race HUD in Auto and is ignored with 16:9.
-    std::string aspect_ratio = "auto";  // "auto" or "16:9"
+    // 16:9 until Auto is right everywhere: at 21:9 the two-player split, its
+    // On your Gear screen and the pause menu are still misplaced, and on a
+    // phone (about 20:9) Auto draws a quarter more and stretches the touch
+    // controls. Auto is the player's choice meanwhile.
+    std::string aspect_ratio = "16:9";  // "auto" or "16:9"
     std::string ui_align = "edge";      // "edge" or "center"
     bool vsync = false;
     bool audio = true;
@@ -173,8 +179,9 @@ bool parse_window_dimension(const std::string& text, uint32_t& value);
 // An unknown desktop leaves 1280x720.
 void apply_default_window_size(LauncherSettings& settings, uint32_t desktop_width, uint32_t desktop_height);
 
-// The resolution scale choices (percent of the output size: 0.25x to 3.0x in
-// steps of 0.25x, 25 to 300), in order. Anything else reads as 100.
+// The resolution scale choices: 0 (Original, 720 lines), then percents of
+// the output size, 0.25x to 3.0x in steps of 0.25x (25 to 300), in order.
+// Anything else reads as Original.
 const std::vector<uint32_t>& resolution_scale_choices();
 
 // A choice as the slider shows it: "0.25x", "0.5x", "0.75x", "1.0x", "1.25x".

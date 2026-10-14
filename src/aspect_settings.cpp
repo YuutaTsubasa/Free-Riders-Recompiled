@@ -1,4 +1,5 @@
 #include "aspect_settings.h"
+#include "render_scale.h"
 #include "native_presentation.h"
 
 #include <algorithm>
@@ -32,22 +33,16 @@ uint32_t size_env(const char* name) {
     return value >= 160 && value <= 16384 ? uint32_t(value) : 0;
 }
 
-// The render scale the presentation will apply (SFR_RENDER_SCALE, same rules),
-// so a width is never chosen that the scaled targets cannot hold (8192).
-uint32_t render_percent() {
-    const std::string value = lower_env("SFR_RENDER_SCALE");
-    for (const char* allowed : {"50", "75", "100", "150", "200", "300"})
-        if (value == allowed) return uint32_t(std::stoul(value));
-    return 100;
-}
 
 uint32_t decide_width(uint32_t guest_width, uint32_t guest_height) {
     if (original_mode()) {
         std::cerr << "NATIVE_ASPECT mode=original logical_width=" << guest_width << '\n';
         return guest_width;
     }
-    const uint32_t percent = render_percent();
-    const uint32_t most = std::min<uint32_t>(8192, 8192u * 100u / percent) & ~1u;
+    // The presentation lowers the render scale itself when a scaled side
+    // would pass 8192 (render_scale::fit_percent), so the width is not
+    // narrowed for it.
+    const uint32_t most = render_scale::max_extent;
     if (const char* forced = std::getenv("SFR_ASPECT_WIDTH"); forced && *forced) {
         const unsigned long value = std::strtoul(forced, nullptr, 10);
         if (value >= guest_width && value <= most) {
@@ -108,7 +103,8 @@ uint32_t decide_width(uint32_t guest_width, uint32_t guest_height) {
 }
 
 bool original_mode() {
-    static const bool original = lower_env("SFR_ASPECT_MODE") == "original";
+    // Auto is asked for; anything else (or nothing) keeps the title's 16:9.
+    static const bool original = lower_env("SFR_ASPECT_MODE") != "auto";
     return original;
 }
 

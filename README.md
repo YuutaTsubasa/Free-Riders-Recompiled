@@ -213,11 +213,12 @@ The launcher groups settings by what you want to change:
 **Graphics** starts with **Display Mode**: **Borderless** (default) fills the
 display, **Windowed** uses the window size chosen below it (the window size rows
 are shown only in Windowed mode). **Render Size** sits right below
-**Graphics backend**: it is a **resolution scale** of the output size (the
-display's in Borderless mode) from 0.25x to 3.0x in steps of 0.25x.
-1.0x (default) renders at exactly the window or desktop resolution; lower values
-reduce GPU load, higher values supersample. Changes to game settings apply on the
-next game launch.
+**Graphics backend**: **Original** (default) renders the game's own 720 lines,
+as every earlier version did, whatever the window or display. The other stops
+are a **resolution scale** of the output size (the display's in Borderless mode)
+from 0.25x to 3.0x in steps of 0.25x: 1.0x renders at exactly the window or
+desktop resolution, lower values reduce GPU load, higher values supersample.
+Changes to game settings apply on the next game launch.
 
 The window size defaults to the desktop size until you choose another. The last
 entry of the window size list, **Custom**, shows width and height boxes for any
@@ -231,8 +232,10 @@ settings file without it now starts in Borderless.
 The window size list also offers common ultrawide sizes (2560 x 720,
 2560 x 1080, 3440 x 1440, 5120 x 1440). Two more options sit in the same group:
 
-- **Aspect Ratio** (`aspect_ratio`): **Auto** (default) adapts the picture to the
-  window or display; **16:9** keeps the original picture. Both preserve the
+- **Aspect Ratio** (`aspect_ratio`): **16:9** (default) keeps the original
+  picture; **Auto** (experimental) adapts the picture to the window or display.
+  At 21:9 Auto still misplaces the two-player split screen, its On your Gear
+  screen and the pause menu, and on a phone it costs frame rate. Both preserve the
   selected output resolution. With Auto and a window (or display, in full
   screen) wider than 16:9, the race's 3D view is widened (hor+), the race HUD
   stays in a centered 16:9 area, menu, title and calibration backdrops fill the
@@ -426,11 +429,12 @@ and choose either backend before starting the game. New settings default to Vulk
 existing saved choices are preserved. Linux and Android use Vulkan.
 
 **Can I change the game's internal resolution?** Yes. **Render Size**
-is a resolution scale of the window (or display in Borderless mode) from 0.25x to
-3.0x in steps of 0.25x; 1.0x (default) matches the window/desktop resolution, so a 1920 x 1080
-window renders 1920 x 1080. Apply it before starting the game. Lower values may
-help a limited GPU; higher values supersample at a greater cost (each side is
-capped at 8192 pixels). An older `render_scale` setting is not carried over. See
+is **Original** (720 lines, the default) or a resolution scale of the window (or
+display in Borderless mode) from 0.25x to 3.0x in steps of 0.25x; 1.0x matches
+the window/desktop resolution, so a 1920 x 1080 window renders 1920 x 1080.
+Apply it before starting the game. Lower values may help a limited GPU; higher
+values supersample at a greater cost (each side is capped at 8192 pixels). An
+older `render_scale` setting becomes the nearest step for the saved window. See
 [Internal resolution](docs/internal-resolution.md).
 
 **How can I compare performance without changing game speed?** Keep the normal

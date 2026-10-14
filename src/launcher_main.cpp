@@ -74,7 +74,7 @@ namespace fs = std::filesystem;
 enum Text {
     TitleLine, Subtitle,
     TabDisplay, TabSound, TabGeneral, TabMotion, TabFiles,
-    WindowSize, DesktopSize, DisplayMode, DisplayModeHint, DisplayBorderless, DisplayWindowed, VSync, VSyncHint, RenderResolution, RenderResolutionHint,
+    WindowSize, DesktopSize, DisplayMode, DisplayModeHint, DisplayBorderless, DisplayWindowed, VSync, VSyncHint, RenderResolution, RenderResolutionHint, OriginalScale,
     Sound, SoundHint, Volume,
     SkipMovies, SkipMoviesHint,
     VertexCache, VertexCacheHint, GpuPipeline, GpuPipelineHint, RaceEvery, RaceEveryHint, TitleStats, TitleStatsHint,
@@ -143,6 +143,7 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Render Size", "渲染尺寸"},
     {"Lower values reduce GPU load; higher values supersample for a sharper picture.",
      "較低值可減輕 GPU 負擔，較高值以超取樣讓畫面更銳利。"},
+    {"Original (1280 x 720)", "原始（1280 x 720）"},
     {"Sound", "聲音"},
     {"Plays the game's sound on the default output device.", "在預設的輸出裝置播放遊戲聲音。"},
     {"Volume", "音量"},
@@ -411,8 +412,8 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Width and height in pixels (160 to 16384). Press Enter or leave the box to apply.",
      "寬度與高度（像素，160 到 16384）。按 Enter 或離開輸入框後套用。"},
     {"Aspect Ratio", "畫面比例"},
-    {"Auto adapts the picture to the window or display. 16:9 keeps the original picture.",
-     "自動會依視窗或螢幕形狀調整畫面；原始則維持遊戲原本的 16:9 畫面。"},
+    {"Auto adapts the picture to the window or display (experimental: at 21:9 the two-player split and the pause menu are not right yet). 16:9 keeps the original picture.",
+     "自動會依視窗或螢幕形狀調整畫面（實驗中：21:9 時雙人分割畫面與暫停選單仍有問題）；原始則維持遊戲原本的 16:9 畫面。"},
     {"Auto", "自動"},
     {"16:9", "原始"},
     {"UI Alignment Mode", "介面對齊"},
@@ -1875,7 +1876,8 @@ struct Launcher {
             int step = 0;
             for (int i = 0; i <= last; ++i)
                 if (choices[size_t(i)] == settings.resolution_scale) step = i;
-            const std::string shown = sfr::resolution_scale_label(choices[size_t(step)]);
+            const std::string shown = choices[size_t(step)] ? sfr::resolution_scale_label(choices[size_t(step)])
+                                                            : std::string(tr(OriginalScale));
             ImGui::SetNextItemWidth(combo_width);
             bool moved = ImGui::SliderInt("##resolution_scale", &step, 0, last, shown.c_str(), ImGuiSliderFlags_AlwaysClamp);
             moved |= slider_steps(&step, 0, last, 1);

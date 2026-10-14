@@ -5,7 +5,7 @@
 
 // Aspect-ratio settings (widescreen beyond 16:9), read once from the
 // environment the launcher hands over:
-//   SFR_ASPECT_MODE = auto (default, also when absent) | original
+//   SFR_ASPECT_MODE = auto | original (default, also when absent)
 //     auto: the logical back buffer takes the shape of the window (or of the
 //       display in full screen): the race's 3D is widened (hor+), the HUD is
 //       laid out per SFR_UI_ALIGN, the menus' backdrop fills the width and the

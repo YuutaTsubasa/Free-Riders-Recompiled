@@ -1,6 +1,7 @@
 #include "launcher_settings.h"
 #include "game_language.h"
 #include "render_scale.h"
+#include "aspect_settings.h"
 #include <algorithm>
 #include <charconv>
 #include <cstdio>
@@ -45,7 +46,7 @@ void read_flag(const std::string& text, bool& out) {
 uint32_t validated_resolution_scale(uint32_t scale) {
     for (const uint32_t choice : resolution_scale_choices())
         if (scale == choice) return scale;
-    return 100;
+    return 0;
 }
 
 // The game's logical frame (the title's 1280x720 back buffer).
@@ -74,7 +75,8 @@ std::string path_utf8(const std::filesystem::path& path) {
 
 LauncherSettings parse_launcher_settings(const std::string& text) {
     LauncherSettings settings;
-    bool ratio_seen = false;
+    bool ratio_seen = false, scale_seen = false;
+    uint32_t old_render_scale = 0;
     std::istringstream lines(text);
     std::string line;
     while (std::getline(lines, line)) {
@@ -84,12 +86,14 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         const std::string value = trim(std::string_view(line).substr(equals + 1));
         if (key == "window_width") read_number(value, 160, 16384, settings.window_width);
         else if (key == "window_height") read_number(value, 160, 16384, settings.window_height);
-        // The old render_scale key (a percent of 1280x720) is not read: the
-        // same number means something else relative to the window.
+        // The old render_scale key was a percent of 1280x720, converted below
+        // once the window is known.
+        else if (key == "render_scale") read_number(value, 1, 1000, old_render_scale);
         else if (key == "resolution_scale") {
-            uint32_t scale = 100;
-            read_number(value, 1, 1000, scale);
+            uint32_t scale = 0;
+            read_number(value, 0, 1000, scale);
             settings.resolution_scale = validated_resolution_scale(scale);
+            scale_seen = true;
         }
         else if (key == "aspect_ratio" && (value == "auto" || value == "16:9")) {
             settings.aspect_ratio = value;
@@ -143,6 +147,13 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         else if (key == "online_server" && value.size() <= 127) settings.online_server = value;
         else if (key == "online_name" && value.size() <= 15) settings.online_name = value;
     }
+    // render_scale=X drew X% of 720 lines. 100 is Original; another becomes
+    // the nearest step of the window that draws about as many lines.
+    if (!scale_seen && old_render_scale && old_render_scale != 100) {
+        const uint32_t output = settings.window_height ? settings.window_height : logical_height;
+        const uint32_t scale = (old_render_scale * logical_height + output / 2) / output;
+        settings.resolution_scale = std::clamp<uint32_t>((scale + 12) / 25 * 25, 25, 300);
+    }
     return settings;
 }
 
@@ -152,7 +163,7 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "window_width=" << s.window_width << '\n'
         << "window_height=" << s.window_height << '\n'
         << "resolution_scale=" << validated_resolution_scale(s.resolution_scale) << '\n'
-        << "aspect_ratio=" << (s.aspect_ratio == "16:9" ? "16:9" : "auto") << '\n'
+        << "aspect_ratio=" << (s.aspect_ratio == "auto" ? "auto" : "16:9") << '\n'
         << "ui_align=" << (s.ui_align == "center" ? "center" : "edge") << '\n'
         << "fullscreen=" << s.fullscreen << '\n'
         << "vsync=" << s.vsync << '\n'
@@ -450,6 +461,7 @@ void apply_default_window_size(LauncherSettings& settings, uint32_t desktop_widt
 const std::vector<uint32_t>& resolution_scale_choices() {
     static const std::vector<uint32_t> choices = [] {
         std::vector<uint32_t> values;
+        values.push_back(0);  // Original
         for (uint32_t percent = 25; percent <= 300; percent += 25) values.push_back(percent);
         return values;
     }();
@@ -483,12 +495,21 @@ InternalResolution internal_resolution(const LauncherSettings& s, uint32_t resol
 #ifdef __ANDROID__
     if (r.output_height > r.output_width) std::swap(r.output_width, r.output_height);  // played in landscape
 #endif
-    // percent of 720 = output_height * (scale / 100) / 720 * 100.
-    const uint64_t scaled = uint64_t(r.output_height) * validated_resolution_scale(resolution_scale);
-    r.requested_percent = uint32_t(std::clamp<uint64_t>((scaled + logical_height / 2) / logical_height,
-                                                        render_scale::min_percent, render_scale::max_percent));
-    // The game's logical frame is always 1280x720; only its scale changes.
+    // percent of 720 = output_height * (scale / 100) / 720 * 100; Original
+    // is 100 whatever the output.
+    const uint32_t chosen = validated_resolution_scale(resolution_scale);
+    const uint64_t scaled = uint64_t(r.output_height) * chosen;
+    r.requested_percent = chosen ? uint32_t(std::clamp<uint64_t>((scaled + logical_height / 2) / logical_height,
+                                                                 render_scale::min_percent, render_scale::max_percent))
+                                 : render_scale::default_percent;
+    // The logical frame is the title's 1280x720, widened in Auto for an
+    // output wider than 16:9 as the game widens it (aspect_settings.cpp).
     r.logical_width = logical_width;
+    if (s.aspect_ratio != "16:9" && r.output_height) {
+        const double exact = double(logical_height) * r.output_width / r.output_height;
+        const uint32_t wide = std::clamp<uint32_t>(uint32_t(std::lround(exact / 2.0)) * 2u, logical_width, 4096);
+        if (aspect::wider_than_16x9(wide, logical_height)) r.logical_width = wide;
+    }
     r.percent = render_scale::fit_percent(r.requested_percent, r.logical_width, logical_height);
     r.width = render_scale::scaled_extent(r.logical_width, r.percent);
     r.height = render_scale::scaled_extent(logical_height, r.percent);

@@ -7,15 +7,19 @@ Render Size is a **resolution scale** of the output: the
 window size, or the display size in full screen (Display Mode **Borderless**). Restart the game to apply a
 change.
 
-The slider goes from 0.25x to 3.0x in steps of 0.25x (12 stops: 0.25x, 0.5x,
-0.75x, 1.0x, 1.25x ... 3.0x). Some of the choices:
+The slider starts at **Original** (the default): the game's own 720 lines
+(1280 x 720 at 16:9) whatever the window or display, as every earlier version
+drew, so a handheld or a phone keeps its frame rate after an update. The other
+stops go from 0.25x to 3.0x in steps of 0.25x (0.25x, 0.5x, 0.75x, 1.0x,
+1.25x ... 3.0x). Some of the choices:
 
 | Resolution scale | Internal height | Example: 1920 x 1080 window | Example: 2560 x 1440 window |
 | --- | --- | --- | --- |
 | 0.25x | a quarter of the window's | 480 x 270 | 640 x 360 |
 | 0.5x | half the window's | 960 x 540 | 1280 x 720 |
 | 0.75x | three quarters | 1440 x 810 | 1920 x 1080 |
-| 1.0x (default) | the window's | 1920 x 1080 | 2560 x 1440 |
+| Original (default) | 720 lines | 1280 x 720 | 1280 x 720 |
+| 1.0x | the window's | 1920 x 1080 | 2560 x 1440 |
 | 1.5x | 1.5 times | 2880 x 1620 | 3840 x 2160 |
 | 2.0x | 2 times | 3840 x 2160 | 5120 x 2880 |
 | 2.5x | 2.5 times | 4800 x 2700 | 6400 x 3600 |
@@ -26,9 +30,14 @@ pixels of 1.0x and 3.0x draws 9 times, while 0.5x draws a quarter and 0.25x a
 sixteenth. GPU cost and memory follow the pixel count, so the top choices are
 meant for strong GPUs.
 
-The internal frame keeps the game's 16:9 shape; only its height follows the
-window. A window of another shape shows it with the existing aspect-ratio
-handling (for example a 3440 x 1440 window at 1.0x renders 2560 x 1440).
+With **Aspect Ratio** 16:9 the internal frame keeps the game's 16:9 shape;
+only its height follows the window (a 3440 x 1440 window at 1.0x renders
+2560 x 1440). With Auto, a window wider than 16:9 widens the frame to its shape
+(3440 x 1440 at 1.0x renders 3440 x 1440, and Original renders 1720 x 720).
+
+An older `settings.ini` with `render_scale` (a percent of 1280 x 720) is read
+once: 100 becomes Original, any other value the step that draws about as many
+lines in the saved window.
 
 1.0x draws exactly as many lines as the window or desktop shows, so the picture
 is not upscaled. Values below 1.0x reduce pixel shading and framebuffer memory,
