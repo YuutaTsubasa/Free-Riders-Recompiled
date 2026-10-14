@@ -366,6 +366,7 @@ struct NativePresentation::Impl {
     std::unique_ptr<plume::RenderTextureView> blit_view;
     std::vector<std::unique_ptr<plume::RenderFramebuffer>> blit_targets;
     std::pair<uint32_t, uint32_t> presented_area{0, 0};
+    float presented_aspect = 0.0f;
     void build_blit();
     void build_blit_targets();
 
@@ -1524,6 +1525,8 @@ std::pair<uint32_t, uint32_t> NativePresentation::target_size() const noexcept {
                          : std::pair{impl_->render_width, impl_->render_height};
 }
 
+float NativePresentation::presented_aspect() const noexcept { return impl_->presented_aspect; }
+
 std::pair<uint32_t, uint32_t> NativePresentation::presented_area() const noexcept {
     return impl_->presented_area.first ? impl_->presented_area : std::pair{impl_->width, impl_->height};
 }
@@ -1744,6 +1747,7 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
     const bool part = area_width && area_height && area_width <= impl_->width &&
                       area_height <= impl_->height && (area_width != impl_->width || area_height != impl_->height);
     impl_->presented_area = part ? std::pair{area_width, area_height} : std::pair{impl_->width, impl_->height};
+    impl_->presented_aspect = part ? display_aspect : 0.0f;
     const auto [shown_width, shown_height] = impl_->presented_area;
     // Scaled into the window keeping its shape, the rest black; a straight
     // copy when the window is exactly the framebuffer and supports transfers.

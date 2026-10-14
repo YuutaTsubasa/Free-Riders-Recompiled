@@ -107,6 +107,9 @@ public:
     std::optional<std::array<float, 16>> avatar_hand_transform(const AvatarPose&, uint32_t bone) const;
     // The area the last present stretched, or the framebuffer size.
     [[nodiscard]] std::pair<uint32_t, uint32_t> presented_area() const noexcept;
+    // The shape the last present gave that area (width / height), or 0 when
+    // it kept the area's own.
+    [[nodiscard]] float presented_aspect() const noexcept;
     // Records commands against the color/depth framebuffer with the current
     // viewport and scissor into the frame's open command list.
     void record(const std::function<void(plume::RenderCommandList&)>& body);
