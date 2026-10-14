@@ -90,6 +90,16 @@ through a 1P race on both Vulkan and D3D12, with a clean cache and save director
 Pack format `SFRSHPK2` includes shader ABI 12 before its entry count. The packer
 selects `v12-*` cache entries, and the runtime and release scripts reject legacy
 or incompatible packs. A previous pack must not merely be relabeled: rebuild
-it from shaders compiled for the current ABI. v0.2.0 shipped a legacy Vulkan
+it from shaders compiled for the current ABI. After an ABI change, the
+previous pack's sources can be translated again without replaying the game:
+
+```bash
+SFR_GRAPHICS=vulkan sfr_shader_cache_rebuild out/shaders/shaders.pack <new-cache>
+SFR_GRAPHICS=d3d12 sfr_shader_cache_rebuild out/shaders/shaders.pack <new-cache>
+python scripts/pack_shaders.py --cache <new-cache> --output <new shaders.pack>
+```
+
+Run it from the checkout (it uses the pinned translator and DXC there) and
+check that every entry has both DXIL and SPIR-V. v0.2.0 shipped a legacy Vulkan
 pack with three buffer addresses while its executable supplied five, causing
 white frames or device loss. This format guard prevents repeating that mix.
