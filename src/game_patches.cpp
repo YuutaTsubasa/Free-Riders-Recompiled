@@ -2,6 +2,8 @@
 #include "diagnostic_hooks.h"
 #include "wait_trace.h"
 #include "guest_memory.h"
+#include "guest_graphics.h"
+#include "aspect_settings.h"
 #include "native_input.h"
 #include "avatar_state.h"
 #include "avatar_transform.h"
@@ -42,6 +44,71 @@ SFR_CONCURRENT_HOOK(sub_82437F38) {
     __imp__sub_82437F38(ctx,base);
     std::cerr << "GAME_PATCH camera_image_slots object=0x" << std::hex << object
               << " initialized=" << std::dec << int(sfr::active_memory->load<uint8_t>(uint64_t(object)+77)) << '\n';
+}
+
+// The logical back-buffer width when it is wider than 16:9 (aspect_settings.h),
+// 0 when the title keeps its own 1280 (original mode, a 16:9 or narrower window).
+static uint32_t wide_logical_width() {
+    using namespace sfr::aspect;
+    const uint32_t width=logical_width(title_layout_width,title_layout_height);
+    return wider_than_16x9(width,title_layout_height) ? width : 0;
+}
+
+PPC_FUNC_IMPL(__imp__sub_8222AB40);
+PPC_FUNC_IMPL(__imp__sub_8222B058);
+PPC_FUNC_IMPL(__imp__sub_82242AB8);
+PPC_FUNC_IMPL(__imp__sub_823F29D8);
+
+// 3D cameras copy their default aspect from a global (0x82B34BE0) when they
+// are constructed. Refresh it from the view being drawn just before, so the
+// 1280/880-wide views (menus, calibration) get 16:9 and a full-width view
+// (a race) the framebuffer's, whatever the previous scene left there.
+static void refresh_camera_aspect() {
+    // Only while the back buffer is wider than 16:9 (aspect_settings.h);
+    // camera_aspect() answers 0 otherwise as well.
+    static const bool enabled=[]{ return wide_logical_width()!=0; }();
+    if(!enabled || !sfr::active_guest_graphics || !sfr::active_guest_graphics->created()) return;
+    const float aspect=sfr::active_guest_graphics->camera_aspect();
+    if(aspect<=0.0f) return;
+    const uint32_t address=0x82B34BE0;
+    sfr::active_memory->store<uint32_t>(address,std::bit_cast<uint32_t>(aspect));
+    sfr::active_memory->store<uint32_t>(address+4,std::bit_cast<uint32_t>(aspect*0.5f));
+}
+SFR_CONCURRENT_HOOK(sub_8222AB40) { sfr::enter_function(ctx,"sub_8222AB40",0x8222AB40); refresh_camera_aspect(); __imp__sub_8222AB40(ctx,base); }
+SFR_CONCURRENT_HOOK(sub_8222B058) { sfr::enter_function(ctx,"sub_8222B058",0x8222B058); refresh_camera_aspect(); __imp__sub_8222B058(ctx,base); }
+SFR_CONCURRENT_HOOK(sub_82242AB8) { sfr::enter_function(ctx,"sub_82242AB8",0x82242AB8); refresh_camera_aspect(); __imp__sub_82242AB8(ctx,base); }
+SFR_CONCURRENT_HOOK(sub_823F29D8) { sfr::enter_function(ctx,"sub_823F29D8",0x823F29D8); refresh_camera_aspect(); __imp__sub_823F29D8(ctx,base); }
+
+PPC_FUNC_IMPL(__imp__sub_8249B068);
+
+// Graphics object initialization. It copies the presentation parameters it is
+// given (word 0 = width) into its own record at +192, and takes the 2D screen
+// size (+116/+120) and the 3D aspect from there. A logical back buffer wider
+// than 16:9 (aspect_settings.h: the window's shape, or SFR_ASPECT_WIDTH) widens
+// the native back buffer (create_device); the guest's record has to say the
+// same, or the 3D view keeps a 16:9 aspect and is stretched across the frame.
+SFR_CONCURRENT_HOOK(sub_8249B068) {
+    sfr::enter_function(ctx,"sub_8249B068",0x8249B068);
+    if(const uint32_t value=wide_logical_width()) {
+        const uint32_t parameters=ctx.r3.u32;
+        if(parameters) {
+            sfr::active_memory->check_write(uint64_t(parameters),4);
+            if(sfr::active_memory->load<uint32_t>(uint64_t(parameters))==sfr::aspect::title_layout_width) {
+                sfr::active_memory->store<uint32_t>(uint64_t(parameters),value);
+                std::cerr << "GAME_PATCH aspect_width parameters=0x" << std::hex << parameters
+                          << std::dec << " width=" << value << '\n';
+            }
+        }
+        // The 3D cameras take their default aspect from a global the title keeps at
+        // 16/9 (0x82B34BE0, with 360.0 before it and aspect/2 after it).
+        const float aspect=float(value)/float(sfr::aspect::title_layout_height);
+        const uint32_t address=0x82B34BE0;
+        sfr::active_memory->check_write(address,8);
+        sfr::active_memory->store<uint32_t>(address,std::bit_cast<uint32_t>(aspect));
+        sfr::active_memory->store<uint32_t>(address+4,std::bit_cast<uint32_t>(aspect*0.5f));
+        std::cerr << "GAME_PATCH camera_aspect=" << aspect << '\n';
+    }
+    __imp__sub_8249B068(ctx,base);
 }
 
 PPC_FUNC_IMPL(__imp__sub_82817B48);

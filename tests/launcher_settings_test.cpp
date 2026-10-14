@@ -1,4 +1,5 @@
 #include "launcher_settings.h"
+#include "render_scale.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -126,45 +127,225 @@ void kinect_tuning_settings() {
     require(odd.kinect_lean == 100 && odd.kinect_crouch_cm == 15, "values outside the sliders are ignored");
 }
 
+void runtime_render_scale() {
+    namespace rs = sfr::render_scale;
+    bool valid = false;
+    require(rs::parse_percent(nullptr) == 100 && rs::parse_percent("") == 100, "no SFR_RENDER_SCALE is 100%");
+    require(rs::parse_percent("167", &valid) == 167 && valid, "any whole percent is accepted");
+    require(rs::parse_percent("10") == 25 && rs::parse_percent("900") == 800 && rs::parse_percent("99999999999") == 100,
+            "percents are clamped to 25..800, absurd numbers ignored");
+    require(rs::parse_percent("1.5", &valid) == 100 && !valid && rs::parse_percent("-50") == 100,
+            "malformed values fall back to 100%");
+    require(rs::fit_percent(800, 1280, 720) == 640 && rs::fit_percent(400, 4096, 720) == 200 &&
+            rs::fit_percent(150, 1720, 720) == 150, "the percent is lowered only past 8192 pixels");
+    require(rs::scaled_extent(1720, 201) == 3458 && rs::scaled_extent(720, 167) == 1202 &&
+            rs::scaled_extent(19, 75) == 14 && rs::scaled_extent(2, 25) == 2,
+            "even sides stay even, odd ones round to the nearest pixel");
+}
+void aspect_settings() {
+    const sfr::LauncherSettings defaults;
+    require(defaults.aspect_ratio == "16:9" && defaults.ui_align == "edge", "aspect defaults to 16:9 with edge alignment");
+    require(value_of(defaults, "SFR_ASPECT_MODE") == "original" && value_of(defaults, "SFR_UI_ALIGN") == "edge",
+            "the aspect variables are always set");
+    require(sfr::format_launcher_settings(defaults).find("aspect_ratio=16:9\n") != std::string::npos,
+            "16:9 is saved");
+    require(value_of(defaults, "SFR_ASPECT_RATIO").empty(), "Auto passes no ratio, the window's shape decides");
+    require(value_of(defaults, "SFR_WINDOW_WIDTH") == "1280", "Auto keeps the window width the player chose");
+    const auto center = sfr::parse_launcher_settings("aspect_ratio=auto\nui_align=center\n");
+    require(value_of(center, "SFR_UI_ALIGN") == "center", "center alignment reaches the game in auto mode");
+
+    const auto original = sfr::parse_launcher_settings("aspect_ratio=16:9\nui_align=center\nwindow_width=3440\nwindow_height=1440\n");
+    require(value_of(original, "SFR_ASPECT_MODE") == "original" && value_of(original, "SFR_ASPECT_RATIO").empty(),
+            "16:9 selects the original picture without a fixed ratio override");
+    require(value_of(original, "SFR_WINDOW_WIDTH") == "3440" && value_of(original, "SFR_WINDOW_HEIGHT") == "1440",
+            "original mode preserves the selected output resolution");
+    const auto saved = sfr::parse_launcher_settings(sfr::format_launcher_settings(original));
+    require(saved.aspect_ratio == "16:9" && saved.ui_align == "center", "hidden alignment choice is preserved");
+    require(value_of(saved, "SFR_UI_ALIGN") == "edge", "original mode ignores the stored alignment");
+    require(sfr::parse_launcher_settings("aspect_mode=original\n").aspect_ratio == "16:9", "old original is 16:9");
+    require(sfr::parse_launcher_settings("aspect_mode=auto\n").aspect_ratio == "auto", "old auto is auto");
+    require(sfr::parse_launcher_settings("aspect_ratio=auto\naspect_mode=original\n").aspect_ratio == "auto",
+            "new ratio key wins over the old key");
+    for (const char* ratio : {"21:9", "32:9", "48:9", "4:3"}) {
+        const auto bad = sfr::parse_launcher_settings(std::string("aspect_ratio=") + ratio + "\nui_align=left\n");
+        require(bad.aspect_ratio == "16:9" && bad.ui_align == "edge", "unsupported choices use defaults");
+    }
+    require(sfr::aspect_ratio_choices() == std::vector<std::string>{"auto", "16:9"}, "launcher offers only Auto and 16:9");
+    const auto wide = sfr::parse_launcher_settings("aspect_ratio=auto\nwindow_width=5120\nwindow_height=1440\nui_align=center\n");
+    require(value_of(wide, "SFR_WINDOW_WIDTH") == "5120" && value_of(wide, "SFR_WINDOW_HEIGHT") == "1440" &&
+            value_of(wide, "SFR_ASPECT_RATIO").empty() && value_of(wide, "SFR_UI_ALIGN") == "center",
+            "Auto preserves an ultrawide resolution and the chosen HUD alignment");
+    const auto sizes = sfr::common_window_sizes();
+    for (const auto& wide_size : {std::pair{2560u, 720u}, std::pair{2560u, 1080u}, std::pair{3440u, 1440u},
+                                  std::pair{5120u, 1440u}})
+        require(std::any_of(sizes.begin(), sizes.end(),
+                            [&](const sfr::WindowSize& s) {
+                                return s.width == wide_size.first && s.height == wide_size.second;
+                            }),
+                "the common window sizes include the ultrawide ones");
+}
+
 void rendering_resolution_settings() {
     const sfr::LauncherSettings defaults;
-    require(defaults.render_scale == 100, "the render scale defaults to 100 percent");
-    require(sfr::format_launcher_settings(defaults).find("render_scale=100\n") != std::string::npos,
-            "internal rendering defaults to native 1280x720");
+    require(defaults.resolution_scale == 0, "the resolution scale defaults to Original");
+    require(sfr::format_launcher_settings(defaults).find("resolution_scale=0\n") != std::string::npos,
+            "the resolution scale is saved as a percent, 0 for Original");
+    const auto& choices = sfr::resolution_scale_choices();
+    require(choices.size() == 13 && choices.front() == 0 && choices.back() == 300,
+            "Original, then 0.25x to 3.0x in 12 steps");
+    for (size_t i = 1; i < choices.size(); ++i)
+        require(choices[i] == 25 * i, "the choices are every multiple of 25 from 25 to 300");
+    // Original draws the game's own 720 lines whatever the output: what every
+    // earlier version drew, on a 4K display or a phone alike.
+    for (const char* window : {"window_width=3840\nwindow_height=2160\nfullscreen=0\n",
+                               "window_width=1920\nwindow_height=1080\nfullscreen=0\n"})
+        require(value_of(sfr::parse_launcher_settings(window), "SFR_RENDER_SCALE") == "100",
+                "Original renders 720 lines at any output size");
+    require(sfr::resolution_scale_label(25) == "0.25x" && sfr::resolution_scale_label(50) == "0.5x" &&
+            sfr::resolution_scale_label(75) == "0.75x" && sfr::resolution_scale_label(100) == "1.0x" &&
+            sfr::resolution_scale_label(125) == "1.25x" && sfr::resolution_scale_label(150) == "1.5x" &&
+            sfr::resolution_scale_label(175) == "1.75x" && sfr::resolution_scale_label(300) == "3.0x",
+            "labels show two decimals only when needed");
     require(value_of(defaults, "SFR_RENDER_SCALE") == "100",
-            "native rendering explicitly overrides an inherited render scale");
-    require(value_of(sfr::parse_launcher_settings("window_width=1920\nwindow_height=1080\n"),
-                     "SFR_RENDER_SCALE") == "100",
-            "older settings keep native rendering regardless of output window size");
+            "without a window or desktop size 1.0x renders the title's 720 lines");
 
-    for (const char* scale : {"50", "75", "100", "150", "200", "300"}) {
-        const auto settings = sfr::parse_launcher_settings(
-            std::string("window_width=1920\nwindow_height=1080\nrender_scale=") + scale + "\n");
-        const auto saved = sfr::format_launcher_settings(settings);
-        require(saved.find(std::string("render_scale=") + scale + "\n") != std::string::npos,
-                "each supported internal resolution is serialized");
-        const auto reloaded = sfr::parse_launcher_settings(saved);
-        require(value_of(reloaded, "SFR_RENDER_SCALE") == scale,
-                "each internal resolution survives a round trip and overrides the game environment");
-        require(reloaded.window_width == 1920 && reloaded.window_height == 1080 &&
-                value_of(reloaded, "SFR_WINDOW_WIDTH") == "1920" &&
-                value_of(reloaded, "SFR_WINDOW_HEIGHT") == "1080",
-                "internal rendering does not change the output window size");
+    // 1.0x draws as many lines as the window shows: the game's percent of 720.
+    const struct { const char* window; const char* scale; const char* percent; uint32_t width, height; } cases[] = {
+        {"window_width=3440\nwindow_height=1440\n", "100", "200", 2560, 1440},
+        {"window_width=3440\nwindow_height=1440\n", "50", "100", 1280, 720},
+        {"window_width=1920\nwindow_height=1080\n", "100", "150", 1920, 1080},
+        {"window_width=1920\nwindow_height=1080\n", "150", "225", 2880, 1620},
+        {"window_width=1280\nwindow_height=720\n", "300", "300", 3840, 2160},
+        {"window_width=2560\nwindow_height=1440\n", "250", "500", 6400, 3600},
+        {"window_width=5120\nwindow_height=1440\n", "100", "200", 2560, 1440},
+        // The frame stays 1280x720 (16:9) whatever the window's shape; only
+        // its height decides the scale. 166.7% rounds to 167.
+        {"window_width=1920\nwindow_height=1200\n", "100", "167", 2138, 1202},
+        // 37.5% rounds to 38, and odd sides round to even ones.
+        {"window_width=960\nwindow_height=540\n", "50", "38", 486, 274},
+    };
+    for (const auto& c : cases) {
+        const auto settings =
+            sfr::parse_launcher_settings(std::string(c.window) + "aspect_ratio=16:9\nresolution_scale=" + c.scale + "\n");
+        require(std::to_string(settings.resolution_scale) == c.scale, "each resolution scale is read");
+        const auto saved = sfr::parse_launcher_settings(sfr::format_launcher_settings(settings));
+        require(saved.resolution_scale == settings.resolution_scale, "the resolution scale survives a round trip");
+        require(value_of(saved, "SFR_RENDER_SCALE") == c.percent,
+                "SFR_RENDER_SCALE = round(window height * scale / 720 * 100)");
+        const auto internal = sfr::internal_resolution(saved);
+        require(internal.width == c.width && internal.height == c.height && internal.width % 2 == 0 &&
+                internal.height % 2 == 0, "the internal size scales the 1280x720 frame, in even pixels");
+        require(value_of(saved, "SFR_WINDOW_WIDTH") == std::to_string(saved.window_width),
+                "the resolution scale does not change the window size");
     }
-    for (const char* scale : {"", "abc", "0", "49", "51", "99", "101", "125", "201", "250", "301", "400",
+
+    // Full screen scales the display, not the window.
+    auto full = sfr::parse_launcher_settings(
+        "window_width=1280\nwindow_height=720\nfullscreen=1\naspect_ratio=16:9\nresolution_scale=100\n");
+    sfr::apply_default_window_size(full, 3840, 2160);
+    require(full.window_width == 1280 && full.window_height == 720, "a saved window size is kept");
+    require(value_of(full, "SFR_RENDER_SCALE") == "300", "full screen scales the display's height");
+    // 3.0x of 2160 lines asks for 900%: the most is 800%, and 1280 wide at
+    // 720 lines may not exceed 8192 pixels (640%).
+    full.resolution_scale = 300;
+    require(value_of(full, "SFR_RENDER_SCALE") == "800", "the asked percent stays within 25..800");
+    const auto big = sfr::internal_resolution(full);
+    require(big.percent == 640 && big.width == 8192 && big.height == 4608, "and is lowered to fit 8192 pixels");
+    full.display_width = 5120;
+    full.display_height = 1440;
+    const auto wide = sfr::internal_resolution(full);
+    require(wide.logical_width == 1280 && wide.requested_percent == 600 && wide.percent == 600 &&
+            wide.width == 7680 && wide.height == 4320, "with 16:9 a wide display still scales the 1280x720 frame");
+    // Auto widens the logical frame as the game does, so the internal size
+    // keeps the output's shape.
+    full.aspect_ratio = "auto";
+    full.display_width = 3440;
+    full.display_height = 1440;
+    full.resolution_scale = 100;
+    const auto auto_wide = sfr::internal_resolution(full);
+    require(auto_wide.logical_width == 1720 && auto_wide.width == 3440 && auto_wide.height == 1440,
+            "Auto at 1.0x renders a 3440x1440 display at its own size");
+    full.resolution_scale = 0;
+    const auto auto_original = sfr::internal_resolution(full);
+    require(auto_original.percent == 100 && auto_original.width == 1720 && auto_original.height == 720,
+            "Original in Auto keeps 720 lines across the wider frame");
+
+    // The old key (a percent of 1280x720) becomes the step that draws about
+    // as many lines in the saved window; 100 was the original 720 lines.
+    const struct { const char* window; const char* old; uint32_t scale; } olds[] = {
+        {"window_width=1280\nwindow_height=720\n", "100", 0},
+        {"window_width=1280\nwindow_height=720\n", "200", 200},
+        {"window_width=1280\nwindow_height=720\n", "50", 50},
+        {"window_width=1920\nwindow_height=1080\n", "150", 100},
+        {"window_width=1920\nwindow_height=1080\n", "300", 200},
+        {"window_width=1920\nwindow_height=1080\n", "50", 25},
+        {"", "75", 75},
+    };
+    for (const auto& o : olds) {
+        const auto old = sfr::parse_launcher_settings(std::string(o.window) + "render_scale=" + o.old + "\n");
+        require(old.resolution_scale == o.scale, "an old render_scale is converted to the nearest step");
+        require(sfr::format_launcher_settings(old).find("render_scale=") == std::string::npos,
+                "and is not saved again");
+    }
+    require(sfr::parse_launcher_settings("render_scale=200\nresolution_scale=150\n").resolution_scale == 150,
+            "the new key wins over the old one");
+    for (const char* scale : {"", "abc", "24", "26", "49", "99", "101", "110", "130", "310", "350", "400",
                               "-50", "+50", "50.0", "50junk", "4294967296"}) {
-        const auto settings = sfr::parse_launcher_settings(std::string("render_scale=") + scale + "\n");
-        require(value_of(settings, "SFR_RENDER_SCALE") == "100",
-                "malformed or unsupported internal resolutions fall back to native rendering");
+        const auto settings = sfr::parse_launcher_settings(std::string("resolution_scale=") + scale + "\n");
+        require(settings.resolution_scale == 0, "malformed or unsupported resolution scales read as Original");
     }
-    require(value_of(sfr::parse_launcher_settings("render_scale=50\nrender_scale=125\n"),
-                     "SFR_RENDER_SCALE") == "100",
-            "an invalid later render scale resets to native rendering");
+    require(sfr::parse_launcher_settings("resolution_scale=50\nresolution_scale=130\n").resolution_scale == 0,
+            "an invalid later resolution scale resets to Original");
     sfr::LauncherSettings invalid;
-    invalid.render_scale = 125;
-    require(sfr::format_launcher_settings(invalid).find("render_scale=100\n") != std::string::npos &&
+    invalid.resolution_scale = 130;
+    require(sfr::format_launcher_settings(invalid).find("resolution_scale=0\n") != std::string::npos &&
             value_of(invalid, "SFR_RENDER_SCALE") == "100",
-            "unsupported in-memory settings serialize and launch at native resolution");
+            "unsupported in-memory settings serialize and launch as Original");
+}
+
+void window_size_defaults_to_the_desktop() {
+    sfr::LauncherSettings fresh;
+    require(fresh.window_width == 0 && fresh.window_height == 0, "no window size is chosen at first");
+    require(value_of(fresh, "SFR_WINDOW_WIDTH") == "1280" && value_of(fresh, "SFR_WINDOW_HEIGHT") == "720",
+            "without a desktop size the game gets 1280x720");
+    sfr::apply_default_window_size(fresh, 3440, 1440);
+    require(fresh.window_width == 3440 && fresh.window_height == 1440, "an unset window takes the desktop size");
+    require(value_of(fresh, "SFR_RENDER_SCALE") == "100", "and Original still renders 720 lines");
+    fresh.resolution_scale = 100;
+    require(value_of(fresh, "SFR_RENDER_SCALE") == "200", "while 1.0x renders the desktop's lines");
+    const auto saved = sfr::parse_launcher_settings(sfr::format_launcher_settings(fresh));
+    require(saved.window_width == 3440 && saved.window_height == 1440, "the filled-in size is saved");
+    auto chosen = sfr::parse_launcher_settings("fullscreen=0\nwindow_width=1600\nwindow_height=900\n");
+    sfr::apply_default_window_size(chosen, 3440, 1440);
+    require(chosen.window_width == 1600 && chosen.window_height == 900, "an explicit window size is kept");
+    auto partial = sfr::parse_launcher_settings("fullscreen=0\nwindow_width=1600\n");
+    sfr::apply_default_window_size(partial, 2560, 1440);
+    require(partial.window_width == 2560 && partial.window_height == 1440, "half a size is not a choice");
+    auto unknown = sfr::parse_launcher_settings("");
+    sfr::apply_default_window_size(unknown, 0, 0);
+    require(unknown.window_width == 1280 && unknown.window_height == 720, "an unknown desktop leaves 1280x720");
+}
+
+void custom_window_size() {
+    require(sfr::is_listed_window_size(1920, 1080, 3440, 1440), "a common size is listed");
+    require(sfr::is_listed_window_size(3440, 1440, 3440, 1440), "the desktop size is listed");
+    require(!sfr::is_listed_window_size(3000, 1300, 1920, 1080), "an unlisted size is custom");
+    require(!sfr::is_listed_window_size(1280, 721, 1920, 1080), "one pixel off is custom");
+    uint32_t value = 777;
+    require(sfr::parse_window_dimension("1920", value) && value == 1920, "digits are read");
+    require(sfr::parse_window_dimension("0001600", value) && value == 1600, "leading zeros are fine");
+    require(sfr::parse_window_dimension("5", value) && value == 160, "a small value is raised to 160");
+    require(sfr::parse_window_dimension("20000", value) && value == 16384, "a large value is lowered to 16384");
+    require(sfr::parse_window_dimension("99999999999999999999", value) && value == 16384, "an enormous value cannot overflow");
+    value = 777;
+    for (const char* text : {"", " ", "12a", "-5", "1e3", "19 20", "+7"})
+        require(!sfr::parse_window_dimension(text, value) && value == 777, "empty or non-numeric text is ignored");
+    auto custom = sfr::parse_launcher_settings("fullscreen=0\nwindow_width=3000\nwindow_height=1300\n");
+    sfr::apply_default_window_size(custom, 1920, 1080);
+    require(custom.window_width == 3000 && custom.window_height == 1300, "a custom size persists through the existing keys");
+    require(!sfr::is_listed_window_size(custom.window_width, custom.window_height, 1920, 1080),
+            "and is custom again on the next launch");
+    require(sfr::internal_resolution(custom).output_height == 1300, "the scale follows the custom size");
 }
 
 void title_stats_settings() {
@@ -274,6 +455,18 @@ void avatar_model_settings() {
             "an unavailable model stays selected so it can be reported instead of silently discarded");
 }
 
+void display_mode_defaults_to_borderless() {
+    require(sfr::LauncherSettings{}.fullscreen, "Borderless is the default display mode");
+    require(sfr::parse_launcher_settings("").fullscreen, "a missing fullscreen key is Borderless");
+    require(sfr::parse_launcher_settings("window_width=1280\n").fullscreen, "other keys leave Borderless alone");
+    require(!sfr::parse_launcher_settings("fullscreen=0\n").fullscreen, "an explicit 0 is Windowed");
+    require(sfr::parse_launcher_settings("fullscreen=1\n").fullscreen, "an explicit 1 is Borderless");
+    sfr::LauncherSettings windowed;
+    windowed.fullscreen = false;
+    require(!sfr::parse_launcher_settings(sfr::format_launcher_settings(windowed)).fullscreen,
+            "Windowed survives a round trip");
+}
+
 void malformed_values_keep_defaults() {
     const auto read = sfr::parse_launcher_settings(
         "window_width=12\nwindow_height=abc\nvolume=101\nfullscreen=maybe\nrace_render_every=9\n"
@@ -338,9 +531,12 @@ void environment_follows_settings() {
         require(sfr::parse_launcher_settings("player2_device=mouse\n").player2_device == "gamepad",
                 "a device nobody has is ignored");
     }
-    require(value_of(settings, "SFR_FULLSCREEN") == "0" && value_of(settings, "SFR_WINDOW_WIDTH") == "1280",
-            "windowed 1280x720 by default");
+    require(value_of(settings, "SFR_FULLSCREEN") == "1" && value_of(settings, "SFR_WINDOW_WIDTH") == "1280",
+            "borderless by default, with the 1280x720 window size kept for Windowed");
+    settings.fullscreen = false;
+    require(value_of(settings, "SFR_FULLSCREEN") == "0", "Windowed turns the full screen switch off");
     settings.fullscreen = true;
+    settings.window_width = 3440;
     settings.window_height = 1440;
     settings.skip_movies = true;
     settings.audio = false;
@@ -439,13 +635,18 @@ int main() {
         voice_language_settings();
         graphics_backend_settings();
         kinect_tuning_settings();
+        runtime_render_scale();
         rendering_resolution_settings();
+        window_size_defaults_to_the_desktop();
+        custom_window_size();
+        aspect_settings();
         camera_debug_settings();
         menu_steady_settings();
         save_directory_settings();
         title_stats_settings();
         avatar_model_settings();
         malformed_values_keep_defaults();
+        display_mode_defaults_to_borderless();
         environment_follows_settings();
         directories_are_found_and_checked();
         std::cout << "Launcher settings checks passed\n";

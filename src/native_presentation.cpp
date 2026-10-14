@@ -1,5 +1,6 @@
 #include "avatar_transform.h"
 #include "native_presentation.h"
+#include "render_scale.h"
 #include <functional>
 
 #include "native_graphics.h"
@@ -1192,19 +1193,21 @@ NativePresentation::NativePresentation(NativeGraphics& graphics, uint32_t width,
     implementation->graphics = &graphics;
     implementation->width = width;
     implementation->height = height;
-    uint32_t percent = 100;
-    if (const char* setting = std::getenv("SFR_RENDER_SCALE"); setting && *setting) {
-        const std::string value(setting);
-        if (value == "50" || value == "75" || value == "100" || value == "150" || value == "200" || value == "300")
-            percent = uint32_t(std::stoul(value));
-        else std::cerr << "NATIVE_RENDER_SCALE invalid=" << value << " fallback=100\n";
-    }
-    implementation->render_width = (std::max)(1u, (width * percent + 50) / 100);
-    implementation->render_height = (std::max)(1u, (height * percent + 50) / 100);
-    if (implementation->render_width > 8192 || implementation->render_height > 8192)
+    // Any whole percent in render_scale.h's range, lowered when the scaled
+    // targets would exceed the largest side the renderer creates.
+    const char* scale_setting = std::getenv("SFR_RENDER_SCALE");
+    bool valid = true;
+    const uint32_t requested = render_scale::parse_percent(scale_setting, &valid);
+    if (!valid) std::cerr << "NATIVE_RENDER_SCALE invalid=" << scale_setting << " fallback=" << requested << '\n';
+    const uint32_t percent = render_scale::fit_percent(requested, width, height);
+    implementation->render_width = render_scale::scaled_extent(width, percent);
+    implementation->render_height = render_scale::scaled_extent(height, percent);
+    if (implementation->render_width > render_scale::max_extent || implementation->render_height > render_scale::max_extent)
         throw std::invalid_argument("scaled native presentation dimensions exceed 8192");
     std::cerr << "NATIVE_RENDER_SCALE percent=" << percent << " logical=" << width << 'x' << height
-              << " physical=" << implementation->render_width << 'x' << implementation->render_height << '\n';
+              << " physical=" << implementation->render_width << 'x' << implementation->render_height;
+    if (percent != requested) std::cerr << " requested=" << requested;
+    std::cerr << '\n';
 
     const bool d3d12 = graphics.backend() == GraphicsBackend::d3d12;
 #ifdef _WIN32
@@ -1458,8 +1461,12 @@ void NativePresentation::set_target(uint64_t key, uint32_t surface_width, uint32
         // The render thread reaches a target only through queued slots, which
         // take its pointer once it is complete; the map itself is the asker's.
         auto made = std::make_unique<Impl::SurfaceTarget>();
+        // Scaled as the frame is; a surface larger than the frame stops at
+        // the largest side (its own ratio maps the raster, scaled_raster).
         const auto pixels = [](uint32_t value, uint32_t render, uint32_t logical) {
-            return (std::max)(1u, uint32_t((uint64_t(value) * render + logical / 2) / logical));
+            return std::clamp<uint32_t>(uint32_t((std::min<uint64_t>)((uint64_t(value) * render + logical / 2) / logical,
+                                                                      render_scale::max_extent)),
+                                        1u, render_scale::max_extent);
         };
         made->width = pixels(surface_width, impl_->render_width, impl_->width);
         made->height = pixels(surface_height, impl_->render_height, impl_->height);
@@ -1656,7 +1663,25 @@ void NativePresentation::draw_player_model(const AvatarFrameTransform& frame) {
     ++impl_->list_generation;
 }
 
-void NativePresentation::present(uint32_t area_width, uint32_t area_height) {
+std::pair<uint32_t, uint32_t> primary_display_size() {
+#ifdef _WIN32
+    // The monitor a full-screen window starts on (CW_USEDEFAULT windows open
+    // on the primary one). Only its shape is used, so DPI scaling is harmless.
+    MONITORINFO monitor{sizeof(monitor)};
+    if (GetMonitorInfoW(MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY), &monitor)) {
+        const RECT& r = monitor.rcMonitor;
+        if (r.right > r.left && r.bottom > r.top) return {uint32_t(r.right - r.left), uint32_t(r.bottom - r.top)};
+    }
+    return {0, 0};
+#else
+    if (!SDL_WasInit(SDL_INIT_VIDEO) && SDL_InitSubSystem(SDL_INIT_VIDEO) != 0) return {0, 0};
+    SDL_DisplayMode mode{};
+    if (SDL_GetDesktopDisplayMode(0, &mode) != 0 || mode.w <= 0 || mode.h <= 0) return {0, 0};
+    return {uint32_t(mode.w), uint32_t(mode.h)};
+#endif
+}
+
+void NativePresentation::present(uint32_t area_width, uint32_t area_height, float display_aspect) {
     impl_->refuse_during_gpu_wait();
     impl_->drain();
 
@@ -1755,7 +1780,15 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height) {
         // screens narrower than the game, very visibly so on a 20:9 phone.
         const float scale = (std::min)(float(out_width) / float(impl_->width),
                                        float(out_height) / float(impl_->height));
-        const float view_width = float(impl_->width) * scale, view_height = float(impl_->height) * scale;
+        float view_width = float(impl_->width) * scale, view_height = float(impl_->height) * scale;
+        if (part && display_aspect > 0.0f) {
+            // The part keeps the size it has inside the whole framebuffer as that
+            // is scaled into the window (the same as frames presented whole, so a
+            // window of another shape than the framebuffer does not make it jump),
+            // never more than the window holds.
+            view_height = (std::min)(view_height, float(out_width) / display_aspect);
+            view_width = view_height * display_aspect;
+        }
         const plume::RenderViewport viewport((float(out_width) - view_width) * 0.5f, (float(out_height) - view_height) * 0.5f,
                                              view_width, view_height);
         const plume::RenderRect scissor(0, 0, int32_t(out_width), int32_t(out_height));

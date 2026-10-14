@@ -165,7 +165,7 @@ with [docs/progress.md](docs/progress.md).
 - [v0.7.1 — Avatars online, and a sign while a model loads](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.7.1)
   An online race with a player using AVATAR closed the games of the others: a game without a custom model had its avatar system off and could not load another player's AVATAR. Online play now always starts the avatar system. A custom VRM model now loads in the background, with "LOADING AVATAR MODEL" and its progress shown in the corner, instead of the game appearing to freeze.
 - [v0.7.2 — 4K rendering and steadier Kinect v2](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.7.2)
-  **Rendering resolution** now offers 3840 x 2160 (4K, 300%) beside 360p to 1440p (Issue #94). A Kinect v2's joints are smoothed the way Kinect v1's SDK smooths its own, and the launcher's Kinect settings gain smoothing, lean sensitivity and crouch depth (Issue #97).
+  **Render Size** now offers 3840 x 2160 (4K, 300%) beside 360p to 1440p (Issue #94). A Kinect v2's joints are smoothed the way Kinect v1's SDK smooths its own, and the launcher's Kinect settings gain smoothing, lean sensitivity and crouch depth (Issue #97).
 - [v0.7.3 — Pause gestures, steadier menus, and more from knuckleslee](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.7.3)
   Contributions by knuckleslee: pause a race with the Kinect's Pause Gesture or a Kinect v2's Stop Sign; a steadier menu cursor for motion input; the frame rate in the window title on Windows; adjustment windows when the game asks for the Kinect troubleshooter or Kinect Guide; and a choice of save folder in the launcher.
 
@@ -202,7 +202,7 @@ The launcher groups settings by what you want to change:
 | Category | Settings |
 | --- | --- |
 | General | Launcher, game and voice languages, movies, restore defaults |
-| Graphics | Window and rendering resolutions, fullscreen, backend, VSync, expandable performance options |
+| Graphics | Display mode (Borderless or Windowed; Borderless by default), window size, aspect ratio and UI alignment, backend, Render Size, VSync, expandable performance options |
 | Sound | Game volume and launcher sounds |
 | Controls | Each player's input source and controller, button/key bindings, Android touch and tilt |
 | Motion input | Kinect/webcam mode, device and preview, mirror, skeleton debug, voice commands |
@@ -210,9 +210,45 @@ The launcher groups settings by what you want to change:
 | Mods | Switch file-replacement mods on and off and set their order ([Mods](docs/mods.md)) |
 | Game files | Installation, data locations and shader pack |
 
-Window and rendering resolutions sit together under **Graphics > Resolution**:
-the first sets the output window size, while the second controls the pixels the
-game draws. Changes to game settings apply on the next game launch.
+**Graphics** starts with **Display Mode**: **Borderless** (default) fills the
+display, **Windowed** uses the window size chosen below it (the window size rows
+are shown only in Windowed mode). **Render Size** sits right below
+**Graphics backend**: **Original** (default) renders the game's own 720 lines,
+as every earlier version did, whatever the window or display. The other stops
+are a **resolution scale** of the output size (the display's in Borderless mode)
+from 0.25x to 3.0x in steps of 0.25x: 1.0x renders at exactly the window or
+desktop resolution, lower values reduce GPU load, higher values supersample.
+Changes to game settings apply on the next game launch.
+
+The window size defaults to the desktop size until you choose another. The last
+entry of the window size list, **Custom**, shows width and height boxes for any
+size from 160 to 16384 pixels per side.
+
+The window size list holds the resolutions the system reports for the display,
+plus common sizes and the desktop's; any other size is shown as **Custom**. The
+saved `fullscreen` key keeps its meaning (1 is Borderless, 0 is Windowed); a
+settings file without it now starts in Borderless.
+
+The window size list also offers common ultrawide sizes (2560 x 720,
+2560 x 1080, 3440 x 1440, 5120 x 1440). Two more options sit in the same group:
+
+- **Aspect Ratio** (`aspect_ratio`): **16:9** (default) keeps the original
+  picture; **Auto** (experimental) adapts the picture to the window or display.
+  At 21:9 Auto still misplaces the two-player split screen, its On your Gear
+  screen and the pause menu, and on a phone it costs frame rate. Both preserve the
+  selected output resolution. With Auto and a window (or display, in full
+  screen) wider than 16:9, the race's 3D view is widened (hor+), the race HUD
+  stays in a centered 16:9 area, menu, title and calibration backdrops fill the
+  whole width, and movies keep their 16:9 shape with black bars. 16:9 keeps the
+  original behaviour untouched.
+- **UI Alignment Mode** (`ui_align`): **Edge** (default) places the race HUD's side
+  groups at the screen edges; **Center** keeps the HUD centered. The row is only
+  shown with Auto; with 16:9 it is hidden, the original behaviour is untouched and
+  the stored choice is preserved. Menu content stays centered.
+
+The launcher sets `SFR_ASPECT_MODE` and `SFR_UI_ALIGN`, clears `SFR_ASPECT_RATIO`, and passes the
+selected window dimensions unchanged. Older `aspect_mode=original` settings load
+as 16:9. Changes apply on the next game launch.
 
 ## How to Build
 
@@ -392,10 +428,13 @@ For direct runtime launches, set `SFR_GAME_LANGUAGE` to `auto`, `en`, `ja`, `de`
 and choose either backend before starting the game. New settings default to Vulkan;
 existing saved choices are preserved. Linux and Android use Vulkan.
 
-**Can I change the game's internal resolution?** Yes. **Rendering resolution**
-offers 360p, 540p, native 720p (default), 1080p, 1440p and 2160p (4K), independently of output
-window size. Apply it before starting the game. Lower values may help a limited
-GPU; higher values draw more detail at a greater cost. See
+**Can I change the game's internal resolution?** Yes. **Render Size**
+is **Original** (720 lines, the default) or a resolution scale of the window (or
+display in Borderless mode) from 0.25x to 3.0x in steps of 0.25x; 1.0x matches
+the window/desktop resolution, so a 1920 x 1080 window renders 1920 x 1080.
+Apply it before starting the game. Lower values may help a limited GPU; higher
+values supersample at a greater cost (each side is capped at 8192 pixels). An
+older `render_scale` setting becomes the nearest step for the saved window. See
 [Internal resolution](docs/internal-resolution.md).
 
 **How can I compare performance without changing game speed?** Keep the normal

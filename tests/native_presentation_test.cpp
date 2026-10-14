@@ -795,7 +795,8 @@ void rectangle_clear_preserves_outside_pixels() {
 void scaled_clear_boundaries_and_loading_area() {
     sfr::NativeGraphics graphics;
     graphics.initialize();
-    for (uint32_t percent : {50u, 75u, 100u, 150u, 200u}) {
+    // Any whole percent, not only the launcher's old list.
+    for (uint32_t percent : {25u, 33u, 50u, 75u, 100u, 125u, 150u, 167u, 200u, 250u}) {
         ScopedEnvironment setting("SFR_RENDER_SCALE", std::to_string(percent));
         sfr::NativePresentation presentation(graphics, 19, 11);
         const uint32_t width = (19 * percent + 50) / 100, height = (11 * percent + 50) / 100;

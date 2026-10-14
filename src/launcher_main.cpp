@@ -74,7 +74,7 @@ namespace fs = std::filesystem;
 enum Text {
     TitleLine, Subtitle,
     TabDisplay, TabSound, TabGeneral, TabMotion, TabFiles,
-    WindowSize, DesktopSize, Fullscreen, FullscreenHint, VSync, VSyncHint, RenderResolution, RenderResolutionHint, NativeResolution,
+    WindowSize, DesktopSize, DisplayMode, DisplayModeHint, DisplayBorderless, DisplayWindowed, VSync, VSyncHint, RenderResolution, RenderResolutionHint, OriginalScale,
     Sound, SoundHint, Volume,
     SkipMovies, SkipMoviesHint,
     VertexCache, VertexCacheHint, GpuPipeline, GpuPipelineHint, RaceEvery, RaceEveryHint, TitleStats, TitleStatsHint,
@@ -108,13 +108,16 @@ enum Text {
     PlayerOneGamepad, PlayerTwoGamepad, GamepadHint, GamepadAutomatic, GamepadMissing,
     AvatarModel, AvatarModelHint, AvatarModelNone, AvatarModelMissing, AvatarModelImportFailed, Clear,
     GameLanguageLabel, GameLanguageHint, VoiceLanguageLabel, VoiceLanguageHint, VoiceFollowsGame, TabAvatar,
-    SectionLanguage, SectionPlayback, SectionReset, SectionWindow, SectionRendering, SectionPerformance,
+    SectionLanguage, SectionPlayback, SectionReset, SectionRendering, SectionPerformance,
     SectionGameAudio, SectionLauncherAudio, SectionPlayer1, SectionPlayer2, SectionBindings, SectionTouch, SectionVoice,
     SectionResolution, WindowResolutionHint, SectionDiagnostics, ExportDiagnostics, ExportDiagnosticsHint,
     TabMods, SectionMods, ModsHint, ModsEmpty, ModsExternal, ModsRefresh, ModsOpenFolder, MoveUp, MoveDown,
     SectionOnline, OnlineLabel, OnlineHint, OnlineHostLabel, OnlineHostHint, OnlineServerLabel, OnlineServerHint,
     OnlineNameLabel, OnlineNameHint,
     KinectSmoothLabel, KinectSmoothHint, KinectLeanLabel, KinectLeanHint, KinectCrouchLabel, KinectCrouchHint,
+    CustomWindowSize, CustomWindowSizeRow, CustomWindowSizeHint,
+    AspectModeLabel, AspectModeHint, AspectAuto, AspectOriginal,
+    UiAlignLabel, UiAlignHint, UiAlignEdge, UiAlignCenter,
     TextCount
 };
 
@@ -129,15 +132,18 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Game files", "遊戲檔案"},
     {"Window resolution", "視窗解析度"},
     {"desktop", "桌面大小"},
-    {"Full screen", "全螢幕"},
-    {"Borderless full screen. Alt+Enter switches while playing.", "無邊框全螢幕。遊戲中可按 Alt+Enter 切換。"},
+    {"Display Mode", "顯示模式"},
+    {"Borderless fills the screen without borders. Windowed uses the window size chosen below. Alt+Enter switches while playing.",
+     "無邊框會以無邊框方式填滿整個螢幕；視窗則使用下方選擇的視窗大小。遊戲中可按 Alt+Enter 切換。"},
+    {"Borderless", "無邊框"},
+    {"Windowed", "視窗"},
     {"Vertical sync", "垂直同步"},
     {"Waits for the display between frames. The game never runs above 60 fps either way.",
      "每格畫面等待螢幕更新。無論是否開啟，遊戲都不會超過 60 fps。"},
-    {"Rendering resolution", "遊戲渲染解析度"},
-    {"Pixels actually drawn by the game, independent of the window size. Lower values reduce GPU load; higher values improve detail.",
-     "遊戲實際繪製的像素數，與視窗大小分開設定。較低值可減輕 GPU 負擔，較高值可增加畫面細節。"},
-    {"native", "原生"},
+    {"Render Size", "渲染尺寸"},
+    {"Lower values reduce GPU load; higher values supersample for a sharper picture.",
+     "較低值可減輕 GPU 負擔，較高值以超取樣讓畫面更銳利。"},
+    {"Original (1280 x 720)", "原始（1280 x 720）"},
     {"Sound", "聲音"},
     {"Plays the game's sound on the default output device.", "在預設的輸出裝置播放遊戲聲音。"},
     {"Volume", "音量"},
@@ -352,7 +358,6 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Languages", "語言"},
     {"Movies", "影片"},
     {"Restore defaults", "還原設定"},
-    {"Window", "視窗"},
     {"Rendering", "渲染畫質"},
     {"Advanced performance options", "進階效能選項"},
     {"Game audio", "遊戲音效"},
@@ -363,8 +368,8 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Touch and tilt", "觸控與傾斜"},
     {"Voice commands", "語音指令"},
     {"Resolution", "解析度"},
-    {"Output size in windowed mode. Fullscreen uses the display size; Rendering resolution controls image detail.",
-     "視窗模式下的輸出大小；全螢幕使用螢幕尺寸。畫面精細度由下方的遊戲渲染解析度決定。"},
+    {"Output size in windowed mode; the desktop size until you choose another. Borderless uses the display size. Render Size scales the image detail from it.",
+     "視窗模式下的輸出大小，未選擇前為桌面大小；無邊框模式使用螢幕尺寸。畫面精細度由下方的渲染尺寸依此比例決定。"},
     {"Diagnostics", "診斷紀錄"},
     {"Export diagnostic ZIP", "匯出診斷 ZIP"},
     {"After playing, save the latest game log, performance settings and device information. Export before starting another game. Logs may contain local file paths.",
@@ -402,6 +407,20 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Crouch depth", "蹲下深度"},
     {"How far your hips must drop to count as a crouch. Raise it if you crouch by accident; lower it if crouches are missed.",
      "臀部要下降多少才算蹲下。若常誤判為蹲下就調高；若蹲下沒反應就調低。"},
+    {"Custom", "自訂"},
+    {"Custom window size", "自訂視窗大小"},
+    {"Width and height in pixels (160 to 16384). Press Enter or leave the box to apply.",
+     "寬度與高度（像素，160 到 16384）。按 Enter 或離開輸入框後套用。"},
+    {"Aspect Ratio", "畫面比例"},
+    {"Auto adapts the picture to the window or display (experimental: at 21:9 the two-player split and the pause menu are not right yet). 16:9 keeps the original picture.",
+     "自動會依視窗或螢幕形狀調整畫面（實驗中：21:9 時雙人分割畫面與暫停選單仍有問題）；原始則維持遊戲原本的 16:9 畫面。"},
+    {"Auto", "自動"},
+    {"16:9", "原始"},
+    {"UI Alignment Mode", "介面對齊"},
+    {"Edge places the race HUD's side groups at the screen edges; Center keeps the HUD centered. Only used with Auto.",
+     "外緣會把比賽 HUD 的左右群組放在螢幕邊緣；中央則讓 HUD 集中在畫面中央。僅在比例為自動時有效。"},
+    {"Edge", "外緣"},
+    {"Center", "中央"},
 }};
 
 int language = 0;
@@ -1236,6 +1255,13 @@ struct Launcher {
     std::vector<std::string> stopped_lines;
     std::unique_ptr<sfr::launcher::GameProcess> game;
     uint32_t desktop_width = 1920, desktop_height = 1080;
+    // The resolutions the system reports for the primary display (Windows: its
+    // display modes); the common sizes and the desktop's are added to them.
+    std::vector<sfr::WindowSize> reported_sizes;
+    // The Window size list's "Custom" entry: chosen this session, and the last
+    // size typed (0 until one is).
+    bool window_size_custom = false;
+    uint32_t custom_width = 0, custom_height = 0;
     InputKind input = InputKind::keyboard;
     ImGuiID last_nav = 0;
     Question question = Question::none;
@@ -1670,56 +1696,134 @@ struct Launcher {
     }
 
     void display_settings() {
-        std::vector<sfr::WindowSize> sizes = sfr::common_window_sizes();
+        std::vector<sfr::WindowSize> sizes = reported_sizes;
+        const bool original = settings.aspect_ratio == "16:9";
         const auto has = [&](uint32_t w, uint32_t h) {
             return std::any_of(sizes.begin(), sizes.end(), [&](const auto& s) { return s.width == w && s.height == h; });
         };
-        if (!has(desktop_width, desktop_height)) sizes.push_back({desktop_width, desktop_height});
-        if (!has(settings.window_width, settings.window_height)) sizes.push_back({settings.window_width, settings.window_height});
-        std::sort(sizes.begin(), sizes.end(), [](const auto& a, const auto& b) { return a.width * a.height < b.width * b.height; });
+        const auto add = [&](uint32_t w, uint32_t h) {
+            if (w < 160 || h < 160) return;
+            if (!has(w, h)) sizes.push_back({w, h});
+        };
+        // The system's sizes, the common ones and the desktop's; any other
+        // size is the Custom entry below, not added to the list.
+        for (const auto& s : sfr::common_window_sizes()) add(s.width, s.height);
+        add(desktop_width, desktop_height);
+        std::sort(sizes.begin(), sizes.end(), [](const auto& a, const auto& b) {
+            return uint64_t(a.width) * a.height < uint64_t(b.width) * b.height;
+        });
         const auto name = [&](const sfr::WindowSize& s) {
-            char text[96];
+            char text[128];
             if (s.width == desktop_width && s.height == desktop_height)
                 std::snprintf(text, sizeof text, "%u x %u  (%s)", s.width, s.height, tr(DesktopSize));
             else std::snprintf(text, sizeof text, "%u x %u", s.width, s.height);
             return std::string(text);
         };
+        // A size the list does not offer (typed here, or saved by an earlier
+        // run) is the Custom entry. The list also holds the system's sizes,
+        // so it is asked directly (sfr::is_listed_window_size knows only the
+        // common and desktop sizes).
+        const bool custom = window_size_custom || !has(settings.window_width, settings.window_height);
         const float combo_width = 300 * scale;
         const float switch_width = ImGui::GetFrameHeight() * 1.9f;
-        settings_section(SectionResolution);
+#ifndef __ANDROID__
+        // The saved key stays "fullscreen": on is Borderless, off is Windowed.
+        setting_row(tr(DisplayMode), tr(DisplayModeHint), combo_width, scale, [&] {
+            ImGui::SetNextItemWidth(combo_width);
+            if (ImGui::BeginCombo("##display_mode", tr(settings.fullscreen ? DisplayBorderless : DisplayWindowed))) {
+                for (const bool borderless : {true, false}) {
+                    const bool chosen = settings.fullscreen == borderless;
+                    if (ImGui::Selectable(tr(borderless ? DisplayBorderless : DisplayWindowed), chosen)) {
+                        settings.fullscreen = borderless;
+                        ::play(sfr::UiSound::confirm);
+                    }
+                    if (chosen) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+        });
+#endif
+        const auto aspect_name = [&](const std::string& ratio) {
+            if (ratio == "auto") return std::string(tr(AspectAuto));
+            if (ratio == "16:9") return std::string(tr(AspectOriginal));
+            return ratio;
+        };
 #ifndef __ANDROID__  // fullscreen phones have no adjustable output window
+        // Window size applies to Windowed mode only; Borderless uses the display size.
+        if (!settings.fullscreen) {
         setting_row(tr(WindowSize), tr(WindowResolutionHint), combo_width, scale, [&] {
             ImGui::SetNextItemWidth(combo_width);
-            if (ImGui::BeginCombo("##size", name({settings.window_width, settings.window_height}).c_str())) {
+            char shown[160];
+            if (custom)
+                std::snprintf(shown, sizeof shown, "%s (%u x %u)", tr(CustomWindowSize), settings.window_width, settings.window_height);
+            else std::snprintf(shown, sizeof shown, "%s", name({settings.window_width, settings.window_height}).c_str());
+            if (ImGui::BeginCombo("##size", shown)) {
                 for (const auto& s : sizes) {
-                    const bool chosen = s.width == settings.window_width && s.height == settings.window_height;
+                    const bool chosen = !custom && s.width == settings.window_width && s.height == settings.window_height;
                     if (ImGui::Selectable(name(s).c_str(), chosen)) {
                         settings.window_width = s.width;
                         settings.window_height = s.height;
+                        window_size_custom = false;
                         ::play(sfr::UiSound::confirm);
                     }
                     if (chosen) ImGui::SetItemDefaultFocus();
                 }
+                if (ImGui::Selectable(tr(CustomWindowSize), custom)) {
+                    if (!custom) {
+                        // The first time starts from the desktop size; later
+                        // the last size typed comes back.
+                        const bool remembered = custom_width != 0 && custom_height != 0;
+                        settings.window_width = remembered ? custom_width : desktop_width;
+                        settings.window_height = remembered ? custom_height : desktop_height;
+                        window_size_custom = true;
+                        ::play(sfr::UiSound::confirm);
+                    }
+                }
+                if (custom) ImGui::SetItemDefaultFocus();
                 ImGui::EndCombo();
             }
         });
+        if (custom) {
+            // Shown only for Custom: width and height, applied when the box is
+            // left or Enter is pressed (a half-typed number is never used).
+            const float gap = ImGui::GetStyle().ItemInnerSpacing.x;
+            const float separator = ImGui::CalcTextSize("x").x;
+            const float box_width = (combo_width - separator - gap * 2) / 2;
+            setting_row(tr(CustomWindowSizeRow), tr(CustomWindowSizeHint), combo_width, scale, [&] {
+                const auto box = [&](const char* id, uint32_t& value, uint32_t& remembered) {
+                    char text[8];
+                    std::snprintf(text, sizeof text, "%u", value);
+                    ImGui::SetNextItemWidth(box_width);
+                    ImGui::InputText(id, text, sizeof text,
+                                     ImGuiInputTextFlags_CharsDecimal | ImGuiInputTextFlags_AutoSelectAll);
+                    // Enter and leaving the box both end the edit.
+                    if (ImGui::IsItemDeactivatedAfterEdit()) {
+                        uint32_t parsed = 0;
+                        if (sfr::parse_window_dimension(text, parsed)) value = parsed;
+                    }
+                    remembered = value;
+                };
+                box("##custom_width", settings.window_width, custom_width);
+                ImGui::SameLine(0, gap);
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextUnformatted("x");
+                ImGui::SameLine(0, gap);
+                box("##custom_height", settings.window_height, custom_height);
+            });
+        }
+        }
 #else
         (void)name;
+        (void)custom;
 #endif
-        const auto render_name = [&](uint32_t percent) {
-            char text[96];
-            if (percent == 100)
-                std::snprintf(text, sizeof text, "1280 x 720  (%s)", tr(NativeResolution));
-            else std::snprintf(text, sizeof text, "%u x %u", 1280 * percent / 100, 720 * percent / 100);
-            return std::string(text);
-        };
-        setting_row(tr(RenderResolution), tr(RenderResolutionHint), combo_width, scale, [&] {
+        // Aspect and output resolution are independent choices.
+        setting_row(tr(AspectModeLabel), tr(AspectModeHint), combo_width, scale, [&] {
             ImGui::SetNextItemWidth(combo_width);
-            if (ImGui::BeginCombo("##render_scale", render_name(settings.render_scale).c_str())) {
-                for (const uint32_t percent : {50u, 75u, 100u, 150u, 200u, 300u}) {
-                    const bool chosen = percent == settings.render_scale;
-                    if (ImGui::Selectable(render_name(percent).c_str(), chosen)) {
-                        settings.render_scale = percent;
+            if (ImGui::BeginCombo("##aspect_ratio", aspect_name(settings.aspect_ratio).c_str())) {
+                for (const auto& ratio : sfr::aspect_ratio_choices()) {
+                    const bool chosen = ratio == settings.aspect_ratio;
+                    if (ImGui::Selectable(aspect_name(ratio).c_str(), chosen)) {
+                        settings.aspect_ratio = ratio;
                         ::play(sfr::UiSound::confirm);
                     }
                     if (chosen) ImGui::SetItemDefaultFocus();
@@ -1727,10 +1831,25 @@ struct Launcher {
                 ImGui::EndCombo();
             }
         });
-#ifndef __ANDROID__
-        settings_section(SectionWindow);
-        setting_row(tr(Fullscreen), tr(FullscreenHint), switch_width, scale, [&] { toggle("##full", &settings.fullscreen); });
-#endif
+        // The alignment only exists with Auto; with the original picture the
+        // row is hidden and the stored choice is kept untouched.
+        if (!original) {
+            setting_row(tr(UiAlignLabel), tr(UiAlignHint), combo_width, scale, [&] {
+                const bool center = settings.ui_align == "center";
+                ImGui::SetNextItemWidth(combo_width);
+                if (ImGui::BeginCombo("##ui_align", tr(center ? UiAlignCenter : UiAlignEdge))) {
+                    for (const bool want_center : {false, true}) {
+                        const bool chosen = want_center == center;
+                        if (ImGui::Selectable(tr(want_center ? UiAlignCenter : UiAlignEdge), chosen)) {
+                            settings.ui_align = want_center ? "center" : "edge";
+                            ::play(sfr::UiSound::confirm);
+                        }
+                        if (chosen) ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+            });
+        }
         settings_section(SectionRendering);
         setting_row(tr(VSync), tr(VSyncHint), switch_width, scale, [&] { toggle("##vsync", &settings.vsync); });
 #ifdef _WIN32  // elsewhere the game always draws with Vulkan
@@ -1749,6 +1868,21 @@ struct Launcher {
             }
         });
 #endif
+        // The resolution scale of the window (or display): 0.25x to 3.0x in
+        // quarter steps, a percent of 25 to 300 in the settings.
+        setting_row(tr(RenderResolution), tr(RenderResolutionHint), combo_width, scale, [&] {
+            const auto& choices = sfr::resolution_scale_choices();
+            const int last = int(choices.size()) - 1;
+            int step = 0;
+            for (int i = 0; i <= last; ++i)
+                if (choices[size_t(i)] == settings.resolution_scale) step = i;
+            const std::string shown = choices[size_t(step)] ? sfr::resolution_scale_label(choices[size_t(step)])
+                                                            : std::string(tr(OriginalScale));
+            ImGui::SetNextItemWidth(combo_width);
+            bool moved = ImGui::SliderInt("##resolution_scale", &step, 0, last, shown.c_str(), ImGuiSliderFlags_AlwaysClamp);
+            moved |= slider_steps(&step, 0, last, 1);
+            if (moved) settings.resolution_scale = choices[size_t(std::clamp(step, 0, last))];
+        });
         ImGui::Dummy(ImVec2(0, 10 * scale));
         if (ImGui::CollapsingHeader(tr(SectionPerformance))) performance_settings();
     }
@@ -2332,6 +2466,7 @@ struct Launcher {
             avatar_model_import_failed = false;
             settings.image_directory = image;
             settings.asset_directory = assets;
+            sfr::apply_default_window_size(settings, desktop_width, desktop_height);
             ui_sounds.enabled = settings.ui_sounds;
             apply_language(settings.language);
             bindings_read = false;  // the Controls page reads them again
@@ -2944,8 +3079,23 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
         launcher.settings.asset_directory = sfr::default_asset_directory(launcher.directory);
     // First run (or the files are gone): the installer comes first.
     if (!launcher.files_ready()) launcher.page = Page::Install;
+    {
+        // Every mode the primary display reports (a sized window can be any of
+        // them, whatever the desktop is set to now).
+        DEVMODEW mode{};
+        mode.dmSize = sizeof(mode);
+        for (DWORD index = 0; EnumDisplaySettingsW(nullptr, index, &mode); ++index) {
+            if (mode.dmPelsWidth < 640 || mode.dmPelsHeight < 360) continue;
+            const sfr::WindowSize size{mode.dmPelsWidth, mode.dmPelsHeight};
+            if (!std::any_of(launcher.reported_sizes.begin(), launcher.reported_sizes.end(),
+                             [&](const auto& s) { return s.width == size.width && s.height == size.height; }))
+                launcher.reported_sizes.push_back(size);
+        }
+    }
     launcher.desktop_width = uint32_t(GetSystemMetrics(SM_CXSCREEN));
     launcher.desktop_height = uint32_t(GetSystemMetrics(SM_CYSCREEN));
+    // No window size saved yet: the desktop's (the settings say so from now on).
+    sfr::apply_default_window_size(launcher.settings, launcher.desktop_width, launcher.desktop_height);
 
     WNDCLASSEXW window_class{sizeof(window_class)};
     window_class.style = CS_CLASSDC;
@@ -3111,6 +3261,8 @@ int main(int argc, char** argv) {
         launcher.desktop_width = uint32_t(desktop.w);
         launcher.desktop_height = uint32_t(desktop.h);
     }
+    // No window size saved yet: the desktop's (the settings say so from now on).
+    sfr::apply_default_window_size(launcher.settings, launcher.desktop_width, launcher.desktop_height);
     if (argc >= 2) dropped = fs::path(argv[1]);
 
 #ifdef __ANDROID__

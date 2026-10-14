@@ -37,8 +37,19 @@ struct SharedConstants {
     // Logical/physical texture-size ratio for resolved framebuffer samples.
     // Only descriptors marked by the renderer consume it; assets stay native.
     float resolved_texture_scale[2];
+    // Added to the clip-space position (times w) after the scale, in the same
+    // translated shaders (c21.xy): centers 16:9 pixel-space content in an
+    // ultrawide framebuffer.
+    float screen_space_offset[2];
+    // Perspective draws (w != 1): x of the clip position is multiplied by this
+    // (c21.z). Corrects scenes whose cameras were built for a wide frame while
+    // a 16:9 view is on screen. Zero leaves positions unchanged.
+    float projection_x_scale;
+    float reserved;
 };
-static_assert(sizeof(SharedConstants) == 336);
+static_assert(sizeof(SharedConstants) == 352);
+static_assert(offsetof(SharedConstants, screen_space_offset) == 336);
+static_assert(offsetof(SharedConstants, projection_x_scale) == 344);
 static_assert(offsetof(SharedConstants, screen_space_scale) == 320);
 static_assert(offsetof(SharedConstants, resolved_texture_scale) == 328);
 
@@ -190,6 +201,8 @@ public:
     // Unchanged while texture() and sampler() would answer the same fetch
     // words the same way, so a caller may keep their answers until it moves.
     uint64_t texture_generation() const noexcept;
+    // Whether a texture descriptor index holds a resolved framebuffer.
+    bool is_resolved_texture(uint32_t descriptor) const noexcept;
 
     // Named outside for the resolve helpers in native_renderer.cpp.
     struct Impl;
