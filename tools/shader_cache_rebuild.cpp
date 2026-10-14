@@ -3,6 +3,7 @@
 #include "runtime_shader_cache.h"
 #include "native_graphics.h"
 #include "guest_memory.h"
+#include "shader_pack_format.h"
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -46,7 +47,9 @@ int main(int argc, char** argv) {
             throw std::runtime_error("unrecognized source shader pack");
         at = 8;
         const uint32_t abi = word(), count = word();
-        if ((abi < 8 || abi > 10) || !count || count > (bytes.size() - at) / 24)
+        // Any earlier ABI with the same entry layout (8 on): its sources are what
+        // is rebuilt for the current one (shader_pack_format.h).
+        if ((abi < 8 || abi >= sfr::shader_abi_version) || !count || count > (bytes.size() - at) / 24)
             throw std::runtime_error("unsupported source ABI or invalid shader count");
         struct Source { sfr::ShaderStage stage; std::span<const uint8_t> data; };
         std::vector<Source> sources;
