@@ -47,6 +47,31 @@ int main() {
             auto shifted=planted;for(auto& l:shifted){l.knee[2]+=.1f;l.ankle[2]+=.2f;}
             both.update(shifted,.05f);require(!both.active(),"both feet shifting cannot bypass the hand guard");
         }
+        {
+            // A hop with both feet over a fixed floor (a real Kinect): no
+            // crouch long enough to arm, the hips leave the ground.
+            const auto over=[](float hip_y) {
+                auto p=pose();for(auto* point:{&p.hip,&p.shoulder})(*point)[1]+=hip_y;
+                p.floor_y=-.8f;return p;
+            };
+            sfr::CameraRaceMotion hop;
+            frames(hop,over(0),60);require(hop.ready() && !hop.jump(),"a Kinect stance calibrates over its floor");
+            frames(hop,over(-.1f),4);require(!hop.crouch(),"a hop's quick dip is not a crouch");
+            hop.update(over(.12f),1.f/60);require(!hop.jump(),"one high sample is not a takeoff");
+            hop.update(over(.15f),1.f/60);require(hop.jump(),"the hips leaving the ground are a jump");
+            int jumps=0;
+            for(int i=0;i<20;++i){hop.update(over(.15f),1.f/60);jumps+=hop.jump();}
+            require(jumps==0,"one hop is one jump, however long it is in the air");
+            frames(hop,over(0),40);
+            hop.update(over(.12f),1.f/60);hop.update(over(.12f),1.f/60);require(hop.jump(),"landing allows the next hop");
+            frames(hop,over(0),40);
+            frames(hop,over(.04f),60);require(!hop.jump(),"standing a little taller is no hop");
+            sfr::CameraRaceMotion webcam;
+            frames(webcam,pose(),60);
+            auto lifted=pose();for(auto* point:{&lifted.hip,&lifted.shoulder,&lifted.left_ankle,&lifted.right_ankle})(*point)[1]+=.15f;
+            webcam.update(lifted,1.f/60);webcam.update(lifted,1.f/60);
+            require(!webcam.jump(),"over the ankles the body rises together: no hop without a floor");
+        }
         sfr::CameraRaceMotion m;
         frames(m,pose(),60);
         require(m.ready() && m.lean()==0 && !m.boost() && !m.crouch() && !m.jump(),"standing calibrates without input");

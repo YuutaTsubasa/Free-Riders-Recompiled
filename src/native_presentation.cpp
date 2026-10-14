@@ -415,7 +415,10 @@ struct NativePresentation::Impl {
         swap_chain.reset();
 #ifdef _WIN32
         sfr::set_game_window(nullptr);  // before its handle can be reused
-        if (window) DestroyWindow(window);
+        if (window) {
+            DestroyWindow(window);
+            SetThreadExecutionState(ES_CONTINUOUS);  // the display may sleep again
+        }
 #else
         if (window) SDL_HideWindow(window);
 #endif
@@ -1240,6 +1243,10 @@ NativePresentation::NativePresentation(NativeGraphics& graphics, uint32_t width,
         bounds.right - bounds.left, bounds.bottom - bounds.top, nullptr, nullptr,
         GetModuleHandleW(nullptr), &implementation->close_requested);
     sfr::set_game_window(implementation->window);  // its title: title_stats.h
+    // A player on a Kinect or a webcam touches neither keyboard nor mouse, so
+    // Windows took the game for idle and turned the display off (Issue #97).
+    // SDL keeps the display on by itself on Linux and Android.
+    if (implementation->window) SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED);
 #else
     // The window Plume's Vulkan instance was made for (NativeGraphics).
     implementation->window = static_cast<SDL_Window*>(graphics.host_window());
