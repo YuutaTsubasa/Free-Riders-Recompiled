@@ -74,6 +74,7 @@ std::string path_utf8(const std::filesystem::path& path) {
 
 LauncherSettings parse_launcher_settings(const std::string& text) {
     LauncherSettings settings;
+    bool ratio_seen = false;
     std::istringstream lines(text);
     std::string line;
     while (std::getline(lines, line)) {
@@ -90,6 +91,14 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
             read_number(value, 1, 1000, scale);
             settings.resolution_scale = validated_resolution_scale(scale);
         }
+        else if (key == "aspect_ratio" && (value == "auto" || value == "16:9")) {
+            settings.aspect_ratio = value;
+            ratio_seen = true;
+        }
+        // Before the ratio list: aspect_mode was auto or original.
+        else if (key == "aspect_mode" && !ratio_seen && (value == "auto" || value == "original"))
+            settings.aspect_ratio = value == "original" ? "16:9" : "auto";
+        else if (key == "ui_align" && (value == "edge" || value == "center")) settings.ui_align = value;
         else if (key == "fullscreen") read_flag(value, settings.fullscreen);
         else if (key == "vsync") read_flag(value, settings.vsync);
         else if (key == "audio") read_flag(value, settings.audio);
@@ -143,6 +152,8 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "window_width=" << s.window_width << '\n'
         << "window_height=" << s.window_height << '\n'
         << "resolution_scale=" << validated_resolution_scale(s.resolution_scale) << '\n'
+        << "aspect_ratio=" << (s.aspect_ratio == "16:9" ? "16:9" : "auto") << '\n'
+        << "ui_align=" << (s.ui_align == "center" ? "center" : "edge") << '\n'
         << "fullscreen=" << s.fullscreen << '\n'
         << "vsync=" << s.vsync << '\n'
         << "audio=" << s.audio << '\n'
@@ -236,6 +247,7 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
                                                                const std::filesystem::path& directory) {
     const auto [window_width, window_height] = window_size(s);
     const InternalResolution internal = internal_resolution(s);
+    const bool original = s.aspect_ratio == "16:9";
     return {
         // Playing: no diagnostic time or call limits, no traces.
         {"SFR_CALL_BUDGET", "18446744073709551615"},
@@ -267,6 +279,11 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         // The resolution scale of the output height, as the game's percent
         // of its 720 lines (always set: an inherited value is overridden).
         {"SFR_RENDER_SCALE", std::to_string(internal.requested_percent)},
+        {"SFR_ASPECT_MODE", original ? "original" : "auto"},
+        // Clear any inherited fixed ratio; Auto follows the window or display.
+        {"SFR_ASPECT_RATIO", ""},
+        // The alignment only means something in auto mode.
+        {"SFR_UI_ALIGN", !original && s.ui_align == "center" ? "center" : "edge"},
         {"SFR_FULLSCREEN", s.fullscreen ? "1" : "0"},
         {"SFR_VSYNC", s.vsync ? "1" : "0"},
         {"SFR_GRAPHICS", s.vulkan ? "vulkan" : "d3d12"},
@@ -392,7 +409,13 @@ std::vector<std::pair<std::string, std::filesystem::path>> shader_tool_environme
 }
 
 std::vector<WindowSize> common_window_sizes() {
-    return {{960, 540}, {1280, 720}, {1600, 900}, {1920, 1080}, {2560, 1440}, {3840, 2160}};
+    return {{960, 540}, {1280, 720}, {1600, 900}, {1920, 1080}, {2560, 720}, {2560, 1080},
+            {2560, 1440}, {3440, 1440}, {3840, 2160}, {5120, 1440}};
+}
+
+const std::vector<std::string>& aspect_ratio_choices() {
+    static const std::vector<std::string> choices{"auto", "16:9"};
+    return choices;
 }
 
 bool is_listed_window_size(uint32_t width, uint32_t height, uint32_t desktop_width, uint32_t desktop_height) {

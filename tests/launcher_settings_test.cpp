@@ -142,6 +142,46 @@ void runtime_render_scale() {
             rs::scaled_extent(19, 75) == 14 && rs::scaled_extent(2, 25) == 2,
             "even sides stay even, odd ones round to the nearest pixel");
 }
+void aspect_settings() {
+    const sfr::LauncherSettings defaults;
+    require(defaults.aspect_ratio == "auto" && defaults.ui_align == "edge", "aspect defaults to auto with edge alignment");
+    require(value_of(defaults, "SFR_ASPECT_MODE") == "auto" && value_of(defaults, "SFR_UI_ALIGN") == "edge",
+            "the aspect variables are always set");
+    require(value_of(defaults, "SFR_ASPECT_RATIO").empty(), "Auto passes no ratio, the window's shape decides");
+    require(value_of(defaults, "SFR_WINDOW_WIDTH") == "1280", "Auto keeps the window width the player chose");
+    const auto center = sfr::parse_launcher_settings("aspect_ratio=auto\nui_align=center\n");
+    require(value_of(center, "SFR_UI_ALIGN") == "center", "center alignment reaches the game in auto mode");
+
+    const auto original = sfr::parse_launcher_settings("aspect_ratio=16:9\nui_align=center\nwindow_width=3440\nwindow_height=1440\n");
+    require(value_of(original, "SFR_ASPECT_MODE") == "original" && value_of(original, "SFR_ASPECT_RATIO").empty(),
+            "16:9 selects the original picture without a fixed ratio override");
+    require(value_of(original, "SFR_WINDOW_WIDTH") == "3440" && value_of(original, "SFR_WINDOW_HEIGHT") == "1440",
+            "original mode preserves the selected output resolution");
+    const auto saved = sfr::parse_launcher_settings(sfr::format_launcher_settings(original));
+    require(saved.aspect_ratio == "16:9" && saved.ui_align == "center", "hidden alignment choice is preserved");
+    require(value_of(saved, "SFR_UI_ALIGN") == "edge", "original mode ignores the stored alignment");
+    require(sfr::parse_launcher_settings("aspect_mode=original\n").aspect_ratio == "16:9", "old original is 16:9");
+    require(sfr::parse_launcher_settings("aspect_mode=auto\n").aspect_ratio == "auto", "old auto is auto");
+    require(sfr::parse_launcher_settings("aspect_ratio=auto\naspect_mode=original\n").aspect_ratio == "auto",
+            "new ratio key wins over the old key");
+    for (const char* ratio : {"21:9", "32:9", "48:9", "4:3"}) {
+        const auto bad = sfr::parse_launcher_settings(std::string("aspect_ratio=") + ratio + "\nui_align=left\n");
+        require(bad.aspect_ratio == "auto" && bad.ui_align == "edge", "unsupported choices use defaults");
+    }
+    require(sfr::aspect_ratio_choices() == std::vector<std::string>{"auto", "16:9"}, "launcher offers only Auto and 16:9");
+    const auto wide = sfr::parse_launcher_settings("aspect_ratio=auto\nwindow_width=5120\nwindow_height=1440\nui_align=center\n");
+    require(value_of(wide, "SFR_WINDOW_WIDTH") == "5120" && value_of(wide, "SFR_WINDOW_HEIGHT") == "1440" &&
+            value_of(wide, "SFR_ASPECT_RATIO").empty() && value_of(wide, "SFR_UI_ALIGN") == "center",
+            "Auto preserves an ultrawide resolution and the chosen HUD alignment");
+    const auto sizes = sfr::common_window_sizes();
+    for (const auto& wide_size : {std::pair{2560u, 720u}, std::pair{2560u, 1080u}, std::pair{3440u, 1440u},
+                                  std::pair{5120u, 1440u}})
+        require(std::any_of(sizes.begin(), sizes.end(),
+                            [&](const sfr::WindowSize& s) {
+                                return s.width == wide_size.first && s.height == wide_size.second;
+                            }),
+                "the common window sizes include the ultrawide ones");
+}
 
 void rendering_resolution_settings() {
     const sfr::LauncherSettings defaults;
@@ -563,6 +603,7 @@ int main() {
         rendering_resolution_settings();
         window_size_defaults_to_the_desktop();
         custom_window_size();
+        aspect_settings();
         camera_debug_settings();
         menu_steady_settings();
         save_directory_settings();

@@ -116,6 +116,8 @@ enum Text {
     OnlineNameLabel, OnlineNameHint,
     KinectSmoothLabel, KinectSmoothHint, KinectLeanLabel, KinectLeanHint, KinectCrouchLabel, KinectCrouchHint,
     CustomWindowSize, CustomWindowSizeRow, CustomWindowSizeHint,
+    AspectModeLabel, AspectModeHint, AspectAuto, AspectOriginal,
+    UiAlignLabel, UiAlignHint, UiAlignEdge, UiAlignCenter,
     TextCount
 };
 
@@ -408,6 +410,16 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Custom window size", "自訂視窗大小"},
     {"Width and height in pixels (160 to 16384). Press Enter or leave the box to apply.",
      "寬度與高度（像素，160 到 16384）。按 Enter 或離開輸入框後套用。"},
+    {"Aspect Ratio", "畫面比例"},
+    {"Auto adapts the picture to the window or display. 16:9 keeps the original picture.",
+     "自動會依視窗或螢幕形狀調整畫面；原始則維持遊戲原本的 16:9 畫面。"},
+    {"Auto", "自動"},
+    {"16:9", "原始"},
+    {"UI Alignment Mode", "介面對齊"},
+    {"Edge places the race HUD's side groups at the screen edges; Center keeps the HUD centered. Only used with Auto.",
+     "外緣會把比賽 HUD 的左右群組放在螢幕邊緣；中央則讓 HUD 集中在畫面中央。僅在比例為自動時有效。"},
+    {"Edge", "外緣"},
+    {"Center", "中央"},
 }};
 
 int language = 0;
@@ -1684,6 +1696,7 @@ struct Launcher {
 
     void display_settings() {
         std::vector<sfr::WindowSize> sizes = reported_sizes;
+        const bool original = settings.aspect_ratio == "16:9";
         const auto has = [&](uint32_t w, uint32_t h) {
             return std::any_of(sizes.begin(), sizes.end(), [&](const auto& s) { return s.width == w && s.height == h; });
         };
@@ -1729,6 +1742,11 @@ struct Launcher {
             }
         });
 #endif
+        const auto aspect_name = [&](const std::string& ratio) {
+            if (ratio == "auto") return std::string(tr(AspectAuto));
+            if (ratio == "16:9") return std::string(tr(AspectOriginal));
+            return ratio;
+        };
 #ifndef __ANDROID__  // fullscreen phones have no adjustable output window
         // Window size applies to Windowed mode only; Borderless uses the display size.
         if (!settings.fullscreen) {
@@ -1797,6 +1815,40 @@ struct Launcher {
         (void)name;
         (void)custom;
 #endif
+        // Aspect and output resolution are independent choices.
+        setting_row(tr(AspectModeLabel), tr(AspectModeHint), combo_width, scale, [&] {
+            ImGui::SetNextItemWidth(combo_width);
+            if (ImGui::BeginCombo("##aspect_ratio", aspect_name(settings.aspect_ratio).c_str())) {
+                for (const auto& ratio : sfr::aspect_ratio_choices()) {
+                    const bool chosen = ratio == settings.aspect_ratio;
+                    if (ImGui::Selectable(aspect_name(ratio).c_str(), chosen)) {
+                        settings.aspect_ratio = ratio;
+                        ::play(sfr::UiSound::confirm);
+                    }
+                    if (chosen) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+        });
+        // The alignment only exists with Auto; with the original picture the
+        // row is hidden and the stored choice is kept untouched.
+        if (!original) {
+            setting_row(tr(UiAlignLabel), tr(UiAlignHint), combo_width, scale, [&] {
+                const bool center = settings.ui_align == "center";
+                ImGui::SetNextItemWidth(combo_width);
+                if (ImGui::BeginCombo("##ui_align", tr(center ? UiAlignCenter : UiAlignEdge))) {
+                    for (const bool want_center : {false, true}) {
+                        const bool chosen = want_center == center;
+                        if (ImGui::Selectable(tr(want_center ? UiAlignCenter : UiAlignEdge), chosen)) {
+                            settings.ui_align = want_center ? "center" : "edge";
+                            ::play(sfr::UiSound::confirm);
+                        }
+                        if (chosen) ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+            });
+        }
         settings_section(SectionRendering);
         setting_row(tr(VSync), tr(VSyncHint), switch_width, scale, [&] { toggle("##vsync", &settings.vsync); });
 #ifdef _WIN32  // elsewhere the game always draws with Vulkan

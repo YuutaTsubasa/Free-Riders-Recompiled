@@ -1,4 +1,5 @@
 #include "guest_graphics.h"
+#include "aspect_settings.h"
 #include "guest_memory.h"
 #include "native_presentation.h"
 #include <plume_render_interface.h>
@@ -151,7 +152,26 @@ bool GuestGraphics::set_viewport(uint32_t device,uint32_t descriptor) {
     for(size_t i=0;i<transform.size();++i)
         memory_.store<uint32_t>(device+0x2908+i*4,std::bit_cast<uint32_t>(transform[i]));
     memory_.store<uint64_t>(device+16,dirty);
+    if(x==0 && y==0 && (attachment==color_handle || attachment==depth_handle))
+        last_view_width_=uint32_t(viewport.width);
+    // Ultrawide: the title's cameras start from a default aspect kept at
+    // 0x82B34BE0. A view that fills the wide back buffer wants its shape; the
+    // 1280/880-wide views (menus, calibration) are shown as 16:9 and want 16:9.
+    if(x==0 && y==0 && aspect::wider_than_16x9(native.width(),native.height()) && viewport.height>0 &&
+       (attachment==color_handle || attachment==depth_handle) && memory_.available(0x82B34BE0,8)==false) {
+        const float camera=viewport.width>=float(native.width()) ? float(native.width())/viewport.height : 16.0f/9.0f;
+        memory_.store<uint32_t>(0x82B34BE0,std::bit_cast<uint32_t>(camera));
+        memory_.store<uint32_t>(0x82B34BE4,std::bit_cast<uint32_t>(camera*0.5f));
+    }
     return true;
+}
+
+float GuestGraphics::camera_aspect() {
+    if(!impl_) return 0.0f;
+    const auto& native=presentation();
+    if(!aspect::wider_than_16x9(native.width(),native.height())) return 0.0f;
+    const bool full=last_view_width_>=native.width();
+    return full ? float(native.width())/float(native.height()) : 16.0f/9.0f;
 }
 
 void GuestGraphics::set_scissor(uint32_t device,uint32_t rectangle_address) {

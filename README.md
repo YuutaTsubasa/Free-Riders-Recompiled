@@ -202,7 +202,7 @@ The launcher groups settings by what you want to change:
 | Category | Settings |
 | --- | --- |
 | General | Launcher, game and voice languages, movies, restore defaults |
-| Graphics | Display mode (Borderless or Windowed; Borderless by default), window size, backend, Render Size, VSync, expandable performance options |
+| Graphics | Display mode (Borderless or Windowed; Borderless by default), window size, aspect ratio and UI alignment, backend, Render Size, VSync, expandable performance options |
 | Sound | Game volume and launcher sounds |
 | Controls | Each player's input source and controller, button/key bindings, Android touch and tilt |
 | Motion input | Kinect/webcam mode, device and preview, mirror, skeleton debug, voice commands |
@@ -227,6 +227,25 @@ The window size list holds the resolutions the system reports for the display,
 plus common sizes and the desktop's; any other size is shown as **Custom**. The
 saved `fullscreen` key keeps its meaning (1 is Borderless, 0 is Windowed); a
 settings file without it now starts in Borderless.
+
+The window size list also offers common ultrawide sizes (2560 x 720,
+2560 x 1080, 3440 x 1440, 5120 x 1440). Two more options sit in the same group:
+
+- **Aspect Ratio** (`aspect_ratio`): **Auto** (default) adapts the picture to the
+  window or display; **16:9** keeps the original picture. Both preserve the
+  selected output resolution. With Auto and a window (or display, in full
+  screen) wider than 16:9, the race's 3D view is widened (hor+), the race HUD
+  stays in a centered 16:9 area, menu, title and calibration backdrops fill the
+  whole width, and movies keep their 16:9 shape with black bars. 16:9 keeps the
+  original behaviour untouched.
+- **UI Alignment Mode** (`ui_align`): **Edge** (default) places the race HUD's side
+  groups at the screen edges; **Center** keeps the HUD centered. The row is only
+  shown with Auto; with 16:9 it is hidden, the original behaviour is untouched and
+  the stored choice is preserved. Menu content stays centered.
+
+The launcher sets `SFR_ASPECT_MODE` and `SFR_UI_ALIGN`, clears `SFR_ASPECT_RATIO`, and passes the
+selected window dimensions unchanged. Older `aspect_mode=original` settings load
+as 16:9. Changes apply on the next game launch.
 
 ## How to Build
 

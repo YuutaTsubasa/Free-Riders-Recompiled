@@ -32,6 +32,10 @@ struct NativeClear {
     uint8_t stencil_value = 0;
 };
 
+// The size in pixels of the primary display (the one a full-screen window
+// covers), {0, 0} when it cannot be told. Used for its shape only.
+std::pair<uint32_t, uint32_t> primary_display_size();
+
 class NativePresentation {
 public:
     NativePresentation(NativeGraphics& graphics, uint32_t width, uint32_t height);
@@ -90,7 +94,9 @@ public:
     // area (a title rendering at a back buffer smaller than the framebuffer),
     // that area is stretched to the window, as a console's scaler does; zero
     // presents the whole framebuffer.
-    void present(uint32_t area_width = 0, uint32_t area_height = 0);
+    // display_aspect > 0 shows the part in a centered area of that shape (ultrawide
+    // windows keep 16:9 content 16:9) instead of filling the framebuffer's shape.
+    void present(uint32_t area_width = 0, uint32_t area_height = 0, float display_aspect = 0.0f);
     void prepare_player_model();
     // The model loads on its own thread; this waits for it and builds it
     // (for callers that need it drawn at once, such as the tests).

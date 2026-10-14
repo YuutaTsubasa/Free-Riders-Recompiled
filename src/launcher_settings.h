@@ -23,6 +23,11 @@ struct LauncherSettings {
     // screen shows the game at.
     uint32_t display_width = 0, display_height = 0;
     bool fullscreen = true;  // Borderless; false is Windowed
+    // Auto follows the window/display shape; 16:9 keeps the original picture.
+    // Neither changes the selected output resolution. Alignment affects the
+    // race HUD in Auto and is ignored with 16:9.
+    std::string aspect_ratio = "auto";  // "auto" or "16:9"
+    std::string ui_align = "edge";      // "edge" or "center"
     bool vsync = false;
     bool audio = true;
     uint32_t volume = 100;           // percent
@@ -187,4 +192,6 @@ struct InternalResolution {
 };
 InternalResolution internal_resolution(const LauncherSettings& settings);
 InternalResolution internal_resolution(const LauncherSettings& settings, uint32_t resolution_scale);
+// The aspect ratio choices, in the order the launcher lists them.
+const std::vector<std::string>& aspect_ratio_choices();
 }
