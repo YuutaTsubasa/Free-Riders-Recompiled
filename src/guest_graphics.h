@@ -105,7 +105,15 @@ private:
     uint32_t last_view_width_ = 0;
     uint32_t menu_bg_swapped_ = 0, menu_bg_other_ = 0, menu_bg_backdrop_ = 0;
     bool menu_bg_whole_ = false, menu_bg_backdrop_last_ = false;
+    // A frame the title lays out narrower than the back buffer and stretches
+    // to 16:9 itself: a two-player split (two half views side by side, 440 or
+    // 640 wide each) or a race in the 880-wide layout (a Tag Race holding
+    // hands, On your Gear). The layout's width, this frame and the last.
+    uint32_t split_layout_ = 0, split_layout_last_ = 0;
 public:
+    // Whether the frame is (or the last one was) such a frame: it is laid out
+    // and shown as the title's own 16:9 picture, not widened.
+    [[nodiscard]] bool split_frame() const noexcept { return split_layout_ || split_layout_last_; }
     // The aspect the title's 3D cameras should start from for the view being
     // drawn: the framebuffer's when the view fills it, 16:9 for the 1280/880
     // wide views. 0 when the framebuffer is not wider than 16:9.

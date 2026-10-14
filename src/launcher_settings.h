@@ -28,11 +28,13 @@ struct LauncherSettings {
     // Auto follows the window/display shape; 16:9 keeps the original picture.
     // Neither changes the selected output resolution. Alignment affects the
     // race HUD in Auto and is ignored with 16:9.
-    // 16:9 until Auto is right everywhere: at 21:9 the two-player split, its
-    // On your Gear screen and the pause menu are still misplaced, and on a
-    // phone (about 20:9) Auto draws a quarter more and stretches the touch
-    // controls. Auto is the player's choice meanwhile.
-    std::string aspect_ratio = "16:9";  // "auto" or "16:9"
+#ifdef __ANDROID__
+    // A phone is about 20:9: Auto would draw a quarter more and stretch the
+    // touch controls, so phones keep the original picture unless asked.
+    std::string aspect_ratio = "16:9";
+#else
+    std::string aspect_ratio = "auto";  // "auto" or "16:9"
+#endif
     std::string ui_align = "edge";      // "edge" or "center"
     bool vsync = false;
     bool audio = true;

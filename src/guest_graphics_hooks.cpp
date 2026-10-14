@@ -4,6 +4,7 @@
 #include "avatar_transform.h"
 #include "guest_graphics.h"
 #include "aspect_settings.h"
+#include "touch_controls.h"
 #include "native_graphics.h"
 #include "native_presentation.h"
 #include "native_raster_state.h"
@@ -74,13 +75,18 @@ void write_framebuffer(const char* path) {
     const std::pair<uint32_t,uint32_t> area{uint32_t(rectangle.right),uint32_t(rectangle.bottom)};
     std::vector<uint8_t> stretched;
     const uint8_t* rows=pixels.data();
-    if(pixels.size()>=size && area.first && area.second && (area.first!=width || area.second!=height)) {
-        stretched.resize(size);
+    // A part shown with a shape of its own (a 16:9 picture on a wider frame)
+    // is written as the window shows it: that shape, black at the sides.
+    const float shape=presentation.presented_aspect();
+    const uint32_t shown=shape>0.0f ? (std::min)(width,uint32_t(float(height)*shape+0.5f)) : width;
+    const uint32_t left=(width-shown)/2;
+    if(pixels.size()>=size && area.first && area.second && (area.first!=width || area.second!=height || shown!=width)) {
+        stretched.assign(size,0);
         for(uint32_t y=0;y<height;++y) {
             const uint64_t source=uint64_t(y)*area.second/height*width;
-            for(uint32_t x=0;x<width;++x)
-                std::memcpy(stretched.data()+(uint64_t(y)*width+x)*4,
-                            pixels.data()+(source+uint64_t(x)*area.first/width)*4,4);
+            for(uint32_t x=0;x<shown;++x)
+                std::memcpy(stretched.data()+(uint64_t(y)*width+left+x)*4,
+                            pixels.data()+(source+uint64_t(x)*area.first/shown)*4,4);
         }
         rows=stretched.data();
     }
@@ -1176,7 +1182,9 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
             // (width - center) / 2 pixels, i.e. 1 - center/width in clip space, so a
             // sprite keeps its distance to its own edge at any width (vertical
             // position is left as the title has it).
-            if(sfr::aspect::hud_anchor() && draw.vertex_count>=3 && draw.stride>=8 && draw.stride<=32 &&
+            // Only while racing with no menu up (touch_racing): the pause ring and
+            // the results' panels share the HUD's corners but belong together.
+            if(sfr::aspect::hud_anchor() && sfr::touch_racing() && draw.vertex_count>=3 && draw.stride>=8 && draw.stride<=32 &&
                draw.vertices.size()>=size_t(draw.vertex_count)*draw.stride) {
                 float lo[2]={1e30f,1e30f},hi[2]={-1e30f,-1e30f};
                 for(uint32_t v=0;v<draw.vertex_count;++v) {
@@ -1221,7 +1229,8 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     // widen x back by the ratio, which is the 16:9 crop of the same view.
     if(wide_frame) {
         const uint32_t view=graphics().last_view_width();
-        if(sfr::aspect::title_16x9_view(view)) draw.shared.projection_x_scale=float(logical_width)/center_width;
+        if(sfr::aspect::title_16x9_view(view) && !graphics().split_frame())
+            draw.shared.projection_x_scale=float(logical_width)/center_width;
     }
 
     draw.blend=graphics().blend_control(0);
@@ -1280,7 +1289,8 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     const bool menu_bg=sfr::aspect::menu_backdrop();
     {
         const uint32_t view=graphics().last_view_width();
-        if(menu_bg && sfr::aspect::title_16x9_view(view) && wide_frame &&
+        // A two-player split is left as the title draws it (split_frame).
+        if(menu_bg && sfr::aspect::title_16x9_view(view) && wide_frame && !graphics().split_frame() &&
            memory.load<uint32_t>(uint64_t(device)+0x3148)==sfr::GuestGraphics::color_handle &&
            !presentation.target_is_surface()) {
             const uint32_t lr=uint32_t(ctx.lr);
@@ -1337,6 +1347,43 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
         const uint32_t note_view=graphics().last_view_width();
         if(menu_bg && sfr::aspect::title_16x9_view(note_view) && wide_frame)
             graphics().note_menu_bg_draw(raster_swapped,raster_swapped && raster_backdrop);
+    }
+    // SFR_ASPECT_TRACE=<present>[,<present>...]: every back-buffer draw of
+    // those frames on a frame wider than 16:9, with its view, its 2D extent and
+    // the placement chosen above (aspect_settings.h).
+    static const std::vector<uint32_t> aspect_trace=[]{
+        std::vector<uint32_t> presents;
+        if(const char* t=std::getenv("SFR_ASPECT_TRACE"))
+            for(char* p=const_cast<char*>(t);*p;) { presents.push_back(uint32_t(std::strtoul(p,&p,10))); if(*p) ++p; }
+        return presents;
+    }();
+    // SFR_ASPECT_TRACE_EVERY=<n>: every n-th frame instead (with SFR_SCREENSHOT_EVERY).
+    static const uint32_t aspect_every=[]{ const char* t=std::getenv("SFR_ASPECT_TRACE_EVERY"); return t?uint32_t(std::strtoul(t,nullptr,10)):0u; }();
+    const uint32_t present_now=sfr::present_count;
+    const bool traced=(aspect_every && present_now%aspect_every==0) ||
+        std::find(aspect_trace.begin(),aspect_trace.end(),present_now)!=aspect_trace.end();
+    if(traced && wide_frame && !presentation.target_is_surface()) {
+        float lo[2]={0,0},hi[2]={0,0};
+        if(draw.vertex_count>=1 && draw.stride>=8 && draw.vertices.size()>=size_t(draw.vertex_count)*draw.stride) {
+            lo[0]=lo[1]=1e30f; hi[0]=hi[1]=-1e30f;
+            for(uint32_t v=0;v<draw.vertex_count;++v) {
+                float xy[2];
+                std::memcpy(xy,draw.vertices.data()+size_t(v)*draw.stride,8);
+                for(int a=0;a<2;++a) { lo[a]=(std::min)(lo[a],xy[a]); hi[a]=(std::max)(hi[a],xy[a]); }
+            }
+        }
+        const auto& v=presentation.raster_state().viewport();
+        const auto& s=presentation.raster_state().scissor();
+        std::cerr << "ASPECT_TRACE present=" << present_now << " racing=" << memory.load<uint32_t>(0x83E52F8C) << " draw=" << frame_draws << " lr=0x" << std::hex << uint32_t(ctx.lr) << std::dec
+                  << " vte=" << (memory.load<uint32_t>(uint64_t(device)+10572)&0x3F)
+                  << " view=" << v.x << ',' << v.y << ',' << v.width << ',' << v.height
+                  << " scissor=" << s.left << ',' << s.top << ',' << s.right << ',' << s.bottom
+                  << " last_view=" << graphics().last_view_width()
+                  << " box=" << lo[0] << ',' << lo[1] << ',' << hi[0] << ',' << hi[1]
+                  << " n=" << draw.vertex_count
+                  << " scale=" << draw.shared.screen_space_scale[0] << ',' << draw.shared.screen_space_scale[1]
+                  << " offset=" << draw.shared.screen_space_offset[0] << ',' << draw.shared.screen_space_offset[1]
+                  << " proj_x=" << draw.shared.projection_x_scale << " swapped=" << raster_swapped << '\n';
     }
     const auto record_start=metrics_clock();
     graphics().renderer().draw(draw);

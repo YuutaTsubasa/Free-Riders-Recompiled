@@ -183,6 +183,18 @@ void GuestGraphics::present_front_buffer(uint32_t device) {
     const auto& viewport=impl_->presentation->raster_state().viewport();
     const bool back_buffer_sized=stretch && viewport.x==0 && viewport.y==0 &&
         uint32_t(viewport.width)==back_width && uint32_t(viewport.height)==back_height;
+    // A split or 880-wide race frame (split_frame) on a frame wider than 16:9
+    // is the title's own picture in the left part of the frame: show that part
+    // as 16:9, as the title does on a 16:9 display, with black at the sides.
+    const uint32_t split=split_layout_;
+    split_layout_last_=split_layout_;
+    split_layout_=0;
+    if(split && aspect::wider_than_16x9(impl_->presentation->width(),impl_->presentation->height())) {
+        menu_bg_whole_=false;
+        menu_bg_swapped_=menu_bg_other_=menu_bg_backdrop_=0;
+        impl_->presentation->present(split,impl_->presentation->height(),16.0f/9.0f);
+        return;
+    }
     // Menu backdrop (aspect_settings.h, SFR_MENU_BG) draws the menus' backdrop
     // over the whole frame and the rest in its centered 16:9 area
     // (guest_graphics_hooks.cpp): present it whole.

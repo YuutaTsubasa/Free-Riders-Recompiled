@@ -144,11 +144,15 @@ void runtime_render_scale() {
 }
 void aspect_settings() {
     const sfr::LauncherSettings defaults;
-    require(defaults.aspect_ratio == "16:9" && defaults.ui_align == "edge", "aspect defaults to 16:9 with edge alignment");
-    require(value_of(defaults, "SFR_ASPECT_MODE") == "original" && value_of(defaults, "SFR_UI_ALIGN") == "edge",
+#ifdef __ANDROID__
+    require(defaults.aspect_ratio == "16:9", "a phone keeps the original picture");
+#else
+    require(defaults.aspect_ratio == "auto" && defaults.ui_align == "edge", "aspect defaults to auto with edge alignment");
+    require(value_of(defaults, "SFR_ASPECT_MODE") == "auto" && value_of(defaults, "SFR_UI_ALIGN") == "edge",
             "the aspect variables are always set");
-    require(sfr::format_launcher_settings(defaults).find("aspect_ratio=16:9\n") != std::string::npos,
-            "16:9 is saved");
+    require(sfr::format_launcher_settings(defaults).find("aspect_ratio=auto\n") != std::string::npos,
+            "Auto is saved");
+#endif
     require(value_of(defaults, "SFR_ASPECT_RATIO").empty(), "Auto passes no ratio, the window's shape decides");
     require(value_of(defaults, "SFR_WINDOW_WIDTH") == "1280", "Auto keeps the window width the player chose");
     const auto center = sfr::parse_launcher_settings("aspect_ratio=auto\nui_align=center\n");
@@ -168,7 +172,7 @@ void aspect_settings() {
             "new ratio key wins over the old key");
     for (const char* ratio : {"21:9", "32:9", "48:9", "4:3"}) {
         const auto bad = sfr::parse_launcher_settings(std::string("aspect_ratio=") + ratio + "\nui_align=left\n");
-        require(bad.aspect_ratio == "16:9" && bad.ui_align == "edge", "unsupported choices use defaults");
+        require(bad.aspect_ratio == defaults.aspect_ratio && bad.ui_align == "edge", "unsupported choices use defaults");
     }
     require(sfr::aspect_ratio_choices() == std::vector<std::string>{"auto", "16:9"}, "launcher offers only Auto and 16:9");
     const auto wide = sfr::parse_launcher_settings("aspect_ratio=auto\nwindow_width=5120\nwindow_height=1440\nui_align=center\n");
