@@ -76,13 +76,26 @@ public:
         const float side=filtered_roll_-neutral_roll_;
         // The model's legs can settle longer than the torso at race entry.
         // Learn a taller stable upright pose slowly, never a crouched baseline.
-        if(!crouch_ && std::abs(side)<.174533f && std::abs(filtered_pitch_-neutral_pitch_)<.174533f &&
+        if(!crouch_ && !hop_latched_ && std::abs(side)<.174533f && std::abs(filtered_pitch_-neutral_pitch_)<.174533f &&
            filtered_height_>neutral_height_)
             neutral_height_+=(1-std::exp(-dt/2.f))*(filtered_height_-neutral_height_);
         lean_=std::copysign(std::clamp((std::abs(side)-.0698132f)/(.523599f-.0698132f),0.f,1.f),side);
         if(lean_==0)lean_=0; // keep neutral positive zero for guest sign-bit consumers
         const bool compressed=filtered_height_<neutral_height_*.8f;
         if(jump_recovering_ && filtered_height_>neutral_height_*.9f)jump_recovering_=false;
+        // A hop with both feet (Issue #97): its dip is too quick to count as a
+        // crouch, so it never armed the rise. Over a floor fixed at calibration
+        // (a real Kinect) the hips leaving the ground well above the standing
+        // height are the takeoff; two raw samples confirm it, and the hips must
+        // come back down before another hop counts. Over the ankles (a webcam)
+        // the whole body rises together, so this needs the floor.
+        const float hop_height=neutral_height_+std::max(.06f,neutral_height_*.08f);
+        if(hop_latched_ && height<neutral_height_*1.03f && previous_height_<neutral_height_*1.03f)hop_latched_=false;
+        if(p.floor_y && !hop_latched_ && height>hop_height && previous_height_>hop_height) {
+            hop_latched_=true;
+            crouch_=false;crouch_candidate_=false;crouch_time_=0;rise_candidate_=false;rise_time_=0;
+            jump_=true;recovery_=.25f;jump_recovering_=true;
+        }
         if(!crouch_ && !jump_recovering_) {
             // Only the interval between two qualifying observations counts.
             crouch_time_=compressed&&crouch_candidate_?crouch_time_+dt:0;
@@ -100,6 +113,7 @@ public:
             rise_time_=rising&&rise_candidate_?rise_time_+dt:0;
             rise_candidate_=rising;
             if(rise_time_>=.04f) {
+                hop_latched_=height>hop_height;  // a crouch-and-spring is not a second hop
                 crouch_=false;crouch_candidate_=false;crouch_time_=0;
                 rise_candidate_=false;rise_time_=0;jump_=true;recovery_=.25f;jump_recovering_=true;
             }
@@ -162,7 +176,7 @@ private:
     CameraOverthrow overthrow_;
     bool boost_neutral_required_=false,brake_side_required_=false,neutral_candidate_=false,side_candidate_=false;
     float neutral_time_=0,side_time_=0;
-    bool jump_recovering_=false,rise_candidate_=false,brake_ready_=false,front_candidate_=false;
+    bool jump_recovering_=false,hop_latched_=false,rise_candidate_=false,brake_ready_=false,front_candidate_=false;
     float lowest_height_=0,previous_height_=0,rise_time_=0,front_time_=0;
     uint64_t sequence_=0;
     float elapsed_=0;
