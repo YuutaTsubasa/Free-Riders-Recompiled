@@ -53,10 +53,10 @@ class BenchmarkScenariosTests(unittest.TestCase):
         self.assertFalse((self.root / 'runs').exists())
 
     def test_resolution_is_separate_from_window_size_and_render_skip(self):
-        plan = self.plan('--render-scale', '75')
+        plan = self.plan('--render-scale', '150')
         settings = self.runner.scenario_settings(plan, self.settings.read_text())
         self.assertIn('window_width=1920\n', settings)
-        self.assertIn('render_scale=75\n', settings)
+        self.assertIn('resolution_scale=150\n', settings)
         self.assertIn('race_render_every=1\n', settings)
 
     def test_scenarios_separate_camera_avatar_and_second_player(self):

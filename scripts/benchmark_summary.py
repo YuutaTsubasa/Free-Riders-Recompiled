@@ -249,7 +249,7 @@ def hardware_table(directory):
     rows = [('Model', info.get('model')), ('CPU', ' / '.join(filter(None, (info.get('cpu'), info.get('cpu_cores'))))),
             ('Instruction sets', info.get('cpu_features')), ('Memory', info.get('memory')),
             ('GPU (as Windows sees it)', '; '.join(gpus) or info.get('driver') or info.get('gpu')),
-            ('GPU the game used (its own log)', machine.get('graphics')), ('Rendering resolution', machine.get('render_scale')),
+            ('GPU the game used (its own log)', machine.get('graphics')), ('Render Size', machine.get('render_scale')),
             ('Operating system', info.get('os_build') or info.get('os')),
             ('Power', ' / '.join(filter(None, (info.get('power'), info.get('power_mode'), info.get('chassis'))))),
             ('Windows settings', ' / '.join(f'{label}={info[key]}' for label, key in
@@ -612,7 +612,7 @@ def bottleneck(rows, capped=False):
         return statistics.median(by_round[config][r] / by_round['baseline'][r] for r in rounds)
     ceiling_ratio, half_ratio = ratio('skip-draws'), ratio('render-50')
     if half_ratio >= 1.10:
-        verdict = f'**GPU**: half resolution is {(half_ratio - 1) * 100:.0f}% faster; lowering the rendering resolution helps most.'
+        verdict = f'**GPU**: half resolution is {(half_ratio - 1) * 100:.0f}% faster; lowering Render Size helps most.'
         decisive = half_ratio
     elif ceiling_ratio >= 1.15:
         verdict = (f'**drawing path**: no drawing is {(ceiling_ratio - 1) * 100:.0f}% faster but half resolution makes almost no difference,'

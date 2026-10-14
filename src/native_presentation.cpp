@@ -1,5 +1,6 @@
 #include "avatar_transform.h"
 #include "native_presentation.h"
+#include "render_scale.h"
 #include <functional>
 
 #include "native_graphics.h"
@@ -1189,19 +1190,21 @@ NativePresentation::NativePresentation(NativeGraphics& graphics, uint32_t width,
     implementation->graphics = &graphics;
     implementation->width = width;
     implementation->height = height;
-    uint32_t percent = 100;
-    if (const char* setting = std::getenv("SFR_RENDER_SCALE"); setting && *setting) {
-        const std::string value(setting);
-        if (value == "50" || value == "75" || value == "100" || value == "150" || value == "200" || value == "300")
-            percent = uint32_t(std::stoul(value));
-        else std::cerr << "NATIVE_RENDER_SCALE invalid=" << value << " fallback=100\n";
-    }
-    implementation->render_width = (std::max)(1u, (width * percent + 50) / 100);
-    implementation->render_height = (std::max)(1u, (height * percent + 50) / 100);
-    if (implementation->render_width > 8192 || implementation->render_height > 8192)
+    // Any whole percent in render_scale.h's range, lowered when the scaled
+    // targets would exceed the largest side the renderer creates.
+    const char* scale_setting = std::getenv("SFR_RENDER_SCALE");
+    bool valid = true;
+    const uint32_t requested = render_scale::parse_percent(scale_setting, &valid);
+    if (!valid) std::cerr << "NATIVE_RENDER_SCALE invalid=" << scale_setting << " fallback=" << requested << '\n';
+    const uint32_t percent = render_scale::fit_percent(requested, width, height);
+    implementation->render_width = render_scale::scaled_extent(width, percent);
+    implementation->render_height = render_scale::scaled_extent(height, percent);
+    if (implementation->render_width > render_scale::max_extent || implementation->render_height > render_scale::max_extent)
         throw std::invalid_argument("scaled native presentation dimensions exceed 8192");
     std::cerr << "NATIVE_RENDER_SCALE percent=" << percent << " logical=" << width << 'x' << height
-              << " physical=" << implementation->render_width << 'x' << implementation->render_height << '\n';
+              << " physical=" << implementation->render_width << 'x' << implementation->render_height;
+    if (percent != requested) std::cerr << " requested=" << requested;
+    std::cerr << '\n';
 
     const bool d3d12 = graphics.backend() == GraphicsBackend::d3d12;
 #ifdef _WIN32
@@ -1451,8 +1454,12 @@ void NativePresentation::set_target(uint64_t key, uint32_t surface_width, uint32
         // The render thread reaches a target only through queued slots, which
         // take its pointer once it is complete; the map itself is the asker's.
         auto made = std::make_unique<Impl::SurfaceTarget>();
+        // Scaled as the frame is; a surface larger than the frame stops at
+        // the largest side (its own ratio maps the raster, scaled_raster).
         const auto pixels = [](uint32_t value, uint32_t render, uint32_t logical) {
-            return (std::max)(1u, uint32_t((uint64_t(value) * render + logical / 2) / logical));
+            return std::clamp<uint32_t>(uint32_t((std::min<uint64_t>)((uint64_t(value) * render + logical / 2) / logical,
+                                                                      render_scale::max_extent)),
+                                        1u, render_scale::max_extent);
         };
         made->width = pixels(surface_width, impl_->render_width, impl_->width);
         made->height = pixels(surface_height, impl_->render_height, impl_->height);

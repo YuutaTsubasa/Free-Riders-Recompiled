@@ -98,7 +98,7 @@ an Android/Mali device or a slower CPU. CPU affinity/power restrictions are stre
 tests, not faithful substitutes for different hardware. Keep the reproducible
 logs and repeat this procedure on the affected device before claiming its issue
 is resolved. A lower output-window size alone does not reduce internal rendering
-work; use the separate [Rendering resolution](internal-resolution.md) setting.
+work; use the separate [Render Size](internal-resolution.md) setting.
 Keep it identical across CPU-optimization comparisons and vary it separately
 when investigating a GPU bottleneck.
 

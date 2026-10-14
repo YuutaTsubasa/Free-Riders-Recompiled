@@ -2,6 +2,7 @@
 
 #include "native_graphics.h"
 #include "title_stats.h"
+#include "render_scale.h"
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -56,12 +57,10 @@ char body_source() {
 // chose them (native_presentation.cpp reads the same scale).
 std::wstring graphics_label() {
     std::wstring label = selected_graphics_backend() == GraphicsBackend::vulkan ? L"Vulkan" : L"D3D12";
-    const char* const scale = std::getenv("SFR_RENDER_SCALE");
-    const std::string value = scale ? scale : "";
-    const bool known = value == "50" || value == "75" || value == "100" || value == "150" || value == "200" ||
-                       value == "300";
+    // Any whole percent render_scale.h accepts; the frame may lower it to
+    // fit the largest target side (NATIVE_RENDER_SCALE in the log says so).
     label += L' ';
-    label += known ? std::wstring(value.begin(), value.end()) : L"100";
+    label += std::to_wstring(render_scale::parse_percent(std::getenv("SFR_RENDER_SCALE")));
     label += L'%';
     return label;
 }

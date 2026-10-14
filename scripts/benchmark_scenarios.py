@@ -32,7 +32,7 @@ BOOLEAN_SETTINGS = {'fullscreen', 'vsync', 'audio', 'skip_movies', 'vertex_cache
                     'tilt', 'camera_mirror', 'voice', 'camera_debug'}
 NUMBER_SETTINGS = {'window_width': range(160, 16385), 'window_height': range(160, 16385),
                    'volume': range(101), 'race_render_every': range(1, 5),
-                   'render_scale': (50, 75, 100, 150, 200)}
+                   'resolution_scale': tuple(range(25, 301, 25))}
 
 
 def parse_args(argv=None):
@@ -42,7 +42,8 @@ def parse_args(argv=None):
                             required=name in ('package', 'settings', 'image', 'assets', 'save', 'output'))
     parser.add_argument('--scenario', required=True, choices=SCENARIOS)
     parser.add_argument('--backend', required=True, choices=('vulkan', 'd3d12'))
-    parser.add_argument('--render-scale', type=int, default=100, choices=(50, 75, 100, 150, 200))
+    # The launcher's resolution scale: a percent of the window (display) height.
+    parser.add_argument('--render-scale', type=int, default=100, choices=tuple(range(25, 301, 25)))
     parser.add_argument('--camera-device', default='')
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument('--dry-run', action='store_true', help='print plan without checking paths or writing')
@@ -82,7 +83,7 @@ def scenario_settings(plan, common):
     values = settings_values(common)
     values.update(image_directory=plan['image'], asset_directory=plan['assets'],
                   vulkan='1' if plan['backend'] == 'vulkan' else '0',
-                  render_scale=str(plan['render_scale']), race_render_every='1',
+                  resolution_scale=str(plan['render_scale']), race_render_every='1',
                   camera='motion' if plan['scenario'] == 'camera' else 'off',
                   camera_device=plan['camera_device'] if plan['scenario'] == 'camera' else '',
                   camera_debug='0', voice='0',
@@ -174,7 +175,8 @@ def write_json(path, value):
 
 def launch_environment(plan, staged, environ):
     env = {k: v for k, v in environ.items() if not k.upper().startswith('SFR_')}
-    env.update(SFR_FRAME_LIMIT='60', SFR_RENDER_EVERY='1', SFR_RENDER_SCALE=str(plan['render_scale']),
+    # SFR_RENDER_SCALE comes from the launcher (the window height and resolution_scale).
+    env.update(SFR_FRAME_LIMIT='60', SFR_RENDER_EVERY='1',
                SFR_FRAME_METRICS='1', SFR_TRACE_INPUT='0', SFR_TRACE_GRAPHICS='0',
                SFR_PIPELINE_CACHE_PATH=str(staged / 'pipeline.bin'),
                SFR_RUNTIME_SHADER_CACHE=str(staged / 'shader-cache'),
@@ -210,7 +212,7 @@ def prepare_run(plan):
                     launcher=file_record(staged / plan['launcher_name']),
                     game=file_record(staged / plan['game_name']),
                     requested_backend=plan['backend'],
-                    internal_resolution=dict(requested_scale_percent=plan['render_scale'], verified=False),
+                    internal_resolution=dict(resolution_scale_percent=plan['render_scale'], verified=False),
                     frame_limit=60, race_render_every=1,
                     host=dict(system=platform.platform(), machine=platform.machine(),
                               processor=platform.processor(), logical_processors=os.cpu_count()),
