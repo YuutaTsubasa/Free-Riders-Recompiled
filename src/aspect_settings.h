@@ -49,9 +49,13 @@ inline constexpr uint32_t title_calibration_width = 880;
 // A race resets the back buffer to the 880-wide layout the console's scaler
 // stretches to 16:9 (two 440-wide halves in a split race). On a frame wider
 // than 16:9 that layout is widened by the same ratio, so the stretched
-// picture fills the frame: even(880 * frame width / 1280).
+// picture fills the frame: even(880 * frame width / 1280). A half of it is
+// never 880 or 1280 wide (two pixels more then, at 32:9): the title copies
+// its views around, and a copied half of exactly 880 or 1280 could not be
+// told from the title's own whole 880 view or a 16:9 one.
 [[nodiscard]] constexpr uint32_t race_layout_width(uint32_t frame_width) noexcept {
-    return (title_calibration_width * frame_width / title_layout_width + 1) & ~1u;
+    const uint32_t width = (title_calibration_width * frame_width / title_layout_width + 1) & ~1u;
+    return width / 2 == title_calibration_width || width / 2 == title_layout_width ? width + 2 : width;
 }
 // SFR_TWO_PLAYER_WIDE=0 keeps the two-player race at 16:9 on a wider frame.
 [[nodiscard]] bool two_player_wide();

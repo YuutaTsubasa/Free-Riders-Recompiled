@@ -1878,14 +1878,21 @@ SFR_GRAPHICS_HOOK(sub_824E96C8) {
            memory.load<uint32_t>(uint64_t(descriptor)+4)==0 &&
            memory.load<uint32_t>(uint64_t(descriptor)+12)==sfr::aspect::title_layout_height) {
             const uint32_t x=memory.load<uint32_t>(uint64_t(descriptor)),w=memory.load<uint32_t>(uint64_t(descriptor)+8);
+            // An entry rewritten before still holds what was written: at 32:9 a
+            // widened half is 880 wide itself and must not be widened again.
+            static std::unordered_map<uint32_t,std::pair<uint32_t,uint32_t>> rewritten;
+            const auto previous=rewritten.find(descriptor);
+            const bool done=previous!=rewritten.end() && previous->second==std::pair{x,w};
             // A half is always the split's; a whole 880 view only while one is
             // on screen (or a Tag Race, whose two hold hands in one view).
             const bool is_half=(x==0 && w==half) || x==half;
-            if(is_half || (x==0 && w==narrow &&
-                           (graphics().split_frame() || memory.load<uint8_t>(0x83E515E7)==2))) {
+            if(!done && (is_half || (x==0 && w==narrow &&
+                                     (graphics().split_frame() || memory.load<uint8_t>(0x83E515E7)==2)))) {
+                const uint32_t new_x=x==half ? race/2 : x, new_w=w==half ? race/2 : race;
                 memory.check_write(uint64_t(descriptor),12);
-                if(x==half) memory.store<uint32_t>(uint64_t(descriptor),race/2);
-                memory.store<uint32_t>(uint64_t(descriptor)+8,w==half ? race/2 : race);
+                memory.store<uint32_t>(uint64_t(descriptor),new_x);
+                memory.store<uint32_t>(uint64_t(descriptor)+8,new_w);
+                rewritten[descriptor]={new_x,new_w};
             }
         }
     }

@@ -166,7 +166,7 @@ bool GuestGraphics::set_viewport(uint32_t device,uint32_t descriptor) {
     // itself, so it is shown the same way. A one-player race sets an 880
     // view too but draws across the whole frame: it is left wide.
     if(x==0 && y==0 && (attachment==color_handle || attachment==depth_handle) &&
-       (uint32_t(viewport.width)==aspect::title_calibration_width ||
+       ((uint32_t(viewport.width)==aspect::title_calibration_width && 2*uint32_t(viewport.width)!=race_width) ||
         (race_width>aspect::title_calibration_width && uint32_t(viewport.width)==race_width)) &&
        uint32_t(viewport.height)==native.height() &&
        memory_.load<uint32_t>(0x83E52F8C)!=0 && memory_.load<uint8_t>(0x83E515E7)==2)
