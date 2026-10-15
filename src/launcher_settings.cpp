@@ -295,7 +295,11 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         {"SFR_ASPECT_RATIO", ""},
         // The alignment only means something in auto mode.
         {"SFR_UI_ALIGN", !original && s.ui_align == "center" ? "center" : "edge"},
+#ifdef __ANDROID__
+        {"SFR_FULLSCREEN", "1"},  // a phone always fills its display (Issue #118)
+#else
         {"SFR_FULLSCREEN", s.fullscreen ? "1" : "0"},
+#endif
         {"SFR_VSYNC", s.vsync ? "1" : "0"},
         {"SFR_GRAPHICS", s.vulkan ? "vulkan" : "d3d12"},
         // "off" leaves the camera alone; "picture" opens it for the image the
