@@ -171,7 +171,7 @@ with [docs/progress.md](docs/progress.md).
 - [v0.8.0 — Ultrawide displays](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.8.0)
   Races fill displays wider than 16:9 (21:9, 32:9 and beyond) with a wider view and the HUD at the screen edges; menus stay centred over a full-width backdrop, and two-player screens keep the original 16:9 picture (knuckleslee's #112–#114). The launcher gains Display Mode (Borderless or Windowed), any window size, and Render Size as a scale of the output, starting at the original 720 lines. Both players holding LT hold hands in a Tag Race, BACK swaps racers in a Relay Race and X confirms dialogs, as in the No Kinect Patch (Issue #109). On a Kinect v2 a jump with both feet now jumps, and the display no longer turns off while playing (Issue #97).
 - [v0.8.1 — Full screen on Android](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.8.1)
-  The game always fills a phone's display: a phone that had run an older version kept the status and navigation bars over the game (Issue #118).
+  The game always fills a phone's display: a phone that had run an older version kept the status and navigation bars over the game (Issue #118). Minimizing the game no longer closes it on D3D12.
 
 ## System Requirements
 
