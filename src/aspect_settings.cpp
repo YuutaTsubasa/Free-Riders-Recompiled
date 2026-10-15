@@ -108,6 +108,14 @@ bool original_mode() {
     return original;
 }
 
+bool two_player_wide() {
+    static const bool on = [] {
+        if (original_mode()) return false;
+        return switch_env("SFR_TWO_PLAYER_WIDE") != 0;
+    }();
+    return on;
+}
+
 bool hud_anchor() {
     static const bool on = [] {
         if (original_mode()) return false;

@@ -192,7 +192,10 @@ void GuestGraphics::present_front_buffer(uint32_t device) {
     if(split && aspect::wider_than_16x9(impl_->presentation->width(),impl_->presentation->height())) {
         menu_bg_whole_=false;
         menu_bg_swapped_=menu_bg_other_=menu_bg_backdrop_=0;
-        impl_->presentation->present(split,impl_->presentation->height(),16.0f/9.0f);
+        // A widened race layout (race_layout_width) fills the frame.
+        const bool widened=split>aspect::title_calibration_width;
+        impl_->presentation->present(split,impl_->presentation->height(),
+            widened ? float(impl_->presentation->width())/float(impl_->presentation->height()) : 16.0f/9.0f);
         return;
     }
     // Menu backdrop (aspect_settings.h, SFR_MENU_BG) draws the menus' backdrop

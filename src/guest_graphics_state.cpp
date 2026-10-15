@@ -154,24 +154,33 @@ bool GuestGraphics::set_viewport(uint32_t device,uint32_t descriptor) {
     memory_.store<uint64_t>(device+16,dirty);
     if(x==0 && y==0 && (attachment==color_handle || attachment==depth_handle))
         last_view_width_=uint32_t(viewport.width);
-    // Two half views side by side, the full height: a two-player split.
+    // Two half views side by side, the full height: a two-player split (of
+    // the race layout, 880 or widened: race_layout_width).
+    const uint32_t race_width=memory_.load<uint32_t>(device+0x35BC);
     if(y==0 && (attachment==color_handle || attachment==depth_handle) && uint32_t(viewport.height)==native.height() &&
-       (viewport.width==440.0f || viewport.width==640.0f) && (x==0 || x==int64_t(viewport.width)))
+       (viewport.width==440.0f || viewport.width==640.0f || 2*uint32_t(viewport.width)==race_width) &&
+       (x==0 || x==int64_t(viewport.width)))
         split_layout_=2*uint32_t(viewport.width);
     // A Tag Race (team mode byte 83E515E7 = 2) in a race ([83E52F8C]) draws
     // the two holding hands in the 880-wide layout and stretches it to 16:9
     // itself, so it is shown the same way. A one-player race sets an 880
     // view too but draws across the whole frame: it is left wide.
     if(x==0 && y==0 && (attachment==color_handle || attachment==depth_handle) &&
-       uint32_t(viewport.width)==aspect::title_calibration_width && uint32_t(viewport.height)==native.height() &&
+       ((uint32_t(viewport.width)==aspect::title_calibration_width && 2*uint32_t(viewport.width)!=race_width) ||
+        (race_width>aspect::title_calibration_width && uint32_t(viewport.width)==race_width)) &&
+       uint32_t(viewport.height)==native.height() &&
        memory_.load<uint32_t>(0x83E52F8C)!=0 && memory_.load<uint8_t>(0x83E515E7)==2)
-        split_layout_=aspect::title_calibration_width;
+        split_layout_=uint32_t(viewport.width);
     // Ultrawide: the title's cameras start from a default aspect kept at
     // 0x82B34BE0. A view that fills the wide back buffer wants its shape; the
     // 1280/880-wide views (menus, calibration) are shown as 16:9 and want 16:9.
     if(x==0 && y==0 && aspect::wider_than_16x9(native.width(),native.height()) && viewport.height>0 &&
        (attachment==color_handle || attachment==depth_handle) && memory_.available(0x82B34BE0,8)==false) {
-        const float camera=viewport.width>=float(native.width()) ? float(native.width())/viewport.height : 16.0f/9.0f;
+        // A widened race layout (race_layout_width) is shown across the whole
+        // frame, so its cameras want the frame's shape (halved for a split).
+        const bool widened=race_width>aspect::title_calibration_width && split_layout_==race_width;
+        const float camera=viewport.width>=float(native.width()) || widened ?
+            float(native.width())/float(native.height()) : 16.0f/9.0f;
         memory_.store<uint32_t>(0x82B34BE0,std::bit_cast<uint32_t>(camera));
         memory_.store<uint32_t>(0x82B34BE4,std::bit_cast<uint32_t>(camera*0.5f));
     }
