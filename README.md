@@ -174,6 +174,8 @@ with [docs/progress.md](docs/progress.md).
   The game always fills a phone's display: a phone that had run an older version kept the status and navigation bars over the game (Issue #118). Minimizing the game no longer closes it on D3D12.
 - [v0.8.2 — Two players on ultrawide displays](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.8.2)
   Two-player races widen too on a display wider than 16:9: each half of a split race, a Tag Race holding hands and their On your Gear screen fill the frame, with each player's HUD at their own edge.
+- [v0.8.3 — Kinect jump diagnostics](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.8.3)
+  With a real Kinect, `game.log` records each crouch and jump the game detects and how high the hips went, so a jump that does not register can be diagnosed from the log (Issue #97).
 
 ## System Requirements
 
