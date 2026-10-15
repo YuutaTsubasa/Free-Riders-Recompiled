@@ -6,6 +6,7 @@
 #include "camera_race_motion.h"
 #include "avatar_state.h"
 #include <bit>
+#include <chrono>
 #include <cstdlib>
 #include <cmath>
 #include <iostream>
@@ -129,9 +130,32 @@ void update_motion(uint32_t record,uint64_t generation,sfr::CameraRaceMotion& mo
         if(!ready)*floor=pose.hip[1]-sensor_floor_below_hips();
         pose.floor_y=*floor;
     }
+    const bool crouched=motion.crouch();
     motion.observe(pose,seconds,generation);
     if(motion.ready()!=ready)
         std::cerr<<"CAMERA_RACE_CALIBRATION ready="<<motion.ready()<<'\n';
+    // A real sensor's crouches and jumps, in every log (Issue #97: a jump
+    // that does not register can only be told apart from the log): each
+    // crouch and jump, and every three seconds the highest and lowest the
+    // hips went against the standing height. At most 600 lines a run.
+    if(floor && motion.ready()) {
+        static int lines=0;
+        static float highest=0,lowest=1e9f;
+        static auto window_start=std::chrono::steady_clock::now();
+        const float ratio=motion.standing_height()>0 ? motion.height()/motion.standing_height() : 0;
+        highest=std::max(highest,ratio); lowest=std::min(lowest,ratio);
+        const auto log=[&](const char* what) {
+            if(lines<600) { ++lines; std::cerr<<"KINECT_MOTION "<<what<<" height="<<motion.height()
+                                             <<" standing="<<motion.standing_height()<<" ratio="<<ratio<<'\n'; }
+        };
+        if(motion.crouch() && !crouched) log("crouch");
+        if(motion.jump()) log("jump");
+        if(std::chrono::steady_clock::now()-window_start>=std::chrono::seconds(3)) {
+            if(lines<600) { ++lines; std::cerr<<"KINECT_MOTION window highest="<<highest<<" lowest="<<lowest
+                                             <<" standing="<<motion.standing_height()<<'\n'; }
+            highest=0; lowest=1e9f; window_start=std::chrono::steady_clock::now();
+        }
+    }
 }
 
 void update_camera_motion(uint32_t record,uint64_t generation) {

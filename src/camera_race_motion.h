@@ -160,6 +160,10 @@ public:
     void reset() {*this=CameraRaceMotion{};}
     bool ready() const {return ready_;}
     float lean() const {return lean_;}
+    // The hips' last height and the learnt standing height (metres above the
+    // floor or the ankles), for the log.
+    float height() const {return previous_height_;}
+    float standing_height() const {return neutral_height_;}
     bool crouch() const {return crouch_;}
     bool jump() const {return jump_;}
     // Legacy name: ordinary forward board acceleration, not Air-consuming Kick Dash.
