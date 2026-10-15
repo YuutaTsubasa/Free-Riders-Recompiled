@@ -287,8 +287,16 @@ SFR_GRAPHICS_HOST_HOOK(sub_824F4858) {
     // type (word 4) and presentation interval (word 13). The native device
     // keeps its own swap chain, sample count and presentation; only the
     // parameters the title reads back change.
+    // A frame wider than 16:9 widens the race layout by the same ratio
+    // (aspect_settings.h, race_layout_width), so the two-player halves fill it.
+    const uint32_t frame_width=graphics().presentation().width();
+    const bool widen=sfr::aspect::two_player_wide() &&
+        sfr::aspect::wider_than_16x9(frame_width,graphics().presentation().height()) &&
+        memory.load<uint32_t>(uint64_t(parameters))==sfr::aspect::title_calibration_width &&
+        memory.load<uint32_t>(uint64_t(parameters)+4)==sfr::aspect::title_layout_height;
     for(uint32_t i=0;i<31;++i) {
-        const uint32_t wanted=memory.load<uint32_t>(uint64_t(parameters)+i*4);
+        uint32_t wanted=memory.load<uint32_t>(uint64_t(parameters)+i*4);
+        if(i==0 && widen) wanted=sfr::aspect::race_layout_width(frame_width);
         const uint32_t current=memory.load<uint32_t>(uint64_t(device)+0x35BC+i*4);
         if(wanted==current) continue;
         if(i!=0 && i!=1 && i!=4 && i!=13) {
@@ -1169,10 +1177,20 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
             }
             fullscreen_quad=lo[0]<=40.0f && hi[0]>=layout_width-40.0f && lo[1]<=40.0f && hi[1]>=layout_height-40.0f;
         }
-        if(!fullscreen_quad && ui_center && full_view && !samples_resolve &&
-           target==sfr::GuestGraphics::color_handle) {
+        // A widened two-player race (aspect::race_layout_width) is stretched
+        // across the frame like the console's scaler stretches 880 to 16:9:
+        // its 2D layout keeps its shape in the middle of that view.
+        // Its HUD goes to the edges by the same zones as a one-player race's.
+        const uint32_t race_width=memory.load<uint32_t>(uint64_t(device)+0x35BC);
+        const bool two_player_race=graphics().split_frame() && race_width>sfr::aspect::title_calibration_width &&
+            view.x==0.0f && uint32_t(view.width)==race_width;
+        // The share of the view the 16:9 layout keeps (center/width).
+        const float layout_share=two_player_race ? float(sfr::aspect::title_calibration_width)/float(race_width)
+                                                 : center_width/float(logical_width);
+        if(!fullscreen_quad && !samples_resolve && target==sfr::GuestGraphics::color_handle &&
+           ((ui_center && full_view) || two_player_race)) {
             // Clip x scaled by center/width: the layout fills the centered 16:9 area.
-            draw.shared.screen_space_offset[1]=center_width/float(logical_width);
+            draw.shared.screen_space_offset[1]=layout_share;
             // HUD anchoring (SFR_UI_ALIGN=edge, or SFR_HUD_ANCHOR=1): HUD sprites of the
             // groups the user picked (hud_capture maps of a race) go to the left or
             // right edge of the wide frame instead of staying in the centered 16:9
@@ -1207,14 +1225,28 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
                     {940.0f, 365.0f,1172.0f, 470.0f, +1},  // right: AIR and its points
                     {1020.0f,596.0f,layout_width, 750.0f, +1},  // bottom right: SPEED
                 };
+                // A two-player race's HUD (measured in a split Tag Race): each
+                // player's speed gauge at their own bottom corner, the first
+                // player's rings and rank at the top left, the map at the top
+                // right. The time in the middle and the markers over the
+                // racers (80 wide, near each half's middle) stay.
+                static const Zone two_player_zones[]={
+                    {  0.0f,   0.0f, 430.0f, 140.0f, -1},  // top left: rings, LV
+                    { 60.0f, 200.0f, 260.0f, 345.0f, -1},  // rank and its effects
+                    {-20.0f, 290.0f, 300.0f, 800.0f, -1},  // first player's speed gauge
+                    {300.0f, 630.0f, 480.0f, 670.0f, -1},  // its scale
+                    {980.0f, 290.0f,1300.0f, 800.0f, +1},  // second player's speed gauge
+                    {800.0f, 630.0f, 980.0f, 670.0f, +1},  // its scale
+                    {945.0f,  35.0f,1210.0f, 300.0f, +1},  // map and marker
+                };
                 // The Kinect overlay icon is the runtime's own, not the title's HUD.
                 const bool kinect_icon=cx>=380.0f && cx<=428.0f && cy>=28.0f && cy<=116.0f && w<=60.0f;
                 // Sprites may reach a little beyond the layout (the speed gauge's
                 // effects: up to 55 past its right edge); whole-screen ones stay put.
-                if(!kinect_icon && lo[0]>=-8.0f && hi[0]<=layout_width+55.0f && w<=450.0f && h<=445.0f) {
-                    for(const Zone& zone : zones) {
+                if(!kinect_icon && lo[0]>=(two_player_race ? -40.0f : -8.0f) && hi[0]<=layout_width+(two_player_race ? 60.0f : 55.0f) && w<=450.0f && h<=445.0f) {
+                    for(const Zone& zone : two_player_race ? std::span<const Zone>(two_player_zones) : std::span<const Zone>(zones)) {
                         if(cx>=zone.x0 && cx<=zone.x1 && cy>=zone.y0 && cy<=zone.y1) {
-                            draw.shared.screen_space_offset[0]=float(zone.side)*(1.0f-center_width/float(logical_width));
+                            draw.shared.screen_space_offset[0]=float(zone.side)*(1.0f-layout_share);
                             break;
                         }
                     }
@@ -1818,6 +1850,43 @@ SFR_GRAPHICS_HOOK(sub_824E96C8) {
             for(uint32_t offset=0;offset<24;offset+=4)
                 std::cerr << (offset?",":"") << sfr::active_memory->load<uint32_t>(uint64_t(ctx.r4.u32)+offset);
             std::cerr << std::dec << '\n';
+        }
+    }
+    // SFR_ASPECT_TRACE_VIEWS=1: each guest caller of a viewport narrower than
+    // the frame, once, with what it asked for (two-player layouts).
+    static const bool trace_views=[]{ const char* t=std::getenv("SFR_ASPECT_TRACE_VIEWS"); return t && *t=='1'; }();
+    if(trace_views && sfr::active_memory) {
+        static std::set<std::pair<uint32_t,uint64_t>> seen;
+        auto& memory=*sfr::active_memory;
+        const uint32_t x=memory.load<uint32_t>(uint64_t(ctx.r4.u32)),w=memory.load<uint32_t>(uint64_t(ctx.r4.u32)+8);
+        if(w<graphics().presentation().width() && seen.emplace(uint32_t(ctx.lr),(uint64_t(x)<<32)|w).second)
+            std::cerr << "ASPECT_VIEW lr=0x" << std::hex << uint32_t(ctx.lr) << std::dec << " x=" << x << " width=" << w
+                      << " height=" << memory.load<uint32_t>(uint64_t(ctx.r4.u32)+12) << '\n';
+    }
+    // A widened two-player race (aspect::race_layout_width, set at the device
+    // reset): the title's per-player view table (8222B6F8) still holds the
+    // 880-wide layout, 0..440 and 440..880 for the halves and 0..880 whole.
+    // The same places in the widened layout are W/2 and W; the table entry is
+    // rewritten in place, once, as the title would have laid it out.
+    if(sfr::active_memory && sfr::aspect::two_player_wide()) {
+        auto& memory=*sfr::active_memory;
+        const uint32_t device=ctx.r3.u32, descriptor=ctx.r4.u32;
+        const uint32_t race=memory.load<uint32_t>(uint64_t(device)+0x35BC);
+        const uint32_t target=memory.load<uint32_t>(uint64_t(device)+0x3148);
+        constexpr uint32_t narrow=sfr::aspect::title_calibration_width, half=narrow/2;
+        if(race>narrow && (target==sfr::GuestGraphics::color_handle || target==sfr::GuestGraphics::depth_handle) &&
+           memory.load<uint32_t>(uint64_t(descriptor)+4)==0 &&
+           memory.load<uint32_t>(uint64_t(descriptor)+12)==sfr::aspect::title_layout_height) {
+            const uint32_t x=memory.load<uint32_t>(uint64_t(descriptor)),w=memory.load<uint32_t>(uint64_t(descriptor)+8);
+            // A half is always the split's; a whole 880 view only while one is
+            // on screen (or a Tag Race, whose two hold hands in one view).
+            const bool is_half=(x==0 && w==half) || x==half;
+            if(is_half || (x==0 && w==narrow &&
+                           (graphics().split_frame() || memory.load<uint8_t>(0x83E515E7)==2))) {
+                memory.check_write(uint64_t(descriptor),12);
+                if(x==half) memory.store<uint32_t>(uint64_t(descriptor),race/2);
+                memory.store<uint32_t>(uint64_t(descriptor)+8,w==half ? race/2 : race);
+            }
         }
     }
     const bool updated=graphics().set_viewport(ctx.r3.u32,ctx.r4.u32);

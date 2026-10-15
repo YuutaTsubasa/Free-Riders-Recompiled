@@ -239,8 +239,10 @@ The window size list also offers common ultrawide sizes (2560 x 720,
 - **Aspect Ratio** (`aspect_ratio`): **Auto** (default on Windows and Linux)
   adapts the picture to the window or display; **16:9** (default on Android,
   where a wider picture costs a phone frame rate) keeps the original picture.
-  Two-player screens (the split race, a Tag Race holding hands, their On your
-  Gear screen) keep the title's 16:9 picture with black at the sides. Both preserve the
+  Two-player races widen too: each half of a split race, a Tag Race holding
+  hands and their On your Gear screen fill the frame, with each player's HUD
+  at their own edge (`SFR_TWO_PLAYER_WIDE=0` keeps them 16:9 with black at the
+  sides). Both preserve the
   selected output resolution. With Auto and a window (or display, in full
   screen) wider than 16:9, the race's 3D view is widened (hor+), the race HUD
   stays in a centered 16:9 area, menu, title and calibration backdrops fill the

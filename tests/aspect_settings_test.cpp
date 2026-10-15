@@ -51,11 +51,23 @@ void layout_helpers() {
 }
 }
 
+// The race layout (880 wide on a 16:9 frame) widened by the frame's ratio,
+// even, so its two halves are whole pixels.
+void race_layout() {
+    using sfr::aspect::race_layout_width;
+    require(race_layout_width(1280) == 880, "16:9 keeps the 880-wide race layout");
+    require(race_layout_width(1706) == 1172, "21:9 (1706 wide) widens it to 1172");
+    require(race_layout_width(2560) == 1760, "32:9 (2560 wide) doubles it");
+    for (uint32_t width : {1300u, 1706u, 2000u, 2560u, 4096u})
+        require(race_layout_width(width) % 2 == 0, "the layout is even, so the halves are whole");
+}
+
 int main() {
     try {
         parsing();
         widths();
         layout_helpers();
+        race_layout();
     } catch (const std::exception& error) {
         std::cerr << "aspect_settings_test failed: " << error.what() << '\n';
         return 1;
