@@ -77,36 +77,55 @@ class RaceFrameSkip {
 public:
     static constexpr uint64_t frame_ns = 16'666'667;
     explicit RaceFrameSkip(uint32_t max_skips = 2) : max_skips_(max_skips) {}
-    // Called at the end of each frame: whether to draw the next one.
-    bool draw_next(uint64_t now_ns, bool racing) {
+    struct Decision {
+        bool draw = true;      // draw the next frame
+        uint64_t wait_ns = 0;  // wait this long first (the frame ended early)
+    };
+    // Called at the end of each frame. The race paces itself by this schedule
+    // (it replaces the frame-rate cap while racing): an early frame waits for
+    // its time, a late one does not, and undrawn frames, being shorter, let
+    // the race catch up. A separate cap that also held undrawn frames to a
+    // sixtieth of a second kept the race behind for good, and it skipped most
+    // frames even on a phone that draws 60 (an AYN Thor).
+    Decision next(uint64_t now_ns, bool racing) {
         if (!racing) {
             started_ = false;
             skipped_ = 0;
-            return true;
+            return {};
         }
         if (!started_) {
             started_ = true;
             due_ns_ = now_ns + frame_ns;
             skipped_ = 0;
-            return true;
+            return {};
+        }
+        if (now_ns < due_ns_) {  // on time: wait for the frame's slot
+            const uint64_t wait = due_ns_ - now_ns;
+            due_ns_ += frame_ns;
+            skipped_ = 0;
+            return {true, wait};
         }
         // How late the frame that just ended is, against a clock that moves
         // on a sixtieth of a second a frame.
-        const uint64_t late = now_ns > due_ns_ ? now_ns - due_ns_ : 0;
+        const uint64_t late = now_ns - due_ns_;
         due_ns_ += frame_ns;
-        // Far behind (a load, a stall, or a game too slow to catch up at
-        // all): start again from now rather than skip for seconds.
+        // Far behind (a load, a stall, or a game too slow to catch up even
+        // undrawn): start again from now. The race then runs slower than
+        // real time, as the console's did when it could not keep up: its
+        // step stays the console's, so it never plays differently.
         if (late > 6 * frame_ns) {
             due_ns_ = now_ns + frame_ns;
             skipped_ = 0;
-            return true;
+            return {};
         }
-        if (late > frame_ns / 2 && skipped_ < max_skips_) {
+        // A frame more than a whole frame late: a phone that keeps 60 is
+        // late by less now and then, and should not drop those frames.
+        if (late > frame_ns && skipped_ < max_skips_) {
             ++skipped_;
-            return false;
+            return {false, 0};
         }
         skipped_ = 0;
-        return true;
+        return {};
     }
 private:
     uint32_t max_skips_;

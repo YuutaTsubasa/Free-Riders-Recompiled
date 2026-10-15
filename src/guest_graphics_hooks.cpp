@@ -523,15 +523,32 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
     // messages every frame so Windows does not mark it unresponsive, and end
     // the run when the player closes it.
     graphics().presentation().pump_events();
-    const double pacing_ms=limit_frame_rate();
+    // A race with frame skipping paces itself (RaceFrameSkip): the cap would
+    // also hold its undrawn frames to a sixtieth of a second, and the race
+    // could then never catch up.
+    double pacing_ms=0;
+    bool race_paced=false;
     if(sfr::race_frameskip_enabled()) {
         static sfr::RaceFrameSkip skip;
         static uint64_t skipped=0,frames=0,race_start=0;
         const bool racing=sfr::active_memory->load<uint32_t>(0x83E52F8C)!=0;
         const uint64_t now=uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count());
-        const bool draw=skip.draw_next(now,racing);
+        const auto decision=skip.next(now,racing);
+        const bool draw=decision.draw;
         draw_this_race_frame.store(draw,std::memory_order_relaxed);
+        race_paced=racing;
+        if(racing && decision.wait_ns) {
+            const auto until=std::chrono::steady_clock::now()+std::chrono::nanoseconds(decision.wait_ns);
+            struct Until { std::chrono::steady_clock::time_point at; } wait{until};
+            sfr::traced_host_wait([](void* argument) {
+                const auto at=static_cast<Until*>(argument)->at;
+                while(std::chrono::steady_clock::now()+std::chrono::milliseconds(2)<at)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                while(std::chrono::steady_clock::now()<at) std::this_thread::yield();
+            },&wait,"frame_cap",int64_t(decision.wait_ns));
+            pacing_ms=double(decision.wait_ns)/1e6;
+        }
         if(!racing) race_start=0;
         if(racing) {
             if(!race_start) { race_start=now; frames=skipped=0; }
@@ -546,6 +563,7 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
             }
         }
     }
+    if(!race_paced) pacing_ms=limit_frame_rate();
     sfr::flush_main_wait_trace(sfr::present_count.load());
     if(graphics().presentation().close_requested())
         throw sfr::RuntimeStop("window-closed",0,"the game window was closed");
