@@ -1712,6 +1712,24 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
             impl_->rebuild_swap_chain = true;
             return;
 #endif
+            // A minimized window has no size to resize to (Plume refuses 0x0):
+            // skip the frame and resize once it is back. Minimizing the game
+            // used to close it on D3D12.
+#ifdef _WIN32
+            RECT client{};
+            const bool minimized = IsIconic(impl_->window) ||
+                (GetClientRect(impl_->window, &client) && (client.right <= 0 || client.bottom <= 0));
+#else
+            int window_width = 0, window_height = 0;
+            SDL_GetWindowSize(impl_->window, &window_width, &window_height);
+            const bool minimized = (SDL_GetWindowFlags(impl_->window) & SDL_WINDOW_MINIMIZED) ||
+                window_width <= 0 || window_height <= 0;
+#endif
+            if (minimized) {
+                impl_->resize_swap_chain = true;
+                std::this_thread::sleep_for(std::chrono::milliseconds(16));  // no frame to pace by
+                return;
+            }
             throw std::runtime_error("failed to resize the native swap chain");
         }
         impl_->rebuild_swap_chain_sync();
