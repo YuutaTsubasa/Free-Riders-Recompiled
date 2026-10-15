@@ -407,7 +407,14 @@ static bool skip_draws() {
 // callbacks still run. Menus render every frame: they already run at 60,
 // and parts of them keep real time, which frames run twice as fast would
 // break (the title ignored its START). 1, the default, renders every frame.
+// Frame skipping (race_frame_clock.h, SFR_RACE_FRAMESKIP): decided at the end
+// of each frame for the next one, so a frame is drawn or skipped whole.
+static std::atomic<bool> draw_this_race_frame{true};
 static bool rendering_this_frame() {
+    if(sfr::race_frameskip_enabled()) {
+        constexpr uint32_t race_flag=0x83E52F8C;
+        if(sfr::active_memory->load<uint32_t>(race_flag)) return draw_this_race_frame.load(std::memory_order_relaxed);
+    }
     static const uint32_t every=[]{
         const char* t=std::getenv("SFR_RENDER_EVERY");
         const long n=t?std::strtol(t,nullptr,10):1;
@@ -502,7 +509,14 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
         previous=present_start;
     }
     sfr::note_frame_presented();  // for the window's title
-    if(rendering_this_frame()) graphics().present_front_buffer(ctx.r3.u32);
+    if(rendering_this_frame()) {
+        graphics().present_front_buffer(ctx.r3.u32);
+        // SFR_TEST_RACE_DRAW_MS=<ms> (testing): each drawn race frame takes that
+        // much longer, as on a device whose GPU cannot keep 60 fps.
+        static const int draw_delay=[]{ const char* t=std::getenv("SFR_TEST_RACE_DRAW_MS"); return t?std::atoi(t):0; }();
+        if(draw_delay>0 && sfr::active_memory->load<uint32_t>(0x83E52F8C))
+            std::this_thread::sleep_for(std::chrono::milliseconds(draw_delay));
+    }
     const double present_ms=
         std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-present_start).count();
     // The window belongs to this thread (CreateDevice ran here): handle its
@@ -510,6 +524,28 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
     // the run when the player closes it.
     graphics().presentation().pump_events();
     const double pacing_ms=limit_frame_rate();
+    if(sfr::race_frameskip_enabled()) {
+        static sfr::RaceFrameSkip skip;
+        static uint64_t skipped=0,frames=0,race_start=0;
+        const bool racing=sfr::active_memory->load<uint32_t>(0x83E52F8C)!=0;
+        const uint64_t now=uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+        const bool draw=skip.draw_next(now,racing);
+        draw_this_race_frame.store(draw,std::memory_order_relaxed);
+        if(!racing) race_start=0;
+        if(racing) {
+            if(!race_start) { race_start=now; frames=skipped=0; }
+            ++frames;
+            skipped+=draw?0:1;
+            // Every 600 race frames: how many were run without being drawn, and
+            // the race's frames against real time (1 keeps the console's speed).
+            if(frames%600==0) {
+                const double seconds=double(now-race_start)*1e-9;
+                std::cerr << "RACE_FRAMESKIP frames=" << frames << " skipped=" << skipped
+                          << " speed=" << (seconds>0 ? frames/60.0/seconds : 0.0) << '\n';
+            }
+        }
+    }
     sfr::flush_main_wait_trace(sfr::present_count.load());
     if(graphics().presentation().close_requested())
         throw sfr::RuntimeStop("window-closed",0,"the game window was closed");

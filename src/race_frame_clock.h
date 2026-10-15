@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <optional>
 
 namespace sfr {
@@ -63,6 +64,71 @@ private:
     uint64_t previous_ns_ = 0;
     double carry_ = 0;  // time owed to (or ahead of) the steps given so far, in frames
 };
+
+// Frame skipping for a race that cannot keep 60 fps (SFR_RACE_FRAMESKIP).
+// The race keeps the console's step of one sixtieth of a second, which its
+// collisions were made for: a longer step let a fast racer through the side
+// of a ramp. When a frame falls behind real time by more than a frame, the
+// next one runs the race without drawing it, so the race keeps its speed and
+// the screen updates less often. At most max_skips frames in a row go
+// undrawn; a race still behind after them (the game itself, not the
+// drawing, too slow) gives the time up and slows down, as on the console.
+class RaceFrameSkip {
+public:
+    static constexpr uint64_t frame_ns = 16'666'667;
+    explicit RaceFrameSkip(uint32_t max_skips = 2) : max_skips_(max_skips) {}
+    // Called at the end of each frame: whether to draw the next one.
+    bool draw_next(uint64_t now_ns, bool racing) {
+        if (!racing) {
+            started_ = false;
+            skipped_ = 0;
+            return true;
+        }
+        if (!started_) {
+            started_ = true;
+            due_ns_ = now_ns + frame_ns;
+            skipped_ = 0;
+            return true;
+        }
+        // How late the frame that just ended is, against a clock that moves
+        // on a sixtieth of a second a frame.
+        const uint64_t late = now_ns > due_ns_ ? now_ns - due_ns_ : 0;
+        due_ns_ += frame_ns;
+        // Far behind (a load, a stall, or a game too slow to catch up at
+        // all): start again from now rather than skip for seconds.
+        if (late > 6 * frame_ns) {
+            due_ns_ = now_ns + frame_ns;
+            skipped_ = 0;
+            return true;
+        }
+        if (late > frame_ns / 2 && skipped_ < max_skips_) {
+            ++skipped_;
+            return false;
+        }
+        skipped_ = 0;
+        return true;
+    }
+private:
+    uint32_t max_skips_;
+    bool started_ = false;
+    uint64_t due_ns_ = 0;   // when the frame being run should end
+    uint32_t skipped_ = 0;  // undrawn frames in a row
+};
+
+// SFR_RACE_FRAMESKIP=1|0: frame skipping on or off. On by default on Android,
+// where a phone often draws under 60 fps; it also keeps the race's step fixed
+// (race_frame_clock_hooks.cpp). Off on desktops, held at 60 by the launcher.
+inline bool race_frameskip_enabled() {
+    static const bool enabled = [] {
+        if (const char* value = std::getenv("SFR_RACE_FRAMESKIP")) return *value && *value != '0';
+#ifdef __ANDROID__
+        return true;
+#else
+        return false;
+#endif
+    }();
+    return enabled;
+}
 
 // SFR_PRESENT_LIMIT_RACING=N (guest_graphics_hooks.cpp): the run ends at the
 // Nth present with the title's race flag set, so the menus and the loading

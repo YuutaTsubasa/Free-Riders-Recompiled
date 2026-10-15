@@ -47,3 +47,42 @@ Prefer the **android10-arm64** APK on Android 10 or later. The Android 9
 compatibility APK uses emulated TLS and has not been tested on an Android 9
 device. Updating over the existing installation preserves app data; do not
 uninstall just to upgrade.
+
+## Frame skipping instead of a variable race step (2026-10-15)
+
+Until v0.8.3 an Android race stepped by the time that passed
+(`SFR_REALTIME_RACE`), so a phone under 60 fps kept the race's speed. The
+race's collisions were made for the console's step of a sixtieth of a second,
+and some of its physics scale an impulse by the step: with longer steps a
+fast racer could leave the course through the side of a ramp (Issue #123; on
+desktops the same thing happened on Rocky Ridge until v0.5.3 made the step
+fixed again).
+
+Now a race keeps the fixed step on Android too, and keeps its speed by not
+drawing some frames instead (`RaceFrameSkip` in `src/race_frame_clock.h`):
+
+- At the end of each race frame the game compares the frames it has run with
+  real time. When it is more than half a frame behind, the next frame runs
+  the race without drawing it (no draws, resolves or present: the same frames
+  `SFR_RENDER_EVERY` skips). At most two frames in a row go undrawn.
+- A race more than six frames behind (a load, a stall, or a phone too slow to
+  run the race itself at 60) starts the count again from now: the race then
+  slows down, as on the console, rather than leaving the screen frozen.
+- Menus always draw every frame.
+- `SFR_RACE_FRAMESKIP=0` turns it off (the step then follows
+  `SFR_REALTIME_RACE` as before); `=1` turns it on on a desktop. Desktops
+  keep it off by default: the launcher holds them at 60 fps.
+- `game.log` has `RACE_FRAMESKIP frames= skipped= speed=` every 600 race
+  frames; `speed` is the race's frames against real time (1 is full speed).
+- `SFR_TEST_RACE_DRAW_MS=<ms>` (testing) makes each drawn race frame take
+  that much longer, as on a device whose GPU cannot keep 60.
+
+On a desktop with `SFR_TEST_RACE_DRAW_MS=12` (drawn frames about 25 ms), the
+race kept `speed=0.99` with 58% of its frames undrawn, and the in-game timer
+read the same at the same frame as a race drawing every frame. With nothing
+slowed down, the skips were at the start of the race (its first seconds load
+and prepare shaders) and none after.
+
+Skipping saves what drawing costs: the host's draw recording and the GPU's
+work. The game's own frame (its logic and the draw list it builds) still runs
+every frame, so a phone that is slow there rather than in the GPU gains less.
