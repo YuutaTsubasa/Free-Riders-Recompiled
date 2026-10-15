@@ -1305,8 +1305,15 @@ NativePresentation::NativePresentation(NativeGraphics& graphics, uint32_t width,
     // Off unless asked for (Plume's Vulkan swap chain starts with it on).
     const char* vsync = std::getenv("SFR_VSYNC");
     implementation->swap_chain->setVsyncEnabled(vsync && *vsync == '1');
+#ifdef __ANDROID__
+    // A phone always plays on the whole display, in SDL's immersive mode, so
+    // the status and navigation bars do not cover the game (Issue #118). The
+    // launcher used to save fullscreen=0, and Android has no switch for it.
+    implementation->start_fullscreen = true;
+#else
     if (const char* fullscreen = std::getenv("SFR_FULLSCREEN"); fullscreen && *fullscreen == '1')
         implementation->start_fullscreen = true;
+#endif
 
     step("targets");
     implementation->color = graphics.device().createTexture(
