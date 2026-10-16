@@ -26,6 +26,7 @@
 #include "imgui_impl_sdlrenderer2.h"
 #endif
 
+#include "apple_window_restore.h"
 #include "imgui_internal.h"
 #include "installer.h"
 #include "launcher_art.h"
@@ -3317,6 +3318,8 @@ int main(int argc, char** argv) {
     SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
 #elif defined(SFR_IOS)
     SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+#elif defined(__APPLE__)
+    sfr::skip_window_restore_prompt();
 #endif
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS) != 0) {
         std::fprintf(stderr, "SDL is not available: %s\n", SDL_GetError());

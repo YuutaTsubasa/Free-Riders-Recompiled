@@ -17,8 +17,10 @@
 #include <immintrin.h>
 #endif
 #else
+#include <dlfcn.h>
 #include <sys/mman.h>
 #include <signal.h>
+#include <ucontext.h>
 #include <unistd.h>
 #endif
 
@@ -1105,13 +1107,33 @@ LONG CALLBACK watch_fault_handler(EXCEPTION_POINTERS* info) {
 // the handler takes both, and passes each on to that signal's own previous
 // handler.
 struct sigaction previous_segv{}, previous_bus{};
+// The faulting instruction's offset in its executable (the rip= of a
+// Windows report), which atos or addr2line turn into the recompiled function.
+uint64_t fault_offset(void* context) {
+    const auto* uc = static_cast<const ucontext_t*>(context);
+#if defined(__APPLE__) && defined(__aarch64__)
+    const uintptr_t pc = uintptr_t(uc->uc_mcontext->__ss.__pc);
+#elif defined(__APPLE__) && defined(__x86_64__)
+    const uintptr_t pc = uintptr_t(uc->uc_mcontext->__ss.__rip);
+#elif defined(__linux__) && defined(__aarch64__)
+    const uintptr_t pc = uintptr_t(uc->uc_mcontext.pc);
+#elif defined(__linux__) && defined(__x86_64__)
+    const uintptr_t pc = uintptr_t(uc->uc_mcontext.gregs[REG_RIP]);
+#else
+    const uintptr_t pc = 0;
+    (void)uc;
+#endif
+    Dl_info image{};
+    if (!pc || !dladdr(reinterpret_cast<void*>(pc), &image) || !image.dli_fbase) return 0;
+    return pc - uintptr_t(image.dli_fbase);
+}
 void watch_fault_handler(int signal, siginfo_t* info, void* context) {
     GuestMemory* memory = watched_memory.load(std::memory_order_acquire);
     const uintptr_t address = uintptr_t(info->si_addr);
     if (memory && memory->handle_watch_fault(address)) return;
     if (memory && address >= uintptr_t(memory->base()) &&
         address - uintptr_t(memory->base()) < GuestMemory::address_space_size)
-        report_guest_fault(address - uintptr_t(memory->base()));
+        report_guest_fault(address - uintptr_t(memory->base()), fault_offset(context));
     const struct sigaction& previous = signal == SIGBUS ? previous_bus : previous_segv;
     if (previous.sa_flags & SA_SIGINFO) {
         if (previous.sa_sigaction) { previous.sa_sigaction(signal, info, context); return; }

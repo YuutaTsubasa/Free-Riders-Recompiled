@@ -1557,6 +1557,17 @@ void NativeRenderer::draw(const NativeDraw& draw) {
         if (impl->bound_pipeline != pipeline) {
             list.setPipeline(pipeline);
             impl->bound_pipeline = pipeline;
+#ifdef __APPLE__
+            // MoltenVK (1.4.2) binds a set's argument buffer to its Metal
+            // buffer index once per encoder and counts it as bound until the
+            // set is bound again, even if a later pipeline put something else
+            // at that index. After Start on the title a Mac's textured draws
+            // found a 160-byte buffer there in place of set 0's textures, and
+            // the GPU faulted. Binding the sets again after each pipeline
+            // change makes MoltenVK put them back (no validation errors since).
+            list.setGraphicsDescriptorSet(impl->textures.get(), 0);
+            list.setGraphicsDescriptorSet(impl->samplers.get(), 1);
+#endif
         }
 #ifdef _WIN32
         // Plume's D3D12 backend sets the pipeline's stencil reference at each
