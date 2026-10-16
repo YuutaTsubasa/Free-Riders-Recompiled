@@ -20,7 +20,11 @@
 #include <dlfcn.h>
 #include <sys/mman.h>
 #include <signal.h>
+#ifdef __APPLE__
+#include <sys/ucontext.h>
+#else
 #include <ucontext.h>
+#endif
 #include <unistd.h>
 #endif
 

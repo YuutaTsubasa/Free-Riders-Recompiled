@@ -2,6 +2,7 @@
 #include "guest_memory.h"
 #include "native_graphics.h"
 #include "runtime_shader_cache.h"
+#include "shader_set_use.h"
 #include <plume_render_interface.h>
 #include <algorithm>
 #include <span>
@@ -77,6 +78,9 @@ uint32_t NativeShaders::create(ShaderStage stage, uint32_t container) {
         next->shader=impl_->graphics.device().createShader(code.data(),code.size(),"shaderMain",
             vulkan?plume::RenderShaderFormat::SPIRV:plume::RenderShaderFormat::DXIL);
         if(!next->shader) unsupported(container,"native shader bytecode ownership failed");
+#ifdef __APPLE__
+        if(vulkan) ShaderSetUse::note(next->shader.get(),code);
+#endif
     }
     // Reserve, without committing, so Xbox header access faults and future
     // guest allocations cannot accidentally make this opaque ID readable.
