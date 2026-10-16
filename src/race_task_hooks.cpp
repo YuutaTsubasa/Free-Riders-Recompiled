@@ -38,8 +38,13 @@ constexpr uint32_t draw_method = 0x822980C8;  // calls a task's method 12
 // on an AYN Thor skipping two frames in three (drawn frames made 20 ms
 // slower). Found with SFR_TEST_DRAW_KEEP below; the read watch's races had
 // not passed that jump. Drawing it costs little (race speed 0.996 there).
+// 821A1968 and 821A61F4 also always draw: with both left out, the racer fell
+// out of Metropolis Speedway into the void about a minute into the race, in
+// both of two runs on the Thor set up as above (issue #154: through the
+// train, railings that could not be grabbed). With either one drawing it did
+// not fall, so both draw.
 constexpr uint32_t undrawn_skips[] = {
-    0x821A8A78, 0x821A1968, 0x821A61F4, 0x821A8998, 0x821A319C, 0x821A25A4,
+    0x821A8A78, 0x821A8998, 0x821A319C, 0x821A25A4,
     0x821A3874, 0x821A2D70, 0x821AB4AC, 0x821A2A94, 0x8219F8D0, 0x821A333C, 0x821A38A0};
 
 // SFR_RACE_SKIP_DRAWING=0: frames that are not drawn still run all the
