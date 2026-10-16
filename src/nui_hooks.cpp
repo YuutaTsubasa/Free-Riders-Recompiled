@@ -1693,6 +1693,8 @@ PPC_FUNC_IMPL(__imp__sub_824A3398);
 static std::recursive_mutex pool_lock;
 static std::atomic<uint32_t> pool_holder{0};
 struct PoolLock {
+    // Taken before the lock: its holder keeps the permit until it lets go.
+    sfr::NoHandoff keep_permit;
     PoolLock() {
         if(pool_lock.try_lock()) { pool_holder.store(sfr::current_guest_thread_id(),std::memory_order_relaxed); return; }
         const auto started=std::chrono::steady_clock::now();

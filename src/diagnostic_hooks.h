@@ -96,6 +96,17 @@ extern const bool diagnostic_entries;
 // times a second; the permit needs only a fraction of those entries to hand off on
 // time and to notice cancellation, so the rest return here, inline.
 void guest_checkpoint_permit();
+// While a hook holds a host lock around guest code (the pools' lock), that
+// code's checkpoints must not give the permit away: a thread holding the
+// permit could then wait on the lock while the lock's holder waits for the
+// permit (seen on an Apple M1, every guest stopped).
+inline thread_local uint32_t no_handoff_depth = 0;
+struct NoHandoff {
+    NoHandoff() { ++no_handoff_depth; }
+    ~NoHandoff() { --no_handoff_depth; }
+    NoHandoff(const NoHandoff&) = delete;
+    NoHandoff& operator=(const NoHandoff&) = delete;
+};
 
 
 

@@ -976,6 +976,8 @@ uint32_t NativeRenderer::placeholder_texture() {
         impl_->texture_objects.resize(slot + 1);
         impl_->texture_views.resize(slot + 1);
     }
+    // A view reads its texture as it is destroyed: the old view goes first.
+    impl_->texture_views[slot].reset();
     impl_->texture_objects[slot] = std::move(texture);
     impl_->texture_views[slot] = std::move(view);
     impl_->placeholder = index;
@@ -1082,6 +1084,8 @@ static uint32_t own_resolve(NativeRenderer::Impl& impl, uint32_t physical, uint3
     const uint32_t index = impl.take_texture_index();
     auto view = texture->createTextureView(plume::RenderTextureViewDesc::Texture2D(format));
     impl.textures->setTexture(index, texture.get(), plume::RenderTextureLayout::SHADER_READ, view.get());
+    // A view reads its texture as it is destroyed: the old view goes first.
+    impl.texture_views[index - first_texture].reset();
     impl.texture_objects[index - first_texture] = std::move(texture);
     impl.texture_views[index - first_texture] = std::move(view);
     impl.resolved_own[physical] = {index, width, height, format};
@@ -1238,6 +1242,8 @@ uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
         impl_->texture_objects.resize(slot + 1);
         impl_->texture_views.resize(slot + 1);
     }
+    // A view reads its texture as it is destroyed: the old view goes first.
+    impl_->texture_views[slot].reset();
     impl_->texture_objects[slot] = std::move(texture);
     impl_->texture_views[slot] = std::move(view);
     // Retain the destination before recording a copy. A later descriptor or

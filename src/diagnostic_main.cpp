@@ -803,7 +803,7 @@ void guest_checkpoint_permit() {
     if (!execution_permit) throw std::logic_error("guest instruction without execution permit");
     // Validates ownership and cancellation before shared memory access, and
     // hands off only outside a reservation.
-    const bool handoff = !active_memory->has_reservation();
+    const bool handoff = !active_memory->has_reservation() && !no_handoff_depth;
     execution_permit->checkpoint(handoff);
     // A core's threads take turns only while detached from the global permit
     // (an attached thread holds both for a short import or hook).
