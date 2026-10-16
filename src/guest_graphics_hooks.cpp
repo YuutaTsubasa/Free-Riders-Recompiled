@@ -1241,9 +1241,22 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
                 };
                 // The Kinect overlay icon is the runtime's own, not the title's HUD.
                 const bool kinect_icon=cx>=380.0f && cx<=428.0f && cy>=28.0f && cy<=116.0f && w<=60.0f;
+                // Text stays together in the middle: the title draws it a glyph at
+                // a time (and each glyph twice, its shadow 2 pixels lower) from its
+                // glyph cache, a 512x256 8888 texture, while the HUD's own sprites
+                // and labels come from compressed atlases. Moved by its centre,
+                // each glyph went its own way: the goal notices and the tutorial
+                // (Issue #131) came apart, and a glyph whose shadow stayed was
+                // shown twice.
+                const bool glyph=[&]{
+                    try {
+                        const auto fetch=sfr::decode_texture_fetch(graphics().texture_fetch(0));
+                        return fetch.format==6 && fetch.width==512 && fetch.height==256;
+                    } catch(...) { return false; }
+                }();
                 // Sprites may reach a little beyond the layout (the speed gauge's
                 // effects: up to 55 past its right edge); whole-screen ones stay put.
-                if(!kinect_icon && lo[0]>=(two_player_race ? -40.0f : -8.0f) && hi[0]<=layout_width+(two_player_race ? 60.0f : 55.0f) && w<=450.0f && h<=445.0f) {
+                if(!kinect_icon && !glyph && lo[0]>=(two_player_race ? -40.0f : -8.0f) && hi[0]<=layout_width+(two_player_race ? 60.0f : 55.0f) && w<=450.0f && h<=445.0f) {
                     for(const Zone& zone : two_player_race ? std::span<const Zone>(two_player_zones) : std::span<const Zone>(zones)) {
                         if(cx>=zone.x0 && cx<=zone.x1 && cy>=zone.y0 && cy<=zone.y1) {
                             draw.shared.screen_space_offset[0]=float(zone.side)*(1.0f-layout_share);
