@@ -84,7 +84,7 @@ jobs:
         # Homebrew's LLVM: its libc++ has std::jthread and std::atomic_ref,
         # which Apple's does not yet.
         run: |
-          brew install ninja sdl2 llvm
+          brew install ninja llvm
           llvm="$(brew --prefix llvm)"
           echo "CC=$llvm/bin/clang" >> "$GITHUB_ENV"
           echo "CXX=$llvm/bin/clang++" >> "$GITHUB_ENV"

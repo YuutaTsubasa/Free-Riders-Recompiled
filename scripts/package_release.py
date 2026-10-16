@@ -10,6 +10,9 @@ install from their own disc image in the launcher. Nothing here runs in CI.
   linux    the build directory (scripts/build_linux.sh --diagnostic ...,
            --build DIR, default ~/sfr-build); shaders come from the pack only
   android  out/android/FreeRidersRecompiled.apk (scripts/build_android.sh)
+  macos    run on a Mac: the build directory (--build DIR) and MoltenVK's
+           macOS dylib (--moltenvk DIR, the directory holding LICENSE from
+           its release); makes FreeRidersRecompiled.app, signed ad hoc
 
 Beside the programs go the shaders.pack collected so far
 (scripts/pack_shaders.py), the licences and, on Windows, shader-tools/ (the
@@ -19,14 +22,17 @@ src/launcher_settings.h).
 
 Every licence file listed must exist; packaging stops otherwise.
 
-Usage: python scripts/package_release.py windows|linux|android --version 0.1.0
+Usage: python scripts/package_release.py windows|linux|android|macos --version 0.1.0
        [--build DIR] [--pack out/shaders/shaders.pack] [--output out/release]
 """
 import argparse
 import hashlib
 import io
+import plistlib
 import shutil
+import subprocess
 import sys
+import tempfile
 import tarfile
 import zipfile
 from pathlib import Path
@@ -106,7 +112,7 @@ def desktop_files(platform, build, pack):
     elif not pack:
         # No Linux translator yet (the pinned XenosRecomp corrupts memory when
         # built with clang 15 for Linux), so the pack is all it has.
-        sys.exit('a Linux release needs --pack')
+        sys.exit('a Linux or macOS release needs --pack')
     if pack:
         files.append(('shaders.pack', checked_shader_pack(need(pack))))
         for backend in ('vulkan', 'd3d12'):
@@ -116,6 +122,56 @@ def desktop_files(platform, build, pack):
             if manifest.is_file():
                 files.append((manifest.name, manifest))
     return files
+
+
+def macos_app(app, version, build, pack, moltenvk, licenses, readme):
+    """FreeRidersRecompiled.app: both programs in Contents/MacOS, MoltenVK in
+    Frameworks (the game loads it from there: src/apple_vulkan_loader.h) and
+    shaders.pack in Resources, which the launcher copies to Application
+    Support with the player's files (src/launcher_platform_sdl.cpp)."""
+    contents = app / 'Contents'
+    for name in ('FreeRidersRecompiled', 'sfr_cpu_diagnostic'):
+        (contents / 'MacOS').mkdir(parents=True, exist_ok=True)
+        shutil.copy2(need(build / name), contents / 'MacOS' / name)
+    dylib = need(moltenvk / 'MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib')
+    (contents / 'Frameworks').mkdir()
+    shutil.copy2(dylib, contents / 'Frameworks/libMoltenVK.dylib')
+    resources = contents / 'Resources'
+    resources.mkdir()
+    licenses = licenses + [('licenses/MoltenVK-Apache-2.0.txt', need(moltenvk / 'LICENSE'))]
+    for inside, source in desktop_files('macos', build, pack)[2:] + licenses:
+        (resources / inside).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, resources / inside)
+    (resources / 'README.txt').write_bytes(readme)
+    # The icon, at the sizes iconutil wants, from the 256 px PNG.
+    iconset = Path(tempfile.mkdtemp()) / 'AppIcon.iconset'
+    iconset.mkdir()
+    for size in (16, 32, 64, 128, 256):
+        for scale, suffix in ((1, ''), (2, '@2x')):
+            if size * scale <= 256:
+                subprocess.run(['sips', '-z', str(size * scale), str(size * scale), str(ROOT / 'packaging/icon/app.png'),
+                                '--out', str(iconset / f'icon_{size}x{size}{suffix}.png')],
+                               check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(['iconutil', '-c', 'icns', str(iconset), '-o', str(resources / 'AppIcon.icns')], check=True)
+    with open(contents / 'Info.plist', 'wb') as stream:
+        plistlib.dump({
+            'CFBundleName': 'Free Riders Recompiled',
+            'CFBundleDisplayName': 'Free Riders Recompiled',
+            'CFBundleIdentifier': 'com.freeriders.recompiled',
+            'CFBundleExecutable': 'FreeRidersRecompiled',
+            'CFBundleIconFile': 'AppIcon',
+            'CFBundlePackageType': 'APPL',
+            'CFBundleShortVersionString': version,
+            'CFBundleVersion': version,
+            'CFBundleInfoDictionaryVersion': '6.0',
+            'LSMinimumSystemVersion': '13.3',
+            'LSApplicationCategoryType': 'public.app-category.games',
+            'NSHighResolutionCapable': True,
+            'NSCameraUsageDescription': 'Camera input lets you ride with your body, as with Kinect.',
+            'NSMicrophoneUsageDescription': 'Voice commands, as with Kinect.',
+        }, stream)
+    # Not notarised: signed ad hoc, which Apple Silicon requires to run at all.
+    subprocess.run(['codesign', '--force', '--deep', '--sign', '-', str(app)], check=True)
 
 
 def camera_files(root):
@@ -136,12 +192,13 @@ def camera_files(root):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('platform', choices=('windows', 'linux', 'android'))
+    parser.add_argument('platform', choices=('windows', 'linux', 'android', 'macos'))
     parser.add_argument('--version', required=True)
     parser.add_argument('--build', type=Path, help='desktop build directory')
     parser.add_argument('--pack', type=Path, default=ROOT / 'out/shaders/shaders.pack',
                         help='shaders.pack to include (pass "" for none)')
     parser.add_argument('--output', type=Path, default=ROOT / 'out/release')
+    parser.add_argument('--moltenvk', type=Path, help='macOS: the unpacked MoltenVK release directory')
     parser.add_argument('--camera', action='store_true', help='bundle Windows MediaPipe models and ONNX Runtime')
     args = parser.parse_args()
     if args.camera and args.platform != 'windows':
@@ -151,11 +208,28 @@ def main():
     licenses = [('licenses/' + name, need(source))
                 for name, source in LICENSES + (DXC_LICENSES if args.platform == 'windows' else [])]
     name = 'FreeRidersRecompiled-%s-%s' % (args.version, {'windows': 'windows-x64', 'linux': 'linux-x64',
-                                                            'android': 'android-arm64'}[args.platform])
+                                                            'android': 'android-arm64',
+                                                            'macos': 'macos-arm64'}[args.platform])
     args.output.mkdir(parents=True, exist_ok=True)
     readme = README.format(version=args.version, platform=args.platform).encode()
 
-    if args.platform == 'android':
+    if args.platform == 'macos':
+        if sys.platform != 'darwin' or not args.moltenvk or not args.build:
+            parser.error('macos packages on a Mac, with --build and --moltenvk')
+        staging = Path(tempfile.mkdtemp())
+        app = staging / name / 'FreeRidersRecompiled.app'
+        macos_app(app, args.version, args.build, pack, args.moltenvk, licenses, readme)
+        (staging / name / 'README.txt').write_bytes(readme)
+        for inside, source in (('VRM-Avatar.md', 'docs/vrm-avatar.md'),
+                               ('Internal-resolution.md', 'docs/internal-resolution.md')):
+            shutil.copyfile(need(ROOT / source), staging / name / inside)
+        out = args.output / (name + '.zip')
+        out.unlink(missing_ok=True)
+        # ditto keeps the bundle's signature, symlinks and modes intact.
+        subprocess.run(['ditto', '-c', '-k', '--keepParent', str(staging / name), str(out)], check=True)
+        shutil.rmtree(staging)
+        outputs = [out]
+    elif args.platform == 'android':
         apk = need(ROOT / 'out/android/FreeRidersRecompiled.apk')
         with zipfile.ZipFile(apk) as archive:
             try:
