@@ -176,6 +176,8 @@ with [docs/progress.md](docs/progress.md).
   Two-player races widen too on a display wider than 16:9: each half of a split race, a Tag Race holding hands and their On your Gear screen fill the frame, with each player's HUD at their own edge.
 - [v0.8.3 — Kinect jump diagnostics](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.8.3)
   With a real Kinect, `game.log` records each crouch and jump the game detects and how high the hips went, so a jump that does not register can be diagnosed from the log (Issue #97).
+- [v0.9.0 — Races keep real time on slow devices](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.9.0)
+  Races keep the console's fixed step everywhere (side ramps no longer throw a racer off the course on a slow phone, Issue #123) and keep real time by not drawing some frames, which now also leave out most of the game's own drawing work. On ultrawide displays the race HUD is placed by which part of the game draws it, so text, the goal notices and the results stay together (Issues #131, #124). Also: a Kinect lean calibration fix (#132), a list of avatar models in the launcher (#132), a Linux hint when no file dialog is installed (#130), and guest memory on 16 KiB-page hosts.
 
 ## System Requirements
 
