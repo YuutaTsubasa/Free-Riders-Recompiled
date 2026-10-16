@@ -496,7 +496,11 @@ bool can_open_log() {
 
 void open_log(const fs::path& log) {
 #ifndef __ANDROID__
+#ifdef __APPLE__
+    const std::string command = "open " + shell_quoted(utf8(log)) + " >/dev/null 2>&1 &";
+#else
     const std::string command = "xdg-open " + shell_quoted(utf8(log)) + " >/dev/null 2>&1 &";
+#endif
     if (std::system(command.c_str()) != 0) return;
 #else
     (void)log;
@@ -519,6 +523,14 @@ FontFiles font_files() {
             {fonts / "Roboto-BlackItalic.ttf", fonts / "Roboto-Bold.ttf", fonts / "RobotoStatic-Regular.ttf"},
             {},  // Chinese: add_system_glyphs
             {}};
+#elif defined(__APPLE__)
+    // macOS has no fontconfig: Arial and STHeiti, which every macOS carries.
+    const fs::path fonts = "/System/Library/Fonts", extra = fonts / "Supplemental";
+    return {{extra / "Arial.ttf"},
+            {extra / "Arial Bold.ttf", extra / "Arial.ttf"},
+            {extra / "Arial Bold Italic.ttf", extra / "Arial Black.ttf", extra / "Arial Bold.ttf"},
+            {fonts / "STHeiti Light.ttc", fonts / "Hiragino Sans GB.ttc"},
+            {fonts / "STHeiti Medium.ttc", fonts / "STHeiti Light.ttc"}};
 #else
     // fontconfig's choice first (only TrueType/OpenType files load), then
     // the usual Debian/Ubuntu paths.
