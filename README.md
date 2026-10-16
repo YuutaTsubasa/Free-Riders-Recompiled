@@ -180,6 +180,8 @@ with [docs/progress.md](docs/progress.md).
   Races keep the console's fixed step everywhere (side ramps no longer throw a racer off the course on a slow phone, Issue #123) and keep real time by not drawing some frames, which now also leave out most of the game's own drawing work. On ultrawide displays the race HUD is placed by which part of the game draws it, so text, the goal notices and the results stay together (Issues #131, #124). Also: a Kinect lean calibration fix (#132), a list of avatar models in the launcher (#132), a Linux hint when no file dialog is installed (#130), and guest memory on 16 KiB-page hosts.
 - [v0.9.1 — Map, Kinect calibration and dialogs](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.9.1)
   The race map stays with its markers at a wide screen's edge (Issue #145). The launcher's Kinect preview can calibrate, setting the crouch depth from your own crouch (#97, #132). Linux file dialogs use the desktop's own portal (#130). On Windows the game's window keeps answering while the game is busy, and the launcher can show a webcam's picture.
+- [v0.9.2 — Big jumps on slow phones](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.9.2)
+  On a phone that can't keep 60 fps, a racer no longer falls short of Dolphin Resort's big jump: part of the game's work that frames left undrawn skipped is needed for the jump, and it now always runs.
 
 ## System Requirements
 
