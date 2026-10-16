@@ -1274,7 +1274,11 @@ NativePresentation::NativePresentation(NativeGraphics& graphics, uint32_t width,
     if (!SDL_GetWindowWMInfo(implementation->window, &system)) unavailable("native window");
     SDL_MetalView view = SDL_Metal_CreateView(implementation->window);
     if (!view) unavailable("Metal view");
+#ifdef SFR_IOS
+    plume::RenderWindow render_window{(void*)system.info.uikit.window, SDL_Metal_GetLayer(view)};
+#else
     plume::RenderWindow render_window{(void*)system.info.cocoa.window, SDL_Metal_GetLayer(view)};
+#endif
 #else
     plume::RenderWindow render_window = implementation->window;
 #endif

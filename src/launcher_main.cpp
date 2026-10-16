@@ -3281,6 +3281,8 @@ int main(int argc, char** argv) {
 #ifdef __ANDROID__
     SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");  // back is the launcher's own Back
     SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+#elif defined(SFR_IOS)
+    SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
 #endif
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS) != 0) {
         std::fprintf(stderr, "SDL is not available: %s\n", SDL_GetError());

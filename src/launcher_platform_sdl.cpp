@@ -27,6 +27,10 @@
 #include <mach-o/dyld.h>
 #include <optional>
 #endif
+#ifdef SFR_IOS
+#include "ios_document_picker.h"
+#include <dlfcn.h>
+#endif
 
 namespace sfr::launcher {
 namespace fs = std::filesystem;
@@ -288,6 +292,15 @@ fs::path launcher_directory() {
 #ifdef __ANDROID__
     const char* path = SDL_AndroidGetExternalStoragePath();
     return path ? fs::path(path) : fs::path(".");
+#elif defined(SFR_IOS)
+    // The app's Documents, which the Files app shows (UIFileSharingEnabled):
+    // the installed game, settings and saves, and the bundle's shaders.pack.
+    const char* home = std::getenv("HOME");
+    const fs::path data = fs::path(home ? home : ".") / "Documents";
+    std::error_code error;
+    fs::create_directories(data, error);
+    copy_bundled_shader_pack(program_directory(), data);
+    return data;
 #elif defined(__APPLE__)
     // FreeRidersRecompiled.app may be read-only (and is signed): the player's
     // files go to Application Support, with the bundle's shaders.pack.
@@ -309,7 +322,7 @@ fs::path launcher_directory() {
 }
 
 bool can_pick_folders() {
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(SFR_IOS)
     return false;
 #else
     return true;
@@ -369,6 +382,12 @@ std::optional<fs::path> pick_path(const fs::path& start, bool folders, FileFilte
     if (picked_path.empty()) return std::nullopt;
     source_names[picked_path] = picked_name.empty() ? picked_path : picked_name;
     return fs::path(picked_path);
+#elif defined(SFR_IOS)
+    (void)start;
+    (void)folders;
+    const auto chosen = ios_pick_document(filter == FileFilter::AvatarModel);
+    if (!chosen) return std::nullopt;
+    return fs::path(std::u8string(chosen->begin(), chosen->end()));
 #elif defined(__APPLE__)
     // The system's own Open panel, through AppleScript; cancelling it is an
     // AppleScript error, which prints nothing on stdout.
@@ -425,7 +444,7 @@ std::optional<fs::path> pick_path(const fs::path& start, bool folders, FileFilte
 }
 
 fs::path game_program(const fs::path& directory) {
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(SFR_IOS)
     (void)directory;
     return {};
 #elif defined(__APPLE__)
@@ -457,6 +476,44 @@ std::unique_ptr<GameProcess> start_game(const LauncherSettings& settings, const 
     launcher_back = false;
     call_activity("launchGame");
     return std::make_unique<AndroidGame>(log);
+#elif defined(SFR_IOS)
+    // One process: the game's library is loaded now, with the settings in
+    // the environment, and runs on this thread. Its static state lasts the
+    // process, so the app ends with the game (as Android's game activity).
+    apply_environment(settings, directory, false);
+    std::vector<std::string> arguments{"FreeRidersRecompiled"};
+    for (const auto& argument : game_arguments(settings)) arguments.push_back(utf8(fs::path(argument)));
+    std::vector<char*> argv;
+    for (auto& argument : arguments) argv.push_back(argument.data());
+    argv.push_back(nullptr);
+    if (chdir(utf8(directory).c_str()) != 0) return nullptr;
+    const fs::path library = program_directory() / "Frameworks/FreeRidersGame.framework/FreeRidersGame";
+    void* game = dlopen(utf8(library).c_str(), RTLD_NOW | RTLD_LOCAL);
+    using Entry = int (*)(int, char**);
+    const auto entry = game ? reinterpret_cast<Entry>(dlsym(game, "sfr_ios_game_main")) : nullptr;
+    if (!entry) {
+        std::ofstream(log, std::ios::trunc) << "The game library did not load: " << (game ? "no entry" : dlerror()) << '\n';
+        return nullptr;
+    }
+    // The game's trace goes to game.log, as from a desktop launcher.
+    const int output = open(utf8(log).c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (output >= 0) {
+        dup2(output, 1);
+        dup2(output, 2);
+        close(output);
+    }
+    // The launcher's window gives way to the game's: SDL allows one window
+    // a screen on iOS, and the launcher never draws again (the app ends with
+    // the game).
+    for (Uint32 id = 1; id < 64; ++id)
+        if (SDL_Window* window = SDL_GetWindowFromID(id)) {
+            if (SDL_Renderer* renderer = SDL_GetRenderer(window)) SDL_DestroyRenderer(renderer);
+            SDL_DestroyWindow(window);
+        }
+    const int code = entry(int(argv.size()) - 1, argv.data());
+    std::fflush(stdout);
+    std::fflush(stderr);
+    _exit(code);
 #else
     const fs::path root = find_runtime_root(directory);
     apply_environment(settings, directory, !root.empty());
@@ -487,7 +544,7 @@ std::unique_ptr<GameProcess> start_game(const LauncherSettings& settings, const 
 }
 
 bool can_open_log() {
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(SFR_IOS)
     return false;
 #else
     return true;
@@ -495,7 +552,7 @@ bool can_open_log() {
 }
 
 void open_log(const fs::path& log) {
-#ifndef __ANDROID__
+#if !defined(__ANDROID__) && !defined(SFR_IOS)
 #ifdef __APPLE__
     const std::string command = "open " + shell_quoted(utf8(log)) + " >/dev/null 2>&1 &";
 #else

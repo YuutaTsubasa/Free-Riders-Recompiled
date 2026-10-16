@@ -13,6 +13,9 @@ install from their own disc image in the launcher. Nothing here runs in CI.
   macos    run on a Mac: the build directory (--build DIR) and MoltenVK's
            macOS dylib (--moltenvk DIR, the directory holding LICENSE from
            its release); makes FreeRidersRecompiled.app, signed ad hoc
+  ios      run on a Mac: the iOS build directory (cmake -DCMAKE_SYSTEM_NAME=iOS,
+           --build DIR) and MoltenVK's iOS release (--moltenvk DIR); makes an
+           unsigned-for-distribution .ipa (signed ad hoc) for sideloading
 
 Beside the programs go the shaders.pack collected so far
 (scripts/pack_shaders.py), the licences and, on Windows, shader-tools/ (the
@@ -22,7 +25,7 @@ src/launcher_settings.h).
 
 Every licence file listed must exist; packaging stops otherwise.
 
-Usage: python scripts/package_release.py windows|linux|android|macos --version 0.1.0
+Usage: python scripts/package_release.py windows|linux|android|macos|ios --version 0.1.0
        [--build DIR] [--pack out/shaders/shaders.pack] [--output out/release]
 """
 import argparse
@@ -174,6 +177,99 @@ def macos_app(app, version, build, pack, moltenvk, licenses, readme):
     subprocess.run(['codesign', '--force', '--deep', '--sign', '-', str(app)], check=True)
 
 
+# What the iOS game asks of the system: a guest address space of several
+# gigabytes and more memory than an app gets by default. Sideloading tools
+# that re-sign the app keep these only where the signing identity may.
+IOS_ENTITLEMENTS = {
+    'com.apple.developer.kernel.extended-virtual-addressing': True,
+    'com.apple.developer.kernel.increased-memory-limit': True,
+}
+
+
+def ios_app(app, version, build, pack, moltenvk, licenses, readme):
+    """FreeRidersRecompiled.app for iOS: the launcher is the app's program,
+    the game a framework it loads at Play (src/ios_game_entry.cpp), SDL and
+    MoltenVK beside it in Frameworks, and the shaders in the bundle, which
+    the launcher copies to the app's Documents (src/launcher_platform_sdl.cpp)."""
+    frameworks = app / 'Frameworks'
+    game = frameworks / 'FreeRidersGame.framework'
+    game.mkdir(parents=True)
+    shutil.copy2(need(build / 'FreeRidersRecompiled.app/FreeRidersRecompiled'), app / 'FreeRidersRecompiled')
+    shutil.copy2(need(build / 'libFreeRidersGame.dylib'), game / 'FreeRidersGame')
+    with open(game / 'Info.plist', 'wb') as stream:
+        plistlib.dump({'CFBundleExecutable': 'FreeRidersGame', 'CFBundleIdentifier': 'com.freeriders.recompiled.game',
+                       'CFBundleName': 'FreeRidersGame', 'CFBundlePackageType': 'FMWK',
+                       'CFBundleShortVersionString': version, 'CFBundleVersion': version,
+                       'MinimumOSVersion': '16.3'}, stream)
+    shutil.copy2(need(build / 'tools/SDL/libSDL2-2.0.0.dylib'), frameworks / 'libSDL2-2.0.0.dylib')
+    # MoltenVK's iOS release is a framework; the game loads it as the macOS
+    # app does, by the dylib name volk asks for (src/apple_vulkan_loader.h).
+    shutil.copy2(need(moltenvk / 'MoltenVK/dynamic/MoltenVK.xcframework/ios-arm64/MoltenVK.framework/MoltenVK'),
+                 frameworks / 'libMoltenVK.dylib')
+    subprocess.run(['install_name_tool', '-id', '@rpath/libMoltenVK.dylib', str(frameworks / 'libMoltenVK.dylib')],
+                   check=True)
+    licenses = licenses + [('licenses/MoltenVK-Apache-2.0.txt', need(moltenvk / 'LICENSE'))]
+    if not pack:
+        sys.exit('an iOS release needs --pack: iOS cannot translate shaders')
+    files = [('shaders.pack', checked_shader_pack(need(pack)))]
+    manifest = pack.parent / 'pipelines-vulkan.manifest'
+    if not manifest.is_file():
+        manifest = ROOT / 'data/pipeline-manifests' / manifest.name
+    if manifest.is_file():
+        files.append((manifest.name, manifest))
+    for inside, source in files + licenses:
+        (app / inside).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, app / inside)
+    (app / 'README.txt').write_bytes(readme)
+    with open(app / 'Info.plist', 'wb') as stream:
+        plistlib.dump({
+            'CFBundleName': 'Free Riders Recompiled',
+            'CFBundleDisplayName': 'Free Riders',
+            'CFBundleIdentifier': 'com.freeriders.recompiled',
+            'CFBundleExecutable': 'FreeRidersRecompiled',
+            'CFBundlePackageType': 'APPL',
+            'CFBundleShortVersionString': version,
+            'CFBundleVersion': version,
+            'CFBundleInfoDictionaryVersion': '6.0',
+            'CFBundleSupportedPlatforms': ['iPhoneOS'],
+            'MinimumOSVersion': '16.3',
+            'UIDeviceFamily': [1, 2],
+            'UIRequiredDeviceCapabilities': ['arm64', 'metal'],
+            'UISupportedInterfaceOrientations': ['UIInterfaceOrientationLandscapeLeft',
+                                                 'UIInterfaceOrientationLandscapeRight'],
+            'UISupportedInterfaceOrientations~ipad': ['UIInterfaceOrientationLandscapeLeft',
+                                                      'UIInterfaceOrientationLandscapeRight'],
+            # Without a launch screen iOS runs the app at an old phone's size.
+            'UILaunchScreen': {},
+            'UIRequiresFullScreen': True,
+            'UIStatusBarHidden': True,
+            # The Files app shows the app's Documents: the disc image can be
+            # put there, and settings, saves and game.log are there.
+            'UIFileSharingEnabled': True,
+            'LSSupportsOpeningDocumentsInPlace': True,
+            'UIApplicationSupportsIndirectInputEvents': True,  # a mouse or trackpad
+            'GCSupportsControllerUserInteraction': True,
+            'GCSupportedGameControllers': [{'ProfileName': 'ExtendedGamepad'}],
+        }, stream)
+    # The build directory's own library paths (CMake's build rpaths) have no
+    # place on a phone, and would only carry the builder's folder names.
+    for binary in (app / 'FreeRidersRecompiled', game / 'FreeRidersGame'):
+        commands = subprocess.run(['otool', '-l', str(binary)], check=True, capture_output=True, text=True).stdout
+        for line in commands.splitlines():
+            words = line.split()
+            if len(words) >= 2 and words[0] == 'path' and words[1].startswith('/'):
+                subprocess.run(['install_name_tool', '-delete_rpath', words[1], str(binary)], check=True)
+    entitlements = Path(tempfile.mkdtemp()) / 'entitlements.plist'
+    with open(entitlements, 'wb') as stream:
+        plistlib.dump(IOS_ENTITLEMENTS, stream)
+    # Inside out: each library, then the framework, then the app with its
+    # entitlements. Ad hoc: sideloading tools sign it again with the player's
+    # own identity.
+    for library in (frameworks / 'libSDL2-2.0.0.dylib', frameworks / 'libMoltenVK.dylib', game):
+        subprocess.run(['codesign', '--force', '--sign', '-', str(library)], check=True)
+    subprocess.run(['codesign', '--force', '--sign', '-', '--entitlements', str(entitlements), str(app)], check=True)
+
+
 def camera_files(root):
     """Windows MediaPipe bundle. Missing runtime, model or licence is fatal."""
     files = []
@@ -192,7 +288,7 @@ def camera_files(root):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('platform', choices=('windows', 'linux', 'android', 'macos'))
+    parser.add_argument('platform', choices=('windows', 'linux', 'android', 'macos', 'ios'))
     parser.add_argument('--version', required=True)
     parser.add_argument('--build', type=Path, help='desktop build directory')
     parser.add_argument('--pack', type=Path, default=ROOT / 'out/shaders/shaders.pack',
@@ -209,11 +305,24 @@ def main():
                 for name, source in LICENSES + (DXC_LICENSES if args.platform == 'windows' else [])]
     name = 'FreeRidersRecompiled-%s-%s' % (args.version, {'windows': 'windows-x64', 'linux': 'linux-x64',
                                                             'android': 'android-arm64',
-                                                            'macos': 'macos-arm64'}[args.platform])
+                                                            'macos': 'macos-arm64',
+                                                            'ios': 'ios-arm64'}[args.platform])
     args.output.mkdir(parents=True, exist_ok=True)
     readme = README.format(version=args.version, platform=args.platform).encode()
 
-    if args.platform == 'macos':
+    if args.platform == 'ios':
+        if sys.platform != 'darwin' or not args.moltenvk or not args.build:
+            parser.error('ios packages on a Mac, with --build and --moltenvk')
+        staging = Path(tempfile.mkdtemp())
+        ios_app(staging / 'Payload/FreeRidersRecompiled.app', args.version, args.build, pack, args.moltenvk,
+                licenses, readme)
+        out = args.output / (name + '.ipa')
+        out.unlink(missing_ok=True)
+        # An .ipa is a zip with Payload/ at its root; ditto keeps the signatures.
+        subprocess.run(['ditto', '-c', '-k', '--keepParent', str(staging / 'Payload'), str(out)], check=True)
+        shutil.rmtree(staging)
+        outputs = [out]
+    elif args.platform == 'macos':
         if sys.platform != 'darwin' or not args.moltenvk or not args.build:
             parser.error('macos packages on a Mac, with --build and --moltenvk')
         staging = Path(tempfile.mkdtemp())
