@@ -193,6 +193,9 @@ add_test(NAME kinect_sensor COMMAND sfr_kinect_sensor_test)
 add_executable(sfr_kinect_smoothing_test tests/kinect_smoothing_test.cpp src/kinect_smoothing.cpp)
 target_include_directories(sfr_kinect_smoothing_test PRIVATE src)
 add_test(NAME kinect_smoothing COMMAND sfr_kinect_smoothing_test)
+add_executable(sfr_kinect_calibration_test tests/kinect_calibration_test.cpp src/kinect_calibration.cpp)
+target_include_directories(sfr_kinect_calibration_test PRIVATE src)
+add_test(NAME kinect_calibration COMMAND sfr_kinect_calibration_test)
 add_executable(sfr_nui_menu_players_test tests/nui_menu_players_test.cpp src/nui_skeleton.cpp src/guest_memory.cpp)
 target_include_directories(sfr_nui_menu_players_test PRIVATE src)
 add_test(NAME nui_menu_players COMMAND sfr_nui_menu_players_test)
@@ -587,7 +590,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui/imgui.cpp")
     # The launcher lists the host cameras and controllers.
     set(SFR_LAUNCHER_SOURCES src/launcher_main.cpp src/launcher_settings.cpp src/mod_loader.cpp src/input_bindings.cpp src/pad_devices.cpp src/pad_assignment.cpp src/launcher_sound.cpp src/launcher_art.cpp src/sony_gamepad.cpp
         ${SFR_CAMERA_CAPTURE} src/kinect_sensor.cpp ${SFR_KINECT_SENSOR} ${SFR_VOICE}
-        src/kinect_preview.cpp src/kinect_preview_window.cpp src/camera_preview_window.cpp src/camera_debug.cpp src/text_wrap.cpp
+        src/kinect_preview.cpp src/kinect_preview_window.cpp src/camera_preview_window.cpp src/kinect_calibration.cpp src/camera_debug.cpp src/text_wrap.cpp
         ${SFR_IMGUI}/imgui.cpp ${SFR_IMGUI}/imgui_draw.cpp ${SFR_IMGUI}/imgui_tables.cpp ${SFR_IMGUI}/imgui_widgets.cpp)
     if(WIN32)
         add_executable(sfr_launcher WIN32 ${SFR_LAUNCHER_SOURCES} src/launcher_platform_win32.cpp src/app_icon.rc
@@ -1053,7 +1056,7 @@ if(SFR_BUILD_DIAGNOSTIC)
                    ${SFR_CAMERA_CAPTURE} ${SFR_POSE_SOURCES})
     # A real Kinect (SFR_CAMERA=kinect), through the Kinect for Windows runtime.
     target_sources(sfr_cpu_diagnostic PRIVATE src/kinect_sensor.cpp ${SFR_KINECT_SENSOR} ${SFR_VOICE}
-        src/kinect_preview.cpp src/kinect_preview_window.cpp)
+        src/kinect_preview.cpp src/kinect_preview_window.cpp src/kinect_calibration.cpp)
     if(SFR_POSE_AVAILABLE)
         target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_onnxruntime)
         sfr_copy_onnx_dlls(sfr_cpu_diagnostic)

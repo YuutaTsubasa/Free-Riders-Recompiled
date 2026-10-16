@@ -22,6 +22,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace sfr {
@@ -77,8 +78,14 @@ struct KinectPreviewWindow::Impl {
     std::chrono::steady_clock::time_point opened_at{}, last_frame{};
     // The tilt motor, turned from the window: a turn at a time, a second
     // or so each (the SDK asks for no more than a turn a second).
-    static constexpr int up_id = 101, down_id = 102, step = 5;
-    HWND up_button = nullptr, down_button = nullptr;
+    static constexpr int up_id = 101, down_id = 102, calibrate_id = 103, step = 5;
+    HWND up_button = nullptr, down_button = nullptr, calibrate_button = nullptr;
+    // The calibration (kinect_calibration.h), on this window's thread; its
+    // finished result waits under lock for the launcher.
+    KinectCalibration calibration;
+    bool calibration_saved = false;
+    std::optional<KinectCalibrationResult> finished;  // under lock
+    bool new_frame = false;
     HFONT button_font = nullptr;
     std::atomic<bool> turning{false}, reread_angle{false};
     std::jthread turner;
@@ -106,6 +113,116 @@ struct KinectPreviewWindow::Impl {
         const int width = 96, height = 32, gap = 10, top = 12;
         MoveWindow(down_button, rect.right - gap - width, top, width, height, TRUE);
         MoveWindow(up_button, rect.right - 2 * (gap + width), top, width, height, TRUE);
+        if (calibrate_button) MoveWindow(calibrate_button, rect.right - 3 * (gap + width) - 40, top, width + 40, height, TRUE);
+    }
+
+    void calibrate() {
+        if (calibration.step() == KinectCalibrationStep::idle || calibration.step() == KinectCalibrationStep::done)
+            calibration.start();
+        else
+            calibration.cancel();
+        calibration_saved = false;
+        update_calibrate_label();
+    }
+
+    void update_calibrate_label() {
+        if (!calibrate_button) return;
+        const auto now = calibration.step();
+        const std::wstring label = now == KinectCalibrationStep::idle ? say(L"Calibrate", L"校正")
+                                   : now == KinectCalibrationStep::done ? say(L"Calibrate again", L"重新校正")
+                                                                         : say(L"Stop calibrating", L"停止校正");
+        SetWindowTextW(calibrate_button, label.c_str());
+    }
+
+    // The player calibrated: the first tracked body (the nearest when there
+    // are several), as the race takes P1.
+    void feed_calibration() {
+        if (!new_frame) return;
+        new_frame = false;
+        const auto before = calibration.step();
+        if (before == KinectCalibrationStep::idle || before == KinectCalibrationStep::done) return;
+        const KinectBody* player = nullptr;
+        for (const KinectBody& body : frame.bodies)
+            if (!player || body.position[2] < player->position[2]) player = &body;
+        const double seconds = std::chrono::duration<double>(frame.captured_at.time_since_epoch()).count();
+        calibration.observe(player, frame.floor_plane, seconds);
+        if (calibration.step() == KinectCalibrationStep::done && !calibration_saved) {
+            calibration_saved = true;
+            std::lock_guard guard(lock);
+            finished = calibration.result();
+        }
+        if (calibration.step() != before) update_calibrate_label();
+    }
+
+    // The current step's instruction, progress and live reading, over the top
+    // of the window.
+    void paint_calibration(HDC dc, int width) {
+        const auto now = calibration.step();
+        if (now == KinectCalibrationStep::idle) return;
+        RECT panel{20, 8, width - 20, 100};
+        HBRUSH brush = CreateSolidBrush(RGB(28, 38, 56));
+        FillRect(dc, &panel, brush);
+        DeleteObject(brush);
+        HFONT big = CreateFontW(-24, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                                CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH,
+                                chinese ? L"Microsoft JhengHei UI" : L"Segoe UI");
+        const auto old = SelectObject(dc, big ? big : GetStockObject(DEFAULT_GUI_FONT));
+        const KinectCalibrationResult& r = calibration.result();
+        wchar_t line[320];
+        std::wstring title, detail;
+        switch (now) {
+        case KinectCalibrationStep::stand:
+            title = say(L"1/5  Stand up straight, arms down, and keep still", L"1/5  站直、雙手放下，保持不動");
+            break;
+        case KinectCalibrationStep::crouch:
+            title = say(L"2/5  Crouch as you would in a race, then stand up", L"2/5  像比賽時那樣蹲下，再站起來");
+            std::swprintf(line, 320, chinese ? L"現在低了 %.0f 公分" : L"Now %.0f cm lower", std::max(0.0f, calibration.drop()) * 100);
+            detail = line;
+            break;
+        case KinectCalibrationStep::jump:
+            title = say(L"3/5  Jump (both feet off the floor)", L"3/5  跳一下（雙腳離地）");
+            std::swprintf(line, 320, chinese ? L"蹲下 %.0f 公分　現在高了 %.0f 公分" : L"Crouch %.0f cm   now %.0f cm higher",
+                          r.crouch_drop * 100, std::max(0.0f, -calibration.drop()) * 100);
+            detail = line;
+            break;
+        case KinectCalibrationStep::lean_left:
+        case KinectCalibrationStep::lean_right:
+            title = now == KinectCalibrationStep::lean_left
+                        ? say(L"4/5  Lean your body to your left as far as you steer, then stand straight",
+                              L"4/5  身體往左傾（像轉彎那樣），再站直")
+                        : say(L"5/5  Now lean to your right, then stand straight", L"5/5  再往右傾，然後站直");
+            std::swprintf(line, 320, chinese ? L"現在傾斜 %.0f°（遊戲在 30° 時轉到底）" : L"Leaning %.0f° (the race steers fully at 30°)",
+                          std::fabs(calibration.lean()));
+            detail = line;
+            break;
+        case KinectCalibrationStep::done:
+            std::swprintf(line, 320, chinese ? L"校正完成：蹲下深度設為 %u 公分" : L"Calibrated: crouch depth set to %u cm", r.crouch_cm);
+            title = line;
+            std::swprintf(line, 320,
+                          chinese ? L"蹲下 %.0f 公分　跳躍 %ls　左傾 %.0f°、右傾 %.0f°（30° 轉到底）"
+                                  : L"Crouch %.0f cm   jump %ls   lean %.0f° left, %.0f° right (30° steers fully)",
+                          r.crouch_drop * 100,
+                          r.jump_rise > 0 ? (std::to_wstring(int(std::lround(r.jump_rise * 100))) + say(L" cm", L" 公分")).c_str()
+                                          : say(L"not seen", L"沒有偵測到").c_str(),
+                          r.lean_left, r.lean_right);
+            detail = line;
+            break;
+        default: break;
+        }
+        text(dc, 32, 16, title, now == KinectCalibrationStep::done ? RGB(128, 225, 167) : foreground);
+        SelectObject(dc, old);
+        if (big) DeleteObject(big);
+        if (!calibration.tracked() && now != KinectCalibrationStep::done)
+            detail = say(L"Nobody in view: stand 1.5 to 3.5 m from the sensor, facing it", L"看不到你：請面向感應器，站在 1.5 到 3.5 公尺處");
+        else if (calibration.waiting_long() && now != KinectCalibrationStep::done)
+            detail += say(L"   (not seen yet: try it again, a little more)", L"　（還沒偵測到：請再做一次，動作大一點）");
+        text(dc, 32, 52, detail, now == KinectCalibrationStep::done ? foreground : RGB(255, 205, 119));
+        if (now != KinectCalibrationStep::done) {
+            RECT bar{32, 80, 32 + int((width - 104) * calibration.progress()), 90};
+            HBRUSH fill = CreateSolidBrush(RGB(70, 207, 236));
+            FillRect(dc, &bar, fill);
+            DeleteObject(fill);
+        }
     }
 
     bool sensor_ready() const {
@@ -129,7 +246,10 @@ struct KinectPreviewWindow::Impl {
                 handed_new = false;
                 last_frame = now;
             }
-        } else if (source->next(frame)) last_frame = now;
+        } else if (source->next(frame)) {
+            last_frame = now;
+            new_frame = true;
+        }
         const bool new_colour = source->image(KinectImageKind::colour, colour);
         if (new_colour) last_frame = now;
         if (new_colour && colour.bytes_per_pixel == 4) {
@@ -269,7 +389,8 @@ struct KinectPreviewWindow::Impl {
             }
             text(dc, 20, 40, hint, readiness.first_failed == KinectStep::count ? foreground : RGB(255, 205, 119));
         }
-        if (source && readiness.ready()) {
+        const bool calibrating = calibration.step() != KinectCalibrationStep::idle;
+        if (source && readiness.ready() && !calibrating) {
             const std::string name = source->model();
             const std::wstring model_name(name.begin(), name.end());
             if (has_angle)
@@ -309,6 +430,7 @@ struct KinectPreviewWindow::Impl {
         draw_image(dc, depth_area, depth_pixels, int(depth.width), int(depth.height));
         skeletons(dc, colour_area, true);
         skeletons(dc, depth_area, false);
+        paint_calibration(dc, width);
         text(dc, gap, height - 28, borrowed ? say(L"Close this window to go back to the game.", L"關閉此視窗即可回到遊戲。")
                                             : say(L"Close this window before starting the game: the Kinect opens for one program at a time.",
                                                   L"開始遊戲前會自動關閉此視窗：Kinect 一次只能給一個程式使用。"), dim);
@@ -332,15 +454,18 @@ struct KinectPreviewWindow::Impl {
             if (self->stopping.stop_requested()) DestroyWindow(window);
             else {
                 self->refresh();
+                self->feed_calibration();
                 const bool ready = !self->turning.load() && self->sensor_ready();
                 EnableWindow(self->up_button, ready);
                 EnableWindow(self->down_button, ready);
+                if (self->calibrate_button) EnableWindow(self->calibrate_button, self->sensor_ready());
                 InvalidateRect(window, nullptr, FALSE);
             }
             return 0;
         case WM_COMMAND:
             if (LOWORD(wp) == up_id) self->turn(step);
             else if (LOWORD(wp) == down_id) self->turn(-step);
+            else if (LOWORD(wp) == calibrate_id) self->calibrate();
             SetFocus(window);  // keep the arrow keys for the window
             return 0;
         case WM_KEYDOWN:
@@ -398,7 +523,14 @@ struct KinectPreviewWindow::Impl {
         button_font = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                                   CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH,
                                   chinese ? L"Microsoft JhengHei UI" : L"Segoe UI");
-        for (HWND button : {up_button, down_button})
+        // Calibrating stores the launcher's crouch depth, so only the
+        // launcher's preview has it (not the one over the game's sensor).
+        if (!borrowed) {
+            calibrate_button = CreateWindowExW(0, L"BUTTON", say(L"Calibrate", L"校正").c_str(),
+                                               WS_CHILD | WS_VISIBLE | WS_DISABLED | BS_PUSHBUTTON, 0, 0, 0, 0, window,
+                                               reinterpret_cast<HMENU>(INT_PTR(calibrate_id)), instance, nullptr);
+        }
+        for (HWND button : {up_button, down_button, calibrate_button})
             if (button && button_font) SendMessageW(button, WM_SETFONT, WPARAM(button_font), TRUE);
         place_buttons(window);
         if (borrowed) sfr::center_over_game(window);  // over the game it adjusts
@@ -490,6 +622,10 @@ std::string KinectPreviewWindow::failure() const {
     std::lock_guard guard(impl_->lock);
     return impl_->failure;
 }
+std::optional<KinectCalibrationResult> KinectPreviewWindow::take_calibration() {
+    std::lock_guard guard(impl_->lock);
+    return std::exchange(impl_->finished, std::nullopt);
+}
 }
 #else
 namespace sfr {
@@ -504,5 +640,6 @@ void KinectPreviewWindow::close() {}
 void KinectPreviewWindow::raise() {}
 std::shared_ptr<KinectSensor> KinectPreviewWindow::sensor() const { return nullptr; }
 std::string KinectPreviewWindow::failure() const { return {}; }
+std::optional<KinectCalibrationResult> KinectPreviewWindow::take_calibration() { return std::nullopt; }
 }
 #endif

@@ -84,7 +84,7 @@ enum Text {
     CameraKinect, KinectRow, KinectRowHint, KinectMissing,
     KinectNoRuntime, KinectNoSensor, KinectFailed, KinectDownload, KinectDownloadV2, KinectInstallHint,
     VoiceLabel, VoiceHint,
-    KinectPreviewOpen, KinectPreviewClose, CameraPreviewOpen, CameraPreviewClose,
+    KinectPreviewOpen, KinectPreviewClose, CameraPreviewOpen, CameraPreviewClose, KinectCalibrated,
     CameraDebug, CameraDebugHint, MenuSteady, MenuSteadyHint, MenuSteadyOff,
     ImageDirectory, ImageDirectoryHint, AssetDirectory, AssetDirectoryHint, Browse, Found, Missing, FilesHint,
     SaveDirectory, SaveDirectoryHint, SaveFound, SaveNone, SaveDefault, SaveOpen,
@@ -205,6 +205,7 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Close preview", "關閉預覽"},
     {"Show picture", "顯示畫面"},
     {"Close picture", "關閉畫面"},
+    {"Kinect calibrated: crouch depth saved", "Kinect 校正完成：已儲存蹲下深度"},
     {"Skeleton debug window", "骨架 Debug 視窗"},
     {"Shows only the skeleton received by the game, in front and side views, with no camera image. Closing this window does not stop the game. Changes apply on the next game launch.",
      "僅顯示遊戲收到的骨架，提供正面與側面視圖，不顯示攝影機影像。關閉此視窗不會停止遊戲。設定會在下次啟動遊戲時套用。"},
@@ -2372,6 +2373,14 @@ struct Launcher {
             // its cameras and skeletons, and its tilt.
             if (kinect_preview) {
                 if (const std::string why = kinect_preview->failure(); !why.empty()) kinect_failure = why;
+                // A finished calibration (the preview's Calibrate) sets the
+                // crouch depth from the player's own crouch.
+                if (const auto calibrated = kinect_preview->take_calibration()) {
+                    settings.kinect_crouch_cm = calibrated->crouch_cm;
+                    sfr::save_launcher_settings(settings_file, settings);
+                    status = tr(KinectCalibrated);
+                    status_error = false;
+                }
                 if (kinect_preview->closed()) kinect_preview.reset();
             }
             const Text label = kinect_preview ? KinectPreviewClose : KinectPreviewOpen;
