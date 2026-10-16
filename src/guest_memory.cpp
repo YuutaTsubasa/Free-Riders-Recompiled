@@ -598,13 +598,16 @@ void GuestMemory::commit_impl(uint64_t address, uint64_t size, bool write_combin
     const uint64_t host_begin = host_floor(address);
     const uint64_t host_size = host_ceil(address + size) - host_begin;
     check_pending_writes(address,guest_round(size));
-    const auto host_intersects = [&](const Region& r) {
-        return host_begin < r.address + r.size && r.address < host_begin + host_size;
+    // Cache policy is kept in guest pages: write-combined memory is ordinary
+    // cached memory except on Windows, whose host pages are guest pages, so
+    // a 16 KiB host page may hold both (the GPU heap next to other memory).
+    const uint64_t guest_size = guest_round(size);
+    const auto guest_intersects = [&](const Region& r) {
+        return address < r.address + r.size && r.address < address + guest_size;
     };
-    if ((!write_combined && std::any_of(write_combined_.begin(), write_combined_.end(), host_intersects)) ||
+    if ((!write_combined && std::any_of(write_combined_.begin(), write_combined_.end(), guest_intersects)) ||
         (write_combined && std::any_of(committed_.begin(), committed_.end(), [&](const Region& r) {
-            const Region host_region{host_floor(r.address), host_ceil(r.address + r.size) - host_floor(r.address)};
-            return host_intersects(host_region);
+            return guest_intersects(Region{r.address, guest_round(r.size)});
         })))
         throw RuntimeStop("memory-cache", address, "guest commit conflicts with existing host cache policy");
 
@@ -629,7 +632,7 @@ void GuestMemory::commit_impl(uint64_t address, uint64_t size, bool write_combin
     if (committed_bytes > backing_budget_)
         throw RuntimeStop("memory-budget", address, "guest backing budget exceeded");
     auto next_write_combined = write_combined_;
-    if (write_combined) next_write_combined.push_back({host_begin, host_size});
+    if (write_combined) next_write_combined.push_back({address, guest_size});
     std::vector<Region> fresh;
     for (uint64_t page = host_begin; page < host_begin + host_size; page += page_size_) {
         const bool backed = std::any_of(backing_.begin(), backing_.end(), [&](const Region& r) {
@@ -737,9 +740,9 @@ void GuestMemory::commit_impl(uint64_t address, uint64_t size, bool write_combin
     backing_.swap(next_backing);
     write_combined_.swap(next_write_combined);
     if (write_combined) {
-        const uint64_t first = host_begin / fast_page_size;
+        const uint64_t first = address / fast_page_size;
         const uint64_t end = std::min<uint64_t>(address_space_size / fast_page_size,
-                                                (host_begin + host_size + fast_page_size - 1) / fast_page_size);
+                                                (address + guest_size + fast_page_size - 1) / fast_page_size);
         std::fill(write_combined_pages_.get() + first, write_combined_pages_.get() + end, uint8_t{1});
     }
     rebuild_fast_pages(address, size);
