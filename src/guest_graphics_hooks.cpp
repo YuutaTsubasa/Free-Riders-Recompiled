@@ -792,8 +792,10 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
 // sprite goes through the title's generic UI layer (the sprite drawer
 // 824C06E0 returning to 824C08A4, its callers 824C0C88/824C0D78, 824AC17C/
 // 824AC1C8, the node drawer 824AD1A0, which recurses, and the tree's root
-// 824AE4F0); the first return address above that layer is the HUD element's
-// own function. Found with the guest return-address chain of every 2D draw in
+// 824AE4F0, and the textured-quad path 824C6A04/8223CED8 the map itself is
+// drawn through: Issue #145, where the map stayed in the middle while its
+// markers went to the edge); the first return address above that layer is
+// the HUD element's own function. Found with the guest return-address chain of every 2D draw in
 // scripted one- and two-player races at 22:9 (2026-10-16).
 constexpr int race_hud_by_half=2;
 struct RaceHudOwner { uint32_t site; int8_t one_player, two_players; };
@@ -814,7 +816,8 @@ constexpr RaceHudOwner race_hud_owners[]={
 };
 // -1 left edge, +1 right edge, race_hud_by_half, or 0: stays in the middle.
 static int race_hud_side(const sfr::GuestMemory& memory, uint32_t sp, bool two_players) {
-    constexpr uint32_t generic[]={0x824C0C88,0x824C0D78,0x824AC17C,0x824AC1C8,0x824AD1A0,0x824AE4F0};
+    constexpr uint32_t generic[]={0x824C0C88,0x824C0D78,0x824AC17C,0x824AC1C8,0x824AD1A0,0x824AE4F0,
+                                  0x824C6A04,0x8223CED8};
     // Each frame keeps its caller's link register 8 below the caller's stack pointer.
     uint32_t frame=sp;
     for(int depth=0;depth<12 && frame && memory.readable(frame,4);++depth) {
@@ -1480,7 +1483,19 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
                   << " n=" << draw.vertex_count
                   << " scale=" << draw.shared.screen_space_scale[0] << ',' << draw.shared.screen_space_scale[1]
                   << " offset=" << draw.shared.screen_space_offset[0] << ',' << draw.shared.screen_space_offset[1]
-                  << " proj_x=" << draw.shared.projection_x_scale << " swapped=" << raster_swapped << '\n';
+                  << " proj_x=" << draw.shared.projection_x_scale << " swapped=" << raster_swapped;
+        if(uint32_t(ctx.lr)==0x824C08A4) {
+            std::cerr << " chain=" << std::hex;
+            uint32_t frame=ctx.r1.u32;
+            for(int depth=0;depth<12 && frame && memory.readable(frame,4);++depth) {
+                const uint32_t caller=memory.load<uint32_t>(frame);
+                if(!caller || caller<=frame || !memory.readable(caller-8,4)) break;
+                std::cerr << memory.load<uint32_t>(caller-8) << ',';
+                frame=caller;
+            }
+            std::cerr << std::dec;
+        }
+        std::cerr << '\n';
     }
     const auto record_start=metrics_clock();
     graphics().renderer().draw(draw);
