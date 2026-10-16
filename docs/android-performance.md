@@ -120,7 +120,7 @@ frames slower:
 | 0 (60 fps) | 5% | 1.00 |
 | 12 ms, skipping the game's drawing | 57% | 1.00 |
 | 12 ms, only the host's drawing (`SFR_RACE_SKIP_DRAWING=0`) | 54% | 0.75 |
-| 30 ms, skipping the game's drawing | 68-73% | 0.81-0.93 |
+| 30 ms, skipping the game's drawing | 76% | 0.99 |
 
 An undrawn Thor frame now costs about 6-7 ms, most of it the race's logic
 (2.1 ms in the job workers, 3.4 ms in method 8), which always runs.
