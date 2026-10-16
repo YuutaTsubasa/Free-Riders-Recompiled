@@ -1101,7 +1101,10 @@ LONG CALLBACK watch_fault_handler(EXCEPTION_POINTERS* info) {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 #else
-struct sigaction previous_segv{};
+// macOS reports a write to a protected page as SIGBUS, Linux as SIGSEGV:
+// the handler takes both, and passes each on to that signal's own previous
+// handler.
+struct sigaction previous_segv{}, previous_bus{};
 void watch_fault_handler(int signal, siginfo_t* info, void* context) {
     GuestMemory* memory = watched_memory.load(std::memory_order_acquire);
     const uintptr_t address = uintptr_t(info->si_addr);
@@ -1109,10 +1112,11 @@ void watch_fault_handler(int signal, siginfo_t* info, void* context) {
     if (memory && address >= uintptr_t(memory->base()) &&
         address - uintptr_t(memory->base()) < GuestMemory::address_space_size)
         report_guest_fault(address - uintptr_t(memory->base()));
-    if (previous_segv.sa_flags & SA_SIGINFO) {
-        if (previous_segv.sa_sigaction) { previous_segv.sa_sigaction(signal, info, context); return; }
-    } else if (previous_segv.sa_handler != SIG_DFL && previous_segv.sa_handler != SIG_IGN) {
-        previous_segv.sa_handler(signal);
+    const struct sigaction& previous = signal == SIGBUS ? previous_bus : previous_segv;
+    if (previous.sa_flags & SA_SIGINFO) {
+        if (previous.sa_sigaction) { previous.sa_sigaction(signal, info, context); return; }
+    } else if (previous.sa_handler != SIG_DFL && previous.sa_handler != SIG_IGN) {
+        previous.sa_handler(signal);
         return;
     }
     // The default action: let the fault happen again without us.
@@ -1133,7 +1137,7 @@ void install_watch_handler(GuestMemory* memory) {
         action.sa_sigaction = watch_fault_handler;
         action.sa_flags = SA_SIGINFO | SA_ONSTACK;
         sigemptyset(&action.sa_mask);
-        return sigaction(SIGSEGV, &action, &previous_segv) == 0;
+        return sigaction(SIGSEGV, &action, &previous_segv) == 0 && sigaction(SIGBUS, &action, &previous_bus) == 0;
 #endif
     }();
     if (!installed) throw RuntimeStop("memory-watch", 0, "cannot install the page-protection fault handler");
