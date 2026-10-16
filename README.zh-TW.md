@@ -3,7 +3,7 @@
 [English](README.md)
 
 Free Riders Recompiled 是以靜態重編譯製作的 Xbox 360 版《Sonic Free Riders》非官方移植，
-支援 Windows、Linux 與 Android。可使用手把或鍵盤遊玩，也能在 **Windows 上使用 Kinect／
+支援 Windows、Linux、macOS 與 Android（另有未經實機測試的 iOS 版）。可使用手把或鍵盤遊玩，也能在 **Windows 上使用 Kinect／
 Kinect v2 或一般攝影機進行體感操作**，並匯入自己的 **VRM 模型**作為遊戲內的 AVATAR 角色。
 Kinect v2 目前屬實驗性支援，仍待實機驗證。
 
@@ -61,8 +61,9 @@ Kinect v2 目前屬實驗性支援，仍待實機驗證。
 ## 安裝
 
 1. 從 [Releases](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases) 下載對應系統
-   的版本：Windows 的 zip、Linux 的 tar.gz，或 Android 的 APK。
-2. 解壓縮到一個獨立的資料夾（Android 則安裝 APK）。
+   的版本：Windows 的 zip、Linux 的 tar.gz、macOS 的 zip（Apple Silicon），或 Android 的 APK；
+   另有給側載用、未經實機測試的 iOS `.ipa`。macOS 版沒有經過 Apple 公證，第一次請按右鍵選「打開」。
+2. 解壓縮到一個獨立的資料夾（Android 則安裝 APK；macOS 打開 `.app`）。
 3. 執行 `FreeRidersRecompiled`，在啟動器要求時選擇你的光碟映像檔（`.iso`），它會把遊戲資料
    複製到旁邊。然後按 **開始遊戲**。
 

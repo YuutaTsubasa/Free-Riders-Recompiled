@@ -3,7 +3,7 @@
 [繁體中文](README.zh-TW.md)
 
 Free Riders Recompiled is an unofficial port of the Xbox 360 version of *Sonic
-Free Riders* for Windows, Linux and Android, built through static recompilation.
+Free Riders* for Windows, Linux, macOS and Android (and, untested, iOS), built through static recompilation.
 Play with a controller or keyboard, use **Kinect / Kinect v2 or webcam motion
 controls on Windows**, and bring your own **VRM model** to the in-game AVATAR
 rider. Kinect v2 support is experimental and still needs hardware validation.
@@ -178,6 +178,8 @@ with [docs/progress.md](docs/progress.md).
   With a real Kinect, `game.log` records each crouch and jump the game detects and how high the hips went, so a jump that does not register can be diagnosed from the log (Issue #97).
 - [v0.9.0 — Races keep real time on slow devices](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.9.0)
   Races keep the console's fixed step everywhere (side ramps no longer throw a racer off the course on a slow phone, Issue #123) and keep real time by not drawing some frames, which now also leave out most of the game's own drawing work. On ultrawide displays the race HUD is placed by which part of the game draws it, so text, the goal notices and the results stay together (Issues #131, #124). Also: a Kinect lean calibration fix (#132), a list of avatar models in the launcher (#132), a Linux hint when no file dialog is installed (#130), and guest memory on 16 KiB-page hosts.
+- [v0.10.0 — macOS and iOS](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.0)
+  A first macOS build (Apple Silicon, an .app with MoltenVK inside) and a first, untested iOS .ipa for sideloading. Also: the race map stays with its markers at a wide screen's edge (Issue #145), a Kinect calibration in the launcher that sets the crouch depth from your own crouch (#97, #132), Linux file dialogs through the desktop's own portal (#130), a Windows game window that keeps answering while the game is busy, and a webcam picture window in the launcher.
 
 ## System Requirements
 
@@ -196,11 +198,13 @@ with [docs/progress.md](docs/progress.md).
 
 1. Download the release for your system from
    [Releases](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases):
-   the Windows zip, the Linux tarball, or the Android APK.
-   For Android 10+, choose `android10-arm64.apk`; the `android-arm64.apk`
+   the Windows zip, the Linux tarball, the macOS zip (Apple Silicon), or the
+   Android APK. An untested iOS `.ipa` for sideloading is there too.
+   On macOS the app is not notarised: right-click it and choose **Open** the
+   first time. For Android 10+, choose `android10-arm64.apk`; the `android-arm64.apk`
    package retains Android 9 compatibility. Both use the same app identity
    and update existing installations without requiring an uninstall.
-2. Unpack it into a folder of its own (on Android, install the APK).
+2. Unpack it into a folder of its own (on Android, install the APK; on macOS, open the `.app`).
 3. Start `FreeRidersRecompiled` and choose your disc image (`.iso`) when the
    launcher asks; it copies the game's data beside itself. Then press
    **Start game**.
