@@ -454,6 +454,21 @@ void avatar_model_settings() {
     const auto cleared = sfr::parse_launcher_settings(saved + "avatar_model=\n");
     require(value_of(cleared, "SFR_AVATAR_MODEL").empty() && value_of(cleared, "SFR_AVATAR") == "0",
             "clearing a previously selected model overrides a stale inherited environment");
+    // Issue #132: the models added are kept, so another can be chosen later.
+    require(reloaded.avatar_models.size() == 1 && reloaded.avatar_models[0] == selected.avatar_model,
+            "a model chosen before the list existed becomes its first entry");
+    auto several = reloaded;
+    several.avatar_models.push_back("D:/avatars/second.glb");
+    several.avatar_model = "D:/avatars/second.glb";
+    const auto both = sfr::parse_launcher_settings(sfr::format_launcher_settings(several));
+    require(both.avatar_models.size() == 2 && both.avatar_models[1] == "D:/avatars/second.glb" &&
+            value_of(both, "SFR_AVATAR_MODEL") == "D:/avatars/second.glb",
+            "every added model is kept, and the chosen one is used");
+    auto none = both;
+    none.avatar_model.clear();
+    const auto kept = sfr::parse_launcher_settings(sfr::format_launcher_settings(none));
+    require(kept.avatar_models.size() == 2 && value_of(kept, "SFR_AVATAR") == "0",
+            "choosing no model keeps the list and disables the avatar");
     const auto missing = sfr::parse_launcher_settings("avatar_model=Z:/missing/avatar.glb\n");
     require(value_of(missing, "SFR_AVATAR_MODEL") == "Z:/missing/avatar.glb",
             "an unavailable model stays selected so it can be reported instead of silently discarded");

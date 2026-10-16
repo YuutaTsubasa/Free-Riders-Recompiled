@@ -85,6 +85,11 @@ struct LauncherSettings {
     bool camera_debug = false;
     // Optional shared local-player Avatar model. Empty keeps the custom avatar disabled.
     std::filesystem::path avatar_model;
+    // The models added on the Avatar page, so another can be chosen without
+    // browsing again (Issue #132). The game shows one avatar, avatar_model;
+    // it is one of these, or none. At most max_avatar_models.
+    std::vector<std::filesystem::path> avatar_models;
+    static constexpr size_t max_avatar_models = 32;
     // Controls (input_bindings.h). The devices each player uses, and how
     // their keys and pad buttons are arranged, as "a=Z,b=X,..." lines. An
     // empty line means the defaults, so a settings file written before any
