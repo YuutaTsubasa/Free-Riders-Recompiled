@@ -1,10 +1,12 @@
 #pragma once
 #include "kinect_sensor.h"
+#include "kinect_calibration.h"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace sfr {
@@ -37,6 +39,9 @@ public:
     // Why no sensor opened (KinectSensor::open's reason, "no-runtime",
     // "no-sensor", ...), or empty while it opens or once it has.
     std::string failure() const;
+    // The calibration the player finished in the window (its Calibrate
+    // button, launcher only), once: the launcher stores its crouch depth.
+    std::optional<KinectCalibrationResult> take_calibration();
     struct Impl;
 private:
     explicit KinectPreviewWindow(std::unique_ptr<Impl>);
