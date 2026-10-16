@@ -731,6 +731,48 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
 // command buffer and appends a draw. The device shadow mirrors those GPU
 // registers, so the native draw reads its state from the same fields.
 // Shared native draw: count vertices of stride bytes (guest byte order).
+// The race HUD's corner pieces, by the title function that draws them. A HUD
+// sprite goes through the title's generic UI layer (the sprite drawer
+// 824C06E0 returning to 824C08A4, its callers 824C0C88/824C0D78, 824AC17C/
+// 824AC1C8, the node drawer 824AD1A0, which recurses, and the tree's root
+// 824AE4F0); the first return address above that layer is the HUD element's
+// own function. Found with the guest return-address chain of every 2D draw in
+// scripted one- and two-player races at 22:9 (2026-10-16).
+constexpr int race_hud_by_half=2;
+struct RaceHudOwner { uint32_t site; int8_t one_player, two_players; };
+constexpr RaceHudOwner race_hud_owners[]={
+    {0x82401C9C,-1,-1}, {0x82401CE0,-1,-1},  // rings, LV
+    {0x824023BC,-1,-1}, {0x82402404,-1,-1},  // skills
+    {0x82402088,-1,-1},                      // the left column's frame and effects
+    {0x82402300,-1,-1},                      // rank
+    {0x82400624,-1,-1},                      // rank effects
+    {0x8240069C,-1,-1},                      // LAP, RECORD
+    {0x823EFF80,+1,+1}, {0x82403158,+1,+1},  // map and its markers
+    {0x823F97E4,+1,race_hud_by_half},        // speed gauge (one per player)
+    {0x823F9AF4,+1,race_hud_by_half},        // SPEED
+    {0x823F9D8C,race_hud_by_half,race_hud_by_half},  // effects at both edges
+    {0x823FC63C,0,race_hud_by_half},         // gauge scale
+    {0x82240F74,0,race_hud_by_half},         // a two-player race's per-player time
+    {0x823F09C8,0,race_hud_by_half},
+};
+// -1 left edge, +1 right edge, race_hud_by_half, or 0: stays in the middle.
+static int race_hud_side(const sfr::GuestMemory& memory, uint32_t sp, bool two_players) {
+    constexpr uint32_t generic[]={0x824C0C88,0x824C0D78,0x824AC17C,0x824AC1C8,0x824AD1A0,0x824AE4F0};
+    // Each frame keeps its caller's link register 8 below the caller's stack pointer.
+    uint32_t frame=sp;
+    for(int depth=0;depth<12 && frame && memory.readable(frame,4);++depth) {
+        const uint32_t caller=memory.load<uint32_t>(frame);
+        if(!caller || caller<=frame || !memory.readable(caller-8,4)) return 0;
+        const uint32_t site=memory.load<uint32_t>(caller-8);
+        frame=caller;
+        if(std::find(std::begin(generic),std::end(generic),site)!=std::end(generic)) continue;
+        for(const auto& owner : race_hud_owners)
+            if(owner.site==site) return two_players ? owner.two_players : owner.one_player;
+        return 0;
+    }
+    return 0;
+}
+
 static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint32_t primitive,
                         uint32_t count, std::span<const uint8_t> vertices, uint32_t stride,
                         std::span<const uint32_t> indices={}, int32_t base_vertex_location=0,
@@ -1191,85 +1233,32 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
            ((ui_center && full_view) || two_player_race)) {
             // Clip x scaled by center/width: the layout fills the centered 16:9 area.
             draw.shared.screen_space_offset[1]=layout_share;
-            // HUD anchoring (SFR_UI_ALIGN=edge, or SFR_HUD_ANCHOR=1): HUD sprites of the
-            // groups the user picked (hud_capture maps of a race) go to the left or
-            // right edge of the wide frame instead of staying in the centered 16:9
-            // area. Rectangles are in the title's 1280x720 layout, which does not
-            // depend on the frame's width; a sprite belongs to one when its center
-            // lies inside. The shift is the margin beside the centered area,
-            // (width - center) / 2 pixels, i.e. 1 - center/width in clip space, so a
-            // sprite keeps its distance to its own edge at any width (vertical
+            // HUD anchoring (SFR_UI_ALIGN=edge, or SFR_HUD_ANCHOR=1): the race HUD's
+            // corner pieces go to the left or right edge of the wide frame instead
+            // of staying in the centered 16:9 area, each by which of the title's
+            // HUD functions draws it (race_hud_side), never by where it is: text,
+            // the results, the pause ring and anything not listed stay together
+            // in the middle. The shift is the margin beside the centered area,
+            // (width - center) / 2 pixels, i.e. 1 - center/width in clip space, so
+            // a sprite keeps its distance to its own edge at any width (vertical
             // position is left as the title has it).
-            // Only while racing with no menu up (touch_racing): the pause ring and
-            // the results' panels share the HUD's corners but belong together.
-            // The results (rank banner, then the table) come up while the race is
-            // still on, drawn from the HUD's own sprites (Issue #124: their times
-            // and ranks came apart); [83E5368C] points at that screen from the
-            // banner until the table has slid away, and is 0 during the race.
-            constexpr uint32_t race_results_screen=0x83E5368C;
-            const bool results_up=memory.load<uint32_t>(race_results_screen)!=0;
-            if(sfr::aspect::hud_anchor() && sfr::touch_racing() && !results_up && draw.vertex_count>=3 && draw.stride>=8 && draw.stride<=32 &&
-               draw.vertices.size()>=size_t(draw.vertex_count)*draw.stride) {
-                float lo[2]={1e30f,1e30f},hi[2]={-1e30f,-1e30f};
-                for(uint32_t v=0;v<draw.vertex_count;++v) {
-                    float xy[2];
-                    std::memcpy(xy,draw.vertices.data()+size_t(v)*draw.stride,8);
-                    for(int a=0;a<2;++a) { lo[a]=(std::min)(lo[a],xy[a]); hi[a]=(std::max)(hi[a],xy[a]); }
-                }
-                const float w=hi[0]-lo[0],h=hi[1]-lo[1];
-                const float cx=(lo[0]+hi[0])*0.5f,cy=(lo[1]+hi[1])*0.5f;
-                // Title layout coordinates (0..1280 x 0..720), the same at any frame
-                // width.
-                struct Zone { float x0,y0,x1,y1; int side; };
-                static const Zone zones[]={
-                    {1130.0f, 310.0f,layout_width, 650.0f, +1},  // bottom right: speed gauge and its effects
-                    {   0.0f, 300.0f, 235.0f, 660.0f, -1},  // left: the rank effects stack
-                    {  0.0f,   0.0f, 430.0f, 205.0f, -1},  // top left: rings, LV, skills
-                    {105.0f, 450.0f, 285.0f, 550.0f, -1},  // left: rank (12th)
-                    { -5.0f, 570.0f, 312.0f, 725.0f, -1},  // bottom left: LAP, RECORD
-                    {945.0f,  35.0f,1210.0f, 300.0f, +1},  // top right: map and marker
-                    {940.0f, 365.0f,1172.0f, 470.0f, +1},  // right: AIR and its points
-                    {1020.0f,596.0f,layout_width, 750.0f, +1},  // bottom right: SPEED
-                };
-                // A two-player race's HUD (measured in a split Tag Race): each
-                // player's speed gauge at their own bottom corner, the first
-                // player's rings and rank at the top left, the map at the top
-                // right. The time in the middle and the markers over the
-                // racers (80 wide, near each half's middle) stay.
-                static const Zone two_player_zones[]={
-                    {  0.0f,   0.0f, 430.0f, 140.0f, -1},  // top left: rings, LV
-                    { 60.0f, 200.0f, 260.0f, 345.0f, -1},  // rank and its effects
-                    {-20.0f, 290.0f, 300.0f, 800.0f, -1},  // first player's speed gauge
-                    {300.0f, 630.0f, 480.0f, 670.0f, -1},  // its scale
-                    {980.0f, 290.0f,1300.0f, 800.0f, +1},  // second player's speed gauge
-                    {800.0f, 630.0f, 980.0f, 670.0f, +1},  // its scale
-                    {945.0f,  35.0f,1210.0f, 300.0f, +1},  // map and marker
-                };
-                // The Kinect overlay icon is the runtime's own, not the title's HUD.
-                const bool kinect_icon=cx>=380.0f && cx<=428.0f && cy>=28.0f && cy<=116.0f && w<=60.0f;
-                // Text stays together in the middle: the title draws it a glyph at
-                // a time (and each glyph twice, its shadow 2 pixels lower) from its
-                // glyph cache, a 512x256 8888 texture, while the HUD's own sprites
-                // and labels come from compressed atlases. Moved by its centre,
-                // each glyph went its own way: the goal notices and the tutorial
-                // (Issue #131) came apart, and a glyph whose shadow stayed was
-                // shown twice.
-                const bool glyph=[&]{
-                    try {
-                        const auto fetch=sfr::decode_texture_fetch(graphics().texture_fetch(0));
-                        return fetch.format==6 && fetch.width==512 && fetch.height==256;
-                    } catch(...) { return false; }
-                }();
-                // Sprites may reach a little beyond the layout (the speed gauge's
-                // effects: up to 55 past its right edge); whole-screen ones stay put.
-                if(!kinect_icon && !glyph && lo[0]>=(two_player_race ? -40.0f : -8.0f) && hi[0]<=layout_width+(two_player_race ? 60.0f : 55.0f) && w<=450.0f && h<=445.0f) {
-                    for(const Zone& zone : two_player_race ? std::span<const Zone>(two_player_zones) : std::span<const Zone>(zones)) {
-                        if(cx>=zone.x0 && cx<=zone.x1 && cy>=zone.y0 && cy<=zone.y1) {
-                            draw.shared.screen_space_offset[0]=float(zone.side)*(1.0f-layout_share);
-                            break;
-                        }
+            constexpr uint32_t race_flag=0x83E52F8C;
+            if(sfr::aspect::hud_anchor() && memory.load<uint32_t>(race_flag)!=0 && uint32_t(ctx.lr)==0x824C08A4) {
+                int side=race_hud_side(memory,ctx.r1.u32,two_player_race);
+                if(side==race_hud_by_half && draw.vertex_count>=3 && draw.stride>=8 && draw.stride<=32 &&
+                   draw.vertices.size()>=size_t(draw.vertex_count)*draw.stride) {
+                    // One function drawing a piece at each edge (the speed gauge's
+                    // effects; in a two-player race each player's gauge): its own
+                    // half of the title's 1280-wide layout says which.
+                    float lo=1e30f,hi=-1e30f;
+                    for(uint32_t v=0;v<draw.vertex_count;++v) {
+                        float x;
+                        std::memcpy(&x,draw.vertices.data()+size_t(v)*draw.stride,4);
+                        lo=(std::min)(lo,x); hi=(std::max)(hi,x);
                     }
+                    side=(lo+hi)*0.5f<layout_width*0.5f ? -1 : +1;
                 }
+                if(side==-1 || side==+1) draw.shared.screen_space_offset[0]=float(side)*(1.0f-layout_share);
             }
         }
     }
