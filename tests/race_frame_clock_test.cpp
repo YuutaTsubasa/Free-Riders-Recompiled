@@ -1,5 +1,7 @@
 #include "race_frame_clock.h"
+#include <algorithm>
 #include <array>
+#include <utility>
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -138,8 +140,91 @@ void race_present_limit_counts_only_the_race() {
     require(limit.counted()==3,"three race presents were counted");
 }
 
+// Frame skipping: a race that keeps up draws every frame; one that falls
+// behind runs frames undrawn to catch up, at most four in a row; one too slow
+// to catch up gives the time up instead of skipping for ever.
+void frame_skipping() {
+    constexpr uint64_t frame = sfr::RaceFrameSkip::frame_ns;
+    // Runs a race whose drawn and undrawn frames take the given times, as the
+    // game does: the frame's work, then the decision and its wait. Returns
+    // the share of frames drawn and the race's speed against real time.
+    const auto race = [&](uint64_t drawn_ns, uint64_t undrawn_ns, int frames, int* most_in_a_row = nullptr) {
+        sfr::RaceFrameSkip skip;
+        uint64_t now = 1'000'000'000;
+        auto decision = skip.next(now, true);
+        const uint64_t start = now;
+        int drawn = 0, in_a_row = 0;
+        for (int i = 0; i < frames; ++i) {
+            now += decision.draw ? drawn_ns : undrawn_ns;
+            drawn += decision.draw;
+            decision = skip.next(now, true);
+            now += decision.wait_ns;
+            in_a_row = decision.draw ? 0 : in_a_row + 1;
+            if (most_in_a_row) *most_in_a_row = std::max(*most_in_a_row, in_a_row);
+        }
+        return std::pair{double(drawn) / frames, frames / 60.0 / (double(now - start) * 1e-9)};
+    };
+    {
+        // A phone that draws 60 (frames of 10 ms, paced to 16.7): every frame
+        // drawn, at full speed. A separate frame cap used to skip most of them.
+        const auto [drawn, speed] = race(10'000'000, 5'000'000, 600);
+        require(drawn == 1.0, "a race that keeps up draws every frame");
+        near(speed, 1.0, 0.01, "and runs at full speed, waiting for each frame's slot");
+    }
+    {
+        // Drawing makes a frame take 25 ms, an undrawn one 8 ms: the race
+        // keeps time by skipping about one frame in three.
+        int most = 0;
+        const auto [drawn, speed] = race(25'000'000, 8'000'000, 600, &most);
+        near(speed, 1.0, 0.03, "skipping keeps the race at real time");
+        require(drawn > 0.5 && drawn < 1.0, "some frames are drawn, some skipped");
+        require(most <= 4, "at most four frames in a row go undrawn");
+    }
+    {
+        // A slow GPU: a drawn frame takes 60 ms, an undrawn one (most of the
+        // game's drawing left out) 5 ms. The race still keeps its speed,
+        // showing about 15 frames a second.
+        int most = 0;
+        const auto [drawn, speed] = race(60'000'000, 5'000'000, 1200, &most);
+        near(speed, 1.0, 0.03, "a 60 ms drawn frame still keeps real time");
+        require(drawn > 0.2 && drawn < 0.3 && most <= 4, "about one frame in four is drawn");
+    }
+    {
+        // Drawn frames of 45 ms, undrawn ones of 6 ms with a 60 ms hitch now
+        // and then: the hitches must not stop the skipping (Thor, 30 ms test).
+        sfr::RaceFrameSkip skip;
+        uint64_t now = 1'000'000'000;
+        auto decision = skip.next(now, true);
+        const uint64_t start = now;
+        int undrawn = 0;
+        for (int i = 0; i < 3000; ++i) {
+            now += decision.draw ? 45'000'000 : (++undrawn % 25 == 0 ? 60'000'000 : 6'000'000);
+            decision = skip.next(now, true);
+            now += decision.wait_ns;
+        }
+        near(3000 / 60.0 / (double(now - start) * 1e-9), 1.0, 0.04, "an occasional slow undrawn frame does not stop skipping");
+        require(skip.blocked() == 0, "no skip was held back");
+    }
+    {
+        // Every frame takes 40 ms even undrawn (the game itself too slow):
+        // skipping cannot catch up, so frames keep being drawn, and the race
+        // slows down with its step unchanged, as on the console.
+        const auto [drawn, speed] = race(40'000'000, 40'000'000, 300);
+        require(drawn > 0.9, "a race too slow to catch up even undrawn keeps drawing");
+        (void)speed;
+    }
+    {
+        sfr::RaceFrameSkip skip;
+        require(skip.next(5, true).draw, "first frame");
+        require(skip.next(10'000'000'000, true).draw, "a long stall starts again rather than skipping");
+        const auto menu = skip.next(20'000'000'000, false);
+        require(menu.draw && menu.wait_ns == 0, "menus always draw and are paced elsewhere");
+        (void)frame;
+    }
+}
 int main() {
     try {
+        frame_skipping();
         transitions(); elapsed_time_is_preserved(); discontinuities_are_bounded_and_observable();
         sixty_fps_steps_whole_frames();
         ui_timelines_keep_time_and_events();

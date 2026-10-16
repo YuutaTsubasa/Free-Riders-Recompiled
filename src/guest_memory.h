@@ -64,6 +64,13 @@ public:
     uint8_t* base() const { return base_; }
     uint64_t backing_budget() const { return backing_budget_; }
     Usage usage(uint64_t begin = 0, uint64_t size = address_space_size) const;
+    // The committed ranges (address, size), for diagnostics.
+    std::vector<std::pair<uint64_t, uint64_t>> committed_ranges() const {
+        const auto layout = read_layout();
+        std::vector<std::pair<uint64_t, uint64_t>> ranges;
+        for (const auto& r : committed_) ranges.emplace_back(r.address, r.size);
+        return ranges;
+    }
     void map(uint64_t address, uint64_t size);
     void map_write_combined(uint64_t address, uint64_t size);
     // Whether a write-combined request is given write-combined host pages.

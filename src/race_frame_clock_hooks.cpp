@@ -22,7 +22,9 @@ bool realtime_races() {
     static const bool enabled = [] {
         if (const char* value = std::getenv("SFR_REALTIME_RACE")) return *value && *value != '0';
 #ifdef __ANDROID__
-        return true;
+        // Frame skipping (race_frame_clock.h) keeps the race's speed with the
+        // console's fixed step instead.
+        return !sfr::race_frameskip_enabled();
 #else
         return false;
 #endif
