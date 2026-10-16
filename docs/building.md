@@ -144,6 +144,28 @@ To run the build directory's programs without the app, point
 aliases, so the generated directory carries `aliases.cpp` for macOS: generate
 it with the current `scripts/generate_diagnostic.py`.
 
+### iOS
+
+On a Mac with Xcode (its licence accepted: `sudo xcodebuild -license accept`)
+and MoltenVK's iOS release (`MoltenVK-ios.tar`):
+
+```bash
+cmake -S . -B out/build/ios -G Ninja -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_ARCHITECTURES=arm64 \
+    -DCMAKE_BUILD_TYPE=Release -DSFR_BUILD_DIAGNOSTIC=ON -DSFR_DIAGNOSTIC_DIR=$PWD/out/recomp/diagnostic
+ninja -C out/build/ios sfr_launcher sfr_cpu_diagnostic
+python3 scripts/package_release.py ios --version 0.0.0 --build out/build/ios \
+    --pack shaders.pack --moltenvk path/to/MoltenVK
+```
+
+This makes an `.ipa` for sideloading, signed ad hoc (sideloading tools sign it
+again). The app is one process: the launcher is its program, and Play loads
+the game's library (`FreeRidersGame.framework`) with the settings already in
+the environment; the app ends with the game. The installed game, settings,
+saves and `game.log` are in the app's Documents, which the Files app shows.
+iOS 16.3 or later. Not yet run on a device: in the Simulator the launcher and
+the game's start work, but the Simulator's GPU lacks the
+`VK_KHR_buffer_device_address` the renderer needs.
+
 ## Tests
 
 ```bash

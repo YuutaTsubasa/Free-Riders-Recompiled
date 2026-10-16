@@ -106,6 +106,11 @@ void run(const std::vector<fs::path>& arguments, const fs::path& log, const char
     for (const auto& argument : arguments) command += L"\"" + argument.wstring() + L"\" ";
     command += L"> \"" + log.wstring() + L"\" 2>&1\"";
     if (_wsystem(command.c_str()) != 0) {
+#elif defined(SFR_IOS)
+    // iOS starts no other programs: its shaders come from shaders.pack alone.
+    (void)arguments;
+    failed(std::string(what) + " cannot run on iOS; a shader missing from shaders.pack cannot be made");
+    {
 #else
     const auto quoted = [](const std::string& text) {
         std::string out = "'";

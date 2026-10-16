@@ -1,8 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
 cmake_policy(SET CMP0091 NEW)
-# macOS: the oldest release the game is built for (ignored elsewhere).
-# Without it the programs require the macOS they were built on.
-set(CMAKE_OSX_DEPLOYMENT_TARGET "13.3" CACHE STRING "Minimum macOS version")
+# macOS and iOS: the oldest release the game is built for (ignored
+# elsewhere). Without it the programs require the system they were built on.
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "16.3" CACHE STRING "Minimum iOS version")
+else()
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "13.3" CACHE STRING "Minimum macOS version")
+endif()
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 project(FreeRidersRecompiled LANGUAGES C CXX)
 # The icon resource (src/app_icon.rc): Ninja's dependency scanner for .rc
@@ -11,9 +15,22 @@ project(FreeRidersRecompiled LANGUAGES C CXX)
 set(CMAKE_NINJA_CMCLDEPS_RC OFF)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-if(ANDROID OR APPLE)
-    # libc++ (the NDK's, and LLVM's on macOS) still ships std::jthread and
-    # std::stop_token as experimental.
+# libc++ (the NDK's, and older LLVM's on macOS) ships std::jthread and
+# std::stop_token as experimental. Newer Apple libc++ has them as standard,
+# and the iOS Simulator SDK has no experimental library at all: on Apple
+# platforms the flag is used only where std::jthread needs it.
+set(SFR_EXPERIMENTAL_LIBRARY ${ANDROID})
+if(APPLE)
+    include(CheckCXXSourceCompiles)
+    set(CMAKE_REQUIRED_FLAGS "-std=c++20")
+    check_cxx_source_compiles("#include <thread>
+int main() { std::jthread t([](std::stop_token) {}); }" SFR_STANDARD_JTHREAD)
+    unset(CMAKE_REQUIRED_FLAGS)
+    if(NOT SFR_STANDARD_JTHREAD)
+        set(SFR_EXPERIMENTAL_LIBRARY ON)
+    endif()
+endif()
+if(SFR_EXPERIMENTAL_LIBRARY)
     add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fexperimental-library>)
     add_link_options(-fexperimental-library)
 endif()
@@ -74,10 +91,21 @@ else()
             message(FATAL_ERROR "Run scripts/bootstrap.py to obtain the pinned SDL.")
         endif()
         enable_language(OBJC)  # SDL's Cocoa code; a language enabled only inside its directory fails to generate
-        set(SDL_SHARED OFF CACHE BOOL "" FORCE)
-        set(SDL_STATIC ON CACHE BOOL "" FORCE)
+        if(IOS)
+            # iOS: the launcher and the game share one process (the game is
+            # a library the launcher loads, as on Android), so one shared SDL;
+            # SDL2main is UIKit's entry, which calls the launcher's SDL_main.
+            enable_language(OBJCXX)
+            set(SDL_SHARED ON CACHE BOOL "" FORCE)
+            set(SDL_STATIC OFF CACHE BOOL "" FORCE)
+            set(SDL2_DISABLE_SDL2MAIN OFF CACHE BOOL "" FORCE)
+            add_compile_definitions(SFR_IOS=1)
+        else()
+            set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+            set(SDL_STATIC ON CACHE BOOL "" FORCE)
+            set(SDL2_DISABLE_SDL2MAIN ON CACHE BOOL "" FORCE)
+        endif()
         set(SDL_TEST OFF CACHE BOOL "" FORCE)
-        set(SDL2_DISABLE_SDL2MAIN ON CACHE BOOL "" FORCE)
         add_subdirectory(tools/SDL EXCLUDE_FROM_ALL)
         if(NOT TARGET SDL2::SDL2)
             add_library(SDL2::SDL2 ALIAS SDL2-static)
@@ -564,6 +592,24 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui/imgui.cpp")
             add_library(sfr_launcher SHARED ${SFR_LAUNCHER_SOURCES})
             set_target_properties(sfr_launcher PROPERTIES OUTPUT_NAME launcher)
             target_link_libraries(sfr_launcher PRIVATE android log ${SFR_CAMERA_LIBRARIES})
+        elseif(IOS)
+            # The app's program: UIKit starts it through SDL2main, and Play
+            # loads the game's library into the same process.
+            add_executable(sfr_launcher ${SFR_LAUNCHER_SOURCES} src/ios_document_picker.mm)
+            set_target_properties(sfr_launcher PROPERTIES OUTPUT_NAME FreeRidersRecompiled)
+            target_link_libraries(sfr_launcher PRIVATE SDL2::SDL2main "-framework UIKit" "-framework Foundation"
+                "-framework UniformTypeIdentifiers")
+            target_link_options(sfr_launcher PRIVATE "-Wl,-rpath,@executable_path/Frameworks")
+            # iOS 27 stops an app linked against its SDK at launch unless the app
+            # adopts the UIScene life cycle, which SDL 2 does not. The SDK the
+            # program says it was linked against decides that, so it says iOS 18,
+            # whose apps keep the classic app delegate SDL uses (until SDL 3).
+            if(CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
+                target_link_options(sfr_launcher PRIVATE "-Wl,-platform_version,ios-simulator,${CMAKE_OSX_DEPLOYMENT_TARGET},18.0")
+            else()
+                target_link_options(sfr_launcher PRIVATE "-Wl,-platform_version,ios,${CMAKE_OSX_DEPLOYMENT_TARGET},18.0")
+            endif()
+            set_source_files_properties(src/ios_document_picker.mm PROPERTIES COMPILE_OPTIONS -fobjc-arc)
         else()
             add_executable(sfr_launcher ${SFR_LAUNCHER_SOURCES})
             set_target_properties(sfr_launcher PROPERTIES OUTPUT_NAME FreeRidersRecompiled)
@@ -731,7 +777,15 @@ if(WIN32 OR UNIX)
         target_compile_definitions(plume PRIVATE D3D12SDKVersion=sfr_plume_unused_D3D12SDKVersion
                                    D3D12SDKPath=sfr_plume_unused_D3D12SDKPath)
     endif()
-    if(APPLE)
+    if(IOS)
+        # Plume's Apple glue is AppKit's; the Vulkan path through SDL needs
+        # none of it, so iOS has a stand-in (src/plume_apple_ios.mm).
+        get_target_property(SFR_PLUME_SOURCES plume SOURCES)
+        list(TRANSFORM SFR_PLUME_SOURCES REPLACE "^plume_apple\\.mm$" "${CMAKE_CURRENT_SOURCE_DIR}/src/plume_apple_ios.mm")
+        set_property(TARGET plume PROPERTY SOURCES ${SFR_PLUME_SOURCES})
+        target_link_libraries(plume PUBLIC "-framework CoreFoundation" "-framework Foundation"
+            "-framework Metal" "-framework QuartzCore" "-framework UIKit" objc)
+    elseif(APPLE)
         # Plume's Apple glue asks IOKit for the GPU vendor and uses Metal and
         # Cocoa objects; its own CMake leaves linking them to the user.
         target_link_libraries(plume PUBLIC "-framework CoreFoundation" "-framework IOKit" "-framework Foundation"
@@ -952,6 +1006,16 @@ if(SFR_BUILD_DIAGNOSTIC)
         # main thread in a Thor race (simpleperf). Nothing replaces them, so
         # bind the library's own calls inside it.
         target_link_options(sfr_cpu_diagnostic PRIVATE -Wl,-Bsymbolic-functions)
+    elseif(IOS)
+        # FreeRidersGame.framework, which the launcher loads at Play once it
+        # has set the environment the runtime reads while it loads.
+        add_library(sfr_cpu_diagnostic SHARED src/ios_game_entry.cpp)
+        set_target_properties(sfr_cpu_diagnostic PROPERTIES OUTPUT_NAME FreeRidersGame)
+        set_source_files_properties(src/diagnostic_main.cpp PROPERTIES COMPILE_DEFINITIONS main=sfr_game_main)
+        target_link_options(sfr_cpu_diagnostic PRIVATE "-Wl,-install_name,@rpath/FreeRidersGame.framework/FreeRidersGame")
+        # SDL is shared from the app's Frameworks; the launcher's SDL2main owns main.
+        target_link_options(sfr_cpu_diagnostic PRIVATE "-Wl,-rpath,@loader_path/..")
+        target_compile_definitions(sfr_cpu_diagnostic PRIVATE SDL_MAIN_HANDLED)
     else()
         add_executable(sfr_cpu_diagnostic)
         if(WIN32)

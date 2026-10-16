@@ -23,7 +23,8 @@ inline void preload_bundled_vulkan() {
     path.resize(std::strlen(path.c_str()));
     std::error_code error;
     const auto directory = std::filesystem::weakly_canonical(path, error).parent_path();
-    for (const auto& candidate : {directory / "../Frameworks/libMoltenVK.dylib", directory / "libMoltenVK.dylib"})
+    for (const auto& candidate : {directory / "../Frameworks/libMoltenVK.dylib", directory / "Frameworks/libMoltenVK.dylib",
+                                   directory / "libMoltenVK.dylib"})
         if (std::filesystem::exists(candidate, error) && dlopen(candidate.c_str(), RTLD_NOW | RTLD_GLOBAL))
             return;
 }
