@@ -4,6 +4,7 @@
 // while its library loads, so every run needs a fresh process), started
 // through LauncherActivity, which also shows the system's document picker.
 #include "launcher_platform.h"
+#include "xdg_portal.h"
 #include "imgui.h"
 #include <SDL.h>
 #include <atomic>
@@ -406,7 +407,19 @@ std::optional<fs::path> pick_path(const fs::path& start, bool folders, FileFilte
     if (chosen.empty()) return std::nullopt;
     return fs::path(std::u8string(chosen.begin(), chosen.end()));
 #else
-    // A desktop's own dialog when zenity or kdialog is there; otherwise the
+    const bool chinese = ui_language() == 1;
+#ifdef __linux__
+    // The desktop's own file dialog through the XDG portal (KDE's, GNOME's,
+    // a sandbox's), with nothing to install (Issue #130).
+    {
+        const auto portal = sfr::xdg_portal::open_file(
+            chinese ? (folders ? "選擇資料夾" : "選擇檔案") : (folders ? "Choose a folder" : "Choose a file"), folders);
+        if (portal.outcome == sfr::xdg_portal::Outcome::chosen)
+            return fs::path(std::u8string(portal.path.begin(), portal.path.end()));
+        if (portal.outcome == sfr::xdg_portal::Outcome::cancelled) return std::nullopt;
+    }
+#endif
+    // Without a portal, zenity or kdialog when either is there; otherwise the
     // path can be typed, dropped on the window or given on the command line.
     std::error_code error;
     const fs::path begin = fs::is_directory(start, error) ? start : start.parent_path();
@@ -424,15 +437,13 @@ std::optional<fs::path> pick_path(const fs::path& start, bool folders, FileFilte
             command += " " + shell_quoted("*.vrm *.glb *.VRM *.GLB|Avatar model");
         command += " 2>/dev/null";
     } else {
-        // Without either the buttons did nothing at all (Issue #130: KDE
-        // without kdialog): say what is missing and what works instead.
-        const bool chinese = ui_language() == 1;
+        // None of them: say so rather than doing nothing (Issue #130).
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, chinese ? "找不到檔案選擇視窗" : "No file dialog",
-            chinese ? "這個系統沒有 zenity 或 kdialog，無法開啟檔案選擇視窗。\n"
-                      "請安裝其中一個（例如 sudo apt install kdialog），\n"
+            chinese ? "這個桌面沒有提供檔案選擇視窗（XDG 桌面入口、zenity、kdialog 都沒有）。\n"
+                      "可安裝 xdg-desktop-portal，或 zenity／kdialog 其中之一；\n"
                       "遊戲光碟映像檔也可以直接拖曳到啟動器視窗上安裝。"
-                    : "Neither zenity nor kdialog is installed, so no file dialog can open.\n"
-                      "Install one of them (for example: sudo apt install kdialog).\n"
+                    : "This desktop offers no file dialog (no XDG desktop portal, zenity or kdialog).\n"
+                      "Installing xdg-desktop-portal, or zenity or kdialog, adds one.\n"
                       "A disc image can also be dropped on the launcher window to install it.",
             nullptr);
         return std::nullopt;
