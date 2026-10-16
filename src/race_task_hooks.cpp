@@ -33,8 +33,13 @@ constexpr uint32_t draw_method = 0x822980C8;  // calls a task's method 12
 // matrix (821A1920), of item-like objects' positions (821A50xx, 821A4F70),
 // of the drawing's own allocator and of the guest's rendering thread. Kinds
 // not listed, those among them, always draw.
+// 8219F910 also always draws: with its drawing left out, a racer launched
+// off Dolphin Resort's big jump fell short of the far side, again and again,
+// on an AYN Thor skipping two frames in three (drawn frames made 20 ms
+// slower). Found with SFR_TEST_DRAW_KEEP below; the read watch's races had
+// not passed that jump. Drawing it costs little (race speed 0.996 there).
 constexpr uint32_t undrawn_skips[] = {
-    0x8219F910, 0x821A8A78, 0x821A1968, 0x821A61F4, 0x821A8998, 0x821A319C, 0x821A25A4,
+    0x821A8A78, 0x821A1968, 0x821A61F4, 0x821A8998, 0x821A319C, 0x821A25A4,
     0x821A3874, 0x821A2D70, 0x821AB4AC, 0x821A2A94, 0x8219F8D0, 0x821A333C, 0x821A38A0};
 
 // SFR_RACE_SKIP_DRAWING=0: frames that are not drawn still run all the
@@ -44,8 +49,24 @@ bool skip_drawing_enabled() {
     return on;
 }
 
+// SFR_TEST_DRAW_KEEP=<vtable>[+<vtable>...] (testing, hex): kinds that still
+// draw in a frame that is not drawn, to find which one a race needs.
+bool kept_when_undrawn(uint32_t vtable) {
+    static const std::vector<uint32_t> kept = [] {
+        std::vector<uint32_t> kinds;
+        if (const char* t = std::getenv("SFR_TEST_DRAW_KEEP"))
+            for (char* p = const_cast<char*>(t); *p;) {
+                kinds.push_back(uint32_t(std::strtoul(p, &p, 16)));
+                if (*p) ++p;
+            }
+        return kinds;
+    }();
+    return std::find(kept.begin(), kept.end(), vtable) != kept.end();
+}
+
 bool skipped_when_undrawn(uint32_t vtable) {
-    return std::find(std::begin(undrawn_skips), std::end(undrawn_skips), vtable) != std::end(undrawn_skips);
+    return std::find(std::begin(undrawn_skips), std::end(undrawn_skips), vtable) != std::end(undrawn_skips) &&
+           !kept_when_undrawn(vtable);
 }
 
 // SFR_TEST_DRAW_READS=1 (testing, Windows; races run about ten times
