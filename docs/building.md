@@ -121,6 +121,29 @@ downloads). Install it, copy your disc image and a `shaders.pack` to the phone,
 then install from the app's launcher. Hold Back to leave the game. Details and
 limits: [android.md](android.md).
 
+### macOS
+
+Apple Silicon, macOS 13.3 or later, with Xcode or its Command Line Tools
+(Apple clang 21 or later), CMake and Ninja. SDL is the pinned copy from
+`scripts/bootstrap.py`, linked in. The Vulkan driver is MoltenVK: unpack its
+release (`MoltenVK-macos.tar`) somewhere.
+
+```bash
+cmake -S . -B out/build/macos -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DSFR_BUILD_DIAGNOSTIC=ON -DSFR_DIAGNOSTIC_DIR=$PWD/out/recomp/diagnostic
+ninja -C out/build/macos sfr_cpu_diagnostic FreeRidersRecompiled
+python3 scripts/package_release.py macos --version 0.0.0 --build out/build/macos \
+    --pack shaders.pack --moltenvk path/to/MoltenVK
+```
+
+The last step makes `FreeRidersRecompiled.app` (in a zip under `out/release`),
+signed ad hoc, with MoltenVK and the shader pack inside. The launcher keeps the
+installed game, settings and saves in `~/Library/Application Support/FreeRidersRecompiled`.
+To run the build directory's programs without the app, point
+`DYLD_LIBRARY_PATH` at MoltenVK's `dynamic/dylib/macOS`. Mach-O has no symbol
+aliases, so the generated directory carries `aliases.cpp` for macOS: generate
+it with the current `scripts/generate_diagnostic.py`.
+
 ## Tests
 
 ```bash
@@ -133,6 +156,5 @@ Tests that need the game's files skip unless their environment variables point
 at them (see `tests/`). The GitHub workflow (`.github/workflows/build.yml`)
 builds and tests everything that does not need the game on Windows and Linux,
 and the Android launcher libraries. It also checks that the runtime and
-launcher build on macOS (Apple Silicon, Homebrew LLVM and SDL2); the game has
-not been run on a Mac yet, and the tests that map guest memory are left out
-there because they need 4 KiB host pages.
+launcher build on macOS (Apple Silicon, Homebrew LLVM); the runner has no
+Vulkan driver, so the game itself is only run on a real Mac.

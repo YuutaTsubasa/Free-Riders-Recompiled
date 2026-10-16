@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 cmake_policy(SET CMP0091 NEW)
+# macOS: the oldest release the game is built for (ignored elsewhere).
+# Without it the programs require the macOS they were built on.
+set(CMAKE_OSX_DEPLOYMENT_TARGET "13.3" CACHE STRING "Minimum macOS version")
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 project(FreeRidersRecompiled LANGUAGES C CXX)
 # The icon resource (src/app_icon.rc): Ninja's dependency scanner for .rc
@@ -63,6 +66,22 @@ else()
         set(SDL_TEST OFF CACHE BOOL "" FORCE)
         set(SDL2_DISABLE_SDL2MAIN ON CACHE BOOL "" FORCE)
         add_subdirectory(tools/SDL EXCLUDE_FROM_ALL)
+        set(SDL2_VERSION 2.32.8)
+    elseif(APPLE)
+        # macOS: the same pinned SDL, linked in, so FreeRidersRecompiled.app
+        # needs no Homebrew and runs on the macOS set above.
+        if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/SDL/CMakeLists.txt")
+            message(FATAL_ERROR "Run scripts/bootstrap.py to obtain the pinned SDL.")
+        endif()
+        enable_language(OBJC)  # SDL's Cocoa code; a language enabled only inside its directory fails to generate
+        set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+        set(SDL_STATIC ON CACHE BOOL "" FORCE)
+        set(SDL_TEST OFF CACHE BOOL "" FORCE)
+        set(SDL2_DISABLE_SDL2MAIN ON CACHE BOOL "" FORCE)
+        add_subdirectory(tools/SDL EXCLUDE_FROM_ALL)
+        if(NOT TARGET SDL2::SDL2)
+            add_library(SDL2::SDL2 ALIAS SDL2-static)
+        endif()
         set(SDL2_VERSION 2.32.8)
     else()
         find_package(SDL2 REQUIRED)
@@ -942,6 +961,12 @@ if(SFR_BUILD_DIAGNOSTIC)
     endif()
     target_sources(sfr_cpu_diagnostic PRIVATE src/diagnostic_main.cpp src/guest_memory.cpp src/xex_module.cpp src/virtual_memory.cpp src/critical_section.cpp src/hardware_info.cpp src/thread_local_storage.cpp src/system_time.cpp src/guest_clock.cpp src/timestamp_bundle.cpp src/vector_memory.cpp src/optional_import_policy.cpp src/native_modules.cpp src/integer_arithmetic.cpp src/memory_statistics.cpp
         ${SFR_DIAGNOSTIC_SOURCES} "${SFR_DIAGNOSTIC_DIR}/ppc_func_mapping.cpp" "${SFR_DIAGNOSTIC_DIR}/imports.cpp")
+    if(APPLE)  # the generated names as calls, as Mach-O has no aliases
+        if(NOT EXISTS "${SFR_DIAGNOSTIC_DIR}/aliases.cpp")
+            message(FATAL_ERROR "Run scripts/generate_diagnostic.py again; this output has no aliases.cpp.")
+        endif()
+        target_sources(sfr_cpu_diagnostic PRIVATE "${SFR_DIAGNOSTIC_DIR}/aliases.cpp")
+    endif()
     target_include_directories(sfr_cpu_diagnostic PRIVATE src "${SFR_DIAGNOSTIC_DIR}" tools/XenonRecomp/thirdparty/simde tools/XenonRecomp/thirdparty/TinySHA1)
     target_sources(sfr_cpu_diagnostic PRIVATE src/video_mode.cpp src/native_display.cpp src/physical_memory.cpp src/ansi_string.cpp src/store_halfword_update.cpp src/store_float_single_update.cpp src/load_halfword_update.cpp src/vector_compare_bounds.cpp src/debug_monitor.cpp src/image_protection.cpp src/resource_coherency.cpp src/video_globals.cpp src/native_language.cpp src/system_config.cpp)
     target_sources(sfr_cpu_diagnostic PRIVATE src/game_region.cpp)
@@ -991,7 +1016,7 @@ if(SFR_BUILD_DIAGNOSTIC)
     else()
         target_link_libraries(sfr_cpu_diagnostic PRIVATE SDL2::SDL2)
     endif()
-    if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")  # Clang or AppleClang
         message(FATAL_ERROR "The generated diagnostic currently requires Clang.")
     endif()
     target_compile_options(sfr_cpu_diagnostic PRIVATE -fno-strict-aliasing -Wno-unused-variable -Wno-unused-value)

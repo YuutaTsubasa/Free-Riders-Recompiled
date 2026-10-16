@@ -1619,7 +1619,7 @@ def generate(input_dir, log_path, output_dir, jump_table_path=None):
         for path in files:
             source = read(path)
             report['input_files'][path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
-            chunks, cursor = ['#include "diagnostic_hooks.h"\n'], 0
+            chunks, cursor = ['#include "diagnostic_hooks.h"\n#include "guest_symbol_alias.h"\n'], 0
             for name, start, body_start, end, body in parse_functions(source, path.name):
                 if name in implemented or name not in symbols:
                     raise ValueError(f'Duplicate or undeclared generated function: {name}')
@@ -1713,6 +1713,14 @@ def generate(input_dir, log_path, output_dir, jump_table_path=None):
                            f'{json.dumps(name)}, 0x{addresses[name]:08X});\n}}\n\n')
             report['imports'].append({'name': name, 'address': f'0x{addresses[name]:08X}'})
         write(staging / 'imports.cpp', ''.join(imports))
+        # Mach-O has no aliases (src/guest_symbol_alias.h): there each name is
+        # a weak function that calls its __imp__ body.
+        aliases = ['#if defined(__APPLE__)\n#include "ppc_recomp_shared.h"\n\n']
+        for name in sorted(implemented):
+            aliases.append(f'PPC_FUNC_IMPL(__imp__{name});\n'
+                           f'PPC_WEAK_FUNC({name}) {{ __imp__{name}(ctx, base); }}\n')
+        aliases.append('\n#endif\n')
+        write(staging / 'aliases.cpp', ''.join(aliases))
         for filename in headers + ['ppc_func_mapping.cpp']:
             shutil.copyfile(input_dir / filename, staging / filename)
             report['input_files'][filename] = hashlib.sha256((input_dir / filename).read_bytes()).hexdigest()

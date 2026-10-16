@@ -23,6 +23,10 @@
 #else
 #include <sys/wait.h>
 #endif
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#include <optional>
+#endif
 
 namespace sfr::launcher {
 namespace fs = std::filesystem;
@@ -146,6 +150,53 @@ std::string shell_quoted(const std::string& text) {
     for (char c : text) quoted += c == '\'' ? std::string("'\\''") : std::string(1, c);
     return quoted + "'";
 }
+
+#ifdef __APPLE__
+// The launcher's own folder: Contents/MacOS inside FreeRidersRecompiled.app.
+fs::path program_directory() {
+    uint32_t size = 0;
+    _NSGetExecutablePath(nullptr, &size);
+    std::string path(size, '\0');
+    if (_NSGetExecutablePath(path.data(), &size) != 0) return fs::current_path();
+    path.resize(std::strlen(path.c_str()));
+    std::error_code error;
+    return fs::weakly_canonical(path, error).parent_path();
+}
+
+// The bundle's Contents folder, when the launcher runs from an .app.
+std::optional<fs::path> bundle_contents() {
+    const fs::path directory = program_directory();
+    if (directory.filename() != "MacOS" || directory.parent_path().filename() != "Contents") return std::nullopt;
+    return directory.parent_path();
+}
+
+// The bundle's shaders.pack is copied beside the player's files when there is
+// none, or when the one there came from another build, as Android does with
+// the APK's (LauncherActivity.copyBundledShaderPack); a chosen pack stays.
+void copy_bundled_shader_pack(const fs::path& resources, const fs::path& directory) {
+    std::error_code error;
+    const fs::path bundled = resources / "shaders.pack", pack = directory / "shaders.pack";
+    const fs::path marker = directory / "shaders.pack.bundled";
+    if (!fs::is_regular_file(bundled, error)) return;
+    const std::string stamp = std::to_string(static_cast<unsigned long long>(fs::file_size(bundled, error))) + ":" +
+                              std::to_string(static_cast<long long>(fs::last_write_time(bundled, error).time_since_epoch().count()));
+    std::string copied;
+    if (std::ifstream in(marker); in) std::getline(in, copied);
+    const bool current = fs::is_regular_file(pack, error) && (copied == "chosen" || copied == stamp);
+    // The game reads its pipeline list from beside the pack (native_renderer.cpp).
+    const fs::path manifest = resources / "pipelines-vulkan.manifest";
+    if (fs::is_regular_file(manifest, error) && (!current || !fs::exists(directory / manifest.filename(), error)))
+        fs::copy_file(manifest, directory / manifest.filename(), fs::copy_options::overwrite_existing, error);
+    if (current) return;
+    const fs::path partial = directory / "shaders.pack.partial";
+    if (!fs::copy_file(bundled, partial, fs::copy_options::overwrite_existing, error) || error) {
+        fs::remove(partial, error);
+        return;
+    }
+    fs::rename(partial, pack, error);
+    if (!error) std::ofstream(marker, std::ios::trunc) << stamp;
+}
+#endif
 #endif
 }
 
@@ -237,6 +288,18 @@ fs::path launcher_directory() {
 #ifdef __ANDROID__
     const char* path = SDL_AndroidGetExternalStoragePath();
     return path ? fs::path(path) : fs::path(".");
+#elif defined(__APPLE__)
+    // FreeRidersRecompiled.app may be read-only (and is signed): the player's
+    // files go to Application Support, with the bundle's shaders.pack.
+    if (const auto contents = bundle_contents()) {
+        const char* home = std::getenv("HOME");
+        const fs::path data = fs::path(home ? home : ".") / "Library/Application Support/FreeRidersRecompiled";
+        std::error_code error;
+        fs::create_directories(data, error);
+        copy_bundled_shader_pack(*contents / "Resources", data);
+        return data;
+    }
+    return program_directory();
 #else
     char* base = SDL_GetBasePath();
     fs::path directory = base ? fs::path(base).parent_path() : fs::current_path();
@@ -306,6 +369,23 @@ std::optional<fs::path> pick_path(const fs::path& start, bool folders, FileFilte
     if (picked_path.empty()) return std::nullopt;
     source_names[picked_path] = picked_name.empty() ? picked_path : picked_name;
     return fs::path(picked_path);
+#elif defined(__APPLE__)
+    // The system's own Open panel, through AppleScript; cancelling it is an
+    // AppleScript error, which prints nothing on stdout.
+    std::error_code error;
+    const fs::path begin = fs::is_directory(start, error) ? start : start.parent_path();
+    std::string location;
+    for (const char c : utf8(begin)) {
+        if (c == '\\' || c == '"') location += '\\';
+        location += c;
+    }
+    std::string script = folders ? "choose folder" : "choose file";
+    if (!folders && filter == FileFilter::AvatarModel) script += " of type {\"vrm\", \"glb\"}";
+    if (!location.empty()) script += " default location (POSIX file \"" + location + "\")";
+    std::string chosen = first_line("osascript -e " + shell_quoted("POSIX path of (" + script + ")") + " 2>/dev/null");
+    if (chosen.size() > 1 && chosen.back() == '/') chosen.pop_back();  // a folder's path ends in /
+    if (chosen.empty()) return std::nullopt;
+    return fs::path(std::u8string(chosen.begin(), chosen.end()));
 #else
     // A desktop's own dialog when zenity or kdialog is there; otherwise the
     // path can be typed, dropped on the window or given on the command line.
@@ -348,6 +428,9 @@ fs::path game_program(const fs::path& directory) {
 #ifdef __ANDROID__
     (void)directory;
     return {};
+#elif defined(__APPLE__)
+    (void)directory;  // which is Application Support inside the .app
+    return program_directory() / "sfr_cpu_diagnostic";
 #else
     return directory / "sfr_cpu_diagnostic";
 #endif

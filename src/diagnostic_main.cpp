@@ -49,6 +49,7 @@
 #include "native_formats.h"
 #include "native_renderer.h"
 #include "runtime_shader_cache.h"
+#include "apple_vulkan_loader.h"
 #if defined(__SSSE3__)
 #include <immintrin.h>
 #elif defined(__ARM_NEON)
@@ -4348,6 +4349,9 @@ int main(int argc, char** argv) {
     std::cerr.unsetf(std::ios::unitbuf);
     std::cerr << host_timing.describe() << '\n';
     struct TraceFlush { ~TraceFlush() { std::cerr.flush(); std::fflush(stderr); } } trace_flush;
+#if defined(__APPLE__)
+    sfr::preload_bundled_vulkan();
+#endif
     // A hang reports nothing, so the buffer is also written out twice a
     // second: a stuck game's log ends where it stopped (stdio locks the stream).
     std::jthread trace_flusher([](std::stop_token stop) {
@@ -4364,6 +4368,9 @@ int main(int argc, char** argv) {
         sfr::entered_functions = std::make_unique<std::atomic<uint32_t>[]>((sfr::trace_limit - sfr::trace_base) / 4 / 32);
     // Runs after every return path below, once guest workers have been joined.
     struct TraceWriter { ~TraceWriter() { sfr::write_function_trace(); } } trace_writer;
+    // The skeleton-frame thread is a static, joined only after other statics
+    // (the event's lock among them) are gone: it is stopped as main returns.
+    struct NuiEventsStop { ~NuiEventsStop() { sfr::stop_nui_skeleton_events(); } } nui_events_stop;
     try {
         if (argc < 2 || argc > 4) {
             std::cerr << "Usage: sfr_cpu_diagnostic IMAGE-DUMP-DIRECTORY [EXTRACTED-ASSET-DIRECTORY] [--game-region=ntsc-us]\nThis is a CPU diagnostic, not a playable game.\n";
