@@ -324,8 +324,20 @@ std::optional<fs::path> pick_path(const fs::path& start, bool folders, FileFilte
         if (!folders && filter == FileFilter::AvatarModel)
             command += " " + shell_quoted("*.vrm *.glb *.VRM *.GLB|Avatar model");
         command += " 2>/dev/null";
-    } else
+    } else {
+        // Without either the buttons did nothing at all (Issue #130: KDE
+        // without kdialog): say what is missing and what works instead.
+        const bool chinese = ui_language() == 1;
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, chinese ? "找不到檔案選擇視窗" : "No file dialog",
+            chinese ? "這個系統沒有 zenity 或 kdialog，無法開啟檔案選擇視窗。\n"
+                      "請安裝其中一個（例如 sudo apt install kdialog），\n"
+                      "遊戲光碟映像檔也可以直接拖曳到啟動器視窗上安裝。"
+                    : "Neither zenity nor kdialog is installed, so no file dialog can open.\n"
+                      "Install one of them (for example: sudo apt install kdialog).\n"
+                      "A disc image can also be dropped on the launcher window to install it.",
+            nullptr);
         return std::nullopt;
+    }
     const std::string chosen = first_line(command);
     if (chosen.empty()) return std::nullopt;
     return fs::path(std::u8string(chosen.begin(), chosen.end()));
