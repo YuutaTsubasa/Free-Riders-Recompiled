@@ -57,6 +57,7 @@ public:
         const float roll=std::atan2(p.hip[0]-p.shoulder[0],y);
         const float pitch=std::atan2(p.shoulder[2]-p.hip[2],y);
         if(!ready_) {
+            calibration_wait_+=dt;
             if(arms_.active()){calibration_=0;return;}
             if(calibration_==0 || std::abs(roll-anchor_roll_)>.0873f ||
                std::abs(pitch-anchor_pitch_)>.0873f || std::abs(height-anchor_height_)>anchor_height_*.15f) {
@@ -65,6 +66,16 @@ public:
             }
             calibration_+=dt;roll_sum_+=roll*dt;pitch_sum_+=pitch*dt;height_sum_+=height*dt;
             if(calibration_<.6f)return;
+            // Neutral is an upright stance. A calibration taken while the
+            // player leaned (Issue #132: about 15 degrees left, held when the
+            // race's body record changed) made that lean the centre: leaning
+            // left barely steered and standing straight steered right. A
+            // stance held off upright is not taken for 3 seconds, so a player
+            // who stands that way (or a tilted camera) still calibrates.
+            if(std::abs(roll_sum_/calibration_)>upright_roll && calibration_wait_<3.f) {
+                calibration_=0;
+                return;
+            }
             neutral_roll_=roll_sum_/calibration_;neutral_pitch_=pitch_sum_/calibration_;
             neutral_height_=height_sum_/calibration_;
             filtered_roll_=neutral_roll_;filtered_pitch_=neutral_pitch_;filtered_height_=neutral_height_;
@@ -185,7 +196,8 @@ private:
     uint64_t sequence_=0;
     float elapsed_=0;
     bool ready_=false,crouch_=false,jump_=false,boost_=false,crouch_candidate_=false,boost_candidate_=false;
-    float calibration_=0,anchor_roll_=0,anchor_pitch_=0,anchor_height_=0;
+    static constexpr float upright_roll=.139626f;  // 8 degrees
+    float calibration_=0,calibration_wait_=0,anchor_roll_=0,anchor_pitch_=0,anchor_height_=0;
     float roll_sum_=0,pitch_sum_=0,height_sum_=0,neutral_roll_=0,neutral_pitch_=0,neutral_height_=0;
     float filtered_roll_=0,filtered_pitch_=0,filtered_height_=0,lean_=0;
     float crouch_time_=0,boost_time_=0,recovery_=0;
