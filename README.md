@@ -182,12 +182,19 @@ with [docs/progress.md](docs/progress.md).
   The race map stays with its markers at a wide screen's edge (Issue #145). The launcher's Kinect preview can calibrate, setting the crouch depth from your own crouch (#97, #132). Linux file dialogs use the desktop's own portal (#130). On Windows the game's window keeps answering while the game is busy, and the launcher can show a webcam's picture.
 - [v0.9.2 — Big jumps on slow phones](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.9.2)
   On a phone that can't keep 60 fps, a racer no longer falls short of Dolphin Resort's big jump: part of the game's work that frames left undrawn skipped is needed for the jump, and it now always runs.
+- [v0.10.0 — macOS and iOS](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.0)
+  First builds for Apple Silicon Macs (`FreeRidersRecompiled.app`, macOS 13.3 or later) and, untested, for iOS (an `.ipa` to sideload). On a Mac, races still run slowly. Also: on a slow phone the racer no longer falls out of Metropolis Speedway (Issue #154).
 
 ## System Requirements
 
 - **Windows**: Windows 10 or 11 (x64), a CPU with AVX, a GPU with Direct3D 12
   (or Vulkan 1.2).
 - **Linux**: x86-64 with AVX and a Vulkan 1.2 driver (tested on Ubuntu 22.04).
+- **macOS**: macOS 13.3 or later on Apple Silicon (tested on an M1 Mac mini).
+  The Vulkan driver (MoltenVK) is inside the app. Experimental: menus run at
+  full speed, but races are slow on an M1 for now.
+- **iOS**: iOS 16.3 or later, sideloaded; a game controller is needed.
+  Untested on a real device.
 - **Android**: Android 9 or later, arm64-v8a, Vulkan 1.1; about 2 GB free
   for the installed game. Releases also offer an **Android 10+** APK using
   native thread-local storage to reduce CPU overhead; prefer that build on
@@ -200,11 +207,15 @@ with [docs/progress.md](docs/progress.md).
 
 1. Download the release for your system from
    [Releases](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases):
-   the Windows zip, the Linux tarball, or the Android APK.
+   the Windows zip, the Linux tarball, the macOS zip, the iOS `.ipa` or the
+   Android APK.
    For Android 10+, choose `android10-arm64.apk`; the `android-arm64.apk`
    package retains Android 9 compatibility. Both use the same app identity
    and update existing installations without requiring an uninstall.
-2. Unpack it into a folder of its own (on Android, install the APK).
+2. Unpack it into a folder of its own (on Android, install the APK; on iOS,
+   sideload the `.ipa` with your own tool). On a Mac, open
+   `FreeRidersRecompiled.app` with right-click › **Open** the first time: it
+   is not notarised.
 3. Start `FreeRidersRecompiled` and choose your disc image (`.iso`) when the
    launcher asks; it copies the game's data beside itself. Then press
    **Start game**.
