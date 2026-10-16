@@ -92,6 +92,20 @@ int main() {
         require(!m.ready() && m.lean()==0 && !m.boost() && !m.jump(),"invalid body resets safely");
         frames(m,pose(),60);m.update(pose(),1.f);
         require(!m.ready(),"stalled samples reset calibration");
+        {
+            // Issue #132: a lean held when calibration starts is not neutral.
+            sfr::CameraRaceMotion leaning;
+            frames(leaning,pose(-.26f),90);
+            require(!leaning.ready(),"a held 15-degree lean is not taken as neutral");
+            frames(leaning,pose(),60);
+            require(leaning.ready() && leaning.lean()==0,"standing upright then calibrates");
+            frames(leaning,pose(-.26f),30);
+            require(leaning.lean()<-.3f,"the same lean then steers left");
+            sfr::CameraRaceMotion crooked;
+            frames(crooked,pose(.2f),300);
+            require(crooked.ready() && crooked.lean()==0,
+                    "a stance held off upright for over 3 seconds still calibrates (a tilted camera)");
+        }
         sfr::CameraRaceMotion moving;
         for(int i=0;i<120;++i)moving.update(pose(i%2?.5f:-.5f),1.f/60);
         require(!moving.ready(),"moving pose is not a neutral calibration");
