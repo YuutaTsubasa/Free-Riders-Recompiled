@@ -1637,8 +1637,57 @@ static void rejected_lifecycle_keeps_watches_clean() {
     clean();
 }
 
+// With host pages of 16 KiB (Apple Silicon, some Android phones) one host
+// page holds four guest pages, which may belong to different reservations:
+// a commit, decommit or release of one leaves the others' bytes alone, and a
+// guest page committed again reads zero. Simulated on any POSIX host.
+static void shared_host_pages() {
+#ifndef _WIN32
+    setenv("SFR_TEST_HOST_PAGE_SIZE", "16384", 1);
+    {
+        sfr::GuestMemory memory;
+        constexpr uint32_t a = 0x400000, b = 0x401000, c = 0x403000;
+        memory.reserve(a, 0x1000);
+        memory.reserve(b, 0x2000);
+        memory.reserve(c, 0x3000);  // into the next host page
+        memory.commit(a, 0x1000);
+        memory.commit(b, 0x1000);
+        memory.commit(c, 0x3000);
+        memory.store<uint32_t>(a, 0xAAAA0001);
+        memory.store<uint32_t>(b, 0xBBBB0002);
+        memory.store<uint32_t>(c, 0xCCCC0003);
+        memory.store<uint32_t>(c + 0x2000, 0xCCCC0004);
+        require_stop([&] { memory.load<uint32_t>(b + 0x1000); }, "memory-access",
+                     "a reserved guest page in a committed host page stays inaccessible");
+        memory.decommit(a, 0x1000);
+        require_stop([&] { memory.load<uint32_t>(a); }, "memory-access", "a decommitted shared guest page is inaccessible");
+        require(memory.load<uint32_t>(b) == 0xBBBB0002, "decommit keeps a neighbour in the same host page");
+        memory.commit(a, 0x1000);
+        require(memory.load<uint32_t>(a) == 0, "a shared guest page committed again reads zero");
+        memory.store<uint32_t>(a, 0xAAAA0005);
+        memory.release(b, 0x2000);
+        require(memory.load<uint32_t>(a) == 0xAAAA0005 && memory.load<uint32_t>(c) == 0xCCCC0003,
+                "release keeps the other reservations in its host pages");
+        memory.reserve(b, 0x2000);
+        memory.commit(b, 0x2000);
+        require(memory.load<uint32_t>(b) == 0 && memory.load<uint32_t>(b + 0x1000) == 0,
+                "a released shared guest page reads zero when reserved and committed again");
+        memory.release(c, 0x3000);
+        require(memory.load<uint32_t>(b + 0x1000) == 0 && memory.load<uint32_t>(a) == 0xAAAA0005,
+                "releasing across host pages keeps the first one's other guest pages");
+        memory.release(a, 0x1000);
+        memory.release(b, 0x2000);
+        require(memory.usage(0x400000, 0x8000).reserved_bytes == 0, "everything released");
+        memory.map(0x408000, 0x1000);  // a host page wholly released before can be used again
+        require(memory.load<uint32_t>(0x408000) == 0, "fresh map reads zero");
+    }
+    unsetenv("SFR_TEST_HOST_PAGE_SIZE");
+#endif
+}
+
 int main() {
     try {
+        shared_host_pages();
         top_down_search_matches_page_oracle();
         partial_page_fast_access();
         fast_path_matches_members();

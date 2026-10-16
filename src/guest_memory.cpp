@@ -5,6 +5,7 @@
 #include <mutex>
 #include <thread>
 #include <cstdlib>
+#include <cstring>
 #include <utility>
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -155,6 +156,30 @@ RuntimeStop::RuntimeStop(std::string category, uint64_t address, std::string det
     : std::runtime_error(category + ": " + detail), category(std::move(category)),
       address(address), detail(std::move(detail)) {}
 
+bool GuestMemory::overlaps(const std::vector<Region>& regions, uint64_t begin, uint64_t end) {
+    return std::any_of(regions.begin(), regions.end(), [&](const Region& r) {
+        return begin < r.address + r.size && r.address < end;
+    });
+}
+
+void GuestMemory::add_intersections(std::vector<Region>& out, const std::vector<Region>& regions,
+                                    uint64_t begin, uint64_t end) {
+    for (const auto& r : regions) {
+        const uint64_t from = std::max(begin, r.address), to = std::min(end, r.address + r.size);
+        if (from < to) out.push_back({from, to - from});
+    }
+}
+
+void GuestMemory::protect_pages_writable(uint64_t address, uint64_t size) {
+#ifdef _WIN32
+    DWORD old = 0;
+    if (!VirtualProtect(base_ + host_floor(address), host_ceil(address + size) - host_floor(address), PAGE_READWRITE, &old))
+#else
+    if (mprotect(base_ + host_floor(address), host_ceil(address + size) - host_floor(address), PROT_READ | PROT_WRITE) != 0)
+#endif
+        throw RuntimeStop("memory-map", address, "cannot make a shared host page writable");
+}
+
 GuestMemory::GuestMemory(uint64_t backing_budget)
     : partial_page_ends_(std::make_unique<uint16_t[]>(address_space_size / fast_page_size)),
       fast_pages_(std::make_unique<uint8_t[]>(address_space_size / fast_page_size)),
@@ -170,9 +195,15 @@ GuestMemory::GuestMemory(uint64_t backing_budget)
     page_size_ = info.dwPageSize;
 #else
     page_size_ = static_cast<uint64_t>(sysconf(_SC_PAGESIZE));
+    // SFR_TEST_HOST_PAGE_SIZE=<bytes> (testing): work in host pages that
+    // large, a multiple of the real one, as on a host with 16 KiB pages.
+    if (const char* text = std::getenv("SFR_TEST_HOST_PAGE_SIZE")) {
+        const uint64_t simulated = std::strtoull(text, nullptr, 10);
+        if (simulated >= page_size_ && simulated % page_size_ == 0) page_size_ = simulated;
+    }
 #endif
     if (page_size_ < 4096 || page_size_ % 4096 || !backing_budget_ ||
-        backing_budget_ > address_space_size || backing_budget_ % page_size_)
+        backing_budget_ > address_space_size || backing_budget_ % fast_page_size)
         throw RuntimeStop("memory-budget", 0, "invalid host page size or guest backing budget");
 #ifdef _WIN32
     if (!virtual_alloc2_available())
@@ -246,7 +277,7 @@ void GuestMemory::map_write_combined(uint64_t address, uint64_t size) {
 // search: allocating memory probes these thousands of times, and a scan
 // over the title's thousands of reservations was a fifth of a race load.
 const GuestMemory::Region* GuestMemory::first_conflict(uint64_t address, uint64_t end) const {
-    const auto rounded_end = [&](const Region& r) { return r.address + (r.size + page_size_ - 1) / page_size_ * page_size_; };
+    const auto rounded_end = [&](const Region& r) { return r.address + guest_round(r.size); };
     auto next = std::upper_bound(reservations_.begin(), reservations_.end(), address,
                                  [](uint64_t value, const Region& r) { return value < r.address; });
     if (next != reservations_.begin() && rounded_end(*std::prev(next)) > address) return &*std::prev(next);
@@ -254,37 +285,37 @@ const GuestMemory::Region* GuestMemory::first_conflict(uint64_t address, uint64_
 }
 
 bool GuestMemory::available(uint64_t address, uint64_t size) const {
-    if (!size || address >= address_space_size || size > address_space_size - address || address % page_size_)
+    if (!size || address >= address_space_size || size > address_space_size - address || address % fast_page_size)
         return false;
-    const auto end = address + (size + page_size_ - 1) / page_size_ * page_size_;
+    const auto end = address + guest_round(size);
     return !first_conflict(address, end);
 }
 
 std::optional<uint64_t> GuestMemory::find_available_top_down(uint64_t begin, uint64_t end, uint64_t size) const {
     if (!size || begin >= end || end > address_space_size || size > end - begin)
         return std::nullopt;
-    const uint64_t rounded = (size + page_size_ - 1) / page_size_ * page_size_;
+    const uint64_t rounded = guest_round(size);
     if (rounded > end - begin) return std::nullopt;
-    uint64_t candidate = (end - rounded) / page_size_ * page_size_;
+    uint64_t candidate = (end - rounded) / fast_page_size * fast_page_size;
     if (candidate < begin) return std::nullopt;
     const auto layout = read_layout();
     auto next = std::lower_bound(reservations_.begin(), reservations_.end(), end,
         [](const Region& r, uint64_t bound) { return r.address < bound; });
     while (next != reservations_.begin()) {
         const Region& r = *--next;
-        const uint64_t region_end = r.address + (r.size + page_size_ - 1) / page_size_ * page_size_;
+        const uint64_t region_end = r.address + guest_round(r.size);
         // Earlier regions cannot reach this candidate: reservations never overlap.
         if (region_end <= candidate) break;
         if (r.address >= candidate + rounded) continue;
         if (r.address < begin + rounded) return std::nullopt;
-        candidate = (r.address - rounded) / page_size_ * page_size_;
+        candidate = (r.address - rounded) / fast_page_size * fast_page_size;
         if (candidate < begin) return std::nullopt;
     }
     return candidate;
 }
 
 uint64_t GuestMemory::lowest_conflict(uint64_t address, uint64_t size) const {
-    const auto end = address + (size + page_size_ - 1) / page_size_ * page_size_;
+    const auto end = address + guest_round(size);
     const Region* const conflict = first_conflict(address, end);
     return conflict ? conflict->address : end;
 }
@@ -305,7 +336,7 @@ void GuestMemory::commit(uint64_t address, uint64_t size) {
 
 void GuestMemory::decommit(uint64_t address, uint64_t size) {
     if (!size || address >= address_space_size || size > address_space_size - address ||
-        address % page_size_ || size % page_size_)
+        address % fast_page_size || size % fast_page_size)
         throw RuntimeStop("memory-decommit", address, "invalid guest decommit range/alignment");
     const bool reserved = std::any_of(reservations_.begin(), reservations_.end(), [&](const Region& r) {
         return address >= r.address && address - r.address <= r.size && size <= r.size - (address - r.address);
@@ -374,22 +405,31 @@ void GuestMemory::decommit(uint64_t address, uint64_t size) {
         ++completed;
     }
 #else
-    std::vector<Region> operations;
-    for (const auto& backing : backing_) {
-        const uint64_t overlap_begin = std::max(address, backing.address);
-        const uint64_t overlap_end = std::min(end, backing.address + backing.size);
-        for (uint64_t page = overlap_begin; page < overlap_end; page += page_size_) {
-            const bool committed = std::any_of(committed_.begin(), committed_.end(), [&](const Region& r) {
-                const uint64_t committed_end = r.address +
-                    (r.size + page_size_ - 1) / page_size_ * page_size_;
-                return page >= r.address && page < committed_end;
-            });
-            if (!committed) continue;
-            if (!operations.empty() && operations.back().address + operations.back().size == page)
-                operations.back().size += page_size_;
-            else
-                operations.push_back({page, page_size_});
+    // A host page may hold several guest pages (16 KiB pages): one still
+    // committed keeps it, and the decommitted part of it is zeroed, as a
+    // discarded page would read once committed again.
+    const auto was_committed = [&](uint64_t begin, uint64_t finish) {
+        return std::any_of(committed_.begin(), committed_.end(), [&](const Region& r) {
+            return begin < r.address + r.size && r.address < finish;
+        });
+    };
+    std::vector<Region> operations, zeroed;
+    for (uint64_t page = host_floor(address); page < host_ceil(end); page += page_size_) {
+        if (!was_committed(page, page + page_size_)) continue;
+        if (overlaps(next, page, page + page_size_)) {
+            add_intersections(zeroed, committed_, std::max(address, page), std::min(end, page + page_size_));
+            continue;
         }
+        if (!operations.empty() && operations.back().address + operations.back().size == page)
+            operations.back().size += page_size_;
+        else
+            operations.push_back({page, page_size_});
+    }
+    for (const auto& r : zeroed) {
+        mark_written(r.address, r.size);
+        disarm_watch(r.address, r.size);
+        protect_pages_writable(r.address, r.size);
+        std::memset(base_ + r.address, 0, r.size);
     }
     size_t completed = 0;
     for (const auto& operation : operations) {
@@ -411,7 +451,7 @@ void GuestMemory::decommit(uint64_t address, uint64_t size) {
 
 void GuestMemory::release(uint64_t address, uint64_t size) {
     if (!size || address >= address_space_size || size > address_space_size - address ||
-        address % page_size_)
+        address % fast_page_size)
         throw RuntimeStop("memory-release", address, "invalid guest release range/alignment");
     const auto reservation = std::find_if(reservations_.begin(), reservations_.end(), [&](const Region& r) {
         return r.address == address && r.size == size;
@@ -420,7 +460,7 @@ void GuestMemory::release(uint64_t address, uint64_t size) {
         throw RuntimeStop("memory-release", address, "release must exactly match one guest reservation");
     if (has_reservation())
         throw RuntimeStop("reservation-interference", address, "release during live reservation");
-    const uint64_t host_size = (size + page_size_ - 1) / page_size_ * page_size_;
+    const uint64_t host_size = guest_round(size);
     const uint64_t end = address + host_size;
     check_pending_writes(address,host_size);
     for (const auto& variable : variables_)
@@ -449,6 +489,7 @@ void GuestMemory::release(uint64_t address, uint64_t size) {
     released_backing.reserve(backing_.size());
     std::vector<Region> next_backing;
     next_backing.reserve(backing_.size());
+#ifdef _WIN32
     for (const auto& backing : backing_) {
         const bool intersects = address < backing.address + backing.size && backing.address < end;
         if (!intersects) {
@@ -460,6 +501,32 @@ void GuestMemory::release(uint64_t address, uint64_t size) {
                               "owned private backing crosses the release reservation boundary");
         released_backing.push_back(backing);
     }
+#else
+    // Host pages another reservation still commits a guest page of are kept
+    // (16 KiB pages hold four guest pages); the released part is zeroed.
+    std::vector<Region> discarded, zeroed;
+    for (uint64_t page = host_floor(address); page < host_ceil(end); page += page_size_) {
+        if (overlaps(next_committed, page, page + page_size_)) {
+            add_intersections(zeroed, committed_, std::max(address, page), std::min(end, page + page_size_));
+            continue;
+        }
+        if (!discarded.empty() && discarded.back().address + discarded.back().size == page)
+            discarded.back().size += page_size_;
+        else
+            discarded.push_back({page, page_size_});
+    }
+    for (const auto& backing : backing_) {
+        // Keep the parts of the backing outside the discarded host pages.
+        uint64_t cursor = backing.address;
+        const uint64_t backing_end = backing.address + backing.size;
+        for (const auto& gone : discarded) {
+            if (gone.address + gone.size <= cursor || gone.address >= backing_end) continue;
+            if (gone.address > cursor) next_backing.push_back({cursor, gone.address - cursor});
+            cursor = std::max(cursor, gone.address + gone.size);
+        }
+        if (cursor < backing_end) next_backing.push_back({cursor, backing_end - cursor});
+    }
+#endif
 
 #ifdef _WIN32
     for (const auto& backing : released_backing) {
@@ -495,12 +562,20 @@ void GuestMemory::release(uint64_t address, uint64_t size) {
         ++completed;
     }
 #else
-    // Replacing the native range also discards watched contents in its rounded tail.
-    mark_written(address, host_size);
-    void* const result = mmap(base_ + address, host_size, PROT_NONE,
-                              MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
-    if (result != base_ + address)
-        throw RuntimeStop("memory-release", address, "cannot restore released guest placeholder backing");
+    for (const auto& r : zeroed) {
+        mark_written(r.address, r.size);
+        disarm_watch(r.address, r.size);
+        protect_pages_writable(r.address, r.size);
+        std::memset(base_ + r.address, 0, r.size);
+    }
+    for (const auto& r : discarded) {
+        // Replacing the native range also discards watched contents in it.
+        mark_written(r.address, r.size);
+        void* const result = mmap(base_ + r.address, r.size, PROT_NONE,
+                                  MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+        if (result != base_ + r.address)
+            throw RuntimeStop("memory-release", address, "cannot restore released guest placeholder backing");
+    }
 #endif
     std::unique_lock layout(layout_mutex_);
     reservations_.swap(next_reservations);
@@ -510,21 +585,25 @@ void GuestMemory::release(uint64_t address, uint64_t size) {
 }
 
 void GuestMemory::commit_impl(uint64_t address, uint64_t size, bool write_combined) {
-    if (!size || address >= address_space_size || size > address_space_size - address || address % page_size_)
+    if (!size || address >= address_space_size || size > address_space_size - address || address % fast_page_size)
         throw RuntimeStop("memory-map", address, "invalid guest commit range/alignment");
     const bool reserved = std::any_of(reservations_.begin(), reservations_.end(), [&](const Region& r) {
         return address >= r.address && address - r.address <= r.size && size <= r.size - (address - r.address);
     });
     if (!reserved) throw RuntimeStop("memory-map", address, "commit outside guest reservation");
 
-    const uint64_t host_size = (size + page_size_ - 1) / page_size_ * page_size_;
-    check_pending_writes(address,host_size);
+    // The host pages holding the range: with 16 KiB pages they can start
+    // before it and end after it (Windows pages are 4 KiB, so there they are
+    // the range rounded up to whole guest pages).
+    const uint64_t host_begin = host_floor(address);
+    const uint64_t host_size = host_ceil(address + size) - host_begin;
+    check_pending_writes(address,guest_round(size));
     const auto host_intersects = [&](const Region& r) {
-        return address < r.address + r.size && r.address < address + host_size;
+        return host_begin < r.address + r.size && r.address < host_begin + host_size;
     };
     if ((!write_combined && std::any_of(write_combined_.begin(), write_combined_.end(), host_intersects)) ||
         (write_combined && std::any_of(committed_.begin(), committed_.end(), [&](const Region& r) {
-            const Region host_region{r.address, (r.size + page_size_ - 1) / page_size_ * page_size_};
+            const Region host_region{host_floor(r.address), host_ceil(r.address + r.size) - host_floor(r.address)};
             return host_intersects(host_region);
         })))
         throw RuntimeStop("memory-cache", address, "guest commit conflicts with existing host cache policy");
@@ -546,13 +625,13 @@ void GuestMemory::commit_impl(uint64_t address, uint64_t size, bool write_combin
     next.resize(count);
     uint64_t committed_bytes = 0;
     for (const auto& r : next)
-        committed_bytes += (r.size + page_size_ - 1) / page_size_ * page_size_;
+        committed_bytes += guest_round(r.size);
     if (committed_bytes > backing_budget_)
         throw RuntimeStop("memory-budget", address, "guest backing budget exceeded");
     auto next_write_combined = write_combined_;
-    if (write_combined) next_write_combined.push_back({address, host_size});
+    if (write_combined) next_write_combined.push_back({host_begin, host_size});
     std::vector<Region> fresh;
-    for (uint64_t page = address; page < address + host_size; page += page_size_) {
+    for (uint64_t page = host_begin; page < host_begin + host_size; page += page_size_) {
         const bool backed = std::any_of(backing_.begin(), backing_.end(), [&](const Region& r) {
             return page >= r.address && page < r.address + r.size;
         });
@@ -587,8 +666,8 @@ void GuestMemory::commit_impl(uint64_t address, uint64_t size, bool write_combin
     }
     std::vector<Region> recommits;
     for (const auto& backing : backing_) {
-        const uint64_t overlap_begin = std::max(address, backing.address);
-        const uint64_t overlap_end = std::min(address + host_size, backing.address + backing.size);
+        const uint64_t overlap_begin = std::max(host_begin, backing.address);
+        const uint64_t overlap_end = std::min(host_begin + host_size, backing.address + backing.size);
         uint64_t cursor = overlap_begin;
         while (cursor < overlap_end) {
             MEMORY_BASIC_INFORMATION info{};
@@ -649,8 +728,8 @@ void GuestMemory::commit_impl(uint64_t address, uint64_t size, bool write_combin
     auto next_backing = backing_;
     next_backing.insert(next_backing.end(), fresh.begin(), fresh.end());
     (void)write_combined;  // cached, see map_write_combined
-    disarm_watch(address, host_size);  // read-write again, watched or not
-    if (mprotect(base_ + address, host_size, PROT_READ | PROT_WRITE) != 0)
+    disarm_watch(host_begin, host_size);  // read-write again, watched or not
+    if (mprotect(base_ + host_begin, host_size, PROT_READ | PROT_WRITE) != 0)
 #endif
         throw RuntimeStop("memory-map", address, "cannot commit guest pages");
     std::unique_lock layout(layout_mutex_);
@@ -658,9 +737,9 @@ void GuestMemory::commit_impl(uint64_t address, uint64_t size, bool write_combin
     backing_.swap(next_backing);
     write_combined_.swap(next_write_combined);
     if (write_combined) {
-        const uint64_t first = address / fast_page_size;
+        const uint64_t first = host_begin / fast_page_size;
         const uint64_t end = std::min<uint64_t>(address_space_size / fast_page_size,
-                                                (address + host_size + fast_page_size - 1) / fast_page_size);
+                                                (host_begin + host_size + fast_page_size - 1) / fast_page_size);
         std::fill(write_combined_pages_.get() + first, write_combined_pages_.get() + end, uint8_t{1});
     }
     rebuild_fast_pages(address, size);
@@ -668,13 +747,13 @@ void GuestMemory::commit_impl(uint64_t address, uint64_t size, bool write_combin
 
 GuestMemory::Usage GuestMemory::usage(uint64_t begin, uint64_t size) const {
     if (!size || begin >= address_space_size || size > address_space_size - begin ||
-        begin % page_size_ || size % page_size_)
+        begin % fast_page_size || size % fast_page_size)
         throw RuntimeStop("memory-statistics", begin, "invalid guest memory statistics range/alignment");
     const uint64_t end = begin + size;
     auto total_intersection = [&](const std::vector<Region>& regions) {
         uint64_t total = 0;
         for (const auto& r : regions) {
-            const uint64_t region_end = r.address + (r.size + page_size_ - 1) / page_size_ * page_size_;
+            const uint64_t region_end = r.address + guest_round(r.size);
             const uint64_t clipped_begin = std::max(begin, r.address);
             const uint64_t clipped_end = std::min(end, region_end);
             if (clipped_begin < clipped_end) total += clipped_end - clipped_begin;

@@ -334,6 +334,18 @@ private:
     void check_store_access(uint64_t address, uint64_t size, const PendingWrite* owner = nullptr) const;
     void check_pending_writes(uint64_t address, uint64_t size, const PendingWrite* owner = nullptr) const;
     void commit_impl(uint64_t address, uint64_t size, bool write_combined);
+    // Guest layout is kept in 4 KiB guest pages; the host may map larger ones
+    // (16 KiB on Apple Silicon and some Android phones), several guest pages
+    // to a host page.
+    static uint64_t guest_round(uint64_t size) { return (size + fast_page_size - 1) / fast_page_size * fast_page_size; }
+    uint64_t host_floor(uint64_t address) const { return address / page_size_ * page_size_; }
+    uint64_t host_ceil(uint64_t address) const { return (address + page_size_ - 1) / page_size_ * page_size_; }
+    static bool overlaps(const std::vector<Region>& regions, uint64_t begin, uint64_t end);
+    // Appends the parts of [begin, end) inside regions.
+    static void add_intersections(std::vector<Region>& out, const std::vector<Region>& regions,
+                                  uint64_t begin, uint64_t end);
+    // The host pages holding [address, address + size) made read-write.
+    void protect_pages_writable(uint64_t address, uint64_t size);
     void complete_store(uint64_t address, uint64_t size) const;
     bool intersects_write_combined(uint64_t address, uint64_t size) const;
     uint64_t read_scalar(uint64_t address, uint64_t size) const;
