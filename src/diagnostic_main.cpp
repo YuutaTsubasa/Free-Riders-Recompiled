@@ -50,6 +50,7 @@
 #include "native_renderer.h"
 #include "runtime_shader_cache.h"
 #include "apple_vulkan_loader.h"
+#include "apple_window_restore.h"
 #if defined(__SSSE3__)
 #include <immintrin.h>
 #elif defined(__ARM_NEON)
@@ -4351,6 +4352,9 @@ int main(int argc, char** argv) {
     struct TraceFlush { ~TraceFlush() { std::cerr.flush(); std::fflush(stderr); } } trace_flush;
 #if defined(__APPLE__)
     sfr::preload_bundled_vulkan();
+#endif
+#if defined(__APPLE__) && TARGET_OS_OSX
+    sfr::skip_window_restore_prompt();
 #endif
     // A hang reports nothing, so the buffer is also written out twice a
     // second: a stuck game's log ends where it stopped (stdio locks the stream).

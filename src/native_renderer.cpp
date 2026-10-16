@@ -4,6 +4,7 @@
 #include "native_upload_batch.h"
 #include "pipeline_manifest.h"
 #include "runtime_shader_cache.h"
+#include "shader_set_use.h"
 #include <thread>
 #include <exception>
 #ifdef _WIN32
@@ -273,6 +274,9 @@ struct NativeRenderer::Impl {
     // change drops every root argument).
     uint64_t bound_generation = ~0ull;
     const plume::RenderPipeline* bound_pipeline = nullptr;
+    // Shader stages (bit 0 vertex, bit 1 pixel) that ran a pipeline not
+    // reading the texture and sampler sets since they were bound (Apple).
+    uint8_t stale_set_stages = 0;
     NativeGraphics& graphics;
     NativePresentation& presentation;
     std::unique_ptr<plume::RenderPipelineLayout> layout;
@@ -575,6 +579,9 @@ void NativeRenderer::prepare_pipelines() {
                             if (!result || (backend == 1 &&
                                 static_cast<const plume::VulkanShader*>(result.get())->vk == VK_NULL_HANDLE))
                                 throw std::runtime_error("prepared shader creation failed");
+#ifdef __APPLE__
+                            if (backend == 1) ShaderSetUse::note(result.get(), bytes);
+#endif
                         }
                         return result.get();
                     };
@@ -1530,7 +1537,15 @@ void NativeRenderer::draw(const NativeDraw& draw) {
     const plume::RenderBuffer* const vertex_buffer = draw.vertex_buffer;
     const uint32_t index_count = uint32_t(index_bytes / sizeof(uint32_t));
     const int32_t base_vertex_location = draw.base_vertex_location;
-    impl_->presentation.record_async([impl = impl_.get(), pipeline = pipeline.get(), palette_bound, stencil_enabled,
+#ifdef __APPLE__
+    // Bit 0: the vertex shader reads the texture or sampler set, bit 1: the
+    // pixel shader does (see the rebinding below).
+    const uint8_t set_stages = uint8_t((ShaderSetUse::of(draw.vertex_shader) & 3 ? 1 : 0) |
+                                       (ShaderSetUse::of(draw.pixel_shader) & 3 ? 2 : 0));
+#else
+    const uint8_t set_stages = 3;
+#endif
+    impl_->presentation.record_async([impl = impl_.get(), pipeline = pipeline.get(), set_stages, palette_bound, stencil_enabled,
                                       stencil_reference, stride, vertex_count, vertex_view_bytes, vertex_buffer,
                                       index_count, base_vertex_location, index_bytes, index_buffer, vulkan,
                                       upload, base_offset, vs_offset, ps_offset,
@@ -1553,10 +1568,29 @@ void NativeRenderer::draw(const NativeDraw& draw) {
             const plume::RenderVertexBufferView zeros(plume::RenderBufferReference(impl->zero_buffer.get(), 0), 256);
             list.setVertexBuffers(zero_slot, &zeros, 1, &slots[1]);
             impl->bound_pipeline = nullptr;
+            impl->stale_set_stages = 0;
         }
         if (impl->bound_pipeline != pipeline) {
             list.setPipeline(pipeline);
             impl->bound_pipeline = pipeline;
+#ifdef __APPLE__
+            // MoltenVK (1.4.2) binds a set's argument buffer to its Metal
+            // buffer index once per encoder and counts it as bound until the
+            // set is bound again, even after a pipeline whose shader stage
+            // reads no textures put other data at that index. After Start on
+            // the title a Mac's textured draws found a 160-byte buffer there
+            // in place of set 0's textures, and the GPU faulted. The sets are
+            // bound again before a stage that reads them follows one that did
+            // not. (Binding them at every pipeline change also worked, but
+            // MoltenVK then checks all 4096 textures each time: a race frame
+            // took 160 ms on an M1.)
+            if (set_stages & impl->stale_set_stages) {
+                list.setGraphicsDescriptorSet(impl->textures.get(), 0);
+                list.setGraphicsDescriptorSet(impl->samplers.get(), 1);
+                impl->stale_set_stages = 0;
+            }
+            impl->stale_set_stages |= uint8_t(~set_stages & 3);
+#endif
         }
 #ifdef _WIN32
         // Plume's D3D12 backend sets the pipeline's stencil reference at each
