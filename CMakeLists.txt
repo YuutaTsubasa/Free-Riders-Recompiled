@@ -355,6 +355,10 @@ add_test(NAME voice_commands COMMAND sfr_voice_commands_test)
 # Checking a host's Kinect without starting the game (no test: it needs one).
 add_executable(sfr_kinect_probe tests/kinect_probe.cpp src/kinect_sensor.cpp ${SFR_KINECT_SENSOR})
 target_include_directories(sfr_kinect_probe PRIVATE src)
+if(WIN32)  # the launcher's camera preview on its own (no test: it needs a camera)
+    add_executable(sfr_camera_preview_probe tests/camera_preview_probe.cpp src/camera_preview_window.cpp ${SFR_CAMERA_CAPTURE})
+    target_include_directories(sfr_camera_preview_probe PRIVATE src)
+endif()
 add_executable(sfr_camera_capture_test tests/camera_capture_test.cpp src/camera_capture.cpp)
 target_include_directories(sfr_camera_capture_test PRIVATE src)
 add_test(NAME camera_capture COMMAND sfr_camera_capture_test)
@@ -583,7 +587,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui/imgui.cpp")
     # The launcher lists the host cameras and controllers.
     set(SFR_LAUNCHER_SOURCES src/launcher_main.cpp src/launcher_settings.cpp src/mod_loader.cpp src/input_bindings.cpp src/pad_devices.cpp src/pad_assignment.cpp src/launcher_sound.cpp src/launcher_art.cpp src/sony_gamepad.cpp
         ${SFR_CAMERA_CAPTURE} src/kinect_sensor.cpp ${SFR_KINECT_SENSOR} ${SFR_VOICE}
-        src/kinect_preview.cpp src/kinect_preview_window.cpp src/camera_debug.cpp src/text_wrap.cpp
+        src/kinect_preview.cpp src/kinect_preview_window.cpp src/camera_preview_window.cpp src/camera_debug.cpp src/text_wrap.cpp
         ${SFR_IMGUI}/imgui.cpp ${SFR_IMGUI}/imgui_draw.cpp ${SFR_IMGUI}/imgui_tables.cpp ${SFR_IMGUI}/imgui_widgets.cpp)
     if(WIN32)
         add_executable(sfr_launcher WIN32 ${SFR_LAUNCHER_SOURCES} src/launcher_platform_win32.cpp src/app_icon.rc
