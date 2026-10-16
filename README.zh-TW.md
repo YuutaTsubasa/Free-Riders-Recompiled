@@ -146,7 +146,8 @@ python scripts/prepare_recomp.py
 | 煞車、抓取 | X | B |
 | 切換站姿 | V | Y |
 | 使用／搖晃道具 | F | RT |
-| 招式 | Q／E | LB／RB |
+| 力量型招式（左／右出拳） | Q／E | LB／RB |
+| 飛行型招式：上升（按住）、下降（放開） | Z 或空白鍵 | A |
 | 牽手（Tag Race，兩位玩家都按住） | R | LT |
 | 換下一位選手（Relay Race） | Z 或 Tab | A 或 BACK |
 | 手部游標（只認 Kinect 的選單） | I J K L | 右類比 |
