@@ -1202,7 +1202,13 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
             // position is left as the title has it).
             // Only while racing with no menu up (touch_racing): the pause ring and
             // the results' panels share the HUD's corners but belong together.
-            if(sfr::aspect::hud_anchor() && sfr::touch_racing() && draw.vertex_count>=3 && draw.stride>=8 && draw.stride<=32 &&
+            // The results (rank banner, then the table) come up while the race is
+            // still on, drawn from the HUD's own sprites (Issue #124: their times
+            // and ranks came apart); [83E5368C] points at that screen from the
+            // banner until the table has slid away, and is 0 during the race.
+            constexpr uint32_t race_results_screen=0x83E5368C;
+            const bool results_up=memory.load<uint32_t>(race_results_screen)!=0;
+            if(sfr::aspect::hud_anchor() && sfr::touch_racing() && !results_up && draw.vertex_count>=3 && draw.stride>=8 && draw.stride<=32 &&
                draw.vertices.size()>=size_t(draw.vertex_count)*draw.stride) {
                 float lo[2]={1e30f,1e30f},hi[2]={-1e30f,-1e30f};
                 for(uint32_t v=0;v<draw.vertex_count;++v) {
