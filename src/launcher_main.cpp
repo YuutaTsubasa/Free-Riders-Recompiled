@@ -33,6 +33,7 @@
 #include "camera_capture.h"
 #include "kinect_sensor.h"
 #include "kinect_preview.h"
+#include "camera_preview_window.h"
 #include "text_wrap.h"
 #include "voice_commands.h"
 #include "launcher_settings.h"
@@ -83,7 +84,7 @@ enum Text {
     CameraKinect, KinectRow, KinectRowHint, KinectMissing,
     KinectNoRuntime, KinectNoSensor, KinectFailed, KinectDownload, KinectDownloadV2, KinectInstallHint,
     VoiceLabel, VoiceHint,
-    KinectPreviewOpen, KinectPreviewClose,
+    KinectPreviewOpen, KinectPreviewClose, CameraPreviewOpen, CameraPreviewClose,
     CameraDebug, CameraDebugHint, MenuSteady, MenuSteadyHint, MenuSteadyOff,
     ImageDirectory, ImageDirectoryHint, AssetDirectory, AssetDirectoryHint, Browse, Found, Missing, FilesHint,
     SaveDirectory, SaveDirectoryHint, SaveFound, SaveNone, SaveDefault, SaveOpen,
@@ -202,6 +203,8 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
      "恢復 Kinect 的語音指令：start、OK、back、next、pause……英文或中文都可以（開始、確定、返回、下一步、暫停…）。使用 Windows 語音辨識與預設麥克風：要用 Kinect 的麥克風陣列，請把它設為預設錄音裝置。"},
     {"Open preview", "開啟預覽"},
     {"Close preview", "關閉預覽"},
+    {"Show picture", "顯示畫面"},
+    {"Close picture", "關閉畫面"},
     {"Skeleton debug window", "骨架 Debug 視窗"},
     {"Shows only the skeleton received by the game, in front and side views, with no camera image. Closing this window does not stop the game. Changes apply on the next game launch.",
      "僅顯示遊戲收到的骨架，提供正面與側面視圖，不顯示攝影機影像。關閉此視窗不會停止遊戲。設定會在下次啟動遊戲時套用。"},
@@ -1248,6 +1251,8 @@ struct Launcher {
     // The preview window, when open, holds the Kinect (one session a
     // process); it has the tilt buttons.
     std::unique_ptr<sfr::KinectPreviewWindow> kinect_preview;
+    // The webcam's own pictures, in a window (Windows): what Test cannot say.
+    std::unique_ptr<sfr::CameraPreviewWindow> camera_preview;
     // The launcher slides in (appear rises to 1) and out before the game
     // starts (leaving, appear falls to 0).
     float appear = 0.0f, page_fade = 0.0f;
@@ -1322,8 +1327,9 @@ struct Launcher {
 
     void launch_now() {
         leaving = false;
-        // The game opens the Kinect itself.
+        // The game opens the Kinect and the camera itself.
         kinect_preview.reset();
+        camera_preview.reset();  // returns once the camera is closed
         sfr::save_launcher_settings(settings_file, settings);
         game = sfr::launcher::start_game(settings, directory, log_file);
         if (!game) {
@@ -2422,7 +2428,16 @@ struct Launcher {
                 cameras_listed_for = settings.camera;
             }
             const float test_width = ImGui::CalcTextSize(tr(CameraTesting)).x + ImGui::GetStyle().FramePadding.x * 4;
-            const float device_width = 230 * scale + test_width;
+            if (camera_preview && camera_preview->closed()) camera_preview.reset();
+#ifdef _WIN32
+            const float preview_width = (std::max)(ImGui::CalcTextSize(tr(CameraPreviewOpen)).x,
+                                                   ImGui::CalcTextSize(tr(CameraPreviewClose)).x) +
+                                        ImGui::GetStyle().FramePadding.x * 4;
+            const float buttons_width = test_width + ImGui::GetStyle().ItemSpacing.x + preview_width;
+#else
+            const float buttons_width = test_width;
+#endif
+            const float device_width = 230 * scale + buttons_width;
             // The camera is remembered by name, so the row shows the saved
             // name even when that camera is not here today.
             const char* current = settings.camera_device.empty()
@@ -2430,7 +2445,7 @@ struct Launcher {
                                       : settings.camera_device.c_str();
             const Text trial[] = {CameraTest, CameraTesting, CameraWorks, CameraSilent, CameraClosed};
             setting_row(tr(CameraDevice), tr(CameraDeviceHint), device_width, scale, [&] {
-                ImGui::SetNextItemWidth(device_width - test_width - ImGui::GetStyle().ItemSpacing.x);
+                ImGui::SetNextItemWidth(device_width - buttons_width - ImGui::GetStyle().ItemSpacing.x);
                 if (ImGui::BeginCombo("##camera_device", current)) {
                     for (const auto& camera : cameras)
                         if (ImGui::Selectable(camera.c_str(), camera == settings.camera_device)) {
@@ -2441,7 +2456,8 @@ struct Launcher {
                 }
                 ImGui::SameLine();
                 const auto state = camera_trial.load();
-                ImGui::BeginDisabled(cameras.empty() || state == CameraTrial::looking);
+                // One of them holds the camera at a time.
+                ImGui::BeginDisabled(cameras.empty() || state == CameraTrial::looking || camera_preview);
                 if (ImGui::Button(tr(trial[int(state)]), ImVec2(test_width, 0))) {
                     camera_trial.store(CameraTrial::looking);
                     camera_trial_worker = std::jthread([this, wanted = std::string(current)] {
@@ -2454,6 +2470,15 @@ struct Launcher {
                     });
                 }
                 ImGui::EndDisabled();
+#ifdef _WIN32
+                ImGui::SameLine();
+                ImGui::BeginDisabled(cameras.empty() || state == CameraTrial::looking);
+                if (ImGui::Button(tr(camera_preview ? CameraPreviewClose : CameraPreviewOpen), ImVec2(preview_width, 0))) {
+                    if (camera_preview) camera_preview.reset();
+                    else camera_preview = sfr::CameraPreviewWindow::open(current, language == 1);
+                }
+                ImGui::EndDisabled();
+#endif
             });
             if (settings.camera == "motion") {
                 setting_row(tr(CameraMirror), tr(CameraMirrorHint), switch_width, scale,
