@@ -984,11 +984,17 @@ bool protect_pages(uint8_t* at, uint64_t size, bool read_only) {
     return mprotect(at, size, read_only ? PROT_READ : PROT_READ | PROT_WRITE) == 0;
 #endif
 }
-void report_guest_fault(uint64_t guest) {
+// The host instruction's offset in the executable (rip=, Windows) names the
+// recompiled function through the link map.
+void report_guest_fault(uint64_t guest, uint64_t host_offset = 0) {
     // Async-signal-safe: no allocation, no stdio.
-    char text[64] = "GUEST_ACCESS_VIOLATION guest=0x";
+    char text[96] = "GUEST_ACCESS_VIOLATION guest=0x";
     size_t length = 31;
     for (int shift = 28; shift >= 0; shift -= 4) text[length++] = "0123456789abcdef"[(guest >> shift) & 15];
+    if (host_offset) {
+        for (const char c : {' ', 'r', 'i', 'p', '=', '0', 'x'}) text[length++] = c;
+        for (int shift = 28; shift >= 0; shift -= 4) text[length++] = "0123456789abcdef"[(host_offset >> shift) & 15];
+    }
     text[length++] = '\n';
 #ifdef _WIN32
     DWORD written = 0;
@@ -1008,7 +1014,8 @@ LONG CALLBACK watch_fault_handler(EXCEPTION_POINTERS* info) {
     if (record->ExceptionInformation[0] == 1 && memory->handle_watch_fault(address))
         return EXCEPTION_CONTINUE_EXECUTION;
     if (address >= uintptr_t(memory->base()) && address - uintptr_t(memory->base()) < GuestMemory::address_space_size)
-        report_guest_fault(address - uintptr_t(memory->base()));
+        report_guest_fault(address - uintptr_t(memory->base()),
+                           uint64_t(info->ContextRecord->Rip) - uint64_t(uintptr_t(GetModuleHandleW(nullptr))));
     return EXCEPTION_CONTINUE_SEARCH;
 }
 #else

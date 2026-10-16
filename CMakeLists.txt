@@ -946,7 +946,7 @@ if(SFR_BUILD_DIAGNOSTIC)
     target_sources(sfr_cpu_diagnostic PRIVATE src/video_mode.cpp src/native_display.cpp src/physical_memory.cpp src/ansi_string.cpp src/store_halfword_update.cpp src/store_float_single_update.cpp src/load_halfword_update.cpp src/vector_compare_bounds.cpp src/debug_monitor.cpp src/image_protection.cpp src/resource_coherency.cpp src/video_globals.cpp src/native_language.cpp src/system_config.cpp)
     target_sources(sfr_cpu_diagnostic PRIVATE src/game_region.cpp)
     target_sources(sfr_cpu_diagnostic PRIVATE src/guest_register_hooks.cpp)
-    target_sources(sfr_cpu_diagnostic PRIVATE src/race_frame_clock_hooks.cpp src/race_orientation_hooks.cpp src/race_boarding_hooks.cpp src/race_launch_hooks.cpp src/race_scripted_motion_hooks.cpp)
+    target_sources(sfr_cpu_diagnostic PRIVATE src/race_frame_clock_hooks.cpp src/race_task_hooks.cpp src/draw_read_watch.cpp src/race_orientation_hooks.cpp src/race_boarding_hooks.cpp src/race_launch_hooks.cpp src/race_scripted_motion_hooks.cpp)
     target_sources(sfr_cpu_diagnostic PRIVATE src/offline_presence_hooks.cpp)
     # The webcam standing in for the sensor, and the body it finds.
     target_sources(sfr_cpu_diagnostic PRIVATE src/camera_player.cpp src/camera_debug.cpp src/camera_debug_window.cpp src/pose_skeleton.cpp src/pose_smoothing.cpp src/pose_stability.cpp src/kinect_stability.cpp

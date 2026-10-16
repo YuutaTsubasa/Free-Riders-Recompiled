@@ -48,7 +48,7 @@ compatibility APK uses emulated TLS and has not been tested on an Android 9
 device. Updating over the existing installation preserves app data; do not
 uninstall just to upgrade.
 
-## Frame skipping instead of a variable race step (2026-10-15)
+## Frame skipping instead of a variable race step (2026-10-15, 2026-10-16)
 
 Until v0.8.3 an Android race stepped by the time that passed
 (`SFR_REALTIME_RACE`), so a phone under 60 fps kept the race's speed. The
@@ -62,27 +62,65 @@ Now a race keeps the fixed step on Android too, and keeps its speed by not
 drawing some frames instead (`RaceFrameSkip` in `src/race_frame_clock.h`):
 
 - At the end of each race frame the game compares the frames it has run with
-  real time. When it is more than half a frame behind, the next frame runs
-  the race without drawing it (no draws, resolves or present: the same frames
-  `SFR_RENDER_EVERY` skips). At most two frames in a row go undrawn.
-- A race more than six frames behind (a load, a stall, or a phone too slow to
-  run the race itself at 60) starts the count again from now: the race then
-  slows down, as on the console, rather than leaving the screen frozen.
+  real time. When it is more than a frame behind, the next frame runs the
+  race without drawing it. At most four frames in a row go undrawn (the
+  screen still shows at least 12 frames a second).
+- A frame that is not drawn also leaves out most of the game's own drawing
+  work (`src/race_task_hooks.cpp`, below), so it is far shorter than a drawn
+  one and the race can catch up.
+- When undrawn frames are no shorter than a frame (the game itself too slow,
+  not its drawing), skipping cannot catch up: frames keep being drawn, tried
+  again once a second. A race more than six frames behind (a load, a stall)
+  starts the count again from now. In both cases the race slows down, as on
+  the console, with its step unchanged.
 - Menus always draw every frame.
-- `SFR_RACE_FRAMESKIP=0` turns it off (the step then follows
-  `SFR_REALTIME_RACE` as before); `=1` turns it on on a desktop. Desktops
-  keep it off by default: the launcher holds them at 60 fps.
+- It is on everywhere by default (desktops too since 2026-10-16: a handheld
+  PC or a slow GPU falls under 60 as a phone does); a device that keeps 60
+  draws every frame. `SFR_RACE_FRAMESKIP=0` turns it off (the step then
+  follows `SFR_REALTIME_RACE` as before).
+  `SFR_RACE_SKIP_DRAWING=0` keeps all of the game's drawing on undrawn
+  frames (as 0.8.x).
 - `game.log` has `RACE_FRAMESKIP frames= skipped= speed=` every 600 race
   frames; `speed` is the race's frames against real time (1 is full speed).
 - `SFR_TEST_RACE_DRAW_MS=<ms>` (testing) makes each drawn race frame take
   that much longer, as on a device whose GPU cannot keep 60.
 
-On a desktop with `SFR_TEST_RACE_DRAW_MS=12` (drawn frames about 25 ms), the
-race kept `speed=0.99` with 58% of its frames undrawn, and the in-game timer
-read the same at the same frame as a race drawing every frame. With nothing
-slowed down, the skips were at the start of the race (its first seconds load
-and prepare shaders) and none after.
+### Logic and drawing in the game's frame
 
-Skipping saves what drawing costs: the host's draw recording and the GPU's
-work. The game's own frame (its logic and the draw list it builds) still runs
-every frame, so a phone that is slow there rather than in the GPU gains less.
+The title's task manager (`824A0458` → `824A00C8`) runs a frame as phases
+over its task objects (about 300 in a race). Each task's methods 4 (handed to
+the three job workers) and 8 are the race's logic and make no graphics calls;
+its method 12, run in phases 4 and 8, is its drawing: about 13,600 graphics
+calls and 10 of the 11 ms a race frame took on a PC. Skipping only the host's
+drawing left all of that, so an undrawn frame still cost about 15 ms on an
+AYN Thor and the race could not catch up.
+
+The drawing cannot all be left out: some of what it writes, the logic reads
+next frame. `SFR_TEST_DRAW_READS=1` (testing, Windows; races run about ten
+times slower, `SFR_TEST_DRAW_FROM=<race frame>` starts it later) finds that:
+after the drawing, every word it changed in the task objects and in the pages
+the main thread wrote (heap and globals) is made unreadable until the next
+frame's drawing, and each read is recorded with the reading instruction and
+the word's owner (`DRAW_READS` lines; the instruction's offset names the
+recompiled function through the link map). A word the logic writes first is
+not counted. In a Free Race the readers were only the player racer's matrix
+(`821A1920`), item-like objects' positions (`821A50xx`, `821A4F70`), the
+drawing's own allocator and the guest's rendering thread. The other racers'
+matrices are written again by the logic before it reads them.
+
+So an undrawn frame leaves out the drawing of the 14 task kinds in
+`undrawn_skips` (about 12 of 12.4 ms on a PC), and every other kind still
+draws, those that are read among them, and any kind not seen in that race.
+
+Measured on an AYN Thor, Free Race, `SFR_TEST_RACE_DRAW_MS` making drawn
+frames slower:
+
+| Drawn frames slowed by | Undrawn | Speed |
+| --- | --- | --- |
+| 0 (60 fps) | 5% | 1.00 |
+| 12 ms, skipping the game's drawing | 57% | 1.00 |
+| 12 ms, only the host's drawing (`SFR_RACE_SKIP_DRAWING=0`) | 54% | 0.75 |
+| 30 ms, skipping the game's drawing | 68-73% | 0.81-0.93 |
+
+An undrawn Thor frame now costs about 6-7 ms, most of it the race's logic
+(2.1 ms in the job workers, 3.4 ms in method 8), which always runs.

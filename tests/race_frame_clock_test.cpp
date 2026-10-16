@@ -141,7 +141,7 @@ void race_present_limit_counts_only_the_race() {
 }
 
 // Frame skipping: a race that keeps up draws every frame; one that falls
-// behind runs frames undrawn to catch up, at most two in a row; one too slow
+// behind runs frames undrawn to catch up, at most four in a row; one too slow
 // to catch up gives the time up instead of skipping for ever.
 void frame_skipping() {
     constexpr uint64_t frame = sfr::RaceFrameSkip::frame_ns;
@@ -178,15 +178,39 @@ void frame_skipping() {
         const auto [drawn, speed] = race(25'000'000, 8'000'000, 600, &most);
         near(speed, 1.0, 0.03, "skipping keeps the race at real time");
         require(drawn > 0.5 && drawn < 1.0, "some frames are drawn, some skipped");
-        require(most <= 2, "at most two frames in a row go undrawn");
+        require(most <= 4, "at most four frames in a row go undrawn");
     }
     {
-        // Every frame takes 40 ms even undrawn: skipping cannot help with the
-        // drawing alone. The step stays fixed (the race never plays
-        // differently); what is left is the game's own frame (TODO: skip its
-        // drawing work too on undrawn frames).
+        // A slow GPU: a drawn frame takes 60 ms, an undrawn one (most of the
+        // game's drawing left out) 5 ms. The race still keeps its speed,
+        // showing about 15 frames a second.
+        int most = 0;
+        const auto [drawn, speed] = race(60'000'000, 5'000'000, 1200, &most);
+        near(speed, 1.0, 0.03, "a 60 ms drawn frame still keeps real time");
+        require(drawn > 0.2 && drawn < 0.3 && most <= 4, "about one frame in four is drawn");
+    }
+    {
+        // Drawn frames of 45 ms, undrawn ones of 6 ms with a 60 ms hitch now
+        // and then: the hitches must not stop the skipping (Thor, 30 ms test).
+        sfr::RaceFrameSkip skip;
+        uint64_t now = 1'000'000'000;
+        auto decision = skip.next(now, true);
+        const uint64_t start = now;
+        int undrawn = 0;
+        for (int i = 0; i < 3000; ++i) {
+            now += decision.draw ? 45'000'000 : (++undrawn % 25 == 0 ? 60'000'000 : 6'000'000);
+            decision = skip.next(now, true);
+            now += decision.wait_ns;
+        }
+        near(3000 / 60.0 / (double(now - start) * 1e-9), 1.0, 0.04, "an occasional slow undrawn frame does not stop skipping");
+        require(skip.blocked() == 0, "no skip was held back");
+    }
+    {
+        // Every frame takes 40 ms even undrawn (the game itself too slow):
+        // skipping cannot catch up, so frames keep being drawn, and the race
+        // slows down with its step unchanged, as on the console.
         const auto [drawn, speed] = race(40'000'000, 40'000'000, 300);
-        require(drawn > 0.3, "a race too slow to catch up still draws");
+        require(drawn > 0.9, "a race too slow to catch up even undrawn keeps drawing");
         (void)speed;
     }
     {

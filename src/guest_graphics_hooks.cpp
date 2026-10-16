@@ -425,6 +425,8 @@ static bool rendering_this_frame() {
     if(!sfr::active_memory->load<uint32_t>(race_flag)) return true;
     return sfr::present_count%every==0;
 }
+// Whether this race frame is drawn, for the task manager (race_task_hooks.cpp).
+namespace sfr { bool race_frame_drawn() { return rendering_this_frame(); } }
 
 namespace sfr {
 std::optional<AvatarMatrix> avatar_hand_transform(const AvatarPose& pose, uint32_t bone) {
@@ -559,7 +561,8 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
             if(frames%600==0) {
                 const double seconds=double(now-race_start)*1e-9;
                 std::cerr << "RACE_FRAMESKIP frames=" << frames << " skipped=" << skipped
-                          << " speed=" << (seconds>0 ? frames/60.0/seconds : 0.0) << '\n';
+                          << " speed=" << (seconds>0 ? frames/60.0/seconds : 0.0) << " resyncs=" << skip.resyncs()
+                          << " blocked=" << skip.blocked() << " undrawn_ms=" << skip.undrawn_ns()/1e6 << '\n';
             }
         }
     }
