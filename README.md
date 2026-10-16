@@ -178,6 +178,8 @@ with [docs/progress.md](docs/progress.md).
   With a real Kinect, `game.log` records each crouch and jump the game detects and how high the hips went, so a jump that does not register can be diagnosed from the log (Issue #97).
 - [v0.9.0 — Races keep real time on slow devices](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.9.0)
   Races keep the console's fixed step everywhere (side ramps no longer throw a racer off the course on a slow phone, Issue #123) and keep real time by not drawing some frames, which now also leave out most of the game's own drawing work. On ultrawide displays the race HUD is placed by which part of the game draws it, so text, the goal notices and the results stay together (Issues #131, #124). Also: a Kinect lean calibration fix (#132), a list of avatar models in the launcher (#132), a Linux hint when no file dialog is installed (#130), and guest memory on 16 KiB-page hosts.
+- [v0.9.1 — Map, Kinect calibration and dialogs](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.9.1)
+  The race map stays with its markers at a wide screen's edge (Issue #145). The launcher's Kinect preview can calibrate, setting the crouch depth from your own crouch (#97, #132). Linux file dialogs use the desktop's own portal (#130). On Windows the game's window keeps answering while the game is busy, and the launcher can show a webcam's picture.
 
 ## System Requirements
 
