@@ -88,7 +88,16 @@ void set_fullscreen(HWND window, bool fullscreen) {
     }
 }
 
+// Asks the window's own thread to destroy it (DestroyWindow works only there).
+constexpr UINT destroy_window_message = WM_APP + 1;
+constexpr UINT_PTR close_timer = 1;
+
 LRESULT CALLBACK presentation_window_proc(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+    if (message == destroy_window_message) {
+        DestroyWindow(window);
+        return 0;
+    }
+    if (message == WM_DESTROY) PostQuitMessage(0);  // ends its thread's loop
     if (message == WM_SYSKEYDOWN && wparam == VK_RETURN && (lparam & (LPARAM(1) << 29))) {
         set_fullscreen(window, !(GetWindowLongW(window, GWL_STYLE) & WS_POPUP));
         return 0;
@@ -99,8 +108,17 @@ LRESULT CALLBACK presentation_window_proc(HWND window, UINT message, WPARAM wpar
         SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
     }
     if (message == WM_CLOSE) {
-        if (auto* requested = reinterpret_cast<bool*>(GetWindowLongPtrW(window, GWLP_USERDATA)))
-            *requested = true;
+        if (auto* requested = reinterpret_cast<std::atomic<bool>*>(GetWindowLongPtrW(window, GWLP_USERDATA)))
+            requested->store(true);
+        // The game ends at its next frame. One that never comes (the game
+        // stuck) would leave the player a window that answers but will not
+        // close, and, answering, Windows no longer offers to end it: so a
+        // close still waiting after five seconds ends the process.
+        SetTimer(window, close_timer, 5000, nullptr);
+        return 0;
+    }
+    if (message == WM_TIMER && wparam == close_timer) {
+        TerminateProcess(GetCurrentProcess(), 0);
         return 0;
     }
     if (message == WM_GETMINMAXINFO) {
@@ -130,6 +148,44 @@ void ensure_window_class() {
     if (error != ERROR_SUCCESS && error != ERROR_CLASS_ALREADY_EXISTS)
         throw std::runtime_error("failed to register the native presentation window class");
 }
+
+// The game's window, made by and living on its own thread, which does
+// nothing but handle its messages. The game draws and presents into it from
+// its own thread as before. Pumped from the presents instead, the window
+// stopped answering whenever a frame took long (a shader translated, a load,
+// a wait): its title bar did not bring it to the front, and Alt+Enter and
+// Alt+F4 did nothing; Windows marked it as not responding.
+class WindowThread {
+public:
+    WindowThread(DWORD style, int width, int height, std::atomic<bool>* close_requested) {
+        std::promise<HWND> made;
+        auto window = made.get_future();
+        thread_ = std::thread([&made, style, width, height, close_requested] {
+            HWND created = CreateWindowExW(0, window_class_name, L"Sonic Free Riders", style, CW_USEDEFAULT,
+                                           CW_USEDEFAULT, width, height, nullptr, nullptr, GetModuleHandleW(nullptr),
+                                           close_requested);
+            made.set_value(created);
+            if (!created) return;
+            MSG message{};
+            while (GetMessageW(&message, nullptr, 0, 0) > 0) {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+        });
+        window_ = window.get();
+    }
+    ~WindowThread() {
+        if (window_) PostMessageW(window_, destroy_window_message, 0, 0);
+        if (thread_.joinable()) thread_.join();
+    }
+    WindowThread(const WindowThread&) = delete;
+    WindowThread& operator=(const WindowThread&) = delete;
+    HWND window() const { return window_; }
+
+private:
+    std::thread thread_;
+    HWND window_ = nullptr;
+};
 #else
 // Borderless full screen on the window's display (Alt+Enter toggles).
 void set_fullscreen(SDL_Window* window, bool fullscreen) {
@@ -260,11 +316,12 @@ struct NativePresentation::Impl {
         command_list->setScissors(scissor);
     }
 #ifdef _WIN32
-    HWND window = nullptr;
+    std::unique_ptr<WindowThread> window_thread;
+    HWND window = nullptr;  // window_thread's
 #else
     SDL_Window* window = nullptr;  // NativeGraphics owns it
 #endif
-    bool close_requested = false;
+    std::atomic<bool> close_requested{false};  // set from the window's thread too
     bool shown = false;
     bool start_fullscreen = false;
     bool ready = false;
@@ -417,10 +474,9 @@ struct NativePresentation::Impl {
         swap_chain.reset();
 #ifdef _WIN32
         sfr::set_game_window(nullptr);  // before its handle can be reused
-        if (window) {
-            DestroyWindow(window);
-            SetThreadExecutionState(ES_CONTINUOUS);  // the display may sleep again
-        }
+        if (window) SetThreadExecutionState(ES_CONTINUOUS);  // the display may sleep again
+        window_thread.reset();
+        window = nullptr;
 #else
         if (window) SDL_HideWindow(window);
 #endif
@@ -1242,10 +1298,9 @@ NativePresentation::NativePresentation(NativeGraphics& graphics, uint32_t width,
     RECT bounds{0, 0, static_cast<LONG>(window_width), static_cast<LONG>(window_height)};
     constexpr DWORD style = windowed_style;
     if (!AdjustWindowRectEx(&bounds, style, FALSE, 0)) unavailable("window bounds");
-    implementation->window = CreateWindowExW(
-        0, window_class_name, L"Sonic Free Riders", style, CW_USEDEFAULT, CW_USEDEFAULT,
-        bounds.right - bounds.left, bounds.bottom - bounds.top, nullptr, nullptr,
-        GetModuleHandleW(nullptr), &implementation->close_requested);
+    implementation->window_thread = std::make_unique<WindowThread>(
+        style, bounds.right - bounds.left, bounds.bottom - bounds.top, &implementation->close_requested);
+    implementation->window = implementation->window_thread->window();
     sfr::set_game_window(implementation->window);  // its title: title_stats.h
     // A player on a Kinect or a webcam touches neither keyboard nor mouse, so
     // Windows took the game for idle and turned the display off (Issue #97).
@@ -1296,6 +1351,16 @@ NativePresentation::NativePresentation(NativeGraphics& graphics, uint32_t width,
         if (native_swap_chain->textures.size() != 3) unavailable("D3D12 swap chain");
         for (const auto& texture : native_swap_chain->textures)
             if (!texture.d3d) unavailable("D3D12 swap-chain texture");
+        // DXGI watches a swap chain's window through its message queue,
+        // which is now the window's own thread (WindowThread): the first
+        // present here and DXGI's handling there waited for each other, and
+        // the game never drew. Alt+Enter is the game's own and full screen is
+        // a borderless window, so DXGI is told not to watch at all.
+        IDXGIFactory* factory = nullptr;
+        if (SUCCEEDED(native_swap_chain->d3d->GetParent(IID_PPV_ARGS(&factory)))) {
+            factory->MakeWindowAssociation(implementation->window, DXGI_MWA_NO_WINDOW_CHANGES | DXGI_MWA_NO_ALT_ENTER);
+            factory->Release();
+        }
     }
 #endif
     if (!d3d12) {
@@ -2006,11 +2071,7 @@ void NativePresentation::finish_preparation() {
 
 void NativePresentation::pump_events() {
 #ifdef _WIN32
-    MSG message{};
-    while (PeekMessageW(&message, impl_->window, 0, 0, PM_REMOVE)) {
-        TranslateMessage(&message);
-        DispatchMessageW(&message);
-    }
+    // The window's own thread handles its messages (WindowThread).
 #else
     // SDL keeps keyboard and controller state from these events too.
     SDL_Event event;
