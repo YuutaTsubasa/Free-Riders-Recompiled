@@ -73,6 +73,15 @@ std::string path_utf8(const std::filesystem::path& path) {
 }
 }
 
+namespace {
+// avatar_model_entry=<path> lines, one per model on the Avatar page.
+std::string avatar_entries(const LauncherSettings& s) {
+    std::string lines;
+    for (const auto& model : s.avatar_models) lines += "avatar_model_entry=" + path_utf8(model) + '\n';
+    return lines;
+}
+}
+
 LauncherSettings parse_launcher_settings(const std::string& text) {
     LauncherSettings settings;
     bool ratio_seen = false, scale_seen = false;
@@ -126,6 +135,9 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         else if (key == "voice") read_flag(value, settings.voice);
         else if (key == "camera_debug") read_flag(value, settings.camera_debug);
         else if (key == "avatar_model") settings.avatar_model = utf8_path(value);
+        else if (key == "avatar_model_entry" && !value.empty() &&
+                 settings.avatar_models.size() < LauncherSettings::max_avatar_models)
+            settings.avatar_models.push_back(utf8_path(value));
         else if (key == "player1_device" && (value == "both" || value == "gamepad" || value == "keyboard"))
             settings.player1_device = value;
         else if (key == "player2_device" && (value == "gamepad" || value == "keyboard" || value == "off"))
@@ -153,6 +165,13 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         const uint32_t output = settings.window_height ? settings.window_height : logical_height;
         const uint32_t scale = (old_render_scale * logical_height + output / 2) / output;
         settings.resolution_scale = std::clamp<uint32_t>((scale + 12) / 25 * 25, 25, 300);
+    }
+    // A model chosen before the list existed is the list's first entry.
+    if (!settings.avatar_model.empty() &&
+        std::find(settings.avatar_models.begin(), settings.avatar_models.end(), settings.avatar_model) ==
+            settings.avatar_models.end()) {
+        if (settings.avatar_models.size() >= LauncherSettings::max_avatar_models) settings.avatar_models.pop_back();
+        settings.avatar_models.insert(settings.avatar_models.begin(), settings.avatar_model);
     }
     return settings;
 }
@@ -188,6 +207,7 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "voice=" << s.voice << '\n'
         << "camera_debug=" << s.camera_debug << '\n'
         << "avatar_model=" << path_utf8(s.avatar_model) << '\n'
+        << avatar_entries(s)
         << "player1_device=" << s.player1_device << '\n'
         << "player2_device=" << s.player2_device << '\n'
         << "player1_gamepad=" << s.player1_gamepad << '\n'
@@ -216,6 +236,8 @@ LauncherSettings load_launcher_settings(const std::filesystem::path& file) {
     text << in.rdbuf();
     auto settings = parse_launcher_settings(text.str());
     settings.avatar_model = resolved_avatar_model(settings, std::filesystem::absolute(file).parent_path());
+    for (auto& model : settings.avatar_models)
+        if (!model.is_absolute()) model = (std::filesystem::absolute(file).parent_path() / model).lexically_normal();
     return settings;
 }
 

@@ -214,7 +214,7 @@ The launcher groups settings by what you want to change:
 | Sound | Game volume and launcher sounds |
 | Controls | Each player's input source and controller, button/key bindings, Android touch and tilt |
 | Motion input | Kinect/webcam mode, device and preview, mirror, skeleton debug, voice commands |
-| Avatar models | Select or clear a custom VRM/GLB model |
+| Avatar models | Add custom VRM/GLB models and choose the one to use |
 | Mods | Switch file-replacement mods on and off and set their order ([Mods](docs/mods.md)) |
 | Game files | Installation, data locations and shader pack |
 
@@ -373,13 +373,15 @@ keyboard controls work with the model too.
 *A custom VRM model replacing the in-game AVATAR rider.*
 
 1. Open the launcher's **Avatar models** tab.
-2. Choose **Browse** and select a `.vrm` or binary `.glb` file. Desktop users
-   can also type its path; Android imports a copy into the app's storage.
+2. Choose **Add model...** and select a `.vrm` or binary `.glb` file. Desktop
+   users can also type its path; Android imports a copy into the app's storage.
+   Models you add stay in the list, so you can switch between them later.
 3. Start the game and select **AVATAR** in the character menu, then choose
    your Gear. AVATAR must already be available in your game save; selecting
    a model does not unlock it.
-4. To change models, return to the launcher and restart the game. **Clear**
-   disables the custom model.
+4. To change models, return to the launcher, choose another one and restart
+   the game. **Don't use a custom model** turns it off; **Remove** takes a model
+   off the list.
 
 One model setting is shared by both local players; it applies to whoever
 selects AVATAR, with separate poses for each player. Ordinary characters are

@@ -6,8 +6,11 @@ have AVATAR available; the model setting does not unlock it.
 
 ## Choose a model
 
-In the launcher's **Avatar models** tab, choose **Browse** and select
-your own `.vrm` or binary `.glb` file. VRM 0.x and VRM 1.0 humanoid mappings
+In the launcher's **Avatar models** tab, choose **Add model...** and select
+your own `.vrm` or binary `.glb` file. Every model added stays in the list:
+choose the one to use, **Don't use a custom model** to turn it off, or
+**Remove** a model from the list. The game shows one avatar, so one model is
+used at a time. VRM 0.x and VRM 1.0 humanoid mappings
 provide animation; an ordinary GLB without that mapping stays static.
 
 Start the game, select **AVATAR**, and choose Gear. You can use a controller,
@@ -20,21 +23,21 @@ Other characters retain their original appearance. Full two-player VRM
 gameplay still needs broader testing.
 
 Changes apply on the next game launch. Return to the launcher to change the
-model; **Clear** disables it. The setting is stored as `avatar_model` in
-`settings.ini`. Model loading is local and does not upload the file.
+model. `settings.ini` stores the chosen one as `avatar_model` and the list as
+`avatar_model_entry` lines. Model loading is local and does not upload the file.
 
 ## Platform details
 
-- **Windows:** Browse uses the file picker. The launcher remembers the path,
-  so leave the model there or select it again after moving it.
-- **Linux:** Browse uses `zenity` or `kdialog` when available. You can also
-  type the path into the model field.
-- **Android:** Browse opens the system document picker and imports a copy
-  into the app-specific storage. Select a replacement to update that copy.
+- **Windows:** Add model... uses the file picker. The launcher remembers the
+  path, so leave the model there or add it again after moving it.
+- **Linux:** Add model... uses `zenity` or `kdialog` when available. You can
+  also type a path into the box below and press Enter.
+- **Android:** Add model... opens the system document picker and imports a
+  copy into the app-specific storage, one per model; Remove deletes that copy.
 
 Desktop relative paths resolve from the launcher folder. A missing file
 shows a warning. If a model cannot load, inspect `game.log` for
-`NATIVE_MODEL unavailable`; select another model or clear the selection.
+`NATIVE_MODEL unavailable`; choose another model or remove it.
 No personal model or game save is included in releases.
 
 ## What to expect
