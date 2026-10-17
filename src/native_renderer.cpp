@@ -470,13 +470,15 @@ struct NativeRenderer::Impl {
     // nodes). An entry's own physical key is the only one that leads to it
     // (its first view is a one-to-one function of the physical address), so
     // forgetting it clears that key's slot; clearing the key map moves
-    // vertex_generation on, which retires the whole memo.
+    // vertex_generation on, which retires the whole memo. Sixteen thousand
+    // slots: a race keeps tens of thousands of ranges, and with 4096 a fifth
+    // of its lookups found another range in the slot (an eighth with these).
     struct VertexMemo {
         PhysicalKey key{};
         VertexEntry* entry = nullptr;
         uint64_t generation = 0;
     };
-    std::array<VertexMemo, 4096> vertex_memo{};
+    std::array<VertexMemo, 16384> vertex_memo{};
     VertexMemo& memo_slot(const PhysicalKey& key) { return vertex_memo[PhysicalKeyHash{}(key) % vertex_memo.size()]; }
     uint64_t vertex_generation = 1;
     // Each entry by the frame it was last known drawn, oldest first. Ranges
