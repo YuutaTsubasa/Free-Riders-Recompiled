@@ -26,6 +26,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <iostream>
 #include <map>
@@ -355,6 +356,16 @@ struct NativeRenderer::Impl {
     // Changes whenever texture() could answer the same fetch words
     // differently: a new frame, a resolve, a texture made or dropped.
     uint64_t texture_generation = 0;
+    // A resolve to where the last one went (the same destination, frame
+    // after frame, at its own descriptor) changes no answer of texture(), so
+    // it leaves the generation alone: two dozen resolves a frame each made
+    // the next draws look every bound texture up again.
+    void resolve_to(uint32_t physical, uint32_t index) {
+        const auto [at, inserted] = resolved_targets.try_emplace(physical, index);
+        if (!inserted && at->second == index) return;
+        at->second = index;
+        ++texture_generation;
+    }
     std::optional<uint32_t> placeholder;  // flat white texture (investigation)
     std::vector<uint32_t> free_texture_indices;
     uint32_t next_texture_index = 0;
@@ -379,6 +390,9 @@ struct NativeRenderer::Impl {
     std::unordered_map<std::vector<uint8_t>, std::shared_ptr<plume::RenderPipeline>, KeyHash> pipelines;
     std::unordered_map<std::vector<uint8_t>, std::shared_ptr<plume::RenderPipeline>, KeyHash> recipe_pipelines;
     std::map<std::vector<uint8_t>, PipelineRecipe> recipes;
+    // The previous draw's key and its entry in pipelines.
+    std::vector<uint8_t> last_pipeline_key;
+    std::shared_ptr<plume::RenderPipeline>* last_pipeline = nullptr;
     std::unordered_map<const ShaderCacheEntry*, std::unique_ptr<plume::RenderShader>> prepared_shaders;
     std::filesystem::path learned_manifest;
     bool manifest_dirty = false, preparation_started = false;
@@ -449,6 +463,8 @@ struct NativeRenderer::Impl {
         // being watched until dynamic_until.
         uint32_t rewrites = 0;
         uint64_t dynamic_until = 0;
+        // Where it was looked up from, to forget that key with the entry.
+        uint32_t physical = 0;
     };
     std::unordered_map<VertexKey, VertexEntry, VertexKeyHash> vertex_entries;
     // The entry's key by physical address, so a lookup finds a known buffer
@@ -465,20 +481,54 @@ struct NativeRenderer::Impl {
         }
     };
     std::unordered_map<PhysicalKey, VertexKey, PhysicalKeyHash> keys_by_physical;
+    static constexpr size_t max_physical_keys = 262144;
     // In front of both maps: the entry each recently drawn range found, by
     // its physical key. The two map lookups were 4.5% of the main thread of
     // an AYN Thor race (the key map grows to a quarter of a million ranges,
     // so most lookups missed the cache); a frame draws the same few hundred
     // ranges again. Entries stay where they are until erased (unordered_map
-    // nodes), and every erase moves vertex_generation on, which retires the
-    // whole memo.
+    // nodes). An entry's own physical key is the only one that leads to it
+    // (its first view is a one-to-one function of the physical address), so
+    // forgetting it clears that key's slot; clearing the key map moves
+    // vertex_generation on, which retires the whole memo. Sixteen thousand
+    // slots: a race keeps tens of thousands of ranges, and with 4096 a fifth
+    // of its lookups found another range in the slot (an eighth with these).
     struct VertexMemo {
         PhysicalKey key{};
         VertexEntry* entry = nullptr;
         uint64_t generation = 0;
     };
-    std::array<VertexMemo, 4096> vertex_memo{};
+    std::array<VertexMemo, 16384> vertex_memo{};
+    VertexMemo& memo_slot(const PhysicalKey& key) { return vertex_memo[PhysicalKeyHash{}(key) % vertex_memo.size()]; }
     uint64_t vertex_generation = 1;
+    // Each entry by the frame it was last known drawn, oldest first. Ranges
+    // not drawn for ten seconds or so are forgotten a few at a time, each
+    // frame: a race streams vertices through a ring, so tens of thousands of
+    // ranges are drawn once, and forgetting them all every 600 frames (keys
+    // included) took 11 to 13 ms of a desktop frame. Their keys go with them;
+    // kept, the key map filled up and was cleared whole, 25 ms on the desktop
+    // and some 38 ms of one AYN Thor race frame (Issue #164).
+    std::deque<std::pair<uint64_t, VertexKey>> vertex_ages;
+    void forget_old_vertices() {
+        while (!vertex_ages.empty() && vertex_ages.front().first + 600 < frame) {
+            const VertexKey key = vertex_ages.front().second;
+            vertex_ages.pop_front();
+            const auto found = vertex_entries.find(key);
+            if (found == vertex_entries.end()) continue;
+            auto& entry = found->second;
+            if (entry.last_frame + 600 >= frame) {
+                vertex_ages.emplace_back(entry.last_frame, key);
+                continue;
+            }
+            retire_vertices(entry);
+            const PhysicalKey physical{entry.physical, key.bytes, key.layout};
+            if (auto& memo = memo_slot(physical); memo.entry == &entry) memo = {};
+            if (const auto known = keys_by_physical.find(physical);
+                    known != keys_by_physical.end() && known->second == key)
+                keys_by_physical.erase(known);
+            vertex_entries.erase(found);
+        }
+    }
     std::vector<std::pair<uint64_t, std::unique_ptr<plume::RenderBuffer>>> retired_vertex_buffers;
     uint64_t cached_vertex_bytes = 0;
     void retire_vertices(VertexEntry& entry) {
@@ -512,7 +562,13 @@ struct NativeRenderer::Impl {
         if (!bounded) samplers->setSampler(index, sampler);
     }
 
-    Impl(NativeGraphics& g, NativePresentation& p) : graphics(g), presentation(p) {}
+    Impl(NativeGraphics& g, NativePresentation& p) : graphics(g), presentation(p) {
+        // Room for as many ranges as the key map keeps: growing either map
+        // rehashed all of it in one draw, 9 ms of a desktop frame at 131072
+        // keys and about 25 ms of an AYN Thor's (Issue #164).
+        keys_by_physical.reserve(max_physical_keys);
+        vertex_entries.reserve(max_physical_keys);
+    }
 };
 
 // The bounded layout's descriptor sets, made per draw from the texture and
@@ -1034,14 +1090,7 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
         }
         // Dropped vertex buffers outlive the frame in flight that may read them.
         std::erase_if(state->retired_vertex_buffers, [&](const auto& retired) { return retired.first + 2 < state->frame; });
-        // Ranges not drawn for ten seconds or so are forgotten.
-        if (state->frame % 600 == 0 &&
-            std::erase_if(state->vertex_entries, [&](auto& item) {
-                if (item.second.last_frame + 600 >= state->frame) return false;
-                state->retire_vertices(item.second);
-                return true;
-            }))
-            ++state->vertex_generation;
+        state->forget_old_vertices();
     });
 }
 
@@ -1095,7 +1144,7 @@ NativeRenderer::CachedVertices NativeRenderer::vertex_cache(GuestMemory& memory,
     uint32_t view_count = 0;
     const Impl::PhysicalKey physical_key{physical, bytes, layout};
     Impl::VertexEntry* known = nullptr;
-    auto& memo = impl_->vertex_memo[Impl::PhysicalKeyHash{}(physical_key) % impl_->vertex_memo.size()];
+    auto& memo = impl_->memo_slot(physical_key);
     if (memo.generation == impl_->vertex_generation && memo.key == physical_key && memo.entry->view_count)
         known = memo.entry;
     else if (const auto key = impl_->keys_by_physical.find(physical_key); key != impl_->keys_by_physical.end())
@@ -1107,7 +1156,7 @@ NativeRenderer::CachedVertices NativeRenderer::vertex_cache(GuestMemory& memory,
                                    uint64_t(physical) | 0xC0000000u})
             if (candidate + bytes <= 0x100000000ull && memory.readable(candidate, bytes)) views[view_count++] = uint32_t(candidate);
         if (!view_count || !bytes) return {};
-        if (impl_->keys_by_physical.size() >= 262144) {
+        if (impl_->keys_by_physical.size() >= Impl::max_physical_keys) {
             impl_->keys_by_physical.clear();
             ++impl_->vertex_generation;
         }
@@ -1124,6 +1173,8 @@ NativeRenderer::CachedVertices NativeRenderer::vertex_cache(GuestMemory& memory,
     };
     if (!entry.view_count) {
         // New: watch every view, and see whether it stays unwritten.
+        entry.physical = physical;
+        impl_->vertex_ages.emplace_back(impl_->frame, Impl::VertexKey{views[0], bytes, layout});
         entry.views = views;
         entry.view_count = view_count;
         for (uint32_t i = 0; i < view_count; ++i) memory.watch_writes(views[i], bytes);
@@ -1309,8 +1360,7 @@ uint32_t NativeRenderer::adopt_resolved_target(uint32_t physical, bool depth) {
         auto& aliases = impl_->pending_aliases[surface];
         std::erase_if(aliases, [&](const Impl::Alias& alias) { return alias.physical == physical; });
         aliases.push_back({physical, source, width, height, format, depth});
-        impl_->resolved_targets[physical] = view;
-        ++impl_->texture_generation;
+        impl_->resolve_to(physical, view);
         return view;
     }
     // Out of the framebuffer (drawn to again at once): copied now. Recorded
@@ -1318,8 +1368,7 @@ uint32_t NativeRenderer::adopt_resolved_target(uint32_t physical, bool depth) {
     // that sample it: submitting and waiting here would cost a GPU round trip
     // for each of a frame's resolves.
     const uint32_t index = own_resolve(*impl_, physical, width, height, format, depth);
-    impl_->resolved_targets[physical] = index;
-    ++impl_->texture_generation;
+    impl_->resolve_to(physical, index);
     ++impl_->resolve_copies;
     presentation.record_async(ResolveCopy{source, impl_->texture_objects[index - first_texture].get(),
         depth ? plume::RenderTextureLayout::DEPTH_WRITE : plume::RenderTextureLayout::COLOR_WRITE});
@@ -1376,15 +1425,21 @@ void NativeRenderer::materialize_aliases(const void* surface) {
 
 uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
     // Timed as a whole: the lookup, the content hash that decides whether the
-    // guest changed it, and the upload when it did.
-    const auto texture_start = std::chrono::steady_clock::now();
+    // guest changed it, and the upload when it did. Only for the frame
+    // metrics (on as guest_graphics_hooks.cpp turns them on): a race frame
+    // asks hundreds of times, two clock reads each.
+    static const bool timed = [] {
+        const char* metrics = std::getenv("SFR_FRAME_METRICS");
+        const char* trace = std::getenv("SFR_TRACE_GRAPHICS");
+        return metrics ? *metrics != '0' : !trace || *trace != '0';
+    }();
     struct TextureTimer {
         Impl& impl; std::chrono::steady_clock::time_point start;
         ~TextureTimer() {
-            impl.texture_ms += std::chrono::duration<double, std::milli>(
+            if (timed) impl.texture_ms += std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - start).count();
         }
-    } texture_timer{*impl_, texture_start};
+    } texture_timer{*impl_, timed ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{}};
     const auto fetch = decode_texture_fetch(words);
     if (!fetch.base_address) return null_2d;
     // What the title resolved out of the framebuffer is served from the copy
@@ -1648,7 +1703,15 @@ void NativeRenderer::draw(const NativeDraw& draw) {
         if (++verified == 1 || verified % 100000 == 0)
             std::cerr << "NATIVE_PIPELINE_KEY verified=" << verified << '\n';
     }
-    auto& pipeline = impl_->pipelines[key];  // copies the key only when inserting
+    // Two draws in three of a race have the same pipeline state as the draw
+    // before them: compared with its key (some six hundred bytes), the key
+    // needs no hash and no lookup. Map entries are never erased, so the
+    // remembered one stays valid.
+    if (!impl_->last_pipeline || key != impl_->last_pipeline_key) {
+        impl_->last_pipeline = &impl_->pipelines[key];  // copies the key only when inserting
+        impl_->last_pipeline_key = key;
+    }
+    auto& pipeline = *impl_->last_pipeline;
     const std::array<plume::RenderInputSlot, 2> slots{plume::RenderInputSlot(0, draw.stride),
                                                        plume::RenderInputSlot(zero_slot, 0)};
     std::optional<PipelineRecipe> recipe;
