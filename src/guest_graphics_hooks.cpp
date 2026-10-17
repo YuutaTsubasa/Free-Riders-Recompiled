@@ -1191,6 +1191,11 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     // same textures, and looking each slot up again was a millisecond a frame.
     struct SlotMemo { std::array<uint32_t,6> words{}; uint64_t generation=~uint64_t(0); uint32_t texture=0, sampler=0; };
     static thread_local std::array<SlotMemo,16> memo;
+    // A pass that resolves its surface and draws back into it (the race's
+    // 110x90, 112x92 and 55x45 surfaces) samples what it resolved: that is
+    // copied out of the surface now, before the lookups below, or they would
+    // hand the draw the surface itself while it is the attachment being written.
+    graphics().presentation().prepare_surface_write();
     const uint64_t generation=graphics().renderer().texture_generation();
     for(uint32_t slot=0;slot<16;++slot) {
         const auto words=graphics().texture_fetch(slot);
