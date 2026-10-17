@@ -123,7 +123,8 @@ inline std::optional<std::vector<uint8_t>> bounded_descriptor_spirv(std::span<co
     // Runtime arrays of images or samplers become fixed arrays; any other
     // runtime array (a storage buffer's last member) is left as it is.
     std::unordered_set<uint32_t> bounded;
-    for (const auto& [id, element] : runtime_arrays) {
+    for (const auto& [id, element_type] : runtime_arrays) {
+        const uint32_t element = element_type;  // a lambda below captures it (not a structured binding)
         if (images.contains(element) || samplers.contains(element)) bounded.insert(id);
         // A combined image sampler array would need a binding type the
         // fallback layout does not have.
