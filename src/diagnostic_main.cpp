@@ -1616,6 +1616,17 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
     if (address == 0x82ACB25C && std::string_view(name) == "__imp__XNotifyGetNext" && native_notifications) {
         const uint32_t handle = ctx.r3.u32, match = ctx.r4.u32;
         const uint32_t id_output = ctx.r5.u32, parameter_output = ctx.r6.u32;
+        // The online service came up after the title read its sign-in state
+        // (the host's game started later): as a console signing in to LIVE
+        // would, it is told the sign-in changed, and reads the state again.
+        if (take_live_late_connection()) {
+            uint32_t users = 0;
+            for (uint32_t index = 0; index < 4; ++index)
+                if (profile_signin_state(index)) users |= 1u << index;
+            constexpr uint32_t xn_sys_signin_changed = 0x0000000A;
+            native_notifications->publish(xn_sys_signin_changed, users);
+            std::cerr << "LIVE_SIGNIN_CHANGED users=0x" << std::hex << users << std::dec << '\n';
+        }
         const bool found = native_notifications->get_next(handle, match, id_output, parameter_output);
         ctx.r3.u64 = found;
         if (trace_imports) {

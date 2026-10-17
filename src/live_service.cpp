@@ -1,4 +1,5 @@
 #include "live_service.h"
+#include "live_connect.h"
 
 #ifdef _WIN32
 #define NOMINMAX
@@ -110,6 +111,9 @@ struct LiveService::Impl {
     std::vector<std::string> answer(Console& console, const std::vector<std::string>& w) {
         const std::string& verb = w[0];
         char text[160];
+        // A check that the service is here (the launcher's Test connection):
+        // the caller does not become a console.
+        if (verb == "PING") return {"OK freeriders " + std::to_string(live_protocol_version)};
         if (verb == "HELLO") {
             console.xuid = std::strtoull(w.at(1).c_str(), nullptr, 16);
             console.name.clear();
@@ -202,7 +206,8 @@ struct LiveService::Impl {
     }
 
     void goodbye(uint32_t number) {
-        std::cerr << "LIVE_SERVICE left console=" << number << '\n';
+        // A connection that never said HELLO (a check) was not a console.
+        if (consoles[number].xuid) std::cerr << "LIVE_SERVICE left console=" << number << '\n';
         for (auto it = sessions.begin(); it != sessions.end();)
             it = it->second.host == number ? sessions.erase(it) : std::next(it);
         const uint64_t xuid = consoles[number].xuid;
