@@ -227,6 +227,16 @@ void NativeGraphics::initialize() {
                   << '\n';
     }
 
+    // The renderer binds every texture through one array of 4096 that is
+    // only partly filled (native_renderer.cpp), which Vulkan allows only with
+    // descriptor indexing. A driver without it (Mesa's hasvk on a Broadwell
+    // HD 5500, issue #134: 128 textures a stage) crashed while compiling the
+    // first pipeline; say why instead.
+    if (backend == GraphicsBackend::vulkan && !render_device->getCapabilities().descriptorIndexing)
+        throw std::runtime_error("this GPU's Vulkan driver lacks descriptor indexing (runtime descriptor arrays, "
+                                 "partially bound and variable-count bindings), which the renderer needs; "
+                                 "the GPU is not supported");
+
     auto render_queue = render_device->createCommandQueue(plume::RenderCommandListType::DIRECT);
     if (!render_queue)
         throw std::runtime_error(std::string("failed to create a ") + name + " direct command queue");
