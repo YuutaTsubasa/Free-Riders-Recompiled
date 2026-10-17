@@ -184,6 +184,8 @@ with [docs/progress.md](docs/progress.md).
   On a phone that can't keep 60 fps, a racer no longer falls short of Dolphin Resort's big jump: part of the game's work that frames left undrawn skipped is needed for the jump, and it now always runs.
 - [v0.10.0 — macOS and iOS](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.0)
   First builds for Apple Silicon Macs (`FreeRidersRecompiled.app`, macOS 13.3 or later) and, untested, for iOS (an `.ipa` to sideload). On a Mac, races still run slowly. Also: on a slow phone the racer no longer falls out of Metropolis Speedway (Issue #154).
+- [v0.10.1 — Online check, smoother speed rail, older GPUs](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.1)
+  The launcher checks the online server before the game starts and says why it can't connect (Issue #161). A stall on Metropolis Speedway's speed rail is gone (#164). Vulkan GPUs without descriptor indexing get a fallback renderer (#134, untested on such hardware), and two rendering bugs are fixed.
 
 ## System Requirements
 
