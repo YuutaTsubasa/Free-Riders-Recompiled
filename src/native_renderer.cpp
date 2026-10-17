@@ -369,6 +369,9 @@ struct NativeRenderer::Impl {
     std::unordered_map<std::vector<uint8_t>, std::shared_ptr<plume::RenderPipeline>, KeyHash> pipelines;
     std::unordered_map<std::vector<uint8_t>, std::shared_ptr<plume::RenderPipeline>, KeyHash> recipe_pipelines;
     std::map<std::vector<uint8_t>, PipelineRecipe> recipes;
+    // The previous draw's key and its entry in pipelines.
+    std::vector<uint8_t> last_pipeline_key;
+    std::shared_ptr<plume::RenderPipeline>* last_pipeline = nullptr;
     std::unordered_map<const ShaderCacheEntry*, std::unique_ptr<plume::RenderShader>> prepared_shaders;
     std::filesystem::path learned_manifest;
     bool manifest_dirty = false, preparation_started = false;
@@ -1396,7 +1399,15 @@ void NativeRenderer::draw(const NativeDraw& draw) {
         if (++verified == 1 || verified % 100000 == 0)
             std::cerr << "NATIVE_PIPELINE_KEY verified=" << verified << '\n';
     }
-    auto& pipeline = impl_->pipelines[key];  // copies the key only when inserting
+    // Two draws in three of a race have the same pipeline state as the draw
+    // before them: compared with its key (some six hundred bytes), the key
+    // needs no hash and no lookup. Map entries are never erased, so the
+    // remembered one stays valid.
+    if (!impl_->last_pipeline || key != impl_->last_pipeline_key) {
+        impl_->last_pipeline = &impl_->pipelines[key];  // copies the key only when inserting
+        impl_->last_pipeline_key = key;
+    }
+    auto& pipeline = *impl_->last_pipeline;
     const std::array<plume::RenderInputSlot, 2> slots{plume::RenderInputSlot(0, draw.stride),
                                                        plume::RenderInputSlot(zero_slot, 0)};
     std::optional<PipelineRecipe> recipe;
