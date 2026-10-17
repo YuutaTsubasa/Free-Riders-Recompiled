@@ -25,6 +25,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <iostream>
 #include <map>
@@ -442,6 +443,8 @@ struct NativeRenderer::Impl {
         // being watched until dynamic_until.
         uint32_t rewrites = 0;
         uint64_t dynamic_until = 0;
+        // Where it was looked up from, to forget that key with the entry.
+        uint32_t physical = 0;
     };
     std::unordered_map<VertexKey, VertexEntry, VertexKeyHash> vertex_entries;
     // The entry's key by physical address, so a lookup finds a known buffer
@@ -458,20 +461,52 @@ struct NativeRenderer::Impl {
         }
     };
     std::unordered_map<PhysicalKey, VertexKey, PhysicalKeyHash> keys_by_physical;
+    static constexpr size_t max_physical_keys = 262144;
     // In front of both maps: the entry each recently drawn range found, by
     // its physical key. The two map lookups were 4.5% of the main thread of
     // an AYN Thor race (the key map grows to a quarter of a million ranges,
     // so most lookups missed the cache); a frame draws the same few hundred
     // ranges again. Entries stay where they are until erased (unordered_map
-    // nodes), and every erase moves vertex_generation on, which retires the
-    // whole memo.
+    // nodes). An entry's own physical key is the only one that leads to it
+    // (its first view is a one-to-one function of the physical address), so
+    // forgetting it clears that key's slot; clearing the key map moves
+    // vertex_generation on, which retires the whole memo.
     struct VertexMemo {
         PhysicalKey key{};
         VertexEntry* entry = nullptr;
         uint64_t generation = 0;
     };
     std::array<VertexMemo, 4096> vertex_memo{};
+    VertexMemo& memo_slot(const PhysicalKey& key) { return vertex_memo[PhysicalKeyHash{}(key) % vertex_memo.size()]; }
     uint64_t vertex_generation = 1;
+    // Each entry by the frame it was last known drawn, oldest first. Ranges
+    // not drawn for ten seconds or so are forgotten a few at a time, each
+    // frame: a race streams vertices through a ring, so tens of thousands of
+    // ranges are drawn once, and forgetting them all every 600 frames (keys
+    // included) took 11 to 13 ms of a desktop frame. Their keys go with them;
+    // kept, the key map filled up and was cleared whole, 25 ms on the desktop
+    // and some 38 ms of one AYN Thor race frame (Issue #164).
+    std::deque<std::pair<uint64_t, VertexKey>> vertex_ages;
+    void forget_old_vertices() {
+        while (!vertex_ages.empty() && vertex_ages.front().first + 600 < frame) {
+            const VertexKey key = vertex_ages.front().second;
+            vertex_ages.pop_front();
+            const auto found = vertex_entries.find(key);
+            if (found == vertex_entries.end()) continue;
+            auto& entry = found->second;
+            if (entry.last_frame + 600 >= frame) {
+                vertex_ages.emplace_back(entry.last_frame, key);
+                continue;
+            }
+            retire_vertices(entry);
+            const PhysicalKey physical{entry.physical, key.bytes, key.layout};
+            if (auto& memo = memo_slot(physical); memo.entry == &entry) memo = {};
+            if (const auto known = keys_by_physical.find(physical);
+                    known != keys_by_physical.end() && known->second == key)
+                keys_by_physical.erase(known);
+            vertex_entries.erase(found);
+        }
+    }
     std::vector<std::pair<uint64_t, std::unique_ptr<plume::RenderBuffer>>> retired_vertex_buffers;
     uint64_t cached_vertex_bytes = 0;
     void retire_vertices(VertexEntry& entry) {
@@ -488,7 +523,13 @@ struct NativeRenderer::Impl {
     // frame still in flight wait one submission more.
     std::vector<uint32_t> released_texture_indices, in_flight_texture_indices;
 
-    Impl(NativeGraphics& g, NativePresentation& p) : graphics(g), presentation(p) {}
+    Impl(NativeGraphics& g, NativePresentation& p) : graphics(g), presentation(p) {
+        // Room for as many ranges as the key map keeps: growing either map
+        // rehashed all of it in one draw, 9 ms of a desktop frame at 131072
+        // keys and about 25 ms of an AYN Thor's (Issue #164).
+        keys_by_physical.reserve(max_physical_keys);
+        vertex_entries.reserve(max_physical_keys);
+    }
 };
 
 void NativeRenderer::Impl::save_manifest() noexcept {
@@ -785,14 +826,7 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
         state->released_texture_indices.clear();
         // Dropped vertex buffers outlive the frame in flight that may read them.
         std::erase_if(state->retired_vertex_buffers, [&](const auto& retired) { return retired.first + 2 < state->frame; });
-        // Ranges not drawn for ten seconds or so are forgotten.
-        if (state->frame % 600 == 0 &&
-            std::erase_if(state->vertex_entries, [&](auto& item) {
-                if (item.second.last_frame + 600 >= state->frame) return false;
-                state->retire_vertices(item.second);
-                return true;
-            }))
-            ++state->vertex_generation;
+        state->forget_old_vertices();
     });
 }
 
@@ -846,7 +880,7 @@ NativeRenderer::CachedVertices NativeRenderer::vertex_cache(GuestMemory& memory,
     uint32_t view_count = 0;
     const Impl::PhysicalKey physical_key{physical, bytes, layout};
     Impl::VertexEntry* known = nullptr;
-    auto& memo = impl_->vertex_memo[Impl::PhysicalKeyHash{}(physical_key) % impl_->vertex_memo.size()];
+    auto& memo = impl_->memo_slot(physical_key);
     if (memo.generation == impl_->vertex_generation && memo.key == physical_key && memo.entry->view_count)
         known = memo.entry;
     else if (const auto key = impl_->keys_by_physical.find(physical_key); key != impl_->keys_by_physical.end())
@@ -858,7 +892,7 @@ NativeRenderer::CachedVertices NativeRenderer::vertex_cache(GuestMemory& memory,
                                    uint64_t(physical) | 0xC0000000u})
             if (candidate + bytes <= 0x100000000ull && memory.readable(candidate, bytes)) views[view_count++] = uint32_t(candidate);
         if (!view_count || !bytes) return {};
-        if (impl_->keys_by_physical.size() >= 262144) {
+        if (impl_->keys_by_physical.size() >= Impl::max_physical_keys) {
             impl_->keys_by_physical.clear();
             ++impl_->vertex_generation;
         }
@@ -875,6 +909,8 @@ NativeRenderer::CachedVertices NativeRenderer::vertex_cache(GuestMemory& memory,
     };
     if (!entry.view_count) {
         // New: watch every view, and see whether it stays unwritten.
+        entry.physical = physical;
+        impl_->vertex_ages.emplace_back(impl_->frame, Impl::VertexKey{views[0], bytes, layout});
         entry.views = views;
         entry.view_count = view_count;
         for (uint32_t i = 0; i < view_count; ++i) memory.watch_writes(views[i], bytes);
