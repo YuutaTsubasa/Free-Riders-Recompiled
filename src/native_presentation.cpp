@@ -1592,6 +1592,11 @@ void NativePresentation::mark_target_read(bool color, bool depth) {
     if (impl_->target) impl_->target->reading |= (color ? 1 : 0) | (depth ? 2 : 0);
 }
 
+void NativePresentation::prepare_surface_write() {
+    impl_->refuse_during_gpu_wait();
+    impl_->prepare_write();
+}
+
 void NativePresentation::set_before_surface_write(std::function<void(const void*)> callback) {
     impl_->before_surface_write = std::move(callback);
 }
