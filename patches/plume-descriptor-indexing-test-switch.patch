@@ -1,0 +1,24 @@
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -3931,7 +3931,7 @@
+             vkGetPhysicalDeviceProperties2(physicalDevice, &deviceProperties2);
+         }
+ 
+-        const bool descriptorIndexing = indexingFeatures.descriptorBindingPartiallyBound && indexingFeatures.descriptorBindingVariableDescriptorCount && indexingFeatures.runtimeDescriptorArray;
++        const bool descriptorIndexing = !disableDescriptorIndexing && indexingFeatures.descriptorBindingPartiallyBound && indexingFeatures.descriptorBindingVariableDescriptorCount && indexingFeatures.runtimeDescriptorArray;
+         if (descriptorIndexing) {
+             indexingFeatures.pNext = createDeviceChain;
+             createDeviceChain = &indexingFeatures;
+--- a/plume_vulkan.h
++++ b/plume_vulkan.h
+@@ -431,6 +431,10 @@
+         // The name buffer device addresses were loaded under: the core name, its
+         // extension name on a Vulkan 1.1 device, or "none".
+         static const char *bufferDeviceAddressEntryPoint();
++        // Test switch: a device created while it is set leaves the descriptor
++        // indexing features disabled and reports no descriptorIndexing
++        // capability, as a driver without them would.
++        static inline bool disableDescriptorIndexing = false;
+         std::unique_ptr<RenderDescriptorSet> createDescriptorSet(const RenderDescriptorSetDesc &desc) override;
+         std::unique_ptr<RenderShader> createShader(const void *data, uint64_t size, const char *entryPointName, RenderShaderFormat format) override;
+         std::unique_ptr<RenderSampler> createSampler(const RenderSamplerDesc &desc) override;

@@ -45,6 +45,39 @@ Set 2 每次繪製以 dynamic offset 指向上傳環（`native_renderer.cpp`）�
 只有三個 set，在 Mali-G57 的上限四個之內（Issue #1）。Push constants 仍宣告（位址改成 `uint2`，
 避免要求 `shaderInt64`）但不再被讀取。
 
+### 沒有 descriptor indexing 的驅動程式
+
+Set 0 與 set 1 是只填了一部分的 4096 張貼圖與 256 個取樣器陣列，需要 descriptor indexing
+（runtime descriptor array、partially bound、variable count、update after bind）。Mesa 的 hasvk
+（Broadwell HD 5500，Issue #134：每個 stage 128 張貼圖）沒有這些功能，編譯第一條管線時就當掉。
+這種驅動程式改走有界佈局（`NativeGraphics::bounded_descriptors`，`game.log` 記
+`NATIVE_DESCRIPTORS mode=bounded`）：
+
+| Set | 內容 |
+| --- | --- |
+| 0 | binding 0：16 張 2D、binding 1：16 張 2D array、binding 2：16 張 cube |
+| 1 | 16 個取樣器 |
+| 2 | 不變 |
+
+- 每次繪製依共用常數裡 16 個 fetch constant 的貼圖與取樣器索引取得（或建立）一對 set，第 s 個
+  元素就是 fetch constant s 的貼圖，共用常數改寫成 0–15 再寫進上傳環（2D 索引的最高位，即解析
+  過的畫面，保留）。沒用到的元素放讀起來是 0 的同型別貼圖，因為沒有 partially bound 時每個元素
+  都必須有效。同一個畫格內相同組合共用同一對 set；set 來自所屬上傳環的 pool，環被重用（GPU 已
+  完成）時整個 pool 重設。
+- 著色器包不變：建立著色器時改寫 SPIR-V（`src/spirv_bounded_descriptors.h`）。set 0/1 的
+  runtime array 改成長度 16 的陣列，三種貼圖依型別移到 binding 0/1/2，拿掉
+  `RuntimeDescriptorArray`、`ShaderNonUniform`、`SPV_EXT_descriptor_indexing` 與 `NonUniform`，
+  改宣告 `SampledImageArrayDynamicIndexing`（Vulkan 1.0 的 `shaderSampledImageArrayDynamicIndexing`；
+  索引來自共用常數，對整次繪製一致）。不認得的模組（其他 set 的陣列、3D 貼圖陣列、其他
+  non-uniform 能力）直接停止並說明原因。
+- 有界佈局本身需要 `shaderSampledImageArrayDynamicIndexing`、每個 stage 48 張貼圖、16 個取樣器、
+  5 個 dynamic uniform buffer、合計 70 個資源與 3 個 set；連這些都沒有的驅動程式仍會停止，並列出
+  缺少的項目。
+- `SFR_TEST_NO_DESCRIPTOR_INDEXING=1` 讓 Plume 建立裝置時不開 descriptor indexing 功能
+  （`patches/plume-descriptor-indexing-test-switch.patch`），在有這些功能的顯示卡上也走有界佈局；
+  搭配 `-DSFR_VULKAN_VALIDATION=ON` 與驗證層，可檢查是否還用到裝置沒開的功能。
+- 有 descriptor indexing 的 Vulkan 與 D3D12 不受影響。
+
 本專案自己加進著色器的部分：
 
 | 內容 | D3D12 | Vulkan |

@@ -3,7 +3,9 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
+#include <vector>
 
 namespace plume {
 struct RenderCommandQueue;
@@ -37,6 +39,15 @@ public:
     plume::RenderDevice& device();
     plume::RenderCommandQueue& queue();
     [[nodiscard]] GraphicsBackend backend() const noexcept;
+    // Vulkan without descriptor indexing (Issue #134): the renderer binds each
+    // draw's textures and samplers in small sets of its own instead of one
+    // array of thousands, and its shaders are rewritten for that layout
+    // (spirv_bounded_descriptors.h). SFR_TEST_NO_DESCRIPTOR_INDEXING=1 makes
+    // the device without the features to try it on a GPU that has them.
+    [[nodiscard]] bool bounded_descriptors() const noexcept;
+    // The shader's code as this device takes it: SPIR-V rewritten for the
+    // bounded layout when bounded_descriptors(), otherwise as it is.
+    [[nodiscard]] std::vector<uint8_t> shader_code(std::span<const uint8_t> code) const;
     // Linux: the SDL window Plume's Vulkan instance was made for (hidden
     // until presentation shows it). Null on Windows.
     [[nodiscard]] void* host_window() const noexcept;
