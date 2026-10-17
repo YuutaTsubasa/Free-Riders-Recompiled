@@ -427,12 +427,18 @@ lobby and online races. Windows, Linux and Android players can race together.
 *The same online race on a PC (the host), a ROG Xbox Ally X and an AYN Thor.*
 
 1. On every device: **Launcher → General → Online play → Xbox LIVE**.
-2. **One device hosts:** turn on **Host the server**. The game runs the server
-   itself on TCP and UDP port 47800. Windows asks once whether to let the game
-   through its firewall; allow it on private networks. Android needs no setup.
-3. **The others connect:** enter the host's local IP address under **Server
-   address** (for example `192.168.1.10`), and give each player a different
-   **Online name**. Your save and profile stay as they are.
+2. **One device hosts:** turn on **Host the server**. The launcher shows the
+   address the others enter ("Friends enter: 192.168.1.23"). The game runs the
+   server itself on TCP and UDP port 47800, and only while it runs. The first
+   time, Windows asks whether to let the game through its firewall: allow it
+   (private networks), or nobody can connect. Android needs no setup.
+3. **The others connect:** enter the host's address under **Server address**
+   (for example `192.168.1.10`), and give each player a different **Online
+   name**. Your save and profile stay as they are. **Test connection** checks
+   the server from the launcher, and **Start game** checks it again: if the
+   server cannot be reached, the launcher says why (address not found, nothing
+   listening, no answer) before the game starts. A game started before the
+   host's keeps trying every 5 seconds, and its Xbox LIVE opens once it is in.
 4. In the game, open **Main Menu → Xbox LIVE**. The host chooses
    **Create Match**; the others choose **Quick Match** and press **A** on the
    lobby they find. The host starts the race.

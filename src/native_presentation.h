@@ -83,6 +83,10 @@ public:
     // what was resolved out of it, and the surface is made writable again.
     void mark_target_read(bool color, bool depth);
     void set_before_surface_write(std::function<void(const void* surface)> callback);
+    // What the first record of a draw does, done before the draw looks up
+    // its textures: a draw back into a surface it has just resolved out of
+    // then samples the copy rather than the surface it writes.
+    void prepare_surface_write();
     // Records made between these (a resolve's own barriers and copies) do
     // not write the current surface, so they leave its resolves aliased.
     void begin_non_writing_records() noexcept;

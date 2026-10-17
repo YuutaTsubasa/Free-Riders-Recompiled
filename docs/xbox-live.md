@@ -10,8 +10,28 @@ On every device: **Launcher → General → Online play → Xbox LIVE**.
 - **One device hosts.** Turn on **Host the server**. That game runs the server
   itself, on TCP and UDP port 47800. Any device can host: a PC, a handheld or a
   phone.
+  The launcher shows this device's address for the others ("Friends enter:
+  192.168.1.23"). The server exists only while the host's game runs.
+  The first time a Windows PC hosts, Windows asks whether to let the game
+  through its firewall. Allow it (private networks): if the question is
+  dismissed, Windows blocks the others and they get no answer. The rule can be
+  changed later in Windows Security > Firewall & network protection > Allow an
+  app through firewall.
 - **The others connect.** Enter the host's local IP address under **Server
   address**, for example `192.168.1.10` or `192.168.1.10:47800`.
+  **Test connection** checks it from the launcher (up to 3 s), and
+  **Start game** runs the same check first. The answers:
+  - *Connected*: a server of this version answered.
+  - *Address not found*: the name or address could not be looked up.
+  - *... is there, but no server runs on port 47800*: the device answered,
+    but the host's game is not running with Host the server on.
+  - *No answer*: the host's game is not running, the devices are on
+    different networks, or the host's firewall drops port 47800.
+  - *Not a Free Riders server, or a different version*.
+
+  When the check fails, Start asks: **Start anyway** or **Cancel**. A game
+  that starts before the host's keeps trying (below), so starting first is
+  fine.
 - **Online name** is the gamertag the others see. The profile's own name, and
   with it the saves, stays as it is.
 
@@ -76,6 +96,19 @@ python scripts/live_server.py --port 47800
 
 - `SFR_LIVE_SERVER=host[:port]` connects to a server. `SFR_LIVE_HOST=1` starts
   one in this process (`src/live_service.cpp`) and connects to it.
+- The first use connects at once (3 s at most; `LIVE_SERVER unreachable=...
+  reason=refused|no-answer|address|unexpected` in game.log when it fails).
+  After a failure, a thread tries again every 5 s (`LIVE_SERVER retry=N
+  connected=...`). The title has read its sign-in state by then, so the next
+  `XNotifyGetNext` sends it `XN_SYS_SIGNINCHANGED`; it reads the state again,
+  now signed in to LIVE, and Xbox LIVE opens from the Main Menu (checked: a
+  server started after the guest reached the Main Menu).
+- `src/live_connect.cpp` holds what the game and the launcher share: reading
+  `host[:port]`, a connect with a time limit, the request exchange, and the
+  launcher's check. The check sends `PING`, which a server answers
+  (`OK freeriders <version>`) without making the caller a console, so it
+  does not show to the others. A server from before PING answers it with an
+  error, which the check takes as "an older release" and lets the game start.
 - The server puts every game on a virtual network. Each game gets an address
   `10.77.x.y`, a MAC address and a machine id.
 - The title's sockets are virtual. Every datagram goes to the server over one
