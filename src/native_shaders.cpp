@@ -73,7 +73,14 @@ uint32_t NativeShaders::create(ShaderStage stage, uint32_t container) {
     // D3D12 specialization libraries remain attached to their source entry:
     // linking requires observed guest render state, which creation does not
     // invent. SPIR-V keeps the constant and takes its value per pipeline.
-    const auto code=found->code(vulkan);
+    auto code=found->code(vulkan);
+    // A driver without descriptor indexing takes the SPIR-V rewritten for
+    // the renderer's bounded layout (NativeGraphics::bounded_descriptors).
+    std::vector<uint8_t> bounded;
+    if(vulkan && !code.empty() && impl_->graphics.bounded_descriptors()) {
+        bounded=impl_->graphics.shader_code(code);
+        code=bounded;
+    }
     if(!code.empty() && (vulkan || !found->specialization_mask)) {
         next->shader=impl_->graphics.device().createShader(code.data(),code.size(),"shaderMain",
             vulkan?plume::RenderShaderFormat::SPIRV:plume::RenderShaderFormat::DXIL);

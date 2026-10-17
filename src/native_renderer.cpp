@@ -5,6 +5,7 @@
 #include "pipeline_manifest.h"
 #include "runtime_shader_cache.h"
 #include "shader_set_use.h"
+#include "spirv_bounded_descriptors.h"
 #include <thread>
 #include <exception>
 #ifdef _WIN32
@@ -32,6 +33,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -265,6 +267,8 @@ uint32_t guest_view(GuestMemory& memory, uint32_t physical, uint64_t size) {
     unsupported(physical, "texture data is not mapped in any physical view");
 }
 }
+
+struct BoundedDescriptors;
 
 struct NativeRenderer::Impl {
     // What the presentation's current command list has bound (its
@@ -541,6 +545,23 @@ struct NativeRenderer::Impl {
     // frame still in flight wait one submission more.
     std::vector<uint32_t> released_texture_indices, in_flight_texture_indices;
 
+    // Vulkan without descriptor indexing (NativeGraphics::bounded_descriptors,
+    // Issue #134): set 0 and set 1 are not the arrays of 4096 textures and
+    // 256 samplers but small fixed ones (spirv_bounded_descriptors.h), and
+    // each draw binds a pair holding what its sixteen fetch constants name,
+    // at their numbers. textures and samplers are then sets of that layout
+    // that are never written or bound; descriptors go to views instead.
+    std::unique_ptr<BoundedDescriptors> bounded;
+    // The render thread's: the pair bound in the list of bounded_generation.
+    uint64_t bounded_generation = ~0ull;
+    VkDescriptorSet bound_texture_set = VK_NULL_HANDLE, bound_sampler_set = VK_NULL_HANDLE;
+    // Every texture descriptor goes through here (and every sampler through
+    // set_sampler), so the bounded layout learns the views it binds.
+    void set_texture(uint32_t index, plume::RenderTexture* texture, plume::RenderTextureView* view);
+    void set_sampler(uint32_t index, plume::RenderSampler* sampler) {
+        if (!bounded) samplers->setSampler(index, sampler);
+    }
+
     Impl(NativeGraphics& g, NativePresentation& p) : graphics(g), presentation(p) {
         // Room for as many ranges as the key map keeps: growing either map
         // rehashed all of it in one draw, 9 ms of a desktop frame at 131072
@@ -549,6 +570,159 @@ struct NativeRenderer::Impl {
         vertex_entries.reserve(max_physical_keys);
     }
 };
+
+// The bounded layout's descriptor sets, made per draw from the texture and
+// sampler indices of its shared constants and kept for the rest of the
+// frame: a race frame's draws bind a few dozen distinct combinations. Sets
+// come from pools of the upload ring they were made with (the same lifetime:
+// reset when the ring is reused, after the GPU has finished with it).
+struct BoundedDescriptors {
+    static constexpr uint32_t count = bounded_descriptor_count;
+    static constexpr uint32_t sets_per_pool = 256;
+    using TextureKey = std::array<uint32_t, 3 * count>;
+    using SamplerKey = std::array<uint32_t, count>;
+    template <class Key>
+    struct KeyHash {
+        size_t operator()(const Key& key) const noexcept {
+            uint64_t hash = 0xcbf29ce484222325ull;
+            for (const uint32_t word : key) hash = (hash ^ word) * 0x100000001b3ull;
+            return size_t(hash ^ (hash >> 29));
+        }
+    };
+    struct Ring {
+        std::vector<VkDescriptorPool> pools;
+        size_t current = 0;
+        std::unordered_map<TextureKey, VkDescriptorSet, KeyHash<TextureKey>> texture_sets;
+        std::unordered_map<SamplerKey, VkDescriptorSet, KeyHash<SamplerKey>> sampler_sets;
+    };
+    VkDevice device = VK_NULL_HANDLE;
+    VkDescriptorSetLayout texture_layout = VK_NULL_HANDLE, sampler_layout = VK_NULL_HANDLE;
+    std::array<Ring, 2> rings;
+    // The view each texture descriptor index holds (null when none), and
+    // views that read as zero for each of the three bindings: a set without
+    // partially bound descriptors needs one of the shader's type in every
+    // element.
+    std::vector<VkImageView> views = std::vector<VkImageView>(texture_capacity, VK_NULL_HANDLE);
+    std::array<std::unique_ptr<plume::RenderTexture>, 3> null_textures;
+    std::array<std::unique_ptr<plume::RenderTextureView>, 3> null_views;
+    std::array<VkImageView, 3> null{};
+    uint64_t sets_made = 0;
+    bool reported_type = false;
+
+    ~BoundedDescriptors() {
+        for (auto& ring : rings)
+            for (const VkDescriptorPool pool : ring.pools) vkDestroyDescriptorPool(device, pool, nullptr);
+    }
+    // The GPU has finished with every set made with this ring.
+    void reset(Ring& ring) {
+        for (const VkDescriptorPool pool : ring.pools) vkResetDescriptorPool(device, pool, 0);
+        ring.current = 0;
+        ring.texture_sets.clear();
+        ring.sampler_sets.clear();
+    }
+    VkDescriptorSet allocate(Ring& ring, VkDescriptorSetLayout layout) {
+        for (;;) {
+            if (ring.current == ring.pools.size()) {
+                const std::array<VkDescriptorPoolSize, 2> sizes{{
+                    {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, sets_per_pool * 3 * count},
+                    {VK_DESCRIPTOR_TYPE_SAMPLER, sets_per_pool * count}}};
+                VkDescriptorPoolCreateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+                info.maxSets = 2 * sets_per_pool;
+                info.poolSizeCount = uint32_t(sizes.size());
+                info.pPoolSizes = sizes.data();
+                VkDescriptorPool pool = VK_NULL_HANDLE;
+                if (const VkResult result = vkCreateDescriptorPool(device, &info, nullptr, &pool); result != VK_SUCCESS)
+                    unsupported(uint32_t(result), "bounded descriptor pool creation failed");
+                ring.pools.push_back(pool);
+            }
+            VkDescriptorSetAllocateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+            info.descriptorPool = ring.pools[ring.current];
+            info.descriptorSetCount = 1;
+            info.pSetLayouts = &layout;
+            VkDescriptorSet set = VK_NULL_HANDLE;
+            const VkResult result = vkAllocateDescriptorSets(device, &info, &set);
+            if (result == VK_SUCCESS) {
+                ++sets_made;
+                return set;
+            }
+            if (result != VK_ERROR_OUT_OF_POOL_MEMORY && result != VK_ERROR_FRAGMENTED_POOL)
+                unsupported(uint32_t(result), "bounded descriptor set allocation failed");
+            ++ring.current;
+        }
+    }
+    // The pair for these shared constants, which are rewritten to point into
+    // it: fetch constant s reads element s of each binding. The top bit of a
+    // 2D index (a resolved framebuffer, NativeDraw::shared) stays.
+    std::pair<VkDescriptorSet, VkDescriptorSet> bind(Ring& ring, SharedConstants& shared,
+                                                     const std::vector<std::unique_ptr<plume::RenderSampler>>& samplers) {
+        TextureKey textures;
+        SamplerKey sampler_key;
+        for (uint32_t s = 0; s < count; ++s) {
+            textures[s] = shared.texture_2d[s] & 0x7fffffffu;
+            textures[count + s] = shared.texture_2d_array[s];
+            textures[2 * count + s] = shared.texture_cube[s];
+            sampler_key[s] = shared.sampler[s];
+            shared.texture_2d[s] = (shared.texture_2d[s] & 0x80000000u) | s;
+            shared.texture_2d_array[s] = shared.texture_cube[s] = shared.sampler[s] = s;
+        }
+        auto& texture_set = ring.texture_sets[textures];
+        if (!texture_set) {
+            texture_set = allocate(ring, texture_layout);
+            std::array<VkDescriptorImageInfo, 3 * count> images{};
+            for (uint32_t i = 0; i < images.size(); ++i) {
+                const uint32_t binding = i / count, index = textures[i];
+                // Only 2D textures exist; the 2D array and cube elements are
+                // the null descriptors the guest code puts there.
+                VkImageView view = binding == 0 && index >= first_texture && index < views.size() ? views[index]
+                                                                                                    : VK_NULL_HANDLE;
+                if (binding != 0 && index != (binding == 1 ? null_2d_array : null_cube) && !reported_type) {
+                    reported_type = true;
+                    std::cerr << "NATIVE_DESCRIPTORS bounded_unsupported_view binding=" << binding << " index="
+                              << index << " (read as zero)\n";
+                }
+                images[i] = {VK_NULL_HANDLE, view ? view : null[binding], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+            }
+            std::array<VkWriteDescriptorSet, 3> writes{};
+            for (uint32_t b = 0; b < 3; ++b) {
+                writes[b] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                writes[b].dstSet = texture_set;
+                writes[b].dstBinding = b;
+                writes[b].descriptorCount = count;
+                writes[b].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+                writes[b].pImageInfo = images.data() + b * count;
+            }
+            vkUpdateDescriptorSets(device, uint32_t(writes.size()), writes.data(), 0, nullptr);
+        }
+        auto& sampler_set = ring.sampler_sets[sampler_key];
+        if (!sampler_set) {
+            sampler_set = allocate(ring, sampler_layout);
+            std::array<VkDescriptorImageInfo, count> infos{};
+            for (uint32_t s = 0; s < count; ++s) {
+                const uint32_t index = sampler_key[s] < samplers.size() ? sampler_key[s] : 0;
+                infos[s].sampler = static_cast<const plume::VulkanSampler*>(samplers[index].get())->vk;
+            }
+            VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            write.dstSet = sampler_set;
+            write.dstBinding = 0;
+            write.descriptorCount = count;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+            write.pImageInfo = infos.data();
+            vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+        }
+        return {texture_set, sampler_set};
+    }
+};
+
+void NativeRenderer::Impl::set_texture(uint32_t index, plume::RenderTexture* texture, plume::RenderTextureView* view) {
+    if (!bounded) {
+        textures->setTexture(index, texture, plume::RenderTextureLayout::SHADER_READ, view);
+        return;
+    }
+    // As Plume's setTexture: the view, or the texture's own, or nothing.
+    if (!texture || index >= bounded->views.size()) return;
+    bounded->views[index] = view ? static_cast<plume::VulkanTextureView*>(view)->vk
+                                 : static_cast<plume::VulkanTexture*>(texture)->imageView;
+}
 
 void NativeRenderer::Impl::save_manifest() noexcept {
     manifest_saved_at = std::chrono::steady_clock::now();
@@ -635,7 +809,12 @@ void NativeRenderer::prepare_pipelines() {
                     const auto shader = [&](const ShaderCacheEntry& entry) -> const plume::RenderShader* {
                         auto& result = impl_->prepared_shaders[&entry];
                         if (!result) {
-                            const auto bytes = entry.code(backend == 1);
+                            auto bytes = entry.code(backend == 1);
+                            std::vector<uint8_t> bounded;
+                            if (backend == 1 && impl_->graphics.bounded_descriptors()) {
+                                bounded = impl_->graphics.shader_code(bytes);
+                                bytes = bounded;
+                            }
                             result = impl_->graphics.device().createShader(bytes.data(), bytes.size(), "shaderMain",
                                 backend == 1 ? plume::RenderShaderFormat::SPIRV : plume::RenderShaderFormat::DXIL);
                             if (!result || (backend == 1 &&
@@ -700,19 +879,31 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
     auto& device = graphics.device();
     plume::RenderPipelineLayoutBuilder layout;
     layout.begin(false, true);
+    const bool vulkan = graphics.backend() == GraphicsBackend::vulkan;
+    const bool bounded = vulkan && graphics.bounded_descriptors();
     plume::RenderDescriptorSetBuilder textures;
     textures.begin();
-    textures.addTexture(0, texture_capacity);
-    textures.end(true, texture_capacity);
+    if (bounded) {
+        // 2D, 2D array and cube textures (spirv_bounded_descriptors.h).
+        for (uint32_t binding = 0; binding < 3; ++binding) textures.addTexture(binding, bounded_descriptor_count);
+        textures.end();
+    } else {
+        textures.addTexture(0, texture_capacity);
+        textures.end(true, texture_capacity);
+    }
     impl_->textures = textures.create(&device);
-    const bool vulkan = graphics.backend() == GraphicsBackend::vulkan;
     // D3D12 binds the one texture heap as spaces 0..2 (2D, 2D array, cube);
     // Vulkan's shaders read all three from set 0 (vulkan_shader_source.cpp).
     for (int space = 0; space < (vulkan ? 1 : 3); ++space) layout.addDescriptorSet(textures);
     plume::RenderDescriptorSetBuilder samplers;
     samplers.begin();
-    samplers.addSampler(0, sampler_capacity);
-    samplers.end(true, sampler_capacity);
+    if (bounded) {
+        samplers.addSampler(0, bounded_descriptor_count);
+        samplers.end();
+    } else {
+        samplers.addSampler(0, sampler_capacity);
+        samplers.end(true, sampler_capacity);
+    }
     impl_->samplers = samplers.create(&device);
     layout.addDescriptorSet(samplers);
     if (vulkan) {
@@ -779,12 +970,51 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
                                                               plume::RenderSwizzle::ZERO, plume::RenderSwizzle::ZERO);
         auto texture = device.createTexture(desc);
         auto texture_view = texture->createTextureView(view);
-        impl_->textures->setTexture(i, texture.get(), plume::RenderTextureLayout::SHADER_READ, texture_view.get());
+        impl_->set_texture(i, texture.get(), texture_view.get());
         impl_->null_objects[i] = std::move(texture);
         impl_->null_views[i] = std::move(texture_view);
     }
     impl_->sampler_objects.push_back(device.createSampler(plume::RenderSamplerDesc{}));
-    impl_->samplers->setSampler(0, impl_->sampler_objects.back().get());
+    impl_->set_sampler(0, impl_->sampler_objects.back().get());
+    if (bounded) {
+        auto& sets = *(impl_->bounded = std::make_unique<BoundedDescriptors>());
+        sets.device = static_cast<plume::VulkanDevice&>(device).vk;
+        sets.texture_layout = static_cast<plume::VulkanDescriptorSet*>(impl_->textures.get())->setLayout->vk;
+        sets.sampler_layout = static_cast<plume::VulkanDescriptorSet*>(impl_->samplers.get())->setLayout->vk;
+        // Zero-reading textures of the bindings' own types, kept apart from
+        // the descriptor slots above (whose objects later textures replace).
+        for (uint32_t i = 0; i < 3; ++i) {
+            plume::RenderTextureDesc desc = plume::RenderTextureDesc::Texture2D(1, 1, 1, plume::RenderFormat::R8_UNORM);
+            plume::RenderTextureViewDesc view = plume::RenderTextureViewDesc::Texture2D(plume::RenderFormat::R8_UNORM);
+            if (i == null_2d_array) desc.arraySize = 2;  // a 2D view of more than one layer is an array view
+            if (i == null_cube) {
+                desc.arraySize = 6;
+                desc.flags = plume::RenderTextureFlag::CUBE;
+                view = plume::RenderTextureViewDesc::TextureCube(plume::RenderFormat::R8_UNORM);
+            }
+            view.componentMapping = plume::RenderComponentMapping(plume::RenderSwizzle::ZERO, plume::RenderSwizzle::ZERO,
+                                                                  plume::RenderSwizzle::ZERO, plume::RenderSwizzle::ZERO);
+            sets.null_textures[i] = device.createTexture(desc);
+            if (!sets.null_textures[i]) unsupported(i, "bounded null texture creation failed");
+            sets.null_views[i] = sets.null_textures[i]->createTextureView(view);
+            if (!sets.null_views[i]) unsupported(i, "bounded null texture view creation failed");
+            sets.null[i] = static_cast<plume::VulkanTextureView*>(sets.null_views[i].get())->vk;
+        }
+        // Laid out for sampling once (their contents are never read: the
+        // views swizzle to zero).
+        const auto list = graphics.queue().createCommandList();
+        const auto fence = device.createCommandFence();
+        if (!list || !fence) unsupported(0, "bounded null texture setup failed");
+        list->begin();
+        for (const auto& texture : sets.null_textures)
+            list->barriers(plume::RenderBarrierStage::GRAPHICS,
+                           plume::RenderTextureBarrier(texture.get(), plume::RenderTextureLayout::SHADER_READ));
+        list->end();
+        graphics.queue().executeCommandLists(list.get(), fence.get());
+        graphics.queue().waitForCommandFence(fence.get());
+        std::cerr << "NATIVE_DESCRIPTORS bounded=1 textures=" << 3 * bounded_descriptor_count
+                  << " samplers=" << bounded_descriptor_count << '\n';
+    }
 
     // Vertex inputs the declaration does not provide read slot 15: zeros.
     impl_->zero_buffer = device.createBuffer(plume::RenderBufferDesc::VertexBuffer(256, plume::RenderHeapType::UPLOAD));
@@ -845,6 +1075,19 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
             state->ring_index ^= 1;
         }
         state->released_texture_indices.clear();
+        // The bounded layout's sets go the way of the ring they were made
+        // with: all of them when every submission has finished, otherwise
+        // those of the ring the next draws fill.
+        if (auto* bounded = state->bounded.get()) {
+            if (complete) for (auto& ring : bounded->rings) bounded->reset(ring);
+            else bounded->reset(bounded->rings[state->ring_index]);
+            // How many sets the frames made, now and then (frame counts flushes).
+            if (state->frame % 600 == 0) {
+                std::cerr << "NATIVE_DESCRIPTORS bounded_sets=" << bounded->sets_made << " flushes=600 pools="
+                          << bounded->rings[0].pools.size() + bounded->rings[1].pools.size() << '\n';
+                bounded->sets_made = 0;
+            }
+        }
         // Dropped vertex buffers outlive the frame in flight that may read them.
         std::erase_if(state->retired_vertex_buffers, [&](const auto& retired) { return retired.first + 2 < state->frame; });
         state->forget_old_vertices();
@@ -1037,7 +1280,7 @@ uint32_t NativeRenderer::placeholder_texture() {
         index = first_texture + impl_->next_texture_index++;
     }
     auto view = texture->createTextureView(plume::RenderTextureViewDesc::Texture2D(format));
-    impl_->textures->setTexture(index, texture.get(), plume::RenderTextureLayout::SHADER_READ, view.get());
+    impl_->set_texture(index, texture.get(), view.get());
     const size_t slot = index - first_texture;
     if (impl_->texture_objects.size() <= slot) {
         impl_->texture_objects.resize(slot + 1);
@@ -1099,7 +1342,7 @@ uint32_t NativeRenderer::adopt_resolved_target(uint32_t physical, bool depth) {
             view = impl_->take_texture_index();
             auto texture_view = source->createTextureView(plume::RenderTextureViewDesc::Texture2D(format));
             if (!texture_view) unsupported(physical, "render surface view creation failed");
-            impl_->textures->setTexture(view, source, plume::RenderTextureLayout::SHADER_READ, texture_view.get());
+            impl_->set_texture(view, source, texture_view.get());
             impl_->texture_views[view - first_texture] = std::move(texture_view);
             impl_->alias_indices.insert(view);
             impl_->resolved_texture_indices.set(view);
@@ -1148,7 +1391,7 @@ static uint32_t own_resolve(NativeRenderer::Impl& impl, uint32_t physical, uint3
     if (!texture) throw RuntimeStop("native-resolve", physical, "native resolve target creation failed");
     const uint32_t index = impl.take_texture_index();
     auto view = texture->createTextureView(plume::RenderTextureViewDesc::Texture2D(format));
-    impl.textures->setTexture(index, texture.get(), plume::RenderTextureLayout::SHADER_READ, view.get());
+    impl.set_texture(index, texture.get(), view.get());
     // A view reads its texture as it is destroyed: the old view goes first.
     impl.texture_views[index - first_texture].reset();
     impl.texture_objects[index - first_texture] = std::move(texture);
@@ -1307,7 +1550,7 @@ uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
     }
     if (index >= texture_capacity) unsupported(index, "native texture descriptor capacity exhausted");
     auto view = texture->createTextureView(plume::RenderTextureViewDesc::Texture2D(layout->format));
-    impl_->textures->setTexture(index, texture.get(), plume::RenderTextureLayout::SHADER_READ, view.get());
+    impl_->set_texture(index, texture.get(), view.get());
     const size_t slot = index - first_texture;
     if (impl_->texture_objects.size() <= slot) {
         impl_->texture_objects.resize(slot + 1);
@@ -1431,7 +1674,7 @@ uint32_t NativeRenderer::sampler(const FetchWords& words) {
     const uint32_t index = uint32_t(impl_->sampler_objects.size());
     if (index >= sampler_capacity) unsupported(index, "native sampler descriptor capacity exhausted");
     impl_->sampler_objects.push_back(impl_->graphics.device().createSampler(fetch_sampler(words)));
-    impl_->samplers->setSampler(index, impl_->sampler_objects.back().get());
+    impl_->set_sampler(index, impl_->sampler_objects.back().get());
     impl_->sampler_indices.emplace(key, index);
     return index;
 }
@@ -1574,15 +1817,33 @@ void NativeRenderer::draw(const NativeDraw& draw) {
         std::memcpy(mapped + vs_rel, draw.vertex_constants.data(), 4096);
         std::memcpy(mapped + ps_rel, draw.pixel_constants.data(), 4096);
     }
-    std::memcpy(mapped + shared_rel, &draw.shared, sizeof(draw.shared));
-    if (impl_->presentation.width() != impl_->presentation.render_width() ||
-        impl_->presentation.height() != impl_->presentation.render_height()) {
+    // The bounded layout's pair of sets for this draw (null otherwise).
+    VkDescriptorSet bounded_textures = VK_NULL_HANDLE, bounded_samplers = VK_NULL_HANDLE;
+    if (impl_->bounded) {
+        // Same as below, then pointed into the draw's own sets; composed here
+        // and written once, as the ring is write-combined.
         auto shared = draw.shared;
-        shared.resolved_texture_scale[0] = float(impl_->presentation.width()) / impl_->presentation.render_width();
-        shared.resolved_texture_scale[1] = float(impl_->presentation.height()) / impl_->presentation.render_height();
-        for (auto& descriptor : shared.texture_2d)
-            if (descriptor < texture_capacity && impl_->resolved_texture_indices.test(descriptor)) descriptor |= 0x80000000u;
+        if (impl_->presentation.width() != impl_->presentation.render_width() ||
+            impl_->presentation.height() != impl_->presentation.render_height()) {
+            shared.resolved_texture_scale[0] = float(impl_->presentation.width()) / impl_->presentation.render_width();
+            shared.resolved_texture_scale[1] = float(impl_->presentation.height()) / impl_->presentation.render_height();
+            for (auto& descriptor : shared.texture_2d)
+                if (descriptor < texture_capacity && impl_->resolved_texture_indices.test(descriptor)) descriptor |= 0x80000000u;
+        }
+        std::tie(bounded_textures, bounded_samplers) =
+            impl_->bounded->bind(impl_->bounded->rings[impl_->ring_index], shared, impl_->sampler_objects);
         std::memcpy(mapped + shared_rel, &shared, sizeof(shared));
+    } else {
+        std::memcpy(mapped + shared_rel, &draw.shared, sizeof(draw.shared));
+        if (impl_->presentation.width() != impl_->presentation.render_width() ||
+            impl_->presentation.height() != impl_->presentation.render_height()) {
+            auto shared = draw.shared;
+            shared.resolved_texture_scale[0] = float(impl_->presentation.width()) / impl_->presentation.render_width();
+            shared.resolved_texture_scale[1] = float(impl_->presentation.height()) / impl_->presentation.render_height();
+            for (auto& descriptor : shared.texture_2d)
+                if (descriptor < texture_capacity && impl_->resolved_texture_indices.test(descriptor)) descriptor |= 0x80000000u;
+            std::memcpy(mapped + shared_rel, &shared, sizeof(shared));
+        }
     }
     const bool vulkan = impl_->graphics.backend() == GraphicsBackend::vulkan;
     // Only the entries the palette holds are written. The rest of the
@@ -1617,6 +1878,22 @@ void NativeRenderer::draw(const NativeDraw& draw) {
 #else
     const uint8_t set_stages = 3;
 #endif
+    if (bounded_textures) {
+        // Ahead of the draw, in the same order: bound when they change or a
+        // list begins (the draw below binds the rest of the layout then).
+        impl_->presentation.record_async([impl = impl_.get(), bounded_textures, bounded_samplers](
+                                             plume::RenderCommandList& list, uint64_t generation) {
+            if (impl->bounded_generation == generation && impl->bound_texture_set == bounded_textures &&
+                impl->bound_sampler_set == bounded_samplers) return;
+            impl->bounded_generation = generation;
+            impl->bound_texture_set = bounded_textures;
+            impl->bound_sampler_set = bounded_samplers;
+            const VkDescriptorSet sets[2] = {bounded_textures, bounded_samplers};
+            vkCmdBindDescriptorSets(static_cast<plume::VulkanCommandList&>(list).vk, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    static_cast<const plume::VulkanPipelineLayout*>(impl->layout.get())->vk, 0, 2, sets,
+                                    0, nullptr);
+        });
+    }
     impl_->presentation.record_async([impl = impl_.get(), pipeline = pipeline.get(), set_stages, palette_bound, stencil_enabled,
                                       stencil_reference, stride, vertex_count, vertex_view_bytes, vertex_buffer,
                                       index_count, base_vertex_location, index_bytes, index_buffer, vulkan,
@@ -1630,8 +1907,11 @@ void NativeRenderer::draw(const NativeDraw& draw) {
             impl->bound_generation = generation;
             list.setGraphicsPipelineLayout(impl->layout.get());
             if (vulkan) {
-                list.setGraphicsDescriptorSet(impl->textures.get(), 0);
-                list.setGraphicsDescriptorSet(impl->samplers.get(), 1);
+                // The bounded layout's sets are bound by the record before.
+                if (!impl->bounded) {
+                    list.setGraphicsDescriptorSet(impl->textures.get(), 0);
+                    list.setGraphicsDescriptorSet(impl->samplers.get(), 1);
+                }
             } else {
                 for (uint32_t space = 0; space < 3; ++space) list.setGraphicsDescriptorSet(impl->textures.get(), space);
                 list.setGraphicsDescriptorSet(impl->samplers.get(), 3);
@@ -1657,8 +1937,16 @@ void NativeRenderer::draw(const NativeDraw& draw) {
             // MoltenVK then checks all 4096 textures each time: a race frame
             // took 160 ms on an M1.)
             if (set_stages & impl->stale_set_stages) {
-                list.setGraphicsDescriptorSet(impl->textures.get(), 0);
-                list.setGraphicsDescriptorSet(impl->samplers.get(), 1);
+                if (impl->bounded) {
+                    // This draw's pair, bound by the record before it.
+                    const VkDescriptorSet sets[2] = {impl->bound_texture_set, impl->bound_sampler_set};
+                    vkCmdBindDescriptorSets(static_cast<plume::VulkanCommandList&>(list).vk, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                            static_cast<const plume::VulkanPipelineLayout*>(impl->layout.get())->vk, 0, 2,
+                                            sets, 0, nullptr);
+                } else {
+                    list.setGraphicsDescriptorSet(impl->textures.get(), 0);
+                    list.setGraphicsDescriptorSet(impl->samplers.get(), 1);
+                }
                 impl->stale_set_stages = 0;
             }
             impl->stale_set_stages |= uint8_t(~set_stages & 3);

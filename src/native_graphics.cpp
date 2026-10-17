@@ -6,6 +6,7 @@
 #include "plume_d3d12.h"
 #endif
 #include "plume_render_interface.h"
+#include "spirv_bounded_descriptors.h"
 
 #include <chrono>
 #include <cstdlib>
@@ -172,6 +173,7 @@ struct NativeGraphics::Impl {
     std::unique_ptr<plume::RenderCommandList> idle_list;
     std::unique_ptr<plume::RenderCommandFence> idle_signal;
     std::unique_ptr<NativePipelineCache> pipeline_cache;
+    bool bounded_descriptors = false;
 };
 
 NativeGraphics::NativeGraphics() = default;
@@ -206,7 +208,11 @@ void NativeGraphics::initialize() {
     if (!render_interface)
         throw std::runtime_error(std::string("failed to create the ") + name + " render interface");
 
+    const char* no_indexing = std::getenv("SFR_TEST_NO_DESCRIPTOR_INDEXING");
+    const bool test_no_indexing = backend == GraphicsBackend::vulkan && no_indexing && std::strcmp(no_indexing, "1") == 0;
+    plume::VulkanDevice::disableDescriptorIndexing = test_no_indexing;
     auto render_device = render_interface->createDevice();
+    plume::VulkanDevice::disableDescriptorIndexing = false;
     if (!render_device)
         throw std::runtime_error(std::string("failed to create a ") + name + " render device");
     // Which adapter the game runs on, for a performance report (scripts/
@@ -231,11 +237,47 @@ void NativeGraphics::initialize() {
     // only partly filled (native_renderer.cpp), which Vulkan allows only with
     // descriptor indexing. A driver without it (Mesa's hasvk on a Broadwell
     // HD 5500, issue #134: 128 textures a stage) crashed while compiling the
-    // first pipeline; say why instead.
-    if (backend == GraphicsBackend::vulkan && !render_device->getCapabilities().descriptorIndexing)
-        throw std::runtime_error("this GPU's Vulkan driver lacks descriptor indexing (runtime descriptor arrays, "
-                                 "partially bound and variable-count bindings), which the renderer needs; "
-                                 "the GPU is not supported");
+    // first pipeline. There each draw binds small sets of its own instead,
+    // which need only Vulkan 1.0's dynamic indexing and a few dozen textures
+    // a stage; a driver short even of that stops with the reason.
+    bool bounded_descriptors = false;
+    if (backend == GraphicsBackend::vulkan && !render_device->getCapabilities().descriptorIndexing) {
+        const VkPhysicalDevice physical = static_cast<plume::VulkanDevice*>(render_device.get())->physicalDevice;
+        VkPhysicalDeviceFeatures features{};
+        vkGetPhysicalDeviceFeatures(physical, &features);
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(physical, &properties);
+        const auto& limits = properties.limits;
+        constexpr uint32_t textures = 3 * bounded_descriptor_count, samplers = bounded_descriptor_count;
+        // Set 2: vertex, pixel and shared constants, palette, loop constants.
+        constexpr uint32_t uniform_buffers = 5;
+        std::string missing;
+        const auto need = [&](bool met, const std::string& what) {
+            if (!met) missing += (missing.empty() ? "" : ", ") + what;
+        };
+        need(features.shaderSampledImageArrayDynamicIndexing, "shaderSampledImageArrayDynamicIndexing");
+        need(limits.maxBoundDescriptorSets >= 3, "3 descriptor sets (has " + std::to_string(limits.maxBoundDescriptorSets) + ")");
+        need(limits.maxPerStageDescriptorSampledImages >= textures, std::to_string(textures) + " textures a stage (has " +
+             std::to_string(limits.maxPerStageDescriptorSampledImages) + ")");
+        need(limits.maxDescriptorSetSampledImages >= textures, std::to_string(textures) + " textures a layout (has " +
+             std::to_string(limits.maxDescriptorSetSampledImages) + ")");
+        need(limits.maxPerStageDescriptorSamplers >= samplers && limits.maxDescriptorSetSamplers >= samplers,
+             std::to_string(samplers) + " samplers");
+        need(limits.maxDescriptorSetUniformBuffersDynamic >= uniform_buffers &&
+             limits.maxPerStageDescriptorUniformBuffers >= uniform_buffers,
+             std::to_string(uniform_buffers) + " dynamic uniform buffers");
+        need(limits.maxPerStageResources >= textures + samplers + uniform_buffers + 1,
+             std::to_string(textures + samplers + uniform_buffers + 1) + " resources a stage (has " +
+             std::to_string(limits.maxPerStageResources) + ")");
+        if (!missing.empty())
+            throw std::runtime_error("this GPU's Vulkan driver lacks descriptor indexing (runtime descriptor arrays, "
+                                     "partially bound and variable-count bindings), and also what the renderer's "
+                                     "fallback for that needs (" + missing + "); the GPU is not supported");
+        bounded_descriptors = true;
+        std::cerr << "NATIVE_DESCRIPTORS mode=bounded forced=" << test_no_indexing << " textures_per_stage="
+                  << limits.maxPerStageDescriptorSampledImages << " samplers_per_stage="
+                  << limits.maxPerStageDescriptorSamplers << " resources_per_stage=" << limits.maxPerStageResources << '\n';
+    }
 
     auto render_queue = render_device->createCommandQueue(plume::RenderCommandListType::DIRECT);
     if (!render_queue)
@@ -243,6 +285,7 @@ void NativeGraphics::initialize() {
 
     auto implementation = std::make_unique<Impl>();
     implementation->backend = backend;
+    implementation->bounded_descriptors = bounded_descriptors;
 #ifndef _WIN32
     implementation->window = window;
 #endif
@@ -279,6 +322,18 @@ void NativeGraphics::initialize() {
         }
     }
     impl_ = std::move(implementation);
+}
+
+bool NativeGraphics::bounded_descriptors() const noexcept {
+    return impl_ && impl_->bounded_descriptors;
+}
+
+std::vector<uint8_t> NativeGraphics::shader_code(std::span<const uint8_t> code) const {
+    if (!bounded_descriptors()) return {code.begin(), code.end()};
+    std::string why;
+    auto rewritten = bounded_descriptor_spirv(code, &why);
+    if (!rewritten) throw std::runtime_error("a shader cannot use the bounded descriptor layout: " + why);
+    return std::move(*rewritten);
 }
 
 bool NativeGraphics::initialized() const noexcept {
