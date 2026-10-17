@@ -346,6 +346,16 @@ struct NativeRenderer::Impl {
     // Changes whenever texture() could answer the same fetch words
     // differently: a new frame, a resolve, a texture made or dropped.
     uint64_t texture_generation = 0;
+    // A resolve to where the last one went (the same destination, frame
+    // after frame, at its own descriptor) changes no answer of texture(), so
+    // it leaves the generation alone: two dozen resolves a frame each made
+    // the next draws look every bound texture up again.
+    void resolve_to(uint32_t physical, uint32_t index) {
+        const auto [at, inserted] = resolved_targets.try_emplace(physical, index);
+        if (!inserted && at->second == index) return;
+        at->second = index;
+        ++texture_generation;
+    }
     std::optional<uint32_t> placeholder;  // flat white texture (investigation)
     std::vector<uint32_t> free_texture_indices;
     uint32_t next_texture_index = 0;
@@ -1098,8 +1108,7 @@ uint32_t NativeRenderer::adopt_resolved_target(uint32_t physical, bool depth) {
         auto& aliases = impl_->pending_aliases[surface];
         std::erase_if(aliases, [&](const Impl::Alias& alias) { return alias.physical == physical; });
         aliases.push_back({physical, source, width, height, format, depth});
-        impl_->resolved_targets[physical] = view;
-        ++impl_->texture_generation;
+        impl_->resolve_to(physical, view);
         return view;
     }
     // Out of the framebuffer (drawn to again at once): copied now. Recorded
@@ -1107,8 +1116,7 @@ uint32_t NativeRenderer::adopt_resolved_target(uint32_t physical, bool depth) {
     // that sample it: submitting and waiting here would cost a GPU round trip
     // for each of a frame's resolves.
     const uint32_t index = own_resolve(*impl_, physical, width, height, format, depth);
-    impl_->resolved_targets[physical] = index;
-    ++impl_->texture_generation;
+    impl_->resolve_to(physical, index);
     ++impl_->resolve_copies;
     presentation.record_async(ResolveCopy{source, impl_->texture_objects[index - first_texture].get(),
         depth ? plume::RenderTextureLayout::DEPTH_WRITE : plume::RenderTextureLayout::COLOR_WRITE});
@@ -1165,15 +1173,21 @@ void NativeRenderer::materialize_aliases(const void* surface) {
 
 uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
     // Timed as a whole: the lookup, the content hash that decides whether the
-    // guest changed it, and the upload when it did.
-    const auto texture_start = std::chrono::steady_clock::now();
+    // guest changed it, and the upload when it did. Only for the frame
+    // metrics (on as guest_graphics_hooks.cpp turns them on): a race frame
+    // asks hundreds of times, two clock reads each.
+    static const bool timed = [] {
+        const char* metrics = std::getenv("SFR_FRAME_METRICS");
+        const char* trace = std::getenv("SFR_TRACE_GRAPHICS");
+        return metrics ? *metrics != '0' : !trace || *trace != '0';
+    }();
     struct TextureTimer {
         Impl& impl; std::chrono::steady_clock::time_point start;
         ~TextureTimer() {
-            impl.texture_ms += std::chrono::duration<double, std::milli>(
+            if (timed) impl.texture_ms += std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - start).count();
         }
-    } texture_timer{*impl_, texture_start};
+    } texture_timer{*impl_, timed ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{}};
     const auto fetch = decode_texture_fetch(words);
     if (!fetch.base_address) return null_2d;
     // What the title resolved out of the framebuffer is served from the copy
