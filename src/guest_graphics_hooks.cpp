@@ -1189,19 +1189,36 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     // The same fetch words get the same texture and sampler until the
     // renderer's texture state moves: a race frame's draws bind mostly the
     // same textures, and looking each slot up again was a millisecond a frame.
-    struct SlotMemo { std::array<uint32_t,6> words{}; uint64_t generation=~uint64_t(0); uint32_t texture=0, sampler=0; };
-    static thread_local std::array<SlotMemo,16> memo;
+    // Remembered by the words, not by the slot: draws in turn bind different
+    // textures to one slot, and remembering only each slot's last words still
+    // left hundreds of lookups a race frame (Issue #164).
+    struct TextureMemo { std::array<uint32_t,6> words{}; uint64_t generation=~uint64_t(0); uint32_t texture=0, sampler=0; };
+    static thread_local std::array<TextureMemo,512> memo;
     // A pass that resolves its surface and draws back into it (the race's
     // 110x90, 112x92 and 55x45 surfaces) samples what it resolved: that is
     // copied out of the surface now, before the lookups below, or they would
     // hand the draw the surface itself while it is the attachment being written.
     graphics().presentation().prepare_surface_write();
     const uint64_t generation=graphics().renderer().texture_generation();
+    // The sixteen fetch constants (24 bytes each at +0x480) read as one block
+    // where it lies in one ordinary page, instead of sixteen texture_fetch
+    // calls of six checked loads each (texture_fetch reads them otherwise).
+    const uint8_t* const fetch_block=memory.fast_read(uint64_t(device)+0x480,16*24);
     for(uint32_t slot=0;slot<16;++slot) {
-        const auto words=graphics().texture_fetch(slot);
+        sfr::FetchWords words;
+        if(fetch_block)
+            for(uint32_t i=0;i<6;++i) {
+                uint32_t word;
+                std::memcpy(&word,fetch_block+24*slot+4*i,4);
+                words[i]=__builtin_bswap32(word);
+            }
+        else
+            words=graphics().texture_fetch(slot);
         draw.shared.texture_2d_array[slot]=1;
         draw.shared.texture_cube[slot]=2;
-        auto& remembered=memo[slot];
+        uint64_t hash=0;
+        for(const uint32_t word:words) hash=(hash^word)*0x9E3779B97F4A7C15ull;
+        auto& remembered=memo[hash>>(64-9)];
         if(remembered.generation==generation && std::equal(words.begin(),words.end(),remembered.words.begin())) {
             draw.shared.texture_2d[slot]=remembered.texture;
             draw.shared.sampler[slot]=remembered.sampler;
