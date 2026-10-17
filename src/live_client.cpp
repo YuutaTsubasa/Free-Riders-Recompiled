@@ -1,4 +1,5 @@
 #include "live_client.h"
+#include "live_connect.h"
 #include "live_service.h"
 
 #ifdef _WIN32
@@ -20,6 +21,7 @@ static void close_socket(socket_t s) { close(s); }
 static constexpr socket_t no_socket = -1;
 #endif
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
@@ -34,13 +36,19 @@ static constexpr socket_t no_socket = -1;
 
 namespace sfr {
 namespace {
-uint64_t parse_hex(const std::string& text) { return std::strtoull(text.c_str(), nullptr, 16); }
+// Long enough for a LAN or the Internet, short enough that a first use at
+// boot does not hold the game for the system's own 21 s.
+constexpr int connect_timeout_ms = 3000;
+
+std::atomic<bool> late_connection{false};
 
 uint64_t fnv(const std::string& text, uint64_t hash = 1469598103934665603ull) {
     for (unsigned char c : text) hash = (hash ^ c) * 1099511628211ull;
     return hash;
 }
 }
+
+bool take_live_late_connection() { return late_connection.load() && late_connection.exchange(false); }
 
 std::string live_gamertag() {
     for (const char* name : {"SFR_LIVE_NAME", "SFR_PROFILE_NAME"})
@@ -89,20 +97,48 @@ struct LiveClient::Impl {
 };
 
 LiveClient* LiveClient::instance() {
-    static LiveClient* client = []() -> LiveClient* {
+    // Null until a connection is made. The first use connects at once, so
+    // the title sees itself signed in to LIVE from its first question; when
+    // the service is not there yet (the host's game started after this one,
+    // or a firewall still in the way), a thread tries again every 5 s, and
+    // the client appears once one of those works.
+    static std::atomic<LiveClient*> client{nullptr};
+    static std::once_flag first;
+    std::call_once(first, [] {
         // SFR_LIVE_HOST=1 runs the service in this game and connects to it.
         std::string server = start_hosted_live_service();
+        bool hosted = !server.empty();
         if (server.empty())
             if (const char* setting = std::getenv("SFR_LIVE_SERVER"); setting && *setting) server = setting;
-        if (server.empty()) return nullptr;
-        auto made = new LiveClient();
-        if (!made->connect(server)) {
-            delete made;
-            return nullptr;
+        if (server.empty()) return;
+        auto made = std::unique_ptr<LiveClient>(new LiveClient());
+        LiveReach failure = LiveReach::ok;
+        if (made->connect(server, failure)) {
+            client.store(made.release());
+            return;
         }
-        return made;
-    }();
-    return client;
+        // Its own service is there or not for good; a wrong address stays wrong.
+        if (hosted || failure == LiveReach::bad_address) return;
+        std::thread([server, failure]() mutable {
+            for (int attempt = 1;; ++attempt) {
+                std::this_thread::sleep_for(std::chrono::seconds(5));
+                auto again = std::unique_ptr<LiveClient>(new LiveClient());
+                LiveReach why = LiveReach::ok;
+                if (again->connect(server, why, true)) {
+                    std::cerr << "LIVE_SERVER retry=" << attempt << " connected=" << server << '\n';
+                    client.store(again.release());
+                    late_connection.store(true);
+                    return;
+                }
+                // Each try that fails as the one before says nothing more.
+                if (why != failure)
+                    std::cerr << "LIVE_SERVER retry=" << attempt << " unreachable=" << server
+                              << " reason=" << live_reach_name(why) << '\n';
+                failure = why;
+            }
+        }).detach();
+    });
+    return client.load();
 }
 
 LiveClient::~LiveClient() {
@@ -113,55 +149,36 @@ LiveClient::~LiveClient() {
     if (impl_->receiver.joinable()) impl_->receiver.join();
 }
 
-bool LiveClient::connect(const std::string& server) {
-#ifdef _WIN32
-    WSADATA data{};
-    WSAStartup(MAKEWORD(2, 2), &data);
-#endif
+bool LiveClient::connect(const std::string& server, LiveReach& failure, bool quiet) {
     impl_ = std::make_unique<Impl>();
-    std::string host = server, port = "47800";
-    if (const auto colon = server.rfind(':'); colon != std::string::npos) {
-        host = server.substr(0, colon);
-        port = server.substr(colon + 1);
-    }
-    addrinfo hints{}, *found = nullptr;
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    if (getaddrinfo(host.c_str(), port.c_str(), &hints, &found) != 0 || !found) {
-        std::cerr << "LIVE_SERVER unreachable=" << server << " reason=address\n";
+    const auto unreachable = [&](LiveReach why) {
+        failure = why;
+        if (!quiet) std::cerr << "LIVE_SERVER unreachable=" << server << " reason=" << live_reach_name(why) << '\n';
         return false;
-    }
-    std::memcpy(&impl_->server, found->ai_addr, found->ai_addrlen);
-    impl_->server_size = socklen_t(found->ai_addrlen);
-    impl_->control = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    const bool connected = impl_->control != no_socket &&
-        ::connect(impl_->control, found->ai_addr, int(found->ai_addrlen)) == 0;
-    freeaddrinfo(found);
-    if (!connected) {
-        std::cerr << "LIVE_SERVER unreachable=" << server << " reason=connect\n";
-        return false;
-    }
-    int on = 1;
-    setsockopt(impl_->control, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&on), sizeof(on));
+    };
+    const auto address = parse_live_server(server);
+    if (!address) return unreachable(LiveReach::bad_address);
+    LiveReach why = LiveReach::ok;
+    impl_->control = socket_t(open_live_connection(*address, connect_timeout_ms, why));
+    if (impl_->control == no_socket) return unreachable(why);
+    impl_->server_size = sizeof(impl_->server);
+    getpeername(impl_->control, reinterpret_cast<sockaddr*>(&impl_->server), &impl_->server_size);
 
     const std::string name = live_gamertag();
     xuid_ = live_xuid();
     char line[128];
     std::snprintf(line, sizeof(line), "HELLO %016llx %s", static_cast<unsigned long long>(xuid_), name.c_str());
-    const auto hello = request(line);
-    std::istringstream words(hello.empty() ? std::string() : hello[0]);
-    std::string ok, number, address, mac, machine;
-    words >> ok >> number >> address >> mac >> machine;
-    if (ok != "OK" || mac.size() != 12) {
-        std::cerr << "LIVE_SERVER unreachable=" << server << " reason=hello\n";
-        return false;
-    }
-    address_ = uint32_t(parse_hex(address));
-    for (size_t i = 0; i < 6; ++i) mac_[i] = uint8_t(parse_hex(mac.substr(2 * i, 2)));
-    machine_ = parse_hex(machine);
+    // A service answers at once; something else on the port may never.
+    const auto answer = live_exchange(LiveSocket(impl_->control), line, impl_->pending, connect_timeout_ms);
+    const auto hello = parse_live_hello(answer.empty() ? std::string_view() : std::string_view(answer[0]));
+    if (!hello) return unreachable(LiveReach::unexpected);
+    address_ = hello->address;
+    mac_ = hello->mac;
+    machine_ = hello->machine;
+    const uint32_t console = hello->console;
 
     impl_->datagrams = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (impl_->datagrams == no_socket) return false;
+    if (impl_->datagrams == no_socket) return unreachable(LiveReach::no_answer);
     sockaddr_in any{};
     any.sin_family = AF_INET;
     bind(impl_->datagrams, reinterpret_cast<sockaddr*>(&any), sizeof(any));
@@ -169,7 +186,6 @@ bool LiveClient::connect(const std::string& server) {
     // by the receiver until the first datagram comes back is not needed on a
     // LAN, so it is sent a few times now.
     uint8_t hello_datagram[5] = {0};
-    const uint32_t console = uint32_t(std::strtoul(number.c_str(), nullptr, 10));
     for (int i = 0; i < 4; ++i) hello_datagram[1 + i] = uint8_t(console >> (24 - 8 * i));
     for (int i = 0; i < 3; ++i)
         sendto(impl_->datagrams, reinterpret_cast<const char*>(hello_datagram), sizeof(hello_datagram), 0,
@@ -183,24 +199,7 @@ bool LiveClient::connect(const std::string& server) {
 
 std::vector<std::string> LiveClient::request(const std::string& line) {
     std::lock_guard lock(impl_->request_mutex);
-    const std::string text = line + '\n';
-    if (::send(impl_->control, text.data(), int(text.size()), 0) != int(text.size())) return {};
-    std::vector<std::string> lines;
-    for (;;) {
-        const auto end = impl_->pending.find('\n');
-        if (end != std::string::npos) {
-            std::string answer = impl_->pending.substr(0, end);
-            impl_->pending.erase(0, end + 1);
-            if (!answer.empty() && answer.back() == '\r') answer.pop_back();
-            if (answer == ".") return lines;
-            lines.push_back(std::move(answer));
-            continue;
-        }
-        char buffer[4096];
-        const int got = recv(impl_->control, buffer, sizeof(buffer), 0);
-        if (got <= 0) return {};
-        impl_->pending.append(buffer, size_t(got));
-    }
+    return live_exchange(LiveSocket(impl_->control), line, impl_->pending, 0);
 }
 
 void LiveClient::open_port(uint16_t port) {

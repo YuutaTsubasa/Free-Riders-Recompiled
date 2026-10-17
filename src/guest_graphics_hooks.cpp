@@ -1194,6 +1194,11 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     // left hundreds of lookups a race frame (Issue #164).
     struct TextureMemo { std::array<uint32_t,6> words{}; uint64_t generation=~uint64_t(0); uint32_t texture=0, sampler=0; };
     static thread_local std::array<TextureMemo,512> memo;
+    // A pass that resolves its surface and draws back into it (the race's
+    // 110x90, 112x92 and 55x45 surfaces) samples what it resolved: that is
+    // copied out of the surface now, before the lookups below, or they would
+    // hand the draw the surface itself while it is the attachment being written.
+    graphics().presentation().prepare_surface_write();
     const uint64_t generation=graphics().renderer().texture_generation();
     // The sixteen fetch constants (24 bytes each at +0x480) read as one block
     // where it lies in one ordinary page, instead of sixteen texture_fetch

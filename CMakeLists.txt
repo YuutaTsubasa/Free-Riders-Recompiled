@@ -531,6 +531,16 @@ if(NOT WIN32)  # the portal is only asked for by the SDL launcher
     target_link_libraries(sfr_xdg_portal_test PRIVATE ${CMAKE_DL_LIBS})
     add_test(NAME xdg_portal COMMAND sfr_xdg_portal_test)
 endif()
+# The online service's address and answers, and the launcher's check against
+# the game's own service on this device's loopback.
+add_executable(sfr_live_connect_test tests/live_connect_test.cpp src/live_connect.cpp src/live_service.cpp)
+target_include_directories(sfr_live_connect_test PRIVATE src)
+if(WIN32)
+    target_link_libraries(sfr_live_connect_test PRIVATE ws2_32 iphlpapi)
+else()
+    target_link_libraries(sfr_live_connect_test PRIVATE Threads::Threads)
+endif()
+add_test(NAME live_connect COMMAND sfr_live_connect_test)
 add_executable(sfr_launcher_settings_test tests/launcher_settings_test.cpp src/launcher_settings.cpp)
 target_include_directories(sfr_launcher_settings_test PRIVATE src)
 add_test(NAME launcher_settings COMMAND sfr_launcher_settings_test)
@@ -591,11 +601,12 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui/imgui.cpp")
     set(SFR_LAUNCHER_SOURCES src/launcher_main.cpp src/launcher_settings.cpp src/mod_loader.cpp src/input_bindings.cpp src/pad_devices.cpp src/pad_assignment.cpp src/launcher_sound.cpp src/launcher_art.cpp src/sony_gamepad.cpp
         ${SFR_CAMERA_CAPTURE} src/kinect_sensor.cpp ${SFR_KINECT_SENSOR} ${SFR_VOICE}
         src/kinect_preview.cpp src/kinect_preview_window.cpp src/camera_preview_window.cpp src/kinect_calibration.cpp src/camera_debug.cpp src/text_wrap.cpp
+        src/live_connect.cpp
         ${SFR_IMGUI}/imgui.cpp ${SFR_IMGUI}/imgui_draw.cpp ${SFR_IMGUI}/imgui_tables.cpp ${SFR_IMGUI}/imgui_widgets.cpp)
     if(WIN32)
         add_executable(sfr_launcher WIN32 ${SFR_LAUNCHER_SOURCES} src/launcher_platform_win32.cpp src/app_icon.rc
             ${SFR_IMGUI}/backends/imgui_impl_win32.cpp ${SFR_IMGUI}/backends/imgui_impl_dx11.cpp)
-        target_link_libraries(sfr_launcher PRIVATE sfr_installer winmm imm32 d3d11 dxgi d3dcompiler hid setupapi ole32 shell32 xinput gdi32 advapi32)
+        target_link_libraries(sfr_launcher PRIVATE sfr_installer winmm imm32 d3d11 dxgi d3dcompiler hid setupapi ole32 shell32 xinput gdi32 advapi32 ws2_32 iphlpapi)
         set_target_properties(sfr_launcher PROPERTIES OUTPUT_NAME FreeRidersRecompiled)
     else()
         set(SFR_LAUNCHER_SOURCES ${SFR_LAUNCHER_SOURCES} src/launcher_platform_sdl.cpp src/xdg_portal.cpp
@@ -1083,13 +1094,13 @@ if(SFR_BUILD_DIAGNOSTIC)
     target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_o1heap)
     target_sources(sfr_cpu_diagnostic PRIVATE src/native_winsock.cpp)
     # Xbox LIVE on this project's own service (SFR_LIVE_SERVER; scripts/live_server.py).
-    target_sources(sfr_cpu_diagnostic PRIVATE src/live_client.cpp src/live_imports.cpp src/live_service.cpp src/live_hooks.cpp)
+    target_sources(sfr_cpu_diagnostic PRIVATE src/live_client.cpp src/live_connect.cpp src/live_imports.cpp src/live_service.cpp src/live_hooks.cpp)
     target_sources(sfr_cpu_diagnostic PRIVATE src/guest_timers.cpp)
     target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_native_notifications)
     target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_guest_graphics sfr_asset_files sfr_native_sync_objects sfr_guest_threads)
     target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_guest_async_files)
     if(WIN32)
-        target_link_libraries(sfr_cpu_diagnostic PRIVATE ws2_32 user32 gdi32)
+        target_link_libraries(sfr_cpu_diagnostic PRIVATE ws2_32 iphlpapi user32 gdi32)
     else()
         target_link_libraries(sfr_cpu_diagnostic PRIVATE SDL2::SDL2)
     endif()

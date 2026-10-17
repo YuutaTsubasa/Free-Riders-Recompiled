@@ -283,8 +283,14 @@ struct NativeRenderer::Impl {
     std::unique_ptr<plume::RenderPipelineLayout> layout;
     std::unique_ptr<plume::RenderDescriptorSet> textures, samplers, survey;
     std::unique_ptr<plume::RenderBuffer> survey_buffer, zero_buffer;
+    // Descriptors first_texture and up: texture_objects[index - first_texture].
     std::vector<std::unique_ptr<plume::RenderTexture>> texture_objects;
     std::vector<std::unique_ptr<plume::RenderTextureView>> texture_views;
+    // Descriptors 0..2 (null_2d, null_2d_array, null_cube), kept apart: in
+    // texture_objects they sat where the first real textures go, which
+    // replaced (and destroyed) them while descriptors 0..2 still used them.
+    std::array<std::unique_ptr<plume::RenderTexture>, first_texture> null_objects;
+    std::array<std::unique_ptr<plume::RenderTextureView>, first_texture> null_views;
     std::vector<std::unique_ptr<plume::RenderSampler>> sampler_objects;
     std::map<std::array<uint32_t, 4>, uint32_t> texture_indices;
     // Guest physical range of each cached texture, for invalidation on CPU writes.
@@ -757,10 +763,13 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
         impl_->survey->setBuffer(0, impl_->survey_buffer.get(), 0, &survey_view);
     }
 
-    // Null descriptors 0..2 read as zero, like Marathon's blank textures.
-    for (uint32_t i = 0; i < 3; ++i) {
+    // Null descriptors 0..2 read as zero, like Marathon's blank textures. Each
+    // has the view type its heap is read as: null_2d_array needs two layers,
+    // since Plume makes an array view only of more than one.
+    for (uint32_t i = 0; i < first_texture; ++i) {
         plume::RenderTextureDesc desc = plume::RenderTextureDesc::Texture2D(1, 1, 1, plume::RenderFormat::R8_UNORM);
         plume::RenderTextureViewDesc view = plume::RenderTextureViewDesc::Texture2D(plume::RenderFormat::R8_UNORM);
+        if (i == null_2d_array) desc.arraySize = 2;
         if (i == null_cube) {
             desc.arraySize = 6;
             desc.flags = plume::RenderTextureFlag::CUBE;
@@ -771,8 +780,8 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
         auto texture = device.createTexture(desc);
         auto texture_view = texture->createTextureView(view);
         impl_->textures->setTexture(i, texture.get(), plume::RenderTextureLayout::SHADER_READ, texture_view.get());
-        impl_->texture_objects.push_back(std::move(texture));
-        impl_->texture_views.push_back(std::move(texture_view));
+        impl_->null_objects[i] = std::move(texture);
+        impl_->null_views[i] = std::move(texture_view);
     }
     impl_->sampler_objects.push_back(device.createSampler(plume::RenderSamplerDesc{}));
     impl_->samplers->setSampler(0, impl_->sampler_objects.back().get());
