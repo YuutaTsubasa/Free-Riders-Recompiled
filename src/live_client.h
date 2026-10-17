@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "live_connect.h"
+
 namespace sfr {
 // The connection to this project's own online service (scripts/live_server.py)
 // that stands in for Xbox LIVE. SFR_LIVE_SERVER=host[:port] turns it on (port
@@ -17,7 +19,8 @@ namespace sfr {
 class LiveClient {
 public:
     // The client for SFR_LIVE_SERVER, connected on first use; null without it,
-    // or when the service cannot be reached (logged once).
+    // or while the service cannot be reached (logged; tried again every 5 s,
+    // so it can appear later, but once there it stays).
     static LiveClient* instance();
     ~LiveClient();
     LiveClient(const LiveClient&) = delete;
@@ -49,7 +52,8 @@ public:
 
 private:
     LiveClient() = default;
-    bool connect(const std::string& server);
+    // quiet: a failure is not logged (the retries log only changes).
+    bool connect(const std::string& server, LiveReach& failure, bool quiet = false);
     void receive_loop();
     struct Impl;
     std::unique_ptr<Impl> impl_;
@@ -62,6 +66,10 @@ private:
 // The gamertag shown online: SFR_LIVE_NAME, else the profile's name.
 // (The profile's own name also names its saves, so it is not changed here.)
 std::string live_gamertag();
+// True once after a retry connected (the service appeared after the title's
+// first use): the title read its sign-in state without LIVE then, and must be
+// told that it changed (XN_SYS_SIGNINCHANGED) to read it again.
+bool take_live_late_connection();
 // The XUID this game uses on the service: an online XUID (0x0009...) from
 // this install's own random id (live-id.txt beside the game, or SFR_LIVE_ID),
 // so two players who both kept the name "Player" still differ.

@@ -11,6 +11,9 @@ Control is one TCP connection per console: a line per request, answered by an
 "OK ..." or "ERR ..." line, any further lines, and a line ".". Binary values
 are hex.
 
+  PING                                -> OK freeriders <version>
+      (allowed before HELLO; a check that the server is there, as the
+      launcher's Test connection does, which does not make a console)
   HELLO <xuid> <gamertag>             -> OK <console> <ip> <mac> <machine>
   CREATE <flags> <public> <private> <props> <contexts>
                                       -> OK <session> <key> <nonce>
@@ -40,6 +43,9 @@ import secrets
 import struct
 
 log = logging.getLogger('live')
+
+# What PING answers (src/live_connect.h, live_protocol_version).
+PROTOCOL_VERSION = 1
 
 
 class Console:
@@ -97,7 +103,9 @@ class Service:
                 if not words:
                     continue
                 try:
-                    if words[0] == 'HELLO':
+                    if words[0] == 'PING':
+                        answer = ['OK freeriders %d' % PROTOCOL_VERSION]
+                    elif words[0] == 'HELLO':
                         console = self.hello(words, writer)
                         answer = ['OK %d %08x %s %016x' % (console.number, console.ip, console.mac.hex(), console.machine)]
                     elif console is None:

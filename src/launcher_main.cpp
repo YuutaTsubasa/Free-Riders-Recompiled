@@ -43,6 +43,7 @@
 #include "input_bindings.h"
 #include "pad_devices.h"
 #include "launcher_sound.h"
+#include "live_connect.h"
 #include "sony_gamepad.h"
 
 #include <algorithm>
@@ -117,6 +118,10 @@ enum Text {
     TabMods, SectionMods, ModsHint, ModsEmpty, ModsExternal, ModsRefresh, ModsOpenFolder, MoveUp, MoveDown,
     SectionOnline, OnlineLabel, OnlineHint, OnlineHostLabel, OnlineHostHint, OnlineServerLabel, OnlineServerHint,
     OnlineNameLabel, OnlineNameHint,
+    OnlineTest, OnlineTesting, OnlineReachOk, OnlineReachOlder, OnlineReachNewer, OnlineReachBadAddress,
+    OnlineReachNotFound, OnlineReachRefused, OnlineReachNoAnswer, OnlineReachUnexpected,
+    OnlineFriendsEnter, OnlineNoAddress, OnlineFirewall, OnlineChecking, OnlineFailedTitle, OnlineFailedRetry,
+    OnlineStartAnyway,
     KinectSmoothLabel, KinectSmoothHint, KinectLeanLabel, KinectLeanHint, KinectCrouchLabel, KinectCrouchHint,
     CustomWindowSize, CustomWindowSizeRow, CustomWindowSizeHint,
     AspectModeLabel, AspectModeHint, AspectAuto, AspectOriginal,
@@ -408,6 +413,32 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Online name", "線上名稱"},
     {"The gamertag the others see (15 characters). Saves stay with your profile.",
      "其他玩家看到的玩家名稱（15 個字元）。存檔仍跟著原本的設定檔。"},
+    {"Test connection", "測試連線"},
+    {"Checking...", "檢查中…"},
+    {"Connected: the server at %s answers.", "連線成功：%s 的伺服器有回應。"},
+    {"Connected to %s, but the host runs an older release. Use the same version on both devices.",
+     "已連到 %s，但主持者用的是較舊的版本。請兩台裝置使用相同版本。"},
+    {"Connected to %s, but the host runs a different release. Use the same version on both devices.",
+     "已連到 %s，但主持者用的是不同的版本。請兩台裝置使用相同版本。"},
+    {"Enter the host's IP address, such as 192.168.1.10, optionally with :port.",
+     "請輸入主持者的 IP 位址，例如 192.168.1.10，可加上 :連接埠。"},
+    {"Address not found. Check the address the host gave you.", "找不到這個位址。請確認主持者給你的位址。"},
+    {"%s is there, but no server runs on port %u. The host's game must be running with \"Host the server\" on.",
+     "%s 有回應，但連接埠 %u 上沒有伺服器。主持者的遊戲必須已啟動，並開啟「由這台裝置當伺服器」。"},
+    {"No answer from %s. The host's game must be running with \"Host the server\" on, both devices on the same network, and port %u (TCP and UDP) allowed through the host's firewall.",
+     "%s 沒有回應。主持者的遊戲必須已啟動並開啟「由這台裝置當伺服器」，兩台裝置要在同一個網路，且主持者的防火牆要允許連接埠 %u（TCP 與 UDP）。"},
+    {"Something answered at %s, but it is not a Free Riders server, or it is a different version.",
+     "%s 有回應，但它不是 Free Riders 伺服器，或是不同的版本。"},
+    {"Friends enter: %s", "朋友請輸入：%s"},
+    {"This device has no network address yet. Connect it to the same network as your friends.",
+     "這台裝置目前沒有網路位址。請連上與朋友相同的網路。"},
+    {"The first time you host, Windows may ask whether to let the game through its firewall. Allow it, or your friends cannot connect.",
+     "第一次當伺服器時，Windows 可能會詢問是否允許遊戲通過防火牆。請選擇允許，否則朋友無法連線。"},
+    {"Checking the online server...", "正在檢查線上伺服器…"},
+    {"Can't reach the server", "無法連到伺服器"},
+    {"If you start anyway, the game keeps trying every few seconds, and Xbox LIVE opens once the server answers.",
+     "若仍要啟動，遊戲會每隔幾秒再試著連線，連上伺服器後就能進入 Xbox LIVE。"},
+    {"Start anyway", "仍要啟動"},
     {"Smooth Kinect v2 tracking", "平滑 Kinect v2 追蹤"},
     {"Steadies a Kinect v2's joints with the same filter Kinect v1's SDK uses, for about a frame of delay. Turn it off to feel the sensor as measured.",
      "用與 Kinect v1 SDK 相同的濾波器讓 Kinect v2 的關節更穩定，約多一格延遲。關閉則使用感應器原始量測。"},
@@ -1197,7 +1228,7 @@ float draw_prompt(ImDrawList* draw, ImVec2 at, float size, InputKind kind, Promp
 // ---------------------------------------------------------------- app
 enum class Page { Settings, Stopped, Install, Installing, Installed };
 enum Tab { GeneralTab, DisplayTab, SoundTab, ControlsTab, MotionTab, AvatarTab, ModsTab, FilesTab, TabCount };
-enum class Question { none, quit, cancel_install, quit_during_install };
+enum class Question { none, quit, cancel_install, quit_during_install, online_unreachable };
 
 // An installation running on its own thread; the page reads its progress.
 struct Installation {
@@ -1279,6 +1310,23 @@ struct Launcher {
     Question question = Question::none;
     float question_fade = 0.0f;
     bool question_focus = false;
+    // Reaching the online server (live_connect.h): Test connection, and the
+    // same check when Start is pressed while joining a host. The check takes
+    // up to 3 s, on a thread of its own that may outlive the launcher's wait.
+    struct OnlineCheck {
+        std::atomic<bool> done{false};
+        sfr::LiveCheck result;  // written before done
+    };
+    std::shared_ptr<OnlineCheck> online_check;  // the one running, if any
+    std::string online_checked;                 // the address it is for
+    bool online_check_starts = false;           // Start waits for it
+    std::string online_result;                  // what the last one found, shown under the address
+    bool online_result_good = false;
+    bool online_result_shown = true;            // scrolled into view once it arrives
+    std::string question_detail;                // the online question's text
+    // This device's addresses, listed when hosting is turned on.
+    std::vector<std::string> own_addresses;
+    bool own_addresses_listed = false;
     // The install pages.
     fs::path source;
     sfr::SourceSummary summary;
@@ -1308,6 +1356,68 @@ struct Launcher {
         focus_start = true;
     }
 
+    // ------------------------------------------------ online
+    void start_online_check(bool then_start) {
+        auto check = std::make_shared<OnlineCheck>();
+        online_check = check;
+        online_checked = settings.online_server;
+        online_check_starts = then_start;
+        online_result.clear();
+        std::thread([check, server = settings.online_server] {
+            check->result = sfr::check_live_server(server, 3000);
+            check->done.store(true, std::memory_order_release);
+        }).detach();
+    }
+
+    bool online_checking() const { return online_check && !online_check->done.load(std::memory_order_acquire); }
+
+    // What a check found, in the player's words: what is wrong and what to do.
+    std::string describe(const sfr::LiveCheck& check) const {
+        const auto server = sfr::parse_live_server(online_checked);
+        const std::string host = !check.address.empty() ? check.address : server ? server->host : online_checked;
+        const unsigned port = server ? server->port : sfr::live_default_port;
+        const Text text = check.reach == sfr::LiveReach::ok ? OnlineReachOk
+                        : check.reach == sfr::LiveReach::older ? OnlineReachOlder
+                        : check.reach == sfr::LiveReach::newer ? OnlineReachNewer
+                        : check.reach == sfr::LiveReach::bad_address ? OnlineReachBadAddress
+                        : check.reach == sfr::LiveReach::not_found ? OnlineReachNotFound
+                        : check.reach == sfr::LiveReach::refused ? OnlineReachRefused
+                        : check.reach == sfr::LiveReach::no_answer ? OnlineReachNoAnswer : OnlineReachUnexpected;
+        char line[640];
+        std::snprintf(line, sizeof line, tr(text), host.c_str(), port);
+        return line;
+    }
+
+    // Each frame: a check that has finished shows its result, and Start
+    // goes on (the game can join) or asks.
+    void poll_online_check() {
+        if (!online_check || !online_check->done.load(std::memory_order_acquire)) return;
+        const sfr::LiveCheck result = online_check->result;
+        online_check.reset();
+        // An address changed since the check was asked for is not this one's.
+        if (online_checked != settings.online_server && !online_check_starts) return;
+        // An older release's server lacks only the check itself: joining it works.
+        const bool joins = result.reach == sfr::LiveReach::ok || result.reach == sfr::LiveReach::older;
+        online_result = describe(result);
+        online_result_good = result.reach == sfr::LiveReach::ok;
+        online_result_shown = false;
+        std::fprintf(stderr, "LAUNCHER_ONLINE_CHECK server=%s reach=%s address=%s version=%d text=%s\n", online_checked.c_str(),
+                     sfr::live_reach_name(result.reach), result.address.c_str(), result.version, online_result.c_str());
+        if (!online_check_starts) {
+            ::play(joins ? sfr::UiSound::confirm : sfr::UiSound::error);
+            return;
+        }
+        online_check_starts = false;
+        status = nullptr;
+        if (joins) {
+            leaving = true;
+            return;
+        }
+        question_detail = online_result;
+        ::play(sfr::UiSound::error);
+        ask(Question::online_unreachable);
+    }
+
     // ------------------------------------------------ game
     void play() {
         sfr::save_launcher_settings(settings_file, settings);
@@ -1322,6 +1432,14 @@ struct Launcher {
             status = tr(MissingFiles); status_error = true;
             tab = FilesTab; tab_fade = 0.0f;
             ::play(sfr::UiSound::error);
+            return;
+        }
+        // Joining a host: first the same check as Test connection, so a
+        // server that is not there is said now, not by a missing menu.
+        if (settings.online && !settings.online_host) {
+            if (online_check_starts) return;  // already checking
+            status = tr(OnlineChecking); status_error = false;
+            start_online_check(true);
             return;
         }
         leaving = true;  // the game starts once the launcher has slid away
@@ -1404,6 +1522,7 @@ struct Launcher {
         focus_start = true;
         if (!yes) return;
         if (asked == Question::quit) quit_now = true;
+        else if (asked == Question::online_unreachable) leaving = true;  // the game keeps trying
         else if (asked == Question::cancel_install && installation) installation->cancel = true;
         else if (asked == Question::quit_during_install) quit_now = true;  // abandon_install cleans up
     }
@@ -1412,8 +1531,10 @@ struct Launcher {
         if (question == Question::none) return;
         if (!ImGui::IsPopupOpen("##question")) ImGui::OpenPopup("##question");
         question_fade = approach(question_fade, 1.0f, 12.0f);
-        const Text title = question == Question::quit ? QuitTitle : CancelInstallTitle;
-        const Text text = question == Question::quit ? QuitText : CancelInstallText;
+        const bool online = question == Question::online_unreachable;
+        const Text title = question == Question::quit ? QuitTitle : online ? OnlineFailedTitle : CancelInstallTitle;
+        const std::string text = online ? question_detail + "\n\n" + tr(OnlineFailedRetry)
+                                        : tr(question == Question::quit ? QuitText : CancelInstallText);
         const float width = 520 * scale;
         ImGui::SetNextWindowPos(ImVec2(size.x * 0.5f, size.y * 0.5f + (1.0f - ease_out(question_fade)) * 30 * scale),
                                 ImGuiCond_Always, ImVec2(0.5f, 0.5f));
@@ -1432,21 +1553,25 @@ struct Launcher {
             ImGui::TextUnformatted(tr(title));
             ImGui::PopFont();
             ImGui::PushTextWrapPos(width - 32 * scale);
-            ImGui::TextColored(dim_text, "%s", wrapped(tr(text), room_to(width - 32 * scale)).c_str());
+            ImGui::TextColored(dim_text, "%s", wrapped(text.c_str(), room_to(width - 32 * scale)).c_str());
             ImGui::PopTextWrapPos();
             ImGui::Dummy(ImVec2(0, 14 * scale));
-            const float button_width = 140 * scale, button_height = 44 * scale;
-            ImGui::SetCursorPosX(width - 32 * scale - button_width * 2 - 12 * scale);
+            const char* yes_label = tr(online ? OnlineStartAnyway : Yes);
+            const char* no_label = tr(online ? Cancel : No);
             ImGui::PushFont(fonts.heading);
+            const float button_width = (std::max)({140 * scale, ImGui::CalcTextSize(yes_label).x + 40 * scale,
+                                                   ImGui::CalcTextSize(no_label).x + 40 * scale});
+            const float button_height = 44 * scale;
+            ImGui::SetCursorPosX(width - 32 * scale - button_width * 2 - 12 * scale);
             bool yes = false, no = false;
-            if (big_button(tr(Yes), ImVec2(button_width, button_height), false, scale)) yes = true;
+            if (big_button(yes_label, ImVec2(button_width, button_height), false, scale)) yes = true;
             ImGui::SameLine(0, 12 * scale);
             if (question_focus && ImGui::GetFrameCount() > 2) {
                 // "No" first: a stray press never quits or cancels.
                 focus_next();
                 question_focus = false;
             }
-            if (big_button(tr(No), ImVec2(button_width, button_height), true, scale)) no = true;
+            if (big_button(no_label, ImVec2(button_width, button_height), true, scale)) no = true;
             ImGui::PopFont();
             if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) no = true;
             if (yes || no) {
@@ -1968,14 +2093,59 @@ struct Launcher {
         if (settings.online) {
             setting_row(tr(OnlineHostLabel), tr(OnlineHostHint), switch_width, scale,
                         [&] { toggle("##online_host", &settings.online_host); });
-            if (!settings.online_host)
-                setting_row(tr(OnlineServerLabel), tr(OnlineServerHint), 260 * scale, scale, [&] {
+            if (settings.online_host) {
+                // What friends type, and the firewall question that decides
+                // whether they can.
+                if (!own_addresses_listed) {
+                    own_addresses = sfr::local_ipv4_addresses();
+                    own_addresses_listed = true;
+                }
+                std::string addresses;
+                for (const auto& address : own_addresses) addresses += (addresses.empty() ? "" : ", ") + address;
+                char line[256];
+                std::snprintf(line, sizeof line, tr(OnlineFriendsEnter), addresses.c_str());
+                ImGui::TextColored(own_addresses.empty() ? warning_text : cyan, "%s",
+                                   own_addresses.empty() ? tr(OnlineNoAddress) : line);
+#ifdef _WIN32
+                ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + content_width);
+                ImGui::TextColored(dim_text, "%s", wrapped(tr(OnlineFirewall), content_width).c_str());
+                ImGui::PopTextWrapPos();
+#endif
+                ImGui::Dummy(ImVec2(0, ImGui::GetStyle().ItemSpacing.y));
+            } else {
+                own_addresses_listed = false;  // listed again next time: the network may have changed
+                const float test_width = (std::max)(ImGui::CalcTextSize(tr(OnlineTest)).x, ImGui::CalcTextSize(tr(OnlineTesting)).x) +
+                                         ImGui::GetStyle().FramePadding.x * 4;
+                const float server_width = 260 * scale + ImGui::GetStyle().ItemSpacing.x + test_width;
+                setting_row(tr(OnlineServerLabel), tr(OnlineServerHint), server_width, scale, [&] {
                     char text[128] = {};
                     std::snprintf(text, sizeof text, "%s", settings.online_server.c_str());
                     ImGui::SetNextItemWidth(260 * scale);
-                    if (ImGui::InputTextWithHint("##online_server", "192.168.1.10", text, sizeof text))
+                    if (ImGui::InputTextWithHint("##online_server", "192.168.1.10", text, sizeof text)) {
                         settings.online_server = text;
+                        online_result.clear();  // it was about another address
+                    }
+                    ImGui::SameLine();
+                    const bool checking = online_checking();
+                    ImGui::BeginDisabled(checking);
+                    if (ImGui::Button(tr(checking ? OnlineTesting : OnlineTest), ImVec2(test_width, 0)))
+                        start_online_check(false);
+                    ImGui::EndDisabled();
                 });
+                if (!online_result.empty()) {
+                    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + content_width);
+                    ImGui::TextColored(online_result_good ? cyan : warning_text, "%s",
+                                       wrapped(online_result.c_str(), content_width).c_str());
+                    ImGui::PopTextWrapPos();
+                    ImGui::Dummy(ImVec2(0, ImGui::GetStyle().ItemSpacing.y));
+                    // The answer may land below the panel's edge: shown once.
+                    if (!online_result_shown) {
+                        if (ImGui::GetCursorScreenPos().y > ImGui::GetWindowPos().y + ImGui::GetWindowHeight())
+                            ImGui::SetScrollHereY(1.0f);
+                        online_result_shown = true;
+                    }
+                }
+            }
             setting_row(tr(OnlineNameLabel), tr(OnlineNameHint), 260 * scale, scale, [&] {
                 char text[16] = {};
                 std::snprintf(text, sizeof text, "%s", settings.online_name.c_str());
@@ -3096,6 +3266,7 @@ struct Launcher {
         appear = leaving ? approach(appear, 0.0f, 9.0f) : approach(appear, 1.0f, 4.5f);
         page_fade = approach(page_fade, 1.0f, 7.0f);
         if (leaving && appear < 0.03f) launch_now();
+        poll_online_check();
         draw_backdrop(ImGui::GetBackgroundDrawList(), io.DisplaySize, float(ImGui::GetTime()), scale);
 
         const Text bar = page == Page::Settings ? BarSettings : page == Page::Stopped ? BarStopped
