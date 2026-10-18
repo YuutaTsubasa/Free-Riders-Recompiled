@@ -209,6 +209,13 @@ void NativeGraphics::initialize() {
 #ifdef _WIN32
     auto render_interface = backend == GraphicsBackend::vulkan ? plume::CreateVulkanInterface() : plume::CreateD3D12Interface();
 #else
+#if defined(__ANDROID__) || defined(SFR_IOS)
+    // Landscape only, as the launcher asks (launcher_main.cpp). Without the
+    // hint SDL gives a resizable window every orientation on Android
+    // (SCREEN_ORIENTATION_FULL_USER, over the manifest's sensorLandscape):
+    // the game turned with the phone and could start in portrait (Issue #177).
+    SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+#endif
     // SDL2 gives the Vulkan instance extensions for a window only.
     if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0)
         throw std::runtime_error(std::string("failed to start SDL video: ") + SDL_GetError());
