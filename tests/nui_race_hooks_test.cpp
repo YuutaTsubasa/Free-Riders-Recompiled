@@ -4,6 +4,7 @@
 #include "diagnostic_hooks.h"
 #include "nui_race.h"
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -408,12 +409,29 @@ void run() {
     put(0, 0, 0, 2.2f);
     put(32, 0, 0.5f, 2.2f);
     bool jumped = false;
-    for (int i = 0; i < 30 && !jumped; ++i) {
-        ++kinect_sequence;
-        frame(0);
-        jumped = invoke("sub_822C9050", source) == 1;
-    }
+    // The motion trace (main sets it) records the jump the fallback gave
+    // the game's own jump detector, and the bits it left in the result.
+    std::ostringstream log;
+    auto* const old = std::cerr.rdbuf(log.rdbuf());
+    try {
+        for (int i = 0; i < 30 && !jumped; ++i) {
+            ++kinect_sequence;
+            frame(0);
+            jumped = invoke("sub_822C9050", source) == 1;
+        }
+    } catch (...) { std::cerr.rdbuf(old); throw; }
+    std::cerr.rdbuf(old);
     require(jumped && (primary() & 0x200), "rising out of the crouch must jump");
+    const std::string traced = log.str();
+    const auto line = traced.find("KINECT_GESTURE address=0x822c9050 original=2 result=1");
+    require(line != std::string::npos && traced.find("jump=1", line) != std::string::npos &&
+                traced.find("primary=0x220", line) != std::string::npos,
+            "the motion trace shows the jump handed to the game's detector and its result bits");
+    require(traced.find("KINECT_MOTION jump") != std::string::npos &&
+                traced.find(" generation=", traced.find("KINECT_MOTION jump")) != std::string::npos,
+            "a detected jump is logged with the sensor frame it came from");
+    require(traced.find("CAMERA_RACE_MOTION") != std::string::npos && traced.find(" standing=") != std::string::npos,
+            "the trace's motion line carries the hips' height and the stance");
     sensor_body = false;
 }
 }
@@ -423,8 +441,10 @@ int main() {
     // depth images, which is what these checks exercise.
 #ifdef _WIN32
     _putenv_s("SFR_KINECT_DEPTH", "0");
+    _putenv_s("SFR_CAMERA_RACE_TRACE", "1");
 #else
     setenv("SFR_KINECT_DEPTH", "0", 1);
+    setenv("SFR_CAMERA_RACE_TRACE", "1", 1);
 #endif
     try {
         harness::run();

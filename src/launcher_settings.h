@@ -83,6 +83,10 @@ struct LauncherSettings {
     // Windows motion mode: show the skeleton submitted to the game in a
     // separate window, without a camera image (SFR_CAMERA_DEBUG).
     bool camera_debug = false;
+    // The motion trace (motion_trace.h): numbers in game.log about what a
+    // Kinect or a webcam player did and what the game made of it, for a bug
+    // report. No images. Only with a Kinect or the motion camera chosen.
+    bool motion_trace = false;  // SFR_CAMERA_RACE_TRACE=1
     // Optional shared local-player Avatar model. Empty keeps the custom avatar disabled.
     std::filesystem::path avatar_model;
     // The models added on the Avatar page, so another can be chosen without

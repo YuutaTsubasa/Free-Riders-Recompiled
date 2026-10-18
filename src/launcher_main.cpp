@@ -126,6 +126,7 @@ enum Text {
     CustomWindowSize, CustomWindowSizeRow, CustomWindowSizeHint,
     AspectModeLabel, AspectModeHint, AspectAuto, AspectOriginal,
     UiAlignLabel, UiAlignHint, UiAlignEdge, UiAlignCenter,
+    MotionTrace, MotionTraceHint,
     TextCount
 };
 
@@ -462,6 +463,9 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
      "外緣會把比賽 HUD 的左右群組放在螢幕邊緣；中央則讓 HUD 集中在畫面中央。僅在比例為自動時有效。"},
     {"Edge", "外緣"},
     {"Center", "中央"},
+    {"Motion trace", "體感追蹤紀錄"},
+    {"Writes what the sensor saw and what the game made of it into game.log, as numbers only (no pictures). Turn it on to report a motion problem, play once, and attach game.log.",
+     "把感應器看到的動作與遊戲的判斷以數字寫進 game.log（不含任何影像）。回報體感問題時開啟，玩一次後附上 game.log。"},
 }};
 
 int language = 0;
@@ -2681,6 +2685,9 @@ struct Launcher {
                 moved |= slider_steps(&radius, 0, 30, 1);
                 if (moved) settings.menu_steady_radius = uint32_t(std::clamp(radius, 0, 30));
             });
+            // For a bug report: numbers in game.log (motion_trace.h).
+            setting_row(tr(MotionTrace), tr(MotionTraceHint), ImGui::GetFrameHeight() * 1.9f, scale,
+                        [&] { toggle("##motion_trace", &settings.motion_trace); });
         }
         if (sfr::VoiceRecognizer::supported()) {
             settings_section(SectionVoice);
