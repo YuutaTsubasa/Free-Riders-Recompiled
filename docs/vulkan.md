@@ -150,6 +150,26 @@ Firebase Test Lab 的 Galaxy S9（Mali-G72，Android 10，驅動程式 r19，Vul
 `SFR_TEST_VERTEX_ATTRIBUTES=<n>` 把裝置的屬性數當成 n（16 在任何顯示卡上試這條路，32 在舊 Mali
 上關掉它）。
 
+### Apple：拿掉分派迴圈
+
+客機著色器有跳躍或迴圈時，XenosRecomp 寫成 `uint pc = 0; while (true) switch (pc) {...}`：每個
+case 落到下一個，或設 pc 後 continue。DXC 把它變成一個迴圈，標頭用 phi 帶著所有暫存器進一個對
+pc 的 switch。Apple 的 Metal 編譯器（MoltenVK，macOS 與 iOS）在這種形狀上每個執行緒溢出 6–8 KB，
+蒙皮（palette）頂點著色器最多：M1 上一場比賽每幀 ~145 ms 都在頂點階段。
+
+Apple 上 `NativeGraphics::shader_code` 先把它拿掉（`spirv_dispatch_loop.h`）：case 照順序排，每個
+前面一個只對自己 pc 的 switch，出口設下一個 pc（下一個 case、continue 指定的、break 就是沒有）後
+跳到那個 switch 的 merge；只有往回的 continue 跨過的 case 外面包一個迴圈。原本迴圈帶著的值和所有
+在別的 block 用到的值放 Function 變數（Metal 會放回暫存器）。每條原指令執行順序不變，NoContraction
+也留著。包裡 476 個著色器中 242 個頂點著色器有分派迴圈，全部改得了、`spirv-val` 都過；單元測試用
+一個小 SPIR-V 直譯器確認改前改後輸出逐位元相同（`SFR_SHADER_PACK=<pack>` 時跑整包）。
+
+M1（Metal System Trace，比賽中 8 秒）：頂點 144.6 → 6.4 ms/幀，GPU 6.5 → 60 fps，最大溢出 6992 →
+608 bytes，`RACE_FRAMESKIP speed` 0.148 → 0.997。Metal 上 gl_Position 逐位元相同；部分 texcoord
+差幾十 ULP（編譯器對非 precise 運算的合併不同），畫面像素差最多 1–2 階。`game.log` 記
+`NATIVE_DISPATCH_LOOP removed=0|1`；`SFR_TEST_DISPATCH_LOOP=0` 在 Apple 上保留迴圈，`=1` 在任何
+Vulkan 裝置上拿掉（驗證層用）。
+
 ### 圖形自我測試的繪製
 
 `graphics_selftest.cpp`（Android 由 `GraphicsTestActivity` 啟動，桌面設 `SFR_GRAPHICS_SELFTEST=1`

@@ -8,6 +8,7 @@
 #include "plume_render_interface.h"
 #include "spirv_bounded_descriptors.h"
 #include "spirv_clip_distance.h"
+#include "spirv_dispatch_loop.h"
 #include "spirv_version.h"
 #include "spirv_vertex_inputs.h"
 
@@ -182,6 +183,7 @@ struct NativeGraphics::Impl {
     plume::RenderFormat depth_format = plume::RenderFormat::D32_FLOAT_S8_UINT;
     bool without_clip_distance = false;
     bool spirv_1_3 = false;
+    bool without_dispatch_loop = false;
     // The device's vertex attributes when fewer than vertex_input_locations.
     uint32_t vertex_attributes = 0;
 };
@@ -391,6 +393,22 @@ void NativeGraphics::initialize() {
                   << " forced=" << (forced && std::atoi(forced) > 0) << " compacted=" << (vertex_attributes != 0) << '\n';
     }
 
+    // Apple's Metal compiler (MoltenVK, on macOS and iOS) spills kilobytes a
+    // thread on XenosRecomp's dispatch loops, most on the skinned vertex
+    // shaders: there the cases run in order behind tests of their own
+    // instead (spirv_dispatch_loop.h). SFR_TEST_DISPATCH_LOOP=0 keeps the
+    // loops on Apple, =1 takes them out on any Vulkan device.
+    bool without_dispatch_loop = false;
+    if (backend == GraphicsBackend::vulkan) {
+#if defined(__APPLE__)
+        without_dispatch_loop = true;
+#endif
+        const char* forced = std::getenv("SFR_TEST_DISPATCH_LOOP");
+        if (forced && (std::strcmp(forced, "1") == 0 || std::strcmp(forced, "0") == 0))
+            without_dispatch_loop = forced[0] == '1';
+        std::cerr << "NATIVE_DISPATCH_LOOP removed=" << without_dispatch_loop << '\n';
+    }
+
     auto render_queue = render_device->createCommandQueue(plume::RenderCommandListType::DIRECT);
     if (!render_queue)
         throw std::runtime_error(std::string("failed to create a ") + name + " direct command queue");
@@ -402,6 +420,7 @@ void NativeGraphics::initialize() {
     implementation->depth_format = depth_format;
     implementation->without_clip_distance = without_clip_distance;
     implementation->spirv_1_3 = spirv_1_3;
+    implementation->without_dispatch_loop = without_dispatch_loop;
     implementation->vertex_attributes = vertex_attributes;
 #ifndef _WIN32
     implementation->window = window;
@@ -459,7 +478,7 @@ bool NativeGraphics::compacts_vertex_inputs() const noexcept {
 
 bool NativeGraphics::rewrites_shaders() const noexcept {
     return impl_ && (impl_->bounded_descriptors || impl_->without_clip_distance || impl_->spirv_1_3 ||
-                     impl_->vertex_attributes);
+                     impl_->vertex_attributes || impl_->without_dispatch_loop);
 }
 
 std::vector<uint8_t> NativeGraphics::shader_code(std::span<const uint8_t> code,
@@ -467,6 +486,11 @@ std::vector<uint8_t> NativeGraphics::shader_code(std::span<const uint8_t> code,
     std::vector<uint8_t> result(code.begin(), code.end());
     std::string why;
     if (vertex_inputs) vertex_inputs->reset();
+    if (impl_ && impl_->without_dispatch_loop) {
+        auto rewritten = without_dispatch_loop_spirv(result, &why);
+        if (!rewritten) throw std::runtime_error("a shader cannot go without its dispatch loop: " + why);
+        result = std::move(*rewritten);
+    }
     if (impl_ && impl_->vertex_attributes) {
         auto compacted = compact_vertex_inputs_spirv(result, impl_->vertex_attributes, &why);
         if (!compacted) throw std::runtime_error("a vertex shader cannot take its inputs at compacted locations: " + why);
