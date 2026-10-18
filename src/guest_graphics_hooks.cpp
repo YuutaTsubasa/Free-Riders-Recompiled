@@ -38,6 +38,7 @@
 #include <string>
 #include <sstream>
 #include <thread>
+#include "performance_hint.h"
 #include <vector>
 #ifdef _WIN32
 #define NOMINMAX
@@ -584,6 +585,7 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
     static auto previous_frame_end=frame_end;
     const double frame_ms=std::chrono::duration<double,std::milli>(frame_end-previous_frame_end).count();
     previous_frame_end=frame_end;
+    sfr::report_frame_work(frame_ms-pacing_ms);  // performance_hint.h (SFR_PERF_HINT)
     // Consume counters even in quiet mode so observation never changes their
     // frame boundaries. Only detailed mode formats the large diagnostic line.
     const auto pipeline_work=graphics().renderer().take_pipeline_work();
