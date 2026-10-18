@@ -190,6 +190,8 @@ with [docs/progress.md](docs/progress.md).
   Phones with a Mali-G715 or G720 GPU (Pixel 10a, POCO X7 Pro and others) crashed while preparing the graphics at start (Issues #166, #169). Their vertex shaders now go without the clip distance these GPUs don't support.
 - [v0.10.3 — Older Mali phones](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.3)
   Vulkan 1.1 phones with an older Mali GPU (Mali-G72/G76, such as the Huawei P30 Pro in Issue #169) stopped before the game could start. The renderer now runs without the newer Vulkan features they lack; tested on a Mali-G72 test phone's graphics start-up, untested in a race there.
+- [v0.10.4 — Old Mali draws, Tensor speed, Kinect v2 trace](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.4)
+  Old Mali phones (Mali-G72/G76) no longer freeze on the first frame (#169). Phones with little CPU cores, such as the Pixel 10a, keep the game's helper threads off them (#176). Kinect v2: a Motion trace switch in the launcher and two jump fixes (#165). The fallback renderer for GPUs without descriptor indexing writes far fewer descriptors (#134).
 
 ## System Requirements
 
