@@ -192,6 +192,8 @@ with [docs/progress.md](docs/progress.md).
   Vulkan 1.1 phones with an older Mali GPU (Mali-G72/G76, such as the Huawei P30 Pro in Issue #169) stopped before the game could start. The renderer now runs without the newer Vulkan features they lack; tested on a Mali-G72 test phone's graphics start-up, untested in a race there.
 - [v0.10.4 — Old Mali draws, Tensor speed, Kinect v2 trace](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.4)
   Old Mali phones (Mali-G72/G76) no longer freeze on the first frame (#169). Phones with little CPU cores, such as the Pixel 10a, keep the game's helper threads off them (#176). Kinect v2: a Motion trace switch in the launcher and two jump fixes (#165). The fallback renderer for GPUs without descriptor indexing writes far fewer descriptors (#134).
+- [v0.10.5 — Touch-friendly launcher, first iPhone fixes](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.5)
+  The launcher scrolls with a finger and has wider scrollbars on touch screens (#186); the on-screen game controls come back with a touch even when a controller or keyboard is connected (#177). On iPhone the app has its icon, the launcher fits the screen, and a disc image in the app's Files folder is found without the picker (#185).
 
 ## System Requirements
 
