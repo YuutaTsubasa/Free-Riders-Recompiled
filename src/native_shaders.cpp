@@ -75,9 +75,10 @@ uint32_t NativeShaders::create(ShaderStage stage, uint32_t container) {
     // invent. SPIR-V keeps the constant and takes its value per pipeline.
     auto code=found->code(vulkan);
     // A driver without descriptor indexing takes the SPIR-V rewritten for
-    // the renderer's bounded layout (NativeGraphics::bounded_descriptors).
+    // the renderer's bounded layout (NativeGraphics::bounded_descriptors),
+    // and a Mali its vertex shaders without the clip distance.
     std::vector<uint8_t> bounded;
-    if(vulkan && !code.empty() && impl_->graphics.bounded_descriptors()) {
+    if(vulkan && !code.empty() && impl_->graphics.rewrites_shaders()) {
         bounded=impl_->graphics.shader_code(code);
         code=bounded;
     }

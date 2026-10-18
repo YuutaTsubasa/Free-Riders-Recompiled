@@ -48,8 +48,11 @@ public class GameActivity extends SDLActivity {
         }
         for (String[] setting : DEFAULTS) setenv(setting[0], setting[1], false);
         // GraphicsTestActivity: the graphics start-up alone (graphics_selftest.cpp).
-        if (getIntent() != null && getIntent().getBooleanExtra(GraphicsTestActivity.EXTRA, false))
+        if (getIntent() != null && getIntent().getBooleanExtra(GraphicsTestActivity.EXTRA, false)) {
             setenv("SFR_GRAPHICS_SELFTEST", "1", true);
+            String clip = getIntent().getStringExtra(GraphicsTestActivity.CLIP_DISTANCE);
+            if (clip != null) setenv("SFR_TEST_NO_CLIP_DISTANCE", clip, true);
+        }
         super.loadLibraries();
     }
 

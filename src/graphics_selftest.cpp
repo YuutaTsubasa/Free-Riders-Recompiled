@@ -14,6 +14,7 @@
 #include <android/log.h>
 #include <cstdio>
 #include <exception>
+#include <filesystem>
 #include <string>
 
 namespace {
@@ -36,12 +37,13 @@ void describe(sfr::NativeGraphics& graphics) {
     char text[1024];
     std::snprintf(text, sizeof(text),
         "device=%s driver=0x%x api=%u.%u.%u bc=%u etc2=%u astc=%u geometry=%u fill_non_solid=%u depth_clamp=%u "
-        "independent_blend=%u dual_source=%u logic_op=%u",
+        "independent_blend=%u dual_source=%u logic_op=%u clip_distance=%u cull_distance=%u",
         properties.properties.deviceName, properties.properties.driverVersion,
         VK_API_VERSION_MAJOR(properties.properties.apiVersion), VK_API_VERSION_MINOR(properties.properties.apiVersion),
         VK_API_VERSION_PATCH(properties.properties.apiVersion), features.textureCompressionBC,
         features.textureCompressionETC2, features.textureCompressionASTC_LDR, features.geometryShader,
-        features.fillModeNonSolid, features.depthClamp, features.independentBlend, features.dualSrcBlend, features.logicOp);
+        features.fillModeNonSolid, features.depthClamp, features.independentBlend, features.dualSrcBlend, features.logicOp,
+        features.shaderClipDistance, features.shaderCullDistance);
     step(text);
     std::snprintf(text, sizeof(text),
         "limits stage_sampled_images=%u stage_samplers=%u stage_resources=%u set_sampled_images=%u set_samplers=%u "
@@ -76,6 +78,14 @@ int sfr_graphics_selftest() {
         sfr::NativePresentation presentation(graphics, 1280, 720);
         step("renderer");
         sfr::NativeRenderer renderer(graphics, presentation);
+        // With the game's shaders beside it (GraphicsTestActivity copies the
+        // APK's shaders.pack and pipeline manifest), every pipeline the game
+        // prepares at start, where Mali crashed (Issues #166, #169).
+        if (std::filesystem::exists("shaders.pack")) {
+            step("pipelines");
+            renderer.prepare_pipelines();
+            step("pipelines done");
+        }
         bool cleared = false;
         for (int frame = 0; frame < 120; ++frame) {
             if (frame == 0) step("first clear and present");
