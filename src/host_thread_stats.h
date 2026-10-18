@@ -24,6 +24,7 @@
 //                    an empty queue),
 //   main_on/render_on that time by core speed (cpu_capacity, as CORE_PLAN
 //                    prints it): speed:ms,...
+//   main_mask        the cores the main thread may run on now (0 unknown),
 //   mhz              each speed's current/maximum clock, 0 if unreadable.
 #include <atomic>
 #include <cstdint>
@@ -153,12 +154,28 @@ public:
                       undrawn ? undrawn_ms_ / undrawn : 0.0, drawn_ ? draw_ms_ / drawn_ : 0.0,
                       drawn_ ? record_ms_ / drawn_ : 0.0, cpu_ms_ / n, wait / n, waits / n, busy / n);
         std::string line = head + time_by_speed(main_ms_, speed, n) + " render_on=" + time_by_speed(render_ms, speed, n) +
-                           " mhz=" + clocks(speed) + '\n';
+                           " main_mask=" + allowed_cores() + " mhz=" + clocks(speed) + '\n';
         *this = HostThreadWindow{};
         last_cpu_ns_ = cpu_ns;
         return line;
     }
 private:
+    // The cores the calling (main) thread may run on now, as a hex mask: the
+    // core plan sets it at the start, and the title's own KeSetAffinityThread
+    // calls can replace it later.
+    static std::string allowed_cores() {
+        uint64_t mask = 0;
+#if defined(__linux__)
+        cpu_set_t set;
+        CPU_ZERO(&set);
+        if (sched_getaffinity(0, sizeof set, &set) == 0)
+            for (int cpu = 0; cpu < 64; ++cpu)
+                if (CPU_ISSET(cpu, &set)) mask |= uint64_t{1} << cpu;
+#endif
+        char text[24];
+        std::snprintf(text, sizeof text, "0x%llx", static_cast<unsigned long long>(mask));
+        return text;
+    }
     // Current/maximum clock of the first core of each speed, in MHz.
     static std::string clocks(const long (&speed)[64]) {
         std::string text;
