@@ -39,6 +39,8 @@
 #include <sstream>
 #include <thread>
 #include "performance_hint.h"
+#include "host_core_plan.h"
+#include "host_thread_stats.h"
 #include <vector>
 #ifdef _WIN32
 #define NOMINMAX
@@ -361,6 +363,10 @@ static const bool frame_metrics=[] {
     const char* setting=std::getenv("SFR_FRAME_METRICS");
     return setting ? *setting!='0' : sfr::graphics_trace();
 }();
+// The main thread's drawing for HOST_THREADS (host_thread_stats.h): all of
+// native_draw, and the renderer's part of it (the upload ring's writes and
+// queueing the draw for the render thread).
+[[maybe_unused]] static std::atomic<uint64_t> quiet_draw_ns{0}, quiet_record_ns{0};
 static auto metrics_clock() {
     return frame_metrics ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
 }
@@ -512,7 +518,8 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
         previous=present_start;
     }
     sfr::note_frame_presented();  // for the window's title
-    if(rendering_this_frame()) {
+    const bool frame_drawn=rendering_this_frame();
+    if(frame_drawn) {
         graphics().present_front_buffer(ctx.r3.u32);
         // SFR_TEST_RACE_DRAW_MS=<ms> (testing): each drawn race frame takes that
         // much longer, as on a device whose GPU cannot keep 60 fps.
@@ -532,7 +539,15 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
     double pacing_ms=0;
     bool race_paced=false;
     if(sfr::race_frameskip_enabled()) {
-        static sfr::RaceFrameSkip skip;
+        // SFR_TEST_RACE_SKIP_SLOW=1 (experiment): race_frame_clock.h skip_slow.
+        static sfr::RaceFrameSkip skip(4,[]{ const char* t=std::getenv("SFR_TEST_RACE_SKIP_SLOW"); return t && *t=='1'; }());
+        // SFR_TEST_RACE_FRAME_MS=<ms> (testing): every race frame, drawn or
+        // not, takes that much longer, as on a phone whose cores run the
+        // game's own work slower (with SFR_TEST_RACE_DRAW_MS, a Pixel 10a's
+        // undrawn ~17 ms and drawn ~35 ms race frames on an AYN Thor).
+        static const int frame_delay=[]{ const char* t=std::getenv("SFR_TEST_RACE_FRAME_MS"); return t?std::atoi(t):0; }();
+        if(frame_delay>0 && sfr::active_memory->load<uint32_t>(0x83E52F8C))
+            std::this_thread::sleep_for(std::chrono::milliseconds(frame_delay));
         static uint64_t skipped=0,frames=0,race_start=0;
         const bool racing=sfr::active_memory->load<uint32_t>(0x83E52F8C)!=0;
         const uint64_t now=uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -563,7 +578,8 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
                 const double seconds=double(now-race_start)*1e-9;
                 std::cerr << "RACE_FRAMESKIP frames=" << frames << " skipped=" << skipped
                           << " speed=" << (seconds>0 ? frames/60.0/seconds : 0.0) << " resyncs=" << skip.resyncs()
-                          << " blocked=" << skip.blocked() << " undrawn_ms=" << skip.undrawn_ns()/1e6 << '\n';
+                          << " blocked=" << skip.blocked() << " undrawn_ms=" << skip.undrawn_ns()/1e6
+                          << " drawn_ms=" << skip.drawn_ns()/1e6 << '\n';
             }
         }
     }
@@ -586,6 +602,16 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
     const double frame_ms=std::chrono::duration<double,std::milli>(frame_end-previous_frame_end).count();
     previous_frame_end=frame_end;
     sfr::report_frame_work(frame_ms-pacing_ms);  // performance_hint.h (SFR_PERF_HINT)
+#ifdef __ANDROID__
+    {   // host_thread_stats.h: the main and render threads' time and cores
+        static sfr::HostThreadWindow threads;
+        const std::string line=threads.frame(sfr::present_count.load(),frame_ms-pacing_ms,frame_drawn,
+                                             double(quiet_draw_ns.exchange(0,std::memory_order_relaxed))/1e6,
+                                             double(quiet_record_ns.exchange(0,std::memory_order_relaxed))/1e6,
+                                             sfr::core_plan_detail::system_speeds().speed);
+        if(!line.empty()) std::cerr << line;
+    }
+#endif
     // Consume counters even in quiet mode so observation never changes their
     // frame boundaries. Only detailed mode formats the large diagnostic line.
     const auto pipeline_work=graphics().renderer().take_pipeline_work();
@@ -850,8 +876,14 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     const auto draw_start=metrics_clock();
     struct DrawTimer {
         std::chrono::steady_clock::time_point start;
+#ifdef __ANDROID__
+        uint64_t quiet_start=sfr::host_monotonic_ns();  // HOST_THREADS draw_ms, on in quiet runs too
+#endif
         ~DrawTimer() {
             if(frame_metrics) frame_draw_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+#ifdef __ANDROID__
+            quiet_draw_ns.fetch_add(sfr::host_monotonic_ns()-quiet_start,std::memory_order_relaxed);
+#endif
         }
     } draw_timer{draw_start};
     if(device!=sfr::GuestGraphics::device_address) throw sfr::RuntimeStop("native-draw",device,"draw on a non-native device");
@@ -1526,7 +1558,13 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
         std::cerr << '\n';
     }
     const auto record_start=metrics_clock();
+#ifdef __ANDROID__
+    const uint64_t quiet_record_start=sfr::host_monotonic_ns();
     graphics().renderer().draw(draw);
+    quiet_record_ns.fetch_add(sfr::host_monotonic_ns()-quiet_record_start,std::memory_order_relaxed);
+#else
+    graphics().renderer().draw(draw);
+#endif
     if(raster_swapped) {
         try { const_cast<sfr::NativePresentation&>(presentation).set_raster_state(saved_viewport,saved_scissor); } catch(const std::exception&) {}
     }

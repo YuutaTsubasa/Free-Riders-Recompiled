@@ -148,8 +148,9 @@ void frame_skipping() {
     // Runs a race whose drawn and undrawn frames take the given times, as the
     // game does: the frame's work, then the decision and its wait. Returns
     // the share of frames drawn and the race's speed against real time.
-    const auto race = [&](uint64_t drawn_ns, uint64_t undrawn_ns, int frames, int* most_in_a_row = nullptr) {
-        sfr::RaceFrameSkip skip;
+    const auto race = [&](uint64_t drawn_ns, uint64_t undrawn_ns, int frames, int* most_in_a_row = nullptr,
+                          bool skip_slow = false) {
+        sfr::RaceFrameSkip skip(4, skip_slow);
         uint64_t now = 1'000'000'000;
         auto decision = skip.next(now, true);
         const uint64_t start = now;
@@ -212,6 +213,23 @@ void frame_skipping() {
         const auto [drawn, speed] = race(40'000'000, 40'000'000, 300);
         require(drawn > 0.9, "a race too slow to catch up even undrawn keeps drawing");
         (void)speed;
+    }
+    {
+        // A Pixel 10a's busiest race parts (Issue #176): drawn frames of 37 ms,
+        // undrawn ones of 17. By default every frame is drawn (under half of
+        // real time); skip_slow skips them anyway, as undrawn ones are far
+        // shorter, and the race comes closer to real time.
+        const auto [drawn, speed] = race(37'000'000, 17'000'000, 1200);
+        require(drawn > 0.9 && speed < 0.5, "by default a race whose undrawn frames are too slow keeps drawing");
+        int most = 0;
+        const auto [slow_drawn, slow_speed] = race(37'000'000, 17'000'000, 1200, &most, true);
+        require(slow_drawn < 0.3 && most <= 4, "skip_slow: about one frame in five is drawn");
+        require(slow_speed > 0.75 && slow_speed < 0.95, "and the race runs at ~0.8 of real time instead of ~0.45");
+        // Undrawn frames hardly shorter than drawn ones: skipping would only
+        // hide frames, so they are drawn even with skip_slow.
+        const auto [same_drawn, same_speed] = race(40'000'000, 36'000'000, 600, nullptr, true);
+        require(same_drawn > 0.9, "skip_slow does not skip when undrawn frames save little");
+        (void)same_speed;
     }
     {
         sfr::RaceFrameSkip skip;

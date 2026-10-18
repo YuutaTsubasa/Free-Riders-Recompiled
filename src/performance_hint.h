@@ -1,11 +1,15 @@
 #pragma once
-// Android's performance hints (ADPF, API 33+): the title's main thread (and
-// the render thread, if it has started by the first present; on the Thor it
-// had not) form a hint session whose target is a sixtieth of a
+// Android's performance hints (ADPF, API 33+): the title's main thread and
+// the render thread form a hint session whose target is a sixtieth of a
 // second, and every frame reports how long the main thread worked (the frame
-// less the pacing wait). Where the phone's power HAL supports it, it raises
-// clocks or moves the threads to faster cores when the work overruns the
-// target, instead of waiting for the scheduler's load tracking.
+// less the pacing wait). The session waits for the render thread, which
+// starts at the first draw (up to 600 frames, then the main thread alone):
+// made at the first present, it had only the main thread (an AYN Thor), and
+// a main thread that waits for the render thread at every clear and present
+// is held back by the render thread's clock as much as by its own. Where
+// the phone's power HAL supports it, it raises clocks or moves the threads
+// to faster cores when the work overruns the target, instead of waiting for
+// the scheduler's load tracking.
 // SFR_PERF_HINT=1|0 (default 0: experiment). Loaded with dlsym, as the app
 // still starts on API 29. Elsewhere the calls do nothing.
 #include <cstdint>
@@ -45,6 +49,8 @@ inline void report_frame_work(double work_ms) {
     using Create = Session* (*)(void*, const int32_t*, size_t, int64_t);
     using Report = int (*)(Session*, int64_t);
     static Report report = nullptr;
+    static unsigned waited = 0;
+    if (!render_tid.load(std::memory_order_relaxed) && ++waited < 600) return;
     static Session* session = [] () -> Session* {
         void* library = dlopen("libandroid.so", RTLD_NOW | RTLD_LOCAL);
         auto get = library ? reinterpret_cast<GetManager>(dlsym(library, "APerformanceHint_getManager")) : nullptr;
