@@ -36,6 +36,7 @@
 #include "kinect_preview.h"
 #include "camera_preview_window.h"
 #include "text_wrap.h"
+#include "touch_scroll.h"
 #include "voice_commands.h"
 #include "launcher_settings.h"
 #include "launcher_screen_fit.h"
@@ -757,6 +758,8 @@ constexpr ImVec4 cyan{0.35f, 0.92f, 1.00f, 1.0f};
 constexpr ImVec4 dim_text{0.66f, 0.72f, 0.84f, 1.0f};
 constexpr ImVec4 warning_text{1.0f, 0.55f, 0.45f, 1.0f};
 
+constexpr float scrollbar_size = 12;  // at scale 1, for a mouse
+
 void apply_style(float scale) {
     ImGuiStyle& style = ImGui::GetStyle();
     ImGui::StyleColorsDark(&style);
@@ -769,7 +772,7 @@ void apply_style(float scale) {
     style.FramePadding = ImVec2(14, 8);
     style.ItemSpacing = ImVec2(12, 10);
     style.WindowPadding = ImVec2(0, 0);
-    style.ScrollbarSize = 12;
+    style.ScrollbarSize = scrollbar_size;
     style.WindowBorderSize = 0;
     style.ChildBorderSize = 1;
     style.PopupBorderSize = 1;
@@ -796,6 +799,72 @@ void apply_style(float scale) {
     c[ImGuiCol_ModalWindowDimBg] = ImVec4(0.0f, 0.02f, 0.08f, 0.62f);
     c[ImGuiCol_ScrollbarBg] = ImVec4(0, 0, 0, 0);
     style.ScaleAllSizes(scale);
+}
+
+// Fingers (issue #186). The phones and tablets, or a PC whose last pointer
+// input was a touch screen: there the scrollbars are made for a finger.
+bool touch_screen_ui() {
+#if defined(__ANDROID__) || defined(SFR_IOS)
+    return true;
+#else
+    return ImGui::GetIO().MouseSource == ImGuiMouseSource_TouchScreen;
+#endif
+}
+
+void apply_touch_scrollbars(float scale, bool touch) {
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.ScrollbarSize = std::round(scrollbar_size * scale * (touch ? 2.5f : 1.0f));
+    style.GrabMinSize = std::round(ImGuiStyle().GrabMinSize * scale * (touch ? 2.0f : 1.0f));
+}
+
+// A finger dragged up or down over a page scrolls it, as on a phone, and the
+// page coasts on after a fling. A short press stays a tap on whatever is under
+// it; a slider, a text field or a scrollbar being held keeps the finger. The
+// mouse is left as it was. Runs after the frame's widgets (the scroll applies
+// from the next frame).
+void touch_drag_scroll(float scale) {
+    static sfr::TouchScroll touch;
+    static ImGuiID target_id = 0;
+    ImGuiContext& g = *GImGui;
+    const ImGuiIO& io = g.IO;
+    touch.set_threshold(10 * scale);
+    const bool down = io.MouseSource == ImGuiMouseSource_TouchScreen && io.MouseDown[0];
+    if (down && io.MouseClicked[0]) {
+        // The page under the finger: the nearest window that scrolls, from
+        // the one touched out through the children it sits in.
+        target_id = 0;
+        for (ImGuiWindow* w = g.HoveredWindow; w; w = (w->Flags & ImGuiWindowFlags_ChildWindow) ? w->ParentWindow : nullptr)
+            if (w->ScrollMax.y > 0) { target_id = w->ID; break; }
+    }
+    ImGuiWindow* target = target_id ? ImGui::FindWindowByID(target_id) : nullptr;
+    bool may_drag = target != nullptr;
+    if (may_drag && g.ActiveId != 0) {
+        // Sliders and text fields take the arrows while held: they are
+        // dragged, not scrolled. So is a scrollbar. (A press on a window's
+        // empty space holds its move ID, which takes every key: that one is
+        // a page being dragged.)
+        const bool window_press = g.ActiveIdWindow && g.ActiveId == g.ActiveIdWindow->MoveId;
+        if (g.ActiveIdUsingNavDirMask != 0 && !window_press) may_drag = false;
+        if (g.ActiveIdWindow && g.ActiveId == ImGui::GetWindowScrollbarID(g.ActiveIdWindow, ImGuiAxis_Y)) may_drag = false;
+    }
+    const sfr::TouchScroll::Step step = touch.update(down, io.MousePos.x, io.MousePos.y, io.DeltaTime, may_drag);
+    // A drag, not a tap: the button pressed at the start must not fire on release.
+    if (step.started) ImGui::ClearActiveID();
+    if (!target) {
+        touch.stop();
+        return;
+    }
+    if (step.scroll != 0) {
+        const float next = target->Scroll.y + step.scroll;
+        ImGui::SetScrollY(target, std::clamp(next, 0.0f, target->ScrollMax.y));
+        if (next <= 0 || next >= target->ScrollMax.y) touch.stop();  // the end: no coasting past it
+    }
+}
+
+// Once a frame, after the widgets: the touch scrolling and scrollbar size.
+void touch_input_frame(float scale) {
+    apply_touch_scrollbars(scale, touch_screen_ui());
+    touch_drag_scroll(scale);
 }
 
 float approach(float value, float target, float rate) {
@@ -3492,6 +3561,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
         launcher.configure_navigation();
         ImGui::NewFrame();
         launcher.frame();
+        touch_input_frame(launcher.scale);
         trace_navigation();
         ImGui::Render();
         constexpr float clear[4] = {0, 0, 0, 1};
@@ -3711,6 +3781,7 @@ int main(int argc, char** argv) {
         launcher.configure_navigation();
         ImGui::NewFrame();
         launcher.frame();
+        touch_input_frame(launcher.scale);
         trace_navigation();
         ImGui::Render();
 #ifdef SFR_IOS
