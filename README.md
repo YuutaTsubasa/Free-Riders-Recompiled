@@ -188,6 +188,8 @@ with [docs/progress.md](docs/progress.md).
   The launcher checks the online server before the game starts and says why it can't connect (Issue #161). A stall on Metropolis Speedway's speed rail is gone (#164). Vulkan GPUs without descriptor indexing get a fallback renderer (#134, untested on such hardware), and two rendering bugs are fixed.
 - [v0.10.2 — Newer Mali phones start](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.2)
   Phones with a Mali-G715 or G720 GPU (Pixel 10a, POCO X7 Pro and others) crashed while preparing the graphics at start (Issues #166, #169). Their vertex shaders now go without the clip distance these GPUs don't support.
+- [v0.10.3 — Older Mali phones](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.3)
+  Vulkan 1.1 phones with an older Mali GPU (Mali-G72/G76, such as the Huawei P30 Pro in Issue #169) stopped before the game could start. The renderer now runs without the newer Vulkan features they lack; tested on a Mali-G72 test phone's graphics start-up, untested in a race there.
 
 ## System Requirements
 
