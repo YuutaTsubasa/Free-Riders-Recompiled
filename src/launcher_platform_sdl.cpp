@@ -67,14 +67,6 @@ std::map<std::string, std::string> source_names;  // /proc/self/fd/N -> document
 
 std::atomic<bool> game_launched{false}, launcher_back{false};
 
-// Glyphs waiting for their pixels: an atlas custom rectangle each.
-struct SystemGlyph {
-    int rect;
-    int width, height;
-    std::vector<unsigned char> coverage;
-};
-std::vector<SystemGlyph> system_glyphs;
-
 // Calls an argument-less void method of LauncherActivity.
 void call_activity(const char* method) {
     auto* env = static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
@@ -224,6 +216,28 @@ extern "C" JNIEXPORT void JNICALL Java_com_freeriders_recompiled_LauncherActivit
 }
 #endif
 
+#if defined(__ANDROID__) || defined(SFR_IOS)
+namespace {
+// Glyphs waiting for their pixels: an atlas custom rectangle each.
+struct SystemGlyph {
+    int rect;
+    int width, height;
+    std::vector<unsigned char> coverage;
+};
+std::vector<SystemGlyph> system_glyphs;
+}
+#endif
+
+#ifdef SFR_IOS
+void add_system_glyphs(ImFont* font, float pixel_size, bool bold, const std::vector<unsigned int>& codepoints) {
+    if (codepoints.empty()) return;
+    for (RenderedGlyph& drawn : ios_render_glyphs(codepoints, pixel_size, bold))
+        system_glyphs.push_back({ImGui::GetIO().Fonts->AddCustomRectFontGlyph(font, ImWchar(drawn.codepoint), drawn.width, drawn.height,
+                                                                              drawn.advance, ImVec2(drawn.x, drawn.y)),
+                                 drawn.width, drawn.height, std::move(drawn.coverage)});
+}
+#endif
+
 #ifdef __ANDROID__
 void add_system_glyphs(ImFont* font, float pixel_size, bool bold, const std::vector<unsigned int>& codepoints) {
     if (codepoints.empty()) return;
@@ -263,7 +277,9 @@ void add_system_glyphs(ImFont* font, float pixel_size, bool bold, const std::vec
         system_glyphs.push_back(std::move(glyph));
     }
 }
+#endif
 
+#if defined(__ANDROID__) || defined(SFR_IOS)
 void draw_system_glyphs() {
     ImFontAtlas& atlas = *ImGui::GetIO().Fonts;
     if (!atlas.IsBuilt()) atlas.Build();
@@ -609,9 +625,9 @@ FontFiles font_files() {
                                       "/System/Library/Fonts/CoreAddition/ArialBold.ttf"}),
             system({"Arial-BoldItalicMT"}, {"/System/Library/Fonts/WebFonts/ArialBoldItalic.ttf",
                                             "/System/Library/Fonts/CoreAddition/ArialBoldItalic.ttf"}),
-            // No Chinese: iOS's PingFang is a file ImGui cannot read (it stops
-            // the font atlas), and the Hiragino faces lack some of the
-            // launcher's characters. Without one the launcher stays English.
+            // Chinese: add_system_glyphs. iOS's PingFang is a file ImGui
+            // cannot read (it stops the font atlas), and the Hiragino faces
+            // lack some of the launcher's characters.
             {},
             {}};
 #elif defined(__APPLE__)

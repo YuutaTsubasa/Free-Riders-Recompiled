@@ -69,9 +69,10 @@ int ui_language();
 void handle_event(const void* sdl_event);
 #endif
 
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(SFR_IOS)
 // Android's CJK fonts are variable CFF2 fonts, which ImGui's rasterizer
-// cannot read: those characters are drawn by Android's own text renderer.
+// cannot read, and iOS's PingFang file stops ImGui's atlas: those characters
+// are drawn by the system's own text renderer (CoreText on iOS).
 // Add them to a font before the atlas is built, draw them in after.
 void add_system_glyphs(ImFont* font, float pixel_size, bool bold, const std::vector<unsigned int>& codepoints);
 void draw_system_glyphs();

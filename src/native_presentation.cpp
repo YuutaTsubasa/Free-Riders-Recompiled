@@ -405,13 +405,28 @@ struct NativePresentation::Impl {
     // again and the frame skipped, a few times in a row before giving up.
     bool resize_swap_chain = false;
     uint32_t acquire_failures = 0;
-#ifdef __ANDROID__
+    // A present refused (VK_ERROR_OUT_OF_DATE_KHR, and on MoltenVK also
+    // VK_SUBOPTIMAL_KHR: the layer is no longer the swap chain's size): the
+    // swap chain is made again next frame, a few times in a row before giving up.
+    uint32_t present_failures = 0;
+    bool present_refused();
+#if defined(__ANDROID__) || defined(SFR_IOS)
     // Android destroys the window's surface in the background; the swap chain
     // is made again on the new one when the app returns (or a present fails).
+    // iOS keeps its Metal layer, and a new surface is the last resort there.
     bool rebuild_swap_chain = false;
+    bool rebuild_surface();
+#endif
+#ifdef __ANDROID__
     // Back held for a second leaves the game (a short press is the game's B).
     uint32_t back_down_ms = 0;
-    bool rebuild_surface();
+#endif
+#ifdef SFR_IOS
+    // The window and SDL's Metal layer, for a new surface.
+    plume::RenderWindow render_window{};
+    // iOS refuses GPU work in the background: nothing is drawn until the
+    // app is back in front.
+    void wait_in_background();
 #endif
 #ifndef _WIN32
     TouchControls touch_controls;
@@ -1331,6 +1346,7 @@ NativePresentation::NativePresentation(NativeGraphics& graphics, uint32_t width,
     if (!view) unavailable("Metal view");
 #ifdef SFR_IOS
     plume::RenderWindow render_window{(void*)system.info.uikit.window, SDL_Metal_GetLayer(view)};
+    implementation->render_window = render_window;
 #else
     plume::RenderWindow render_window{(void*)system.info.cocoa.window, SDL_Metal_GetLayer(view)};
 #endif
@@ -1691,16 +1707,34 @@ std::vector<uint8_t> NativePresentation::readback_color() {
 #endif
 }
 
-#ifdef __ANDROID__
+bool NativePresentation::Impl::present_refused() {
+    if (graphics->backend() != GraphicsBackend::vulkan || ++present_failures > 8) return false;
+    std::cerr << "NATIVE_PRESENTATION present_refused attempt=" << present_failures
+              << " size=" << swap_chain->getWidth() << 'x' << swap_chain->getHeight() << '\n';
+#ifdef SFR_IOS
+    if (present_failures > 4) {
+        rebuild_swap_chain = true;  // a new size did not help: a new surface
+        return true;
+    }
+#endif
+    resize_swap_chain = true;
+    return true;
+}
+
+#if defined(__ANDROID__) || defined(SFR_IOS)
 bool NativePresentation::Impl::rebuild_surface() {
     flush();
     wait_presentation_queue();
     blit_targets.clear();
     swap_chain.reset();
+#ifdef __ANDROID__
     SDL_SysWMinfo system{};
     SDL_VERSION(&system.version);
     if (!SDL_GetWindowWMInfo(window, &system) || !system.info.android.window) return false;
     swap_chain = graphics->queue().createSwapChain(system.info.android.window, 3, swap_chain_format, 2);
+#else
+    swap_chain = graphics->queue().createSwapChain(render_window, 3, swap_chain_format, 2);
+#endif
     if (!swap_chain || !swap_chain->resize() || swap_chain->isEmpty()) {
         swap_chain.reset();
         return false;
@@ -1710,8 +1744,29 @@ bool NativePresentation::Impl::rebuild_surface() {
     rebuild_swap_chain_sync();
     if (blit_pipeline) build_blit_targets();
     rebuild_swap_chain = false;
-    std::cerr << "NATIVE_PRESENTATION surface rebuilt images=" << swap_chain->getTextureCount() << '\n';
+    std::cerr << "NATIVE_PRESENTATION surface rebuilt images=" << swap_chain->getTextureCount()
+              << " size=" << swap_chain->getWidth() << 'x' << swap_chain->getHeight() << '\n';
     return true;
+}
+#endif
+
+#ifdef SFR_IOS
+void NativePresentation::Impl::wait_in_background() {
+    flush();
+    wait_presentation_queue();
+    std::cerr << "NATIVE_PRESENTATION background" << std::endl;
+    SDL_Event event;
+    while (true) {
+        if (!SDL_WaitEventTimeout(&event, 250)) continue;
+        if (event.type == SDL_QUIT) {
+            close_requested = true;
+            break;
+        }
+        if (event.type == SDL_APP_DIDENTERFOREGROUND) break;
+    }
+    // The layer may have a new size (the phone turned over meanwhile).
+    resize_swap_chain = true;
+    std::cerr << "NATIVE_PRESENTATION foreground" << std::endl;
 }
 #endif
 
@@ -1769,7 +1824,7 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
     impl_->refuse_during_gpu_wait();
     impl_->drain();
 
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(SFR_IOS)
     // Back from the background: draw into the new surface, or skip the frame.
     if ((impl_->rebuild_swap_chain || !impl_->swap_chain) && !impl_->rebuild_surface()) return;
 #endif
@@ -1804,6 +1859,10 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
                 std::this_thread::sleep_for(std::chrono::milliseconds(16));  // no frame to pace by
                 return;
             }
+#ifdef SFR_IOS
+            impl_->rebuild_swap_chain = true;  // a new surface on the same layer, next frame
+            return;
+#endif
             throw std::runtime_error("failed to resize the native swap chain");
         }
         impl_->rebuild_swap_chain_sync();
@@ -1825,6 +1884,12 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
 #endif
         if (++impl_->acquire_failures <= 8) {
             std::cerr << "NATIVE_PRESENTATION acquire_refused attempt=" << impl_->acquire_failures << '\n';
+#ifdef SFR_IOS
+            if (impl_->acquire_failures > 4) {
+                impl_->rebuild_swap_chain = true;  // a new size did not help: a new surface
+                return;
+            }
+#endif
             impl_->resize_swap_chain = true;
             return;
         }
@@ -1966,7 +2031,11 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
         impl_->rebuild_swap_chain = true;
         return;
 #endif
-        throw std::runtime_error("failed to present native swap-chain texture");
+        // Made again next frame (the window is still shown below: a hidden
+        // one may be what refuses).
+        if (!impl_->present_refused()) throw std::runtime_error("failed to present native swap-chain texture");
+    } else {
+        impl_->present_failures = 0;
     }
     if (!impl_->shown) {
 #ifdef _WIN32
@@ -2087,6 +2156,10 @@ void NativePresentation::pump_events() {
         if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_RETURN && (event.key.keysym.mod & KMOD_ALT) &&
             !event.key.repeat)
             set_fullscreen(impl_->window, !(SDL_GetWindowFlags(impl_->window) & SDL_WINDOW_FULLSCREEN_DESKTOP));
+#ifdef SFR_IOS
+        // SDL does not hold this pump on iOS: the game waits here itself.
+        if (event.type == SDL_APP_WILLENTERBACKGROUND) impl_->wait_in_background();
+#endif
 #ifdef __ANDROID__
         // SDL holds this pump while the app is paused; back in front, the
         // window has a new surface.

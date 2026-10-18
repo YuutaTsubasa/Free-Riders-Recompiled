@@ -213,7 +213,13 @@ void NativeGraphics::initialize() {
     if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0)
         throw std::runtime_error(std::string("failed to start SDL video: ") + SDL_GetError());
     SDL_Window* window = SDL_CreateWindow("Sonic Free Riders", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 720,
-#ifdef __APPLE__
+#ifdef SFR_IOS
+                                          // High DPI: SDL's Metal layer then has the screen's scale,
+                                          // and its size in pixels is the swap chain's. Without it the
+                                          // layer said 852x393 while the swap chain was 2556x1179, and
+                                          // MoltenVK refused every present as suboptimal (Issue #185).
+                                          SDL_WINDOW_METAL | SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+#elif defined(__APPLE__)
                                           SDL_WINDOW_METAL | SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE);
 #else
                                           SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE);
