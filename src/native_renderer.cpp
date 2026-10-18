@@ -140,7 +140,8 @@ private:
 #endif
 
 std::unique_ptr<plume::RenderPipeline> create_draw_pipeline(plume::RenderDevice& device,
-        const plume::RenderPipelineLayout* layout, const NativeDraw& draw, GraphicsBackend backend) {
+        const plume::RenderPipelineLayout* layout, const NativeDraw& draw, GraphicsBackend backend,
+        plume::RenderFormat depth_format) {
     const std::array<plume::RenderInputSlot, 2> slots{plume::RenderInputSlot(0, draw.stride),
                                                        plume::RenderInputSlot(zero_slot, 0)};
         plume::RenderGraphicsPipelineDesc desc;
@@ -165,7 +166,7 @@ std::unique_ptr<plume::RenderPipeline> create_draw_pipeline(plume::RenderDevice&
             desc.stencilFrontFace = draw.stencil_front;
             desc.stencilBackFace = draw.stencil_back;
         }
-        desc.depthTargetFormat = plume::RenderFormat::D32_FLOAT_S8_UINT;
+        desc.depthTargetFormat = depth_format;
         desc.renderTargetCount = 1;
         desc.renderTargetFormat[0] = plume::RenderFormat::B8G8R8A8_UNORM;
         desc.renderTargetBlend[0] = draw.blend.description(draw.write_mask);
@@ -863,7 +864,7 @@ void NativeRenderer::prepare_pipelines() {
                     state.pixel_shader = backend == 0 && ps->specialization_mask ?
                         specialized(*ps, recipe.pixel_link_constants) : shader(*ps);
                     auto pipeline = create_draw_pipeline(impl_->graphics.device(), impl_->layout.get(), state,
-                                                         impl_->graphics.backend());
+                                                         impl_->graphics.backend(), impl_->graphics.depth_format());
                     if (pipeline) {
                         impl_->recipe_pipelines.emplace(key, std::move(pipeline));
                         ++compiled;
@@ -1368,7 +1369,7 @@ static uint32_t own_resolve(NativeRenderer::Impl& impl, uint32_t physical, uint3
 uint32_t NativeRenderer::adopt_resolved_target(uint32_t physical, bool depth) {
     auto& presentation = impl_->presentation;
     const auto [width, height] = presentation.target_size();
-    const auto format = depth ? plume::RenderFormat::D32_FLOAT_S8_UINT : plume::RenderFormat::B8G8R8A8_UNORM;
+    const auto format = depth ? impl_->graphics.depth_format() : plume::RenderFormat::B8G8R8A8_UNORM;
     auto* source = depth ? &presentation.target_depth() : &presentation.target_color();
     NonWritingRecords records(presentation);
     if (const void* surface = presentation.target_identity(); surface && aliased_resolves()) {
@@ -1771,7 +1772,8 @@ void NativeRenderer::draw(const NativeDraw& draw) {
     }
     if (!pipeline) {
         const auto pipeline_start = std::chrono::steady_clock::now();
-        pipeline = create_draw_pipeline(device, impl_->layout.get(), draw, impl_->graphics.backend());
+        pipeline = create_draw_pipeline(device, impl_->layout.get(), draw, impl_->graphics.backend(),
+                                        impl_->graphics.depth_format());
         if (!pipeline) unsupported(0, "native graphics pipeline creation failed");
         ++impl_->pipelines_created;
         impl_->pipeline_ms += std::chrono::duration<double, std::milli>(

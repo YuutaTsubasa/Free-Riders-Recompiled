@@ -178,6 +178,7 @@ struct NativeGraphics::Impl {
     std::unique_ptr<NativePipelineCache> pipeline_cache;
     bool bounded_descriptors = false;
     BoundedLengths bounded_lengths;
+    plume::RenderFormat depth_format = plume::RenderFormat::D32_FLOAT_S8_UINT;
     bool without_clip_distance = false;
     bool spirv_1_3 = false;
 };
@@ -343,17 +344,29 @@ void NativeGraphics::initialize() {
                   << " removed=" << without_clip_distance << '\n';
     }
 
-    // Every depth target is D32_SFLOAT_S8_UINT. Plume makes a texture object
-    // even when the driver refuses the image, and an old Mali driver (a
-    // Mali-G72's, r19) without that format then crashed making the
-    // presentation's framebuffer view; stop with the reason instead.
+    // Depth targets are D32_SFLOAT_S8_UINT, drawn into and sampled (resolved
+    // depth). An old Mali driver (a Mali-G72's, r19) has only
+    // D24_UNORM_S8_UINT; Plume made a texture object without an image there,
+    // and the driver crashed making the presentation's framebuffer view.
+    // Such a driver gets D24S8; one with neither stops with the reason.
+    plume::RenderFormat depth_format = plume::RenderFormat::D32_FLOAT_S8_UINT;
     if (backend == GraphicsBackend::vulkan) {
-        VkFormatProperties depth{};
-        vkGetPhysicalDeviceFormatProperties(static_cast<plume::VulkanDevice*>(render_device.get())->physicalDevice,
-                                            VK_FORMAT_D32_SFLOAT_S8_UINT, &depth);
-        if (!(depth.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT))
-            throw std::runtime_error("this GPU's Vulkan driver lacks the D32_SFLOAT_S8_UINT depth format the "
-                                     "renderer needs; the GPU is not supported");
+        const VkPhysicalDevice physical = static_cast<plume::VulkanDevice*>(render_device.get())->physicalDevice;
+        const auto usable = [&](VkFormat format) {
+            constexpr VkFormatFeatureFlags needed =
+                VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+            VkFormatProperties properties{};
+            vkGetPhysicalDeviceFormatProperties(physical, format, &properties);
+            return (properties.optimalTilingFeatures & needed) == needed;
+        };
+        const bool d32s8 = usable(VK_FORMAT_D32_SFLOAT_S8_UINT), d24s8 = usable(VK_FORMAT_D24_UNORM_S8_UINT);
+        const bool forced = test_switch("SFR_TEST_DEPTH_D24S8");
+        if ((forced || !d32s8) && d24s8) depth_format = plume::RenderFormat::D24_UNORM_S8_UINT;
+        else if (!d32s8)
+            throw std::runtime_error("this GPU's Vulkan driver has neither the D32_SFLOAT_S8_UINT nor the "
+                                     "D24_UNORM_S8_UINT depth format the renderer needs; the GPU is not supported");
+        std::cerr << "NATIVE_DEPTH format=" << (depth_format == plume::RenderFormat::D32_FLOAT_S8_UINT ? "D32S8" : "D24S8")
+                  << " d32s8=" << d32s8 << " d24s8=" << d24s8 << " forced=" << forced << '\n';
     }
 
     auto render_queue = render_device->createCommandQueue(plume::RenderCommandListType::DIRECT);
@@ -364,6 +377,7 @@ void NativeGraphics::initialize() {
     implementation->backend = backend;
     implementation->bounded_descriptors = bounded_descriptors;
     implementation->bounded_lengths = bounded_lengths;
+    implementation->depth_format = depth_format;
     implementation->without_clip_distance = without_clip_distance;
     implementation->spirv_1_3 = spirv_1_3;
 #ifndef _WIN32
@@ -410,6 +424,10 @@ bool NativeGraphics::bounded_descriptors() const noexcept {
 
 BoundedLengths NativeGraphics::bounded_lengths() const noexcept {
     return impl_ ? impl_->bounded_lengths : BoundedLengths{};
+}
+
+plume::RenderFormat NativeGraphics::depth_format() const noexcept {
+    return impl_ ? impl_->depth_format : plume::RenderFormat::D32_FLOAT_S8_UINT;
 }
 
 bool NativeGraphics::rewrites_shaders() const noexcept {

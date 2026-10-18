@@ -109,13 +109,20 @@ Plume 原本把 `VK_EXT_scalar_block_layout` 與 `VK_KHR_buffer_device_address` 
 - `SFR_TEST_VULKAN_1_1=1`：Vulkan 實例只要求 1.1，驗證層就以 1.1 的規則檢查裝置與著色器，
   著色器也改成 SPIR-V 1.3。
 - `SFR_TEST_NO_SCALAR_LAYOUT=1`、`SFR_TEST_NO_DEVICE_ADDRESS=1`：建立裝置時不開這兩個功能與擴充。
-- 三者加上 `SFR_TEST_NO_DESCRIPTOR_INDEXING=1`、`SFR_TEST_NO_CLIP_DISTANCE=1` 與
+- `SFR_TEST_DEPTH_D24S8=1`：深度格式改用 D24S8（見下）。
+- 以上加上 `SFR_TEST_NO_DESCRIPTOR_INDEXING=1`、`SFR_TEST_NO_CLIP_DISTANCE=1` 與
   `SFR_TEST_BOUNDED_TEXTURES=16`，大致就是舊 Mali 的情況。
 
+### 深度格式
+
+所有深度目標（畫面、render surface、解析出的深度）與繪製管線都用 `NativeGraphics::depth_format`：
+optimal tiling 能當 depth-stencil attachment 又能取樣的話用 `D32_SFLOAT_S8_UINT`，否則用
+`D24_UNORM_S8_UINT`（`patches/plume-d24s8-depth.patch` 在 Plume 的 `RenderFormat` 最後加上它），
+兩者都沒有就停止並說明原因。`game.log` 記 `NATIVE_DEPTH format=D32S8|D24S8 d32s8=… d24s8=… forced=…`。
+
 Firebase Test Lab 的 Galaxy S9（Mali-G72，Android 10，驅動程式 r19，Vulkan 1.1.108）回報
-`scalar_block_layout=1 device_address=0`：改版前一樣會停在建立裝置。改版後裝置、SPIR-V 1.3 與緊湊佈局
-都通過，但它也沒有 `D32_SFLOAT_S8_UINT` 深度格式（只有 D24S8），建立畫面的深度目標失敗。現在會
-停下並說明原因；要支援還得在 Plume 加上 D24S8 格式，並讓所有深度目標與管線改用它。
+`scalar_block_layout=1 device_address=0`：改版前一樣會停在建立裝置。它也沒有 `D32_SFLOAT_S8_UINT`
+（只有 D24S8），因此需要上面的深度格式。
 
 本專案自己加進著色器的部分：
 

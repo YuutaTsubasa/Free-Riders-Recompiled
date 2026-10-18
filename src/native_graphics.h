@@ -10,6 +10,7 @@
 #include "spirv_bounded_descriptors.h"
 
 namespace plume {
+enum class RenderFormat;
 struct RenderCommandQueue;
 struct RenderDevice;
 }
@@ -50,6 +51,11 @@ public:
     // The bounded layout's texture bindings: the full one, or the compact one
     // for a driver with fewer textures a stage.
     [[nodiscard]] BoundedLengths bounded_lengths() const noexcept;
+    // The format of every depth target and of the pipelines drawing into
+    // them: D32_FLOAT_S8_UINT, or D24_UNORM_S8_UINT on a Vulkan driver
+    // without it (an old Mali's). SFR_TEST_DEPTH_D24S8=1 takes D24S8 on any
+    // Vulkan device.
+    [[nodiscard]] plume::RenderFormat depth_format() const noexcept;
     // Whether shader_code changes SPIR-V on this device: the bounded layout,
     // vertex shaders without their clip distance (spirv_clip_distance.h:
     // Mali, or a device without shaderClipDistance), or SPIR-V 1.3 for a
