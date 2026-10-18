@@ -823,8 +823,11 @@ void touch_drag_scroll(float scale) {
     bool may_drag = target != nullptr;
     if (may_drag && g.ActiveId != 0) {
         // Sliders and text fields take the arrows while held: they are
-        // dragged, not scrolled. So is a scrollbar.
-        if (g.ActiveIdUsingNavDirMask != 0) may_drag = false;
+        // dragged, not scrolled. So is a scrollbar. (A press on a window's
+        // empty space holds its move ID, which takes every key: that one is
+        // a page being dragged.)
+        const bool window_press = g.ActiveIdWindow && g.ActiveId == g.ActiveIdWindow->MoveId;
+        if (g.ActiveIdUsingNavDirMask != 0 && !window_press) may_drag = false;
         if (g.ActiveIdWindow && g.ActiveId == ImGui::GetWindowScrollbarID(g.ActiveIdWindow, ImGuiAxis_Y)) may_drag = false;
     }
     const sfr::TouchScroll::Step step = touch.update(down, io.MousePos.x, io.MousePos.y, io.DeltaTime, may_drag);
