@@ -38,6 +38,11 @@
 #include "text_wrap.h"
 #include "voice_commands.h"
 #include "launcher_settings.h"
+#include "launcher_screen_fit.h"
+#ifdef SFR_IOS
+#include "disc_image_search.h"
+#include "ios_screen.h"
+#endif
 #include "mod_loader.h"
 #include "game_language.h"
 #include "input_bindings.h"
@@ -127,6 +132,7 @@ enum Text {
     AspectModeLabel, AspectModeHint, AspectAuto, AspectOriginal,
     UiAlignLabel, UiAlignHint, UiAlignEdge, UiAlignCenter,
     MotionTrace, MotionTraceHint,
+    InstallIntroIos,
     TextCount
 };
 
@@ -466,6 +472,10 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Motion trace", "體感追蹤紀錄"},
     {"Writes what the sensor saw and what the game made of it into game.log, as numbers only (no pictures). Turn it on to report a motion problem, play once, and attach game.log.",
      "把感應器看到的動作與遊戲的判斷以數字寫進 game.log（不含任何影像）。回報體感問題時開啟，玩一次後附上 game.log。"},
+    {"Choose your Sonic Free Riders disc image (.iso), or copy it with the Files app to On My iPhone > Free Riders, "
+     "where the launcher finds it. Its files are copied into the app's storage and the game's code is prepared from them.",
+     "請選擇 Sonic Free Riders 的光碟映像檔（.iso），或用「檔案」App 把它放進「我的 iPhone › Free Riders」，"
+     "啟動器會在那裡找到它。檔案會複製到 app 的儲存空間，並從中準備遊戲程式。"},
 }};
 
 int language = 0;
@@ -691,8 +701,12 @@ Fonts load_fonts(float scale) {
     };
     const auto load = [&](const std::vector<fs::path>& latin, const std::vector<fs::path>& chinese, float size) -> ImFont* {
         ImFont* font = nullptr;
-        if (const fs::path path = first(latin); !path.empty())
+        if (const fs::path path = first(latin); !path.empty()) {
             font = io.Fonts->AddFontFromFileTTF(utf8(path).c_str(), size * scale, nullptr, ranges.Data);
+#ifdef SFR_IOS
+            SDL_Log("launcher font %s: %s", utf8(path).c_str(), font ? "loaded" : "not loaded");
+#endif
+        }
         if (!font) {
             ImFontConfig config;
             config.SizePixels = size * scale;
@@ -702,6 +716,9 @@ Fonts load_fonts(float scale) {
             ImFontConfig merge;
             merge.MergeMode = true;
             io.Fonts->AddFontFromFileTTF(utf8(path).c_str(), size * scale, &merge, ranges.Data);
+#ifdef SFR_IOS
+            SDL_Log("launcher Chinese font %s", utf8(path).c_str());
+#endif
         }
         return font;
     };
@@ -792,10 +809,15 @@ float ease_out(float t) {
 
 ImU32 color(ImVec4 c, float alpha) { return ImGui::GetColorU32(ImVec4(c.x, c.y, c.z, c.w * alpha)); }
 
+// How far the backdrop and the bars reach past the layout's edges: on iOS
+// the layout keeps to the safe area, and these fill the screen round it.
+ImVec4 screen_bleed{0, 0, 0, 0};  // left, top, right, bottom
+
 // Our own backdrop: a deep blue gradient, light streaks racing past, and
 // wide rings turning slowly on the right.
 void draw_backdrop(ImDrawList* draw, ImVec2 size, float time, float scale) {
-    draw->AddRectFilledMultiColor(ImVec2(0, 0), size, IM_COL32(9, 22, 64, 255), IM_COL32(28, 14, 70, 255),
+    const float left = -screen_bleed.x, right = size.x + screen_bleed.z;
+    draw->AddRectFilledMultiColor(ImVec2(left, -screen_bleed.y), ImVec2(right, size.y + screen_bleed.w), IM_COL32(9, 22, 64, 255), IM_COL32(28, 14, 70, 255),
                                   IM_COL32(4, 8, 22, 255), IM_COL32(3, 12, 34, 255));
     for (int i = 0; i < 3; ++i) {
         const float radius = (260.0f + 120.0f * i) * scale;
@@ -809,10 +831,10 @@ void draw_backdrop(ImDrawList* draw, ImVec2 size, float time, float scale) {
     }
     // A wide band across the lower half, tilted like a track.
     const float band_y = size.y * 0.70f;
-    draw->AddQuadFilled(ImVec2(0, band_y + 70 * scale), ImVec2(size.x, band_y - 150 * scale),
-                        ImVec2(size.x, band_y - 60 * scale), ImVec2(0, band_y + 160 * scale), IM_COL32(40, 110, 255, 26));
-    draw->AddQuadFilled(ImVec2(0, band_y + 172 * scale), ImVec2(size.x, band_y - 48 * scale),
-                        ImVec2(size.x, band_y - 42 * scale), ImVec2(0, band_y + 178 * scale), IM_COL32(120, 190, 255, 60));
+    draw->AddQuadFilled(ImVec2(left, band_y + 70 * scale), ImVec2(right, band_y - 150 * scale),
+                        ImVec2(right, band_y - 60 * scale), ImVec2(left, band_y + 160 * scale), IM_COL32(40, 110, 255, 26));
+    draw->AddQuadFilled(ImVec2(left, band_y + 172 * scale), ImVec2(right, band_y - 48 * scale),
+                        ImVec2(right, band_y - 42 * scale), ImVec2(left, band_y + 178 * scale), IM_COL32(120, 190, 255, 60));
     for (int i = 0; i < 48; ++i) {
         // Fixed pseudo-random lane, length and speed per streak.
         const uint32_t seed = uint32_t(i) * 2654435761u;
@@ -1334,6 +1356,7 @@ struct Launcher {
     // The install pages.
     fs::path source;
     sfr::SourceSummary summary;
+    double disc_search_at = -1.0e9;  // when the Install page last looked for a disc image (iOS)
     uint64_t available = 0;
     std::unique_ptr<Installation> installation;
     std::string install_error;
@@ -1671,15 +1694,16 @@ struct Launcher {
         const float t = float(ImGui::GetTime());
         const float shown = ease_out(appear);
         const float top = top_bar * scale * shown, bottom = size.y - bottom_bar * scale * shown;
+        const float left = -screen_bleed.x, right = size.x + screen_bleed.z;
         // Top bar.
-        draw->AddRectFilledMultiColor(ImVec2(0, 0), ImVec2(size.x, top), IM_COL32(3, 8, 24, 235), IM_COL32(8, 6, 30, 235),
+        draw->AddRectFilledMultiColor(ImVec2(left, -screen_bleed.y), ImVec2(right, top), IM_COL32(3, 8, 24, 235), IM_COL32(8, 6, 30, 235),
                                       IM_COL32(6, 16, 44, 225), IM_COL32(6, 16, 44, 225));
-        for (float y = 2; y < top; y += 3 * scale) draw->AddLine(ImVec2(0, y), ImVec2(size.x, y), IM_COL32(120, 180, 255, 7));
+        for (float y = 2; y < top; y += 3 * scale) draw->AddLine(ImVec2(left, y), ImVec2(right, y), IM_COL32(120, 180, 255, 7));
         const auto edge = [&](float y, bool down) {
-            draw->AddRectFilledMultiColor(ImVec2(0, y - 1 * scale), ImVec2(size.x, y + 1 * scale), color(cyan, 0.9f * shown),
+            draw->AddRectFilledMultiColor(ImVec2(left, y - 1 * scale), ImVec2(right, y + 1 * scale), color(cyan, 0.9f * shown),
                                           color(accent, 0.15f * shown), color(accent, 0.15f * shown), color(cyan, 0.9f * shown));
             const float glow = 14 * scale * (down ? 1.0f : -1.0f);
-            draw->AddRectFilledMultiColor(ImVec2(0, y), ImVec2(size.x * 0.6f, y + glow), color(cyan, 0.18f * shown),
+            draw->AddRectFilledMultiColor(ImVec2(left, y), ImVec2(size.x * 0.6f, y + glow), color(cyan, 0.18f * shown),
                                           color(cyan, 0.0f), color(cyan, 0.0f), color(cyan, 0.0f));
         };
         edge(top, true);
@@ -1709,15 +1733,16 @@ struct Launcher {
                                  (1.0f - shown) * 60 * scale, title_y + 8 * scale),
                       color(accent_bright, shown * breath), label);
         // Bottom bar.
-        draw->AddRectFilledMultiColor(ImVec2(0, bottom), size, IM_COL32(6, 16, 44, 225), IM_COL32(6, 16, 44, 225),
-                                      IM_COL32(3, 8, 24, 240), IM_COL32(8, 6, 30, 240));
-        for (float y = bottom + 2; y < size.y; y += 3 * scale) draw->AddLine(ImVec2(0, y), ImVec2(size.x, y), IM_COL32(120, 180, 255, 7));
+        draw->AddRectFilledMultiColor(ImVec2(left, bottom), ImVec2(right, size.y + screen_bleed.w), IM_COL32(6, 16, 44, 225),
+                                      IM_COL32(6, 16, 44, 225), IM_COL32(3, 8, 24, 240), IM_COL32(8, 6, 30, 240));
+        for (float y = bottom + 2; y < size.y + screen_bleed.w; y += 3 * scale)
+            draw->AddLine(ImVec2(left, y), ImVec2(right, y), IM_COL32(120, 180, 255, 7));
         edge(bottom, false);
     }
 
     // What the buttons do on this page, drawn at the bottom left.
     void guide(ImVec2 size, std::initializer_list<std::pair<Prompt, Text>> entries) {
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(SFR_IOS)
         if (input == InputKind::keyboard) return;  // touch: the buttons speak for themselves
 #endif
         ImDrawList* draw = ImGui::GetBackgroundDrawList();
@@ -3061,12 +3086,22 @@ struct Launcher {
     }
 
     void install_page(ImVec2 size) {
+#ifdef SFR_IOS
+        // A disc image copied into the app's folder with the Files app is
+        // taken as it is, without the document picker (Issue #185).
+        if (source.empty() && ImGui::GetTime() - disc_search_at > 2.0) {
+            disc_search_at = ImGui::GetTime();
+            if (const auto found = sfr::launcher::find_disc_image(directory)) use_source(*found);
+        }
+        const Text intro = InstallIntroIos;
+#else
+        const Text intro = sfr::launcher::can_pick_folders() ? InstallIntro : InstallIntroFile;
+#endif
         page_heading(tr(InstallTitle));
         const float x = margin * scale + slide();
         ImGui::SetCursorPosX(x);
         ImGui::PushTextWrapPos(size.x - margin * scale);
-        ImGui::TextColored(dim_text, "%s", wrapped(tr(sfr::launcher::can_pick_folders() ? InstallIntro : InstallIntroFile),
-                                                   room_to(size.x - margin * scale)).c_str());
+        ImGui::TextColored(dim_text, "%s", wrapped(tr(intro), room_to(size.x - margin * scale)).c_str());
         ImGui::PopTextWrapPos();
         ImGui::Dummy(ImVec2(0, 6 * scale));
         ImGui::SetCursorPosX(x);
@@ -3561,8 +3596,23 @@ int main(int argc, char** argv) {
         // The whole screen: the 1120 x 700 layout scaled to fit it.
         int width = 0, height = 0;
         SDL_GetRendererOutputSize(renderer, &width, &height);
-        launcher.scale = std::max(1.0f, std::min(float(width) / 1120.0f, float(height) / 700.0f));
+        launcher.scale = sfr::launcher::layout_scale(float(width), float(height));
     }
+#elif defined(SFR_IOS)
+    // The window measures points, three pixels each on an iPhone: the
+    // launcher draws in pixels instead, as on Android, inside the safe area
+    // (the Dynamic Island and the home indicator stay clear). Issue #185.
+    const auto fit_screen = [window, renderer] {
+        int pixel_width = 0, pixel_height = 0, point_width = 0, point_height = 0;
+        SDL_GetRendererOutputSize(renderer, &pixel_width, &pixel_height);
+        SDL_GetWindowSize(window, &point_width, &point_height);
+        return sfr::launcher::fit_screen(pixel_width, pixel_height, point_width, point_height,
+                                         sfr::launcher::ios_safe_area());
+    };
+    sfr::launcher::ScreenFit screen = fit_screen();
+    launcher.scale = screen.scale;
+    SDL_Log("launcher screen %.0fx%.0f at %.0f,%.0f pixels, %.2f pixels a point", screen.width, screen.height, screen.x,
+            screen.y, screen.pixels_per_point);
 #endif
     launcher.show_window = [window](bool shown) {
 #ifndef __ANDROID__  // there the game is another activity in front
@@ -3609,6 +3659,16 @@ int main(int argc, char** argv) {
         }
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
+#ifdef SFR_IOS
+            // Points to the launcher's pixels.
+            const auto to_pixels = [&screen](int& x, int& y) {
+                x = int(std::lround(float(x) * screen.pixels_per_point - screen.x));
+                y = int(std::lround(float(y) * screen.pixels_per_point - screen.y));
+            };
+            if (event.type == SDL_MOUSEMOTION) to_pixels(event.motion.x, event.motion.y);
+            if (event.type == SDL_MOUSEBUTTONDOWN || event.type == SDL_MOUSEBUTTONUP)
+                to_pixels(event.button.x, event.button.y);
+#endif
             ImGui_ImplSDL2_ProcessEvent(&event);
             sfr::launcher::handle_event(&event);
             if (event.type == SDL_QUIT ||
@@ -3636,12 +3696,46 @@ int main(int argc, char** argv) {
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
         ImGui_ImplSDLRenderer2_NewFrame();
         ImGui_ImplSDL2_NewFrame();
+#ifdef SFR_IOS
+        screen = fit_screen();  // the safe area moves when the phone turns over
+        io.DisplaySize = ImVec2(screen.width, screen.height);
+        io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
+        {
+            int pixel_width = 0, pixel_height = 0;
+            SDL_GetRendererOutputSize(renderer, &pixel_width, &pixel_height);
+            screen_bleed = ImVec4(screen.x, screen.y, float(pixel_width) - screen.x - screen.width,
+                                  float(pixel_height) - screen.y - screen.height);
+        }
+#endif
         feed_sony_pad();
         launcher.configure_navigation();
         ImGui::NewFrame();
         launcher.frame();
         trace_navigation();
         ImGui::Render();
+#ifdef SFR_IOS
+        {
+            // Into the safe area: SDL's renderer backend resets the viewport,
+            // so the vertices and clip rectangles move instead.
+            ImDrawData* draw_data = ImGui::GetDrawData();
+            const ImDrawList* backdrop = ImGui::GetBackgroundDrawList();
+            const ImVec2 full(screen.x + screen.width + screen_bleed.z, screen.y + screen.height + screen_bleed.w);
+            for (ImDrawList* list : draw_data->CmdLists) {
+                for (ImDrawVert& vertex : list->VtxBuffer) {
+                    vertex.pos.x += screen.x;
+                    vertex.pos.y += screen.y;
+                }
+                for (ImDrawCmd& command : list->CmdBuffer) {
+                    command.ClipRect.x += screen.x;
+                    command.ClipRect.y += screen.y;
+                    command.ClipRect.z += screen.x;
+                    command.ClipRect.w += screen.y;
+                    if (list == backdrop) command.ClipRect = ImVec4(0, 0, full.x, full.y);  // the whole screen
+                }
+            }
+            draw_data->DisplaySize = full;
+        }
+#endif
         SDL_RenderSetScale(renderer, io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y);
         SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
         SDL_RenderClear(renderer);
@@ -3662,6 +3756,11 @@ int main(int argc, char** argv) {
         if (static const char* autoplay = std::getenv("SFR_LAUNCHER_AUTOPLAY");
             autoplay && *autoplay == '1' && ImGui::GetFrameCount() == 150 && launcher.page == Page::Settings)
             launcher.play();
+        // SFR_LAUNCHER_PICK=1: open the disc image picker at the 120th frame
+        // of the Install page (for tests on a Simulator, which has no taps).
+        if (static const char* pick = std::getenv("SFR_LAUNCHER_PICK");
+            pick && *pick == '1' && ImGui::GetFrameCount() == 120 && launcher.page == Page::Install)
+            launcher.choose_source(false);
         if (launcher.quit_now) running = false;
     }
     launcher.abandon_install();

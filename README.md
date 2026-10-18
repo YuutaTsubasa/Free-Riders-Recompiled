@@ -226,7 +226,8 @@ with [docs/progress.md](docs/progress.md).
    is not notarised.
 3. Start `FreeRidersRecompiled` and choose your disc image (`.iso`) when the
    launcher asks; it copies the game's data beside itself. Then press
-   **Start game**.
+   **Start game**. On iOS you can instead copy the `.iso` with the Files app
+   to **On My iPhone › Free Riders**; the launcher finds it there.
 
 ## Settings
 
