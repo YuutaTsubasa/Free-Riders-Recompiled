@@ -73,6 +73,12 @@ Set 0 與 set 1 是只填了一部分的 4096 張貼圖與 256 個取樣器陣�
 - 有界佈局本身需要 `shaderSampledImageArrayDynamicIndexing`、每個 stage 48 張貼圖、16 個取樣器、
   5 個 dynamic uniform buffer、合計 70 個資源與 3 個 set；連這些都沒有的驅動程式仍會停止，並列出
   缺少的項目。
+- 舊的 Mali 驅動程式（Galaxy S9 的 Mali-G72，r19：每個 stage 只有 16 張貼圖）放不下 48 張，改用
+  緊湊佈局（`BoundedLengths`，`NATIVE_DESCRIPTORS ... compact=1`）：binding 0 是 14 張 2D，binding
+  1、2 各 1 張（反正只有 2D 貼圖，另兩種一律讀到 0）。元素 0 讀到 0，其後依序放這次繪製用到的不同
+  2D 貼圖，共用常數的 2D 索引改寫成元素編號；超過 13 張時其餘讀到 0，並記一次
+  `NATIVE_DESCRIPTORS bounded_overflow`（實際比賽沒有出現）。每個 stage 少於 10 張就停止。
+  `SFR_TEST_BOUNDED_TEXTURES=<n>` 把每個 stage 的貼圖上限當成 n，在其他顯示卡上測試這個佈局。
 - `SFR_TEST_NO_DESCRIPTOR_INDEXING=1` 讓 Plume 建立裝置時不開 descriptor indexing 功能
   （`patches/plume-descriptor-indexing-test-switch.patch`），在有這些功能的顯示卡上也走有界佈局；
   搭配 `-DSFR_VULKAN_VALIDATION=ON` 與驗證層，可檢查是否還用到裝置沒開的功能。
@@ -103,8 +109,13 @@ Plume 原本把 `VK_EXT_scalar_block_layout` 與 `VK_KHR_buffer_device_address` 
 - `SFR_TEST_VULKAN_1_1=1`：Vulkan 實例只要求 1.1，驗證層就以 1.1 的規則檢查裝置與著色器，
   著色器也改成 SPIR-V 1.3。
 - `SFR_TEST_NO_SCALAR_LAYOUT=1`、`SFR_TEST_NO_DEVICE_ADDRESS=1`：建立裝置時不開這兩個功能與擴充。
-- 三者加上 `SFR_TEST_NO_DESCRIPTOR_INDEXING=1` 與 `SFR_TEST_NO_CLIP_DISTANCE=1`，大致就是
-  Mali-G76 的情況。
+- 三者加上 `SFR_TEST_NO_DESCRIPTOR_INDEXING=1`、`SFR_TEST_NO_CLIP_DISTANCE=1` 與
+  `SFR_TEST_BOUNDED_TEXTURES=16`，大致就是舊 Mali 的情況。
+
+Firebase Test Lab 的 Galaxy S9（Mali-G72，Android 10，驅動程式 r19，Vulkan 1.1.108）回報
+`scalar_block_layout=1 device_address=0`：改版前一樣會停在建立裝置。改版後裝置、SPIR-V 1.3 與緊湊佈局
+都通過，但它也沒有 `D32_SFLOAT_S8_UINT` 深度格式（只有 D24S8），建立畫面的深度目標失敗。現在會
+停下並說明原因；要支援還得在 Plume 加上 D24S8 格式，並讓所有深度目標與管線改用它。
 
 本專案自己加進著色器的部分：
 

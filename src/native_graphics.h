@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include "spirv_bounded_descriptors.h"
+
 namespace plume {
 struct RenderCommandQueue;
 struct RenderDevice;
@@ -45,6 +47,9 @@ public:
     // (spirv_bounded_descriptors.h). SFR_TEST_NO_DESCRIPTOR_INDEXING=1 makes
     // the device without the features to try it on a GPU that has them.
     [[nodiscard]] bool bounded_descriptors() const noexcept;
+    // The bounded layout's texture bindings: the full one, or the compact one
+    // for a driver with fewer textures a stage.
+    [[nodiscard]] BoundedLengths bounded_lengths() const noexcept;
     // Whether shader_code changes SPIR-V on this device: the bounded layout,
     // vertex shaders without their clip distance (spirv_clip_distance.h:
     // Mali, or a device without shaderClipDistance), or SPIR-V 1.3 for a

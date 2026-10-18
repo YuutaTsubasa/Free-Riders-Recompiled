@@ -177,6 +177,7 @@ struct NativeGraphics::Impl {
     std::unique_ptr<plume::RenderCommandFence> idle_signal;
     std::unique_ptr<NativePipelineCache> pipeline_cache;
     bool bounded_descriptors = false;
+    BoundedLengths bounded_lengths;
     bool without_clip_distance = false;
     bool spirv_1_3 = false;
 };
@@ -255,22 +256,45 @@ void NativeGraphics::initialize() {
                   << '\n';
     }
 
+    // The shaders are SPIR-V 1.5, which needs Vulkan 1.2. A Vulkan 1.1 device
+    // (the Mali-G76 of Issue #169) takes them as SPIR-V 1.3 (spirv_version.h).
+    // The version is the lower of the instance's and the device's.
+    bool spirv_1_3 = false;
+    if (backend == GraphicsBackend::vulkan) {
+        const auto* vulkan_device = static_cast<plume::VulkanDevice*>(render_device.get());
+        const uint32_t version = (std::min)(static_cast<plume::VulkanInterface*>(render_interface.get())->appInfo.apiVersion,
+                                          vulkan_device->physicalDeviceProperties.apiVersion);
+        spirv_1_3 = version < VK_API_VERSION_1_2;
+        const auto& capabilities = render_device->getCapabilities();
+        std::cerr << "NATIVE_SPIRV api=" << VK_API_VERSION_MAJOR(version) << '.' << VK_API_VERSION_MINOR(version)
+                  << " version=" << (spirv_1_3 ? "1.3" : "1.5") << " scalar_block_layout="
+                  << capabilities.scalarBlockLayout << " device_address=" << capabilities.bufferDeviceAddress << '\n';
+    }
+
     // The renderer binds every texture through one array of 4096 that is
     // only partly filled (native_renderer.cpp), which Vulkan allows only with
     // descriptor indexing. A driver without it (Mesa's hasvk on a Broadwell
     // HD 5500, issue #134: 128 textures a stage) crashed while compiling the
     // first pipeline. There each draw binds small sets of its own instead,
     // which need only Vulkan 1.0's dynamic indexing and a few dozen textures
-    // a stage; a driver short even of that stops with the reason.
+    // a stage; a driver short even of that stops with the reason. Old Mali
+    // drivers (a Mali-G72's: 16 textures a stage) get its compact form.
+    // SFR_TEST_BOUNDED_TEXTURES=<n> takes n as the textures a stage.
     bool bounded_descriptors = false;
+    BoundedLengths bounded_lengths;
     if (backend == GraphicsBackend::vulkan && !render_device->getCapabilities().descriptorIndexing) {
         const VkPhysicalDevice physical = static_cast<plume::VulkanDevice*>(render_device.get())->physicalDevice;
         VkPhysicalDeviceFeatures features{};
         vkGetPhysicalDeviceFeatures(physical, &features);
         VkPhysicalDeviceProperties properties{};
         vkGetPhysicalDeviceProperties(physical, &properties);
-        const auto& limits = properties.limits;
-        constexpr uint32_t textures = 3 * bounded_descriptor_count, samplers = bounded_descriptor_count;
+        auto& limits = properties.limits;
+        if (const char* forced = std::getenv("SFR_TEST_BOUNDED_TEXTURES"); forced && std::atoi(forced) > 0)
+            limits.maxPerStageDescriptorSampledImages = uint32_t(std::atoi(forced));
+        const auto lengths = sfr::bounded_lengths(
+            (std::min)(limits.maxPerStageDescriptorSampledImages, limits.maxDescriptorSetSampledImages));
+        if (lengths) bounded_lengths = *lengths;
+        const uint32_t textures = bounded_lengths.textures(), samplers = bounded_descriptor_count;
         // Set 2: vertex, pixel and shared constants, palette, loop constants.
         constexpr uint32_t uniform_buffers = 5;
         std::string missing;
@@ -298,7 +322,8 @@ void NativeGraphics::initialize() {
         bounded_descriptors = true;
         std::cerr << "NATIVE_DESCRIPTORS mode=bounded forced=" << test_no_indexing << " textures_per_stage="
                   << limits.maxPerStageDescriptorSampledImages << " samplers_per_stage="
-                  << limits.maxPerStageDescriptorSamplers << " resources_per_stage=" << limits.maxPerStageResources << '\n';
+                  << limits.maxPerStageDescriptorSamplers << " resources_per_stage=" << limits.maxPerStageResources
+                  << " compact=" << bounded_lengths.compact() << '\n';
     }
 
     // Every vertex shader writes a clip distance (spirv_clip_distance.h).
@@ -318,19 +343,17 @@ void NativeGraphics::initialize() {
                   << " removed=" << without_clip_distance << '\n';
     }
 
-    // The shaders are SPIR-V 1.5, which needs Vulkan 1.2. A Vulkan 1.1 device
-    // (the Mali-G76 of Issue #169) takes them as SPIR-V 1.3 (spirv_version.h).
-    // The version is the lower of the instance's and the device's.
-    bool spirv_1_3 = false;
+    // Every depth target is D32_SFLOAT_S8_UINT. Plume makes a texture object
+    // even when the driver refuses the image, and an old Mali driver (a
+    // Mali-G72's, r19) without that format then crashed making the
+    // presentation's framebuffer view; stop with the reason instead.
     if (backend == GraphicsBackend::vulkan) {
-        const auto* vulkan_device = static_cast<plume::VulkanDevice*>(render_device.get());
-        const uint32_t version = (std::min)(static_cast<plume::VulkanInterface*>(render_interface.get())->appInfo.apiVersion,
-                                          vulkan_device->physicalDeviceProperties.apiVersion);
-        spirv_1_3 = version < VK_API_VERSION_1_2;
-        const auto& capabilities = render_device->getCapabilities();
-        std::cerr << "NATIVE_SPIRV api=" << VK_API_VERSION_MAJOR(version) << '.' << VK_API_VERSION_MINOR(version)
-                  << " version=" << (spirv_1_3 ? "1.3" : "1.5") << " scalar_block_layout="
-                  << capabilities.scalarBlockLayout << " device_address=" << capabilities.bufferDeviceAddress << '\n';
+        VkFormatProperties depth{};
+        vkGetPhysicalDeviceFormatProperties(static_cast<plume::VulkanDevice*>(render_device.get())->physicalDevice,
+                                            VK_FORMAT_D32_SFLOAT_S8_UINT, &depth);
+        if (!(depth.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT))
+            throw std::runtime_error("this GPU's Vulkan driver lacks the D32_SFLOAT_S8_UINT depth format the "
+                                     "renderer needs; the GPU is not supported");
     }
 
     auto render_queue = render_device->createCommandQueue(plume::RenderCommandListType::DIRECT);
@@ -340,6 +363,7 @@ void NativeGraphics::initialize() {
     auto implementation = std::make_unique<Impl>();
     implementation->backend = backend;
     implementation->bounded_descriptors = bounded_descriptors;
+    implementation->bounded_lengths = bounded_lengths;
     implementation->without_clip_distance = without_clip_distance;
     implementation->spirv_1_3 = spirv_1_3;
 #ifndef _WIN32
@@ -384,6 +408,10 @@ bool NativeGraphics::bounded_descriptors() const noexcept {
     return impl_ && impl_->bounded_descriptors;
 }
 
+BoundedLengths NativeGraphics::bounded_lengths() const noexcept {
+    return impl_ ? impl_->bounded_lengths : BoundedLengths{};
+}
+
 bool NativeGraphics::rewrites_shaders() const noexcept {
     return impl_ && (impl_->bounded_descriptors || impl_->without_clip_distance || impl_->spirv_1_3);
 }
@@ -397,7 +425,7 @@ std::vector<uint8_t> NativeGraphics::shader_code(std::span<const uint8_t> code) 
         result = std::move(*rewritten);
     }
     if (bounded_descriptors()) {
-        auto rewritten = bounded_descriptor_spirv(result, &why);
+        auto rewritten = bounded_descriptor_spirv(result, &why, impl_->bounded_lengths);
         if (!rewritten) throw std::runtime_error("a shader cannot use the bounded descriptor layout: " + why);
         result = std::move(*rewritten);
     }

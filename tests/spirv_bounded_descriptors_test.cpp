@@ -186,6 +186,35 @@ void rewrites_the_heaps(bool non_uniform) {
     require(twice.has_value() && *twice == *rewritten, "the rewrite is idempotent");
 }
 
+// The compact layout of a driver with 16 textures a stage: 14 2D textures,
+// one 2D array and one cube, and still 16 samplers.
+void rewrites_the_heaps_compact() {
+    const auto lengths = sfr::bounded_lengths(16);
+    require(lengths && lengths->compact() && lengths->texture_2d == 14 && lengths->texture_2d_array == 1 &&
+            lengths->texture_cube == 1 && lengths->textures() == 16, "16 textures a stage give 14 + 1 + 1");
+    require(sfr::bounded_lengths(48) && !sfr::bounded_lengths(48)->compact(), "48 textures a stage give the full layout");
+    require(!sfr::bounded_lengths(9), "9 textures a stage are too few");
+    std::string why;
+    const auto rewritten = sfr::bounded_descriptor_spirv(heaps(false).bytes(), &why, *lengths);
+    require(rewritten.has_value(), "the heaps are rewritten compact: " + why);
+    const Parsed out = parse(*rewritten);
+    require(out.bound == 103, "three new ids, the length constants");
+    std::map<uint32_t, uint32_t> constants;  // id -> length
+    for (const auto& in : out.of(43)) {
+        require(in[1] == 6, "the lengths are of the module's uint");
+        constants[in[2]] = in[3];
+    }
+    require(constants == std::map<uint32_t, uint32_t>{{100, 14}, {101, 1}, {102, 16}},
+            "length constants 14, 1 and 16 in the order the arrays need them");
+    std::map<uint32_t, uint32_t> lengths_of;  // array -> length
+    for (const auto& in : out.of(28)) {
+        lengths_of[in[1]] = constants.at(in[3]);
+        require(out.position(in[3]) < out.position(in[1]), "the length is declared before the array");
+    }
+    require(lengths_of == std::map<uint32_t, uint32_t>{{20, 14}, {21, 1}, {22, 1}, {23, 16}},
+            "2D 14, 2D array 1, cube 1, samplers 16");
+}
+
 void adds_a_uint_type_when_missing() {
     Module m;
     m.op(17, {Shader});
@@ -332,6 +361,7 @@ int main() {
     try {
         rewrites_the_heaps(false);
         rewrites_the_heaps(true);
+        rewrites_the_heaps_compact();
         adds_a_uint_type_when_missing();
         leaves_a_module_without_heaps();
         refuses_what_it_does_not_know();

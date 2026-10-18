@@ -27,8 +27,34 @@ namespace sfr {
 // of the shader's own type in every element.
 inline constexpr uint32_t bounded_descriptor_count = 16;
 
+// The elements of each texture binding. The full layout above has
+// bounded_descriptor_count of each. A driver allowing fewer textures a stage
+// (a Mali-G72's 16) gets the compact one: fewer 2D textures, which the
+// renderer fills with each draw's distinct textures after a zero-reading
+// first element, and one 2D array and one cube texture, which read as zero
+// anyway (only 2D textures exist, native_renderer.cpp).
+struct BoundedLengths {
+    uint32_t texture_2d = bounded_descriptor_count;
+    uint32_t texture_2d_array = bounded_descriptor_count;
+    uint32_t texture_cube = bounded_descriptor_count;
+    [[nodiscard]] bool compact() const noexcept { return texture_2d_array < bounded_descriptor_count; }
+    [[nodiscard]] uint32_t textures() const noexcept { return texture_2d + texture_2d_array + texture_cube; }
+    [[nodiscard]] uint32_t of(uint32_t binding) const noexcept {
+        return binding == 0 ? texture_2d : binding == 1 ? texture_2d_array : texture_cube;
+    }
+};
+
+// The layout for this many textures a stage: the full one if it fits, else
+// the compact one (empty if not even that fits; it needs eight 2D textures).
+inline std::optional<BoundedLengths> bounded_lengths(uint32_t textures_per_stage) {
+    if (textures_per_stage >= 3 * bounded_descriptor_count) return BoundedLengths{};
+    if (textures_per_stage < 8 + 2) return std::nullopt;
+    return BoundedLengths{(std::min)(textures_per_stage - 2, bounded_descriptor_count), 1, 1};
+}
+
 // The same module for that layout: the runtime arrays of images and samplers
-// in sets 0 and 1 become arrays of bounded_descriptor_count, the texture
+// in sets 0 and 1 become fixed arrays (of bounded_descriptor_count samplers,
+// and of textures as many as lengths gives their binding), the texture
 // heaps move to their bindings by image type, and the descriptor-indexing
 // capabilities, extension and NonUniform decorations are dropped (a fixed
 // array indexed by a dynamically uniform value needs only the Vulkan 1.0
@@ -37,7 +63,8 @@ inline constexpr uint32_t bounded_descriptor_count = 16;
 // shader indexes with. Empty, with the reason in why, for a module this does
 // not understand; anything else is copied as it is.
 inline std::optional<std::vector<uint8_t>> bounded_descriptor_spirv(std::span<const uint8_t> code,
-                                                                    std::string* why = nullptr) {
+                                                                    std::string* why = nullptr,
+                                                                    const BoundedLengths& lengths = {}) {
     const auto refuse = [&](const std::string& reason) -> std::optional<std::vector<uint8_t>> {
         if (why) *why = reason;
         return std::nullopt;
@@ -170,8 +197,23 @@ inline std::optional<std::vector<uint8_t>> bounded_descriptor_spirv(std::span<co
     }
     for (const auto& [word, binding] : rebinding) words[word] = binding;
 
+    // Each fixed array's length by its element type, and a constant for each
+    // distinct length.
+    const auto length_of = [&](uint32_t element) {
+        const auto image = images.find(element);
+        if (image == images.end()) return bounded_descriptor_count;
+        if (image->second.dim == dim_2d) return image->second.arrayed ? lengths.texture_2d_array : lengths.texture_2d;
+        return image->second.dim == dim_cube ? lengths.texture_cube : bounded_descriptor_count;
+    };
     uint32_t bound = words[3];
-    const uint32_t length = bounded.empty() ? 0 : bound++;
+    std::vector<std::pair<uint32_t, uint32_t>> length_constants;  // length, constant id
+    for (const auto& in : instructions)
+        if (in.opcode == op_type_runtime_array && bounded.contains(words[in.at + 1])) {
+            const uint32_t length = length_of(words[in.at + 2]);
+            if (std::none_of(length_constants.begin(), length_constants.end(),
+                             [&](const auto& constant) { return constant.first == length; }))
+                length_constants.emplace_back(length, bound++);
+        }
     const bool new_uint = !bounded.empty() && !uint_type;
     if (new_uint) uint_type = bound++;
     std::vector<uint32_t> out(words.begin(), words.begin() + 5);
@@ -203,10 +245,14 @@ inline std::optional<std::vector<uint8_t>> bounded_descriptor_spirv(std::span<co
             }
             uint_emitted = true;
             if (!length_emitted) {
-                out.insert(out.end(), {(4u << 16) | op_constant, uint_type, length, bounded_descriptor_count});
+                for (const auto& [length, id] : length_constants)
+                    out.insert(out.end(), {(4u << 16) | op_constant, uint_type, id, length});
                 length_emitted = true;
             }
-            out.insert(out.end(), {(4u << 16) | op_type_array, w[1], w[2], length});
+            const uint32_t length = length_of(w[2]);
+            const auto constant = std::find_if(length_constants.begin(), length_constants.end(),
+                                               [&](const auto& c) { return c.first == length; });
+            out.insert(out.end(), {(4u << 16) | op_type_array, w[1], w[2], constant->second});
             continue;
         }
         if (in.opcode == op_type_int && index + 1 == uint_at) uint_emitted = true;

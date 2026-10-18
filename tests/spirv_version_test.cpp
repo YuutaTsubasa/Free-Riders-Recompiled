@@ -147,8 +147,9 @@ void refuses_what_spirv_1_3_lacks() {
 }
 
 // SFR_SHADER_PACK=<shaders.pack>: every SPIR-V shader of a real pack is
-// lowered as it is, and after both other rewrites, as a Vulkan 1.1 Mali
-// would take it. SFR_SPIRV_1_3_DUMP=<directory> keeps each result for
+// lowered as it is, and after both other rewrites (in the compact bounded
+// layout), as an old Mali would take it. SFR_SPIRV_1_3_DUMP=<directory>
+// keeps each result for
 // spirv-val --target-env vulkan1.1.
 void lowers_a_shader_pack() {
     const char* path = std::getenv("SFR_SHADER_PACK");
@@ -175,7 +176,7 @@ void lowers_a_shader_pack() {
         require(plain.has_value(), "pack shader " + std::to_string(i) + " is lowered: " + why);
         auto rewritten = sfr::without_clip_distance_spirv(code, &why);
         require(rewritten.has_value(), "pack shader " + std::to_string(i) + " loses its clip distance: " + why);
-        rewritten = sfr::bounded_descriptor_spirv(*rewritten, &why);
+        rewritten = sfr::bounded_descriptor_spirv(*rewritten, &why, *sfr::bounded_lengths(16));
         require(rewritten.has_value(), "pack shader " + std::to_string(i) + " is bounded: " + why);
         const auto all = sfr::spirv_1_3(*rewritten, &why);
         require(all.has_value(), "rewritten pack shader " + std::to_string(i) + " is lowered: " + why);
