@@ -1,6 +1,7 @@
 #pragma once
-// Android's performance hints (ADPF, API 33+): the title's main thread and
-// the render thread form a hint session whose target is a sixtieth of a
+// Android's performance hints (ADPF, API 33+): the title's main thread (and
+// the render thread, if it has started by the first present; on the Thor it
+// had not) form a hint session whose target is a sixtieth of a
 // second, and every frame reports how long the main thread worked (the frame
 // less the pacing wait). Where the phone's power HAL supports it, it raises
 // clocks or moves the threads to faster cores when the work overruns the
