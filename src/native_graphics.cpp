@@ -8,7 +8,9 @@
 #include "plume_render_interface.h"
 #include "spirv_bounded_descriptors.h"
 #include "spirv_clip_distance.h"
+#include "spirv_version.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -176,6 +178,7 @@ struct NativeGraphics::Impl {
     std::unique_ptr<NativePipelineCache> pipeline_cache;
     bool bounded_descriptors = false;
     bool without_clip_distance = false;
+    bool spirv_1_3 = false;
 };
 
 NativeGraphics::NativeGraphics() = default;
@@ -187,6 +190,15 @@ void NativeGraphics::initialize() {
     const char* name = graphics_backend_name(backend);
     std::cerr << "NATIVE_GRAPHICS_INITIALIZE backend=" << name << '\n';
 
+    // SFR_TEST_VULKAN_1_1=1 makes the Vulkan instance ask for 1.1, so that
+    // the validation layer holds the device to that version's rules (the
+    // shaders as SPIR-V 1.3, no 1.2 features without their extensions), as
+    // on a Vulkan 1.1 driver such as a Mali-G76's (Issue #169).
+    const auto test_switch = [&](const char* variable) {
+        const char* value = std::getenv(variable);
+        return backend == GraphicsBackend::vulkan && value && std::strcmp(value, "1") == 0;
+    };
+    plume::VulkanInterface::testApiVersion = test_switch("SFR_TEST_VULKAN_1_1") ? VK_API_VERSION_1_1 : 0;
 #ifdef _WIN32
     auto render_interface = backend == GraphicsBackend::vulkan ? plume::CreateVulkanInterface() : plume::CreateD3D12Interface();
 #else
@@ -207,14 +219,22 @@ void NativeGraphics::initialize() {
 #endif
     if (!render_interface) SDL_DestroyWindow(window);
 #endif
+    plume::VulkanInterface::testApiVersion = 0;
     if (!render_interface)
         throw std::runtime_error(std::string("failed to create the ") + name + " render interface");
 
-    const char* no_indexing = std::getenv("SFR_TEST_NO_DESCRIPTOR_INDEXING");
-    const bool test_no_indexing = backend == GraphicsBackend::vulkan && no_indexing && std::strcmp(no_indexing, "1") == 0;
+    // SFR_TEST_NO_SCALAR_LAYOUT=1 and SFR_TEST_NO_DEVICE_ADDRESS=1 make the
+    // device without scalar block layout and buffer device addresses, which
+    // a Vulkan 1.1 Mali-G76 lacks (Issue #169); nothing the renderer does
+    // needs them.
+    const bool test_no_indexing = test_switch("SFR_TEST_NO_DESCRIPTOR_INDEXING");
     plume::VulkanDevice::disableDescriptorIndexing = test_no_indexing;
+    plume::VulkanDevice::disableScalarBlockLayout = test_switch("SFR_TEST_NO_SCALAR_LAYOUT");
+    plume::VulkanDevice::disableBufferDeviceAddress = test_switch("SFR_TEST_NO_DEVICE_ADDRESS");
     auto render_device = render_interface->createDevice();
     plume::VulkanDevice::disableDescriptorIndexing = false;
+    plume::VulkanDevice::disableScalarBlockLayout = false;
+    plume::VulkanDevice::disableBufferDeviceAddress = false;
     if (!render_device)
         throw std::runtime_error(std::string("failed to create a ") + name + " render device");
     // Which adapter the game runs on, for a performance report (scripts/
@@ -298,6 +318,21 @@ void NativeGraphics::initialize() {
                   << " removed=" << without_clip_distance << '\n';
     }
 
+    // The shaders are SPIR-V 1.5, which needs Vulkan 1.2. A Vulkan 1.1 device
+    // (the Mali-G76 of Issue #169) takes them as SPIR-V 1.3 (spirv_version.h).
+    // The version is the lower of the instance's and the device's.
+    bool spirv_1_3 = false;
+    if (backend == GraphicsBackend::vulkan) {
+        const auto* vulkan_device = static_cast<plume::VulkanDevice*>(render_device.get());
+        const uint32_t version = (std::min)(static_cast<plume::VulkanInterface*>(render_interface.get())->appInfo.apiVersion,
+                                          vulkan_device->physicalDeviceProperties.apiVersion);
+        spirv_1_3 = version < VK_API_VERSION_1_2;
+        const auto& capabilities = render_device->getCapabilities();
+        std::cerr << "NATIVE_SPIRV api=" << VK_API_VERSION_MAJOR(version) << '.' << VK_API_VERSION_MINOR(version)
+                  << " version=" << (spirv_1_3 ? "1.3" : "1.5") << " scalar_block_layout="
+                  << capabilities.scalarBlockLayout << " device_address=" << capabilities.bufferDeviceAddress << '\n';
+    }
+
     auto render_queue = render_device->createCommandQueue(plume::RenderCommandListType::DIRECT);
     if (!render_queue)
         throw std::runtime_error(std::string("failed to create a ") + name + " direct command queue");
@@ -306,6 +341,7 @@ void NativeGraphics::initialize() {
     implementation->backend = backend;
     implementation->bounded_descriptors = bounded_descriptors;
     implementation->without_clip_distance = without_clip_distance;
+    implementation->spirv_1_3 = spirv_1_3;
 #ifndef _WIN32
     implementation->window = window;
 #endif
@@ -349,7 +385,7 @@ bool NativeGraphics::bounded_descriptors() const noexcept {
 }
 
 bool NativeGraphics::rewrites_shaders() const noexcept {
-    return impl_ && (impl_->bounded_descriptors || impl_->without_clip_distance);
+    return impl_ && (impl_->bounded_descriptors || impl_->without_clip_distance || impl_->spirv_1_3);
 }
 
 std::vector<uint8_t> NativeGraphics::shader_code(std::span<const uint8_t> code) const {
@@ -363,6 +399,11 @@ std::vector<uint8_t> NativeGraphics::shader_code(std::span<const uint8_t> code) 
     if (bounded_descriptors()) {
         auto rewritten = bounded_descriptor_spirv(result, &why);
         if (!rewritten) throw std::runtime_error("a shader cannot use the bounded descriptor layout: " + why);
+        result = std::move(*rewritten);
+    }
+    if (impl_ && impl_->spirv_1_3) {
+        auto rewritten = spirv_1_3(result, &why);
+        if (!rewritten) throw std::runtime_error("a shader cannot be SPIR-V 1.3: " + why);
         result = std::move(*rewritten);
     }
     return result;

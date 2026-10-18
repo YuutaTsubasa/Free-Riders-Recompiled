@@ -1,0 +1,145 @@
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -101,8 +101,6 @@
+     
+     static const std::unordered_set<std::string> RequiredDeviceExtensions = {
+         VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+-        VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME,
+-        VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME,
+     };
+     
+     static const std::unordered_set<std::string> OptionalDeviceExtensions = {
+@@ -110,6 +108,11 @@
+         // mirror-once addressing falls back to mirrored repeat.
+         VK_EXT_ROBUSTNESS_2_EXTENSION_NAME,
+         VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_EXTENSION_NAME,
++        // Without them (a Vulkan 1.1 driver such as a Mali-G76's): the
++        // capabilities report no scalarBlockLayout and no bufferDeviceAddress,
++        // and buffers are made without device addresses.
++        VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME,
++        VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME,
+         VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
+         VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME,
+         VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME,
+@@ -859,7 +862,9 @@
+         bufferInfo.usage |= (desc.flags & RenderBufferFlag::SHADER_BINDING_TABLE) ? VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR : 0;
+ 
+         const uint32_t deviceAddressMask = RenderBufferFlag::CONSTANT | RenderBufferFlag::ACCELERATION_STRUCTURE | RenderBufferFlag::ACCELERATION_STRUCTURE_SCRATCH | RenderBufferFlag::ACCELERATION_STRUCTURE_INPUT | RenderBufferFlag::SHADER_BINDING_TABLE;
+-        bufferInfo.usage |= (desc.flags & deviceAddressMask) ? VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT : 0;
++        if (device->capabilities.bufferDeviceAddress) {
++            bufferInfo.usage |= (desc.flags & deviceAddressMask) ? VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT : 0;
++        }
+ 
+         VmaAllocationCreateInfo createInfo = {};
+         /* TODO: Debug pools.
+@@ -3858,10 +3863,16 @@
+         indexingFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
+         featuresChain = &indexingFeatures;
+ 
++        // Scalar block layout and buffer device addresses are core from Vulkan
++        // 1.2 and extensions before it: without either, a feature structure
++        // stays out of the chain.
++        const bool promotedFeaturesCore = physicalDeviceProperties.apiVersion >= VK_API_VERSION_1_2;
+         VkPhysicalDeviceScalarBlockLayoutFeatures layoutFeatures = {};
+         layoutFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES;
+-        layoutFeatures.pNext = featuresChain;
+-        featuresChain = &layoutFeatures;
++        if (promotedFeaturesCore || supportedOptionalExtensions.count(VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME)) {
++            layoutFeatures.pNext = featuresChain;
++            featuresChain = &layoutFeatures;
++        }
+ 
+         VkPhysicalDevicePresentIdFeaturesKHR presentIdFeatures = {};
+         VkPhysicalDevicePresentWaitFeaturesKHR presentWaitFeatures = {};
+@@ -3886,8 +3897,10 @@
+ 
+         VkPhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddressFeatures = {};
+         bufferDeviceAddressFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
+-        bufferDeviceAddressFeatures.pNext = featuresChain;
+-        featuresChain = &bufferDeviceAddressFeatures;
++        if (promotedFeaturesCore || supportedOptionalExtensions.count(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME)) {
++            bufferDeviceAddressFeatures.pNext = featuresChain;
++            featuresChain = &bufferDeviceAddressFeatures;
++        }
+ 
+         VkPhysicalDevicePortabilitySubsetFeaturesKHR portabilityFeatures = {};
+         portabilityFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PORTABILITY_SUBSET_FEATURES_KHR;
+@@ -3902,7 +3915,8 @@
+         void *createDeviceChain = nullptr;
+         VkPhysicalDeviceRayTracingPipelineFeaturesKHR rtPipelineFeatures = {};
+         VkPhysicalDeviceAccelerationStructureFeaturesKHR accelerationStructureFeatures = {};
+-        const bool rtSupported = supportedOptionalExtensions.find(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME) != supportedOptionalExtensions.end();
++        // Acceleration structures need buffer device addresses.
++        const bool rtSupported = !disableBufferDeviceAddress && bufferDeviceAddressFeatures.bufferDeviceAddress && (supportedOptionalExtensions.find(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME) != supportedOptionalExtensions.end());
+         if (rtSupported) {
+             rtPipelineProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR;
+ 
+@@ -3937,7 +3951,7 @@
+             createDeviceChain = &indexingFeatures;
+         }
+ 
+-        const bool scalarBlockLayout = layoutFeatures.scalarBlockLayout;
++        const bool scalarBlockLayout = !disableScalarBlockLayout && layoutFeatures.scalarBlockLayout;
+         if (scalarBlockLayout) {
+             layoutFeatures.pNext = createDeviceChain;
+             createDeviceChain = &layoutFeatures;
+@@ -3958,7 +3972,7 @@
+             createDeviceChain = &robustnessFeatures;
+         }
+ 
+-        const bool bufferDeviceAddress = bufferDeviceAddressFeatures.bufferDeviceAddress;
++        const bool bufferDeviceAddress = !disableBufferDeviceAddress && bufferDeviceAddressFeatures.bufferDeviceAddress;
+         if (bufferDeviceAddress) {
+             bufferDeviceAddressFeatures.pNext = createDeviceChain;
+             createDeviceChain = &bufferDeviceAddressFeatures;
+@@ -4037,6 +4051,16 @@
+         }
+ 
+         for (const std::string &extension : supportedOptionalExtensions) {
++            // A feature switched off for a test goes with its extension, and
++            // ray tracing goes without buffer device addresses.
++            if ((!scalarBlockLayout && (extension == VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME)) || (!bufferDeviceAddress && (extension == VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME))) {
++                continue;
++            }
++
++            if (!rtSupported && ((extension == VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) || (extension == VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME))) {
++                continue;
++            }
++
+             enabledExtensions.push_back(extension.c_str());
+         }
+ 
+@@ -4481,7 +4505,7 @@
+         appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
+         appInfo.pEngineName = "plume";
+         appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
+-        appInfo.apiVersion = VK_API_VERSION_1_2;
++        appInfo.apiVersion = (testApiVersion != 0) ? testApiVersion : VK_API_VERSION_1_2;
+ 
+         VkInstanceCreateInfo createInfo = {};
+         createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+--- a/plume_vulkan.h
++++ b/plume_vulkan.h
+@@ -435,6 +435,11 @@
+         // indexing features disabled and reports no descriptorIndexing
+         // capability, as a driver without them would.
+         static inline bool disableDescriptorIndexing = false;
++        // Test switches: the same for scalar block layout and for buffer
++        // device addresses (and their extensions), as a Vulkan 1.1 driver
++        // without them would be.
++        static inline bool disableScalarBlockLayout = false;
++        static inline bool disableBufferDeviceAddress = false;
+         std::unique_ptr<RenderDescriptorSet> createDescriptorSet(const RenderDescriptorSetDesc &desc) override;
+         std::unique_ptr<RenderShader> createShader(const void *data, uint64_t size, const char *entryPointName, RenderShaderFormat format) override;
+         std::unique_ptr<RenderSampler> createSampler(const RenderSamplerDesc &desc) override;
+@@ -468,6 +473,10 @@
+         VkApplicationInfo appInfo = {};
+         RenderInterfaceCapabilities capabilities;
+         std::vector<std::string> deviceNames;
++        // Test switch: an interface created while it is set asks for this
++        // Vulkan version instead of 1.2, so that the validation layer holds
++        // a device to an older version's rules.
++        static inline uint32_t testApiVersion = 0;
+ 
+ #   if SDL_VULKAN_ENABLED
+         VulkanInterface(RenderWindow sdlWindow);

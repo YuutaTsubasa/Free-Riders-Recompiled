@@ -78,6 +78,34 @@ Set 0 與 set 1 是只填了一部分的 4096 張貼圖與 256 個取樣器陣�
   搭配 `-DSFR_VULKAN_VALIDATION=ON` 與驗證層，可檢查是否還用到裝置沒開的功能。
 - 有 descriptor indexing 的 Vulkan 與 D3D12 不受影響。
 
+### Vulkan 1.1 的驅動程式
+
+Plume 原本把 `VK_EXT_scalar_block_layout` 與 `VK_KHR_buffer_device_address` 列為必要擴充功能，
+沒有的驅動程式（Huawei P30 Pro 的 Mali-G76、Android 10、Vulkan 1.1，Issue #169）連裝置都建立不了。
+實際上兩者都用不到：
+
+- 著色器包的 476 個 SPIR-V 模組沒有一個宣告 `PhysicalStorageBufferAddresses`（常數已改由 set 2
+  的 uniform buffer 讀取），`spirv-val` 不加 `--scalar-block-layout` 也全部通過（`-fvk-use-dx-layout`
+  的偏移量符合 Vulkan 1.1 的 relaxed block layout）。渲染器也不再取緩衝區位址。
+- `patches/plume-optional-scalar-layout-device-address.patch` 把兩者改成選用：有就照舊開啟，沒有時
+  capabilities 回報 `scalarBlockLayout=0`、`bufferDeviceAddress=0`，緩衝區不加
+  `SHADER_DEVICE_ADDRESS` 用途。
+
+但 DXC 輸出的是 SPIR-V 1.5，需要 Vulkan 1.2。實例與裝置版本中較低者小於 1.2 時，建立著色器前把
+模組改成 SPIR-V 1.3（`src/spirv_version.h`）：版本號改為 1.3，進入點介面只留 Input/Output 變數
+（1.4 起介面列出所有用到的全域變數）。遇到 1.3 沒有的東西（1.4/1.5 指令、組合型別的
+`OpSelect`、Vulkan 記憶體模型、physical storage buffer）直接停止並說明原因。整個著色器包（原樣，
+以及加上拿掉 clip distance 與有界佈局兩種改寫之後）改成 1.3 後，`spirv-val --target-env vulkan1.1`
+全部通過。`game.log` 記 `NATIVE_SPIRV api=… version=1.3|1.5 scalar_block_layout=… device_address=…`。
+
+測試開關（只在 Vulkan 生效）：
+
+- `SFR_TEST_VULKAN_1_1=1`：Vulkan 實例只要求 1.1，驗證層就以 1.1 的規則檢查裝置與著色器，
+  著色器也改成 SPIR-V 1.3。
+- `SFR_TEST_NO_SCALAR_LAYOUT=1`、`SFR_TEST_NO_DEVICE_ADDRESS=1`：建立裝置時不開這兩個功能與擴充。
+- 三者加上 `SFR_TEST_NO_DESCRIPTOR_INDEXING=1` 與 `SFR_TEST_NO_CLIP_DISTANCE=1`，大致就是
+  Mali-G76 的情況。
+
 本專案自己加進著色器的部分：
 
 | 內容 | D3D12 | Vulkan |
