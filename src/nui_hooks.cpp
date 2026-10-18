@@ -20,8 +20,11 @@
 #include "local_profile.h"
 #include "touch_controls.h"
 #include "title_stats.h"
+#include "motion_trace.h"
 #include <bit>
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <unordered_map>
 #include <mutex>
 #include <initializer_list>
@@ -130,6 +133,58 @@ void watch_body_pause_gestures(const sfr::KinectFrame& frame,bool active) {
 // (-1) until then. Written by the identity hook, read by the skeleton hook.
 std::mutex kinect_identity_lock;
 std::unordered_map<uint32_t,uint32_t> kinect_identities;  // sensor tracking id -> enrollment
+// The motion trace (motion_trace.h) of a real Kinect: what the game is given
+// for its first two bodies, numbers only. KINECT_TRACE every third sensor
+// frame (ten a second): the hips, the shoulders and the hands in metres
+// (camera space after levelling, so +y is up), the hands' tracking states
+// (2 tracked, 1 inferred), a v2's hand reading (2 open, 3 a fist, 4 lasso)
+// and how far the menu steadying moved each hand (millimetres; 0 in races).
+// KINECT_TRACE_JOINTS once a second: all twenty joints of the first body.
+// About 2 KB a second.
+void trace_kinect_frame(const sfr::KinectFrame& frame,uint64_t generation,int64_t captured_ms,bool racing,float tilt,
+                        const std::unordered_map<uint32_t,std::array<float,2>>& steady_mm) {
+    if(generation%3!=0) return;
+    std::ostringstream line;
+    line.setf(std::ios::fixed);
+    line.precision(3);
+    line<<"KINECT_TRACE generation="<<generation<<" t_ms="<<captured_ms<<" racing="<<racing<<" level="<<tilt
+        <<" bodies="<<frame.bodies.size();
+    const auto point=[&](const char* name,const std::array<float,3>& p) {
+        line<<' '<<name<<'='<<p[0]<<','<<p[1]<<','<<p[2];
+    };
+    uint32_t written=0;
+    for(const sfr::KinectBody& body:frame.bodies) {
+        if(written++==2) break;
+        line<<" | id="<<body.tracking_id<<" slot="<<body.sensor_index;
+        point("hip",body.joints[sfr::nui_joint::hip_center]);
+        point("sc",body.joints[sfr::nui_joint::shoulder_center]);
+        point("sl",body.joints[sfr::nui_joint::shoulder_left]);
+        point("sr",body.joints[sfr::nui_joint::shoulder_right]);
+        point("hl",body.joints[sfr::nui_joint::hand_left]);
+        point("hr",body.joints[sfr::nui_joint::hand_right]);
+        line<<" tracked="<<body.joint_states[sfr::nui_joint::hip_center]<<','
+            <<body.joint_states[sfr::nui_joint::hand_left]<<','<<body.joint_states[sfr::nui_joint::hand_right]
+            <<" hand="<<unsigned(body.hand_states[0])<<','<<unsigned(body.hand_states[1]);
+        const auto shift=steady_mm.find(body.tracking_id);
+        if(shift!=steady_mm.end()) {
+            line.precision(1);
+            line<<" steady_mm="<<shift->second[0]<<','<<shift->second[1];
+            line.precision(3);
+        }
+    }
+    std::cerr<<line.str()<<'\n';
+    if(generation%30==0 && !frame.bodies.empty()) {
+        std::ostringstream joints;
+        joints.setf(std::ios::fixed);
+        joints.precision(3);
+        const sfr::KinectBody& body=frame.bodies.front();
+        joints<<"KINECT_TRACE_JOINTS generation="<<generation<<" id="<<body.tracking_id;
+        for(uint32_t j=0;j<sfr::nui_joint_count;++j)
+            joints<<" j"<<j<<'='<<body.joints[j][0]<<','<<body.joints[j][1]<<','<<body.joints[j][2]
+                  <<'/'<<body.joint_states[j];
+        std::cerr<<joints.str()<<'\n';
+    }
+}
 sfr::CameraInputSelection camera_selection;
 std::atomic<bool> camera_input_active{false};
 std::atomic<uint64_t> camera_pose_counter{0};
@@ -568,6 +623,10 @@ SFR_INPUT_HOOK(sub_827707B0) {
         camera_player=sfr::CameraPlayer::start();
     }
     if(kinect) {
+        static const bool motion_trace=sfr::motion_trace_enabled();
+        const auto work_began=std::chrono::steady_clock::now();
+        // How far the menu steadying moved each body's hands this frame.
+        static std::unordered_map<uint32_t,std::array<float,2>> steady_mm;
         // Both players are whoever the sensor sees; nobody in front of it is
         // an empty frame, which the title answers the way it did on the
         // console (asking the player to step in). The pads keep their voice
@@ -598,7 +657,24 @@ SFR_INPUT_HOOK(sub_827707B0) {
                 // The menu cursor steadied (kinect_stability.h) before
                 // anything reads the frame.
                 static sfr::KinectBodySteadying steadying=sfr::KinectBodySteadying::from_environment();
+                std::vector<std::pair<uint32_t,std::array<std::array<float,3>,2>>> raw;
+                if(motion_trace)
+                    for(const sfr::KinectBody& body:kinect_frame.bodies)
+                        raw.push_back({body.tracking_id,{body.joints[sfr::nui_joint::hand_left],
+                                                         body.joints[sfr::nui_joint::hand_right]}});
                 steadying.steady(kinect_frame.bodies,!racing);
+                steady_mm.clear();
+                for(const auto& [id,hands]:raw)
+                    for(const sfr::KinectBody& body:kinect_frame.bodies) {
+                        if(body.tracking_id!=id) continue;
+                        auto& shift=steady_mm[id];
+                        for(int side=0;side<2;++side) {
+                            const auto& a=hands[side];
+                            const auto& b=body.joints[side?sfr::nui_joint::hand_right:sfr::nui_joint::hand_left];
+                            shift[side]=1000.0f*std::sqrt((a[0]-b[0])*(a[0]-b[0])+(a[1]-b[1])*(a[1]-b[1])+
+                                                          (a[2]-b[2])*(a[2]-b[2]));
+                        }
+                    }
             }
             expired=sfr::kinect_expire_frame(kinect_frame,std::chrono::steady_clock::now());
             // The adjustment window sees the frames the game reads, not its own.
@@ -652,6 +728,9 @@ SFR_INPUT_HOOK(sub_827707B0) {
                 }
                 std::cerr<<line.str()<<'\n';
             }
+            if(motion_trace)
+                trace_kinect_frame(kinect_frame,generation,std::chrono::duration_cast<std::chrono::milliseconds>(
+                                       kinect_frame.captured_at-started).count(),racing,tilt,steady_mm);
         }
         sfr::publish_second_player_pad(std::nullopt);
         // A cached body retains the source capture time and frame number.
@@ -708,6 +787,19 @@ SFR_INPUT_HOOK(sub_827707B0) {
         if((kinect_frame.bodies.size()>=2)!=second_present) {
             second_present=kinect_frame.bodies.size()>=2;
             std::cerr << "NUI_SECOND_PLAYER present=" << second_present << " source=kinect\n";
+        }
+        if(motion_trace) {
+            // This hook's own share of a frame with a Kinect (taking the
+            // sensor's frame, steadying, levelling, writing the skeletons,
+            // the pause gestures), every 300 calls: it should be
+            // microseconds; a slow race would show it here first.
+            static sfr::TraceCost cost;
+            cost.add(std::chrono::steady_clock::now()-work_began);
+            if(cost.calls()>=300) {
+                std::cerr << "KINECT_COST part=skeleton calls=" << cost.calls() << " mean_us=" << cost.mean_us()
+                          << " max_us=" << cost.max_us() << '\n';
+                cost.clear();
+            }
         }
         ctx.r3.u64=0;
         return;
@@ -850,7 +942,7 @@ SFR_INPUT_HOOK(sub_827707B0) {
                                use_camera?&camera_joints:nullptr);
     // Numeric-only race diagnostics: the exact submitted P1 joints, never
     // camera pixels. Pair with SFR_RACE_BODY_DUMP to inspect guest processing.
-    static const bool race_trace=[] {const char* t=std::getenv("SFR_CAMERA_RACE_TRACE");return t && *t=='1';}();
+    static const bool race_trace=sfr::motion_trace_enabled();
     if(race_trace && racing && frame_number%5==0) {
         const uint64_t data=uint64_t(frame)+sfr::nui_skeleton_data_offset+
             (player_routing.reversed()?sfr::nui_skeleton_data_size:0);

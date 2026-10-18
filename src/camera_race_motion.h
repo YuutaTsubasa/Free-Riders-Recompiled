@@ -87,7 +87,15 @@ public:
         const float side=filtered_roll_-neutral_roll_;
         // The model's legs can settle longer than the torso at race entry.
         // Learn a taller stable upright pose slowly, never a crouched baseline.
-        if(!crouch_ && !hop_latched_ && std::abs(side)<.174533f && std::abs(filtered_pitch_-neutral_pitch_)<.174533f &&
+        // Over a fixed floor (a real Kinect) only hips held still, and not
+        // within a second of a jump: the rise into a hop and the landing
+        // after it lifted the stance a few millimetres a hop (Issue #165:
+        // 0.76 to 0.84 m over a run of about twenty hops while the stance
+        // between them stayed put), and with it the height a hop must reach.
+        still_time_=std::abs(height-previous_height_)<.015f?still_time_+dt:0;
+        since_jump_+=dt;
+        const bool settled=!p.floor_y || (still_time_>=.25f && since_jump_>=1.f);
+        if(!crouch_ && !hop_latched_ && settled && std::abs(side)<.174533f && std::abs(filtered_pitch_-neutral_pitch_)<.174533f &&
            filtered_height_>neutral_height_)
             neutral_height_+=(1-std::exp(-dt/2.f))*(filtered_height_-neutral_height_);
         lean_=std::copysign(std::clamp((std::abs(side)-.0698132f)/(.523599f-.0698132f),0.f,1.f),side);
@@ -105,7 +113,7 @@ public:
         if(p.floor_y && !hop_latched_ && height>hop_height && previous_height_>hop_height) {
             hop_latched_=true;
             crouch_=false;crouch_candidate_=false;crouch_time_=0;rise_candidate_=false;rise_time_=0;
-            jump_=true;recovery_=.25f;jump_recovering_=true;
+            jump_=true;recovery_=.25f;jump_recovering_=true;since_jump_=0;
         }
         if(!crouch_ && !jump_recovering_) {
             // Only the interval between two qualifying observations counts.
@@ -124,9 +132,13 @@ public:
             rise_time_=rising&&rise_candidate_?rise_time_+dt:0;
             rise_candidate_=rising;
             if(rise_time_>=.04f) {
-                hop_latched_=height>hop_height;  // a crouch-and-spring is not a second hop
+                // A crouch-and-spring is not a second hop, even when the
+                // rise is caught below the hop height and goes on into the
+                // air (Issue #165: a jump at 0.87 m, then a hop at 0.89 m).
+                // Landing, or simply standing, unlatches it.
+                hop_latched_=true;
                 crouch_=false;crouch_candidate_=false;crouch_time_=0;
-                rise_candidate_=false;rise_time_=0;jump_=true;recovery_=.25f;jump_recovering_=true;
+                rise_candidate_=false;rise_time_=0;jump_=true;recovery_=.25f;jump_recovering_=true;since_jump_=0;
             }
         }
         previous_height_=height;
@@ -201,5 +213,6 @@ private:
     float roll_sum_=0,pitch_sum_=0,height_sum_=0,neutral_roll_=0,neutral_pitch_=0,neutral_height_=0;
     float filtered_roll_=0,filtered_pitch_=0,filtered_height_=0,lean_=0;
     float crouch_time_=0,boost_time_=0,recovery_=0;
+    float still_time_=0,since_jump_=0;
 };
 }

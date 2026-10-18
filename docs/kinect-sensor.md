@@ -46,6 +46,8 @@ v2 目前只提供骨架，會自動啟用骨架轉向與蹲跳，不必額外�
 1P／2P 各自校正站姿與計時；遊戲最多接收兩位玩家，追蹤身分與原始感測器槽位保持穩定。
 `SFR_KINECT_BODY_LEAN`、`SFR_KINECT_BODY_GESTURES` 仍可用 `1`／`0` 強制開關。
 這條路徑有自動測試，尚未完成 Kinect v2 實機遊玩驗證。
+v2 的資料流程、#97／#132／#165 的 log 分析、待實機確認的項目，以及啟動器「體感追蹤紀錄」
+開關（`SFR_CAMERA_RACE_TRACE=1`，只寫數字、不含影像）的用法，見 [kinect-v2.md](kinect-v2.md)（英文）。
 
 1. 需要 **Kinect v2**（Xbox One 版需另購 *Kinect Adapter for Windows*，副廠也可）與
    電腦上的 **USB 3.0** 連接埠（Intel 或 Renesas 晶片的控制器較穩，部分 AMD 控制器有相容性問題）。

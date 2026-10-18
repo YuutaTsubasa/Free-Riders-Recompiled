@@ -5,6 +5,7 @@
 #include "camera_input.h"
 #include "camera_race_motion.h"
 #include "avatar_state.h"
+#include "motion_trace.h"
 #include <bit>
 #include <chrono>
 #include <cstdlib>
@@ -137,22 +138,30 @@ void update_motion(uint32_t record,uint64_t generation,sfr::CameraRaceMotion& mo
     // A real sensor's crouches and jumps, in every log (Issue #97: a jump
     // that does not register can only be told apart from the log): each
     // crouch and jump, and every three seconds the highest and lowest the
-    // hips went against the standing height. At most 600 lines a run.
+    // hips went against the standing height. At most 600 lines a run, or
+    // 5000 with the motion trace; each with the sensor frame it came from
+    // and the time, so the gap between two jumps can be told.
     if(floor && motion.ready()) {
         static int lines=0;
+        static const int most=sfr::motion_trace_enabled()?5000:600;
+        static const auto started=std::chrono::steady_clock::now();
+        const auto stamp=[&] {
+            return " generation="+std::to_string(generation)+" t_ms="+std::to_string(
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-started).count());
+        };
         static float highest=0,lowest=1e9f;
         static auto window_start=std::chrono::steady_clock::now();
         const float ratio=motion.standing_height()>0 ? motion.height()/motion.standing_height() : 0;
         highest=std::max(highest,ratio); lowest=std::min(lowest,ratio);
         const auto log=[&](const char* what) {
-            if(lines<600) { ++lines; std::cerr<<"KINECT_MOTION "<<what<<" height="<<motion.height()
-                                             <<" standing="<<motion.standing_height()<<" ratio="<<ratio<<'\n'; }
+            if(lines<most) { ++lines; std::cerr<<"KINECT_MOTION "<<what<<" height="<<motion.height()
+                                              <<" standing="<<motion.standing_height()<<" ratio="<<ratio<<stamp()<<'\n'; }
         };
         if(motion.crouch() && !crouched) log("crouch");
         if(motion.jump()) log("jump");
         if(std::chrono::steady_clock::now()-window_start>=std::chrono::seconds(3)) {
-            if(lines<600) { ++lines; std::cerr<<"KINECT_MOTION window highest="<<highest<<" lowest="<<lowest
-                                             <<" standing="<<motion.standing_height()<<'\n'; }
+            if(lines<most) { ++lines; std::cerr<<"KINECT_MOTION window highest="<<highest<<" lowest="<<lowest
+                                              <<" standing="<<motion.standing_height()<<stamp()<<'\n'; }
             highest=0; lowest=1e9f; window_start=std::chrono::steady_clock::now();
         }
     }
@@ -473,6 +482,8 @@ SFR_INPUT_HOOK(sub_82438930) {
     std::erase_if(sensor_motions,[](const auto& item){return sensor_epoch-item.second.epoch>30;});
     if(sensor_steering!=was_steering)
         std::cerr<<"NUI_RACE_SENSOR_LEAN active="<<sensor_steering<<" record=0x"<<std::hex<<sensor_record<<std::dec<<'\n';
+    static const bool motion_trace=sfr::motion_trace_enabled();
+    const auto work_began=std::chrono::steady_clock::now();
     if(racing && box && original_body && camera_player(0))update_camera_motion(original_body,sfr::camera_pose_generation());
     else if(sensor_steering) {
         camera_motion.reset();camera_last_tick=0;
@@ -482,16 +493,30 @@ SFR_INPUT_HOOK(sub_82438930) {
         if(sensor_body_lean())write_camera_lean(sensor_record,sensor_lean_scale(),motion);
     }
     else {camera_motion.reset();camera_last_tick=0;}
-    static const bool motion_trace=[] {const char* p=std::getenv("SFR_CAMERA_RACE_TRACE");return p && *p=='1';}();
+    if(motion_trace && sensor_steering) {
+        // The skeleton fallback's own share of a race frame (KINECT_COST
+        // part=race), every 300 updates: it should be microseconds.
+        static sfr::TraceCost cost;
+        cost.add(std::chrono::steady_clock::now()-work_began);
+        if(cost.calls()>=300) {
+            std::cerr<<"KINECT_COST part=race calls="<<cost.calls()<<" mean_us="<<cost.mean_us()<<" max_us="<<cost.max_us()<<'\n';
+            cost.clear();
+        }
+    }
     static uint32_t motion_frames=0;
     const auto& traced_motion=sensor_steering?sensor_motion(sensor_record):camera_motion;
     if(motion_trace && (racing || sensor_steering) && (++motion_frames%30==0 || traced_motion.jump() || traced_motion.overthrow())) {
+        // height/standing: the hips above the floor and the learnt stance
+        // (metres; a Kinect's floor sits 0.75 m under the calibrated hips).
         std::cerr<<"CAMERA_RACE_MOTION title_step="<<seconds<<" generation="<<(sensor_steering?sfr::kinect_frame_generation():sfr::camera_pose_generation())
                  <<" camera="<<camera_player(0)<<" ready="<<traced_motion.ready()
                  <<" lean="<<traced_motion.lean()<<" depth_pair="<<depth_lean_right<<'/'<<depth_lean_left
                  <<" crouch="<<traced_motion.crouch()
                  <<" jump="<<traced_motion.jump()<<" acceleration="<<traced_motion.boost()<<" arm_action="<<traced_motion.arm_action()
-                 <<" overthrow="<<traced_motion.overthrow()<<" kick_leg="<<traced_motion.kick_leg_action()<<'\n';
+                 <<" overthrow="<<traced_motion.overthrow()<<" kick_leg="<<traced_motion.kick_leg_action()
+                 <<" height="<<traced_motion.height()<<" standing="<<traced_motion.standing_height()
+                 <<" written_lean="<<(sensor_steering?load_float(sensor_record+640):0.f)<<'/'
+                 <<(sensor_steering?load_float(sensor_record+644):0.f)<<'\n';
     }
 }
 
@@ -564,9 +589,10 @@ SFR_INPUT_HOOK(sub_822C63E8) {
 static void trace_camera_detector(uint32_t address,uint32_t detector,uint32_t results,uint32_t result) {
     if(address!=0x822C8778 && address!=0x822CB840 && address!=0x822CA6B0 && address!=0x822C9BF0 && address!=0x822C9050 &&
        address!=0x822CA518 && address!=0x822CBD28 && address!=0x822CC590 && address!=0x822CCD98 && address!=0x822CD068)return;
-    static const bool enabled=[] {const char* p=std::getenv("SFR_CAMERA_RACE_TRACE");return p && *p=='1';}();
+    static const bool enabled=sfr::motion_trace_enabled();
     if(!enabled)return;
     static std::unordered_map<uint64_t,std::array<uint32_t,4>> last;
+    static sfr::TraceRate rate(20);
     const uint64_t key=uint64_t(address)<<32|detector;
     const uint32_t left_arm=address==0x822CC590?memory().load<uint32_t>(detector+72):0;
     const uint32_t right_arm=address==0x822CC590?memory().load<uint32_t>(detector+76):0;
@@ -575,11 +601,11 @@ static void trace_camera_detector(uint32_t address,uint32_t detector,uint32_t re
     const std::array state{result,left_arm,right_arm,kick_state};
     const bool changed=!last.contains(key)||last[key]!=state;
     last[key]=state;
-    if(changed||camera_motion.jump())std::cerr<<"CAMERA_GESTURE address=0x"<<std::hex<<address
+    if((changed||camera_motion.jump()) && rate.allow())std::cerr<<"CAMERA_GESTURE address=0x"<<std::hex<<address
         <<" detector=0x"<<detector<<" primary=0x"<<memory().load<uint32_t>(entry(results)+4)
         <<" secondary=0x"<<memory().load<uint32_t>(entry(results)+20)<<std::dec
         <<" arm_first="<<left_arm<<" arm_second="<<right_arm<<" result="<<result<<" generation="<<sfr::camera_pose_generation()<<" motion_jump="<<camera_motion.jump()<<" brake_ready="<<camera_motion.brake_ready()<<" arm_action="<<camera_motion.arm_action()
-        <<" kick_state="<<kick_state<<" kick_leg="<<camera_motion.kick_leg_action()<<'\n';
+        <<" kick_state="<<kick_state<<" kick_leg="<<camera_motion.kick_leg_action()<<" dropped="<<rate.dropped()<<'\n';
 }
 
 // Opt-in numeric consumer trace: distinguish recognized crouch from title
@@ -589,8 +615,16 @@ SFR_INPUT_HOOK(sub_822B60F8) {
     sfr::enter_function(ctx,"sub_822B60F8",0x822B60F8);
     const uint32_t actor=ctx.r3.u32;
     __imp__sub_822B60F8(ctx,base);
-    static const bool enabled=[] {const char* p=std::getenv("SFR_CAMERA_RACE_TRACE");return p&&*p=='1';}();
-    if(!enabled || !pad_racing() || !sfr::camera_motion_active())return;
+    // A webcam player's race, or a real Kinect's (the skeleton fallback's
+    // motion: did the rider take the crouch and jump it was given?).
+    static const bool enabled=sfr::motion_trace_enabled();
+    if(!enabled)return;
+    const bool camera=pad_racing() && sfr::camera_motion_active();
+    if(!camera && !sensor_steering)return;
+    // Read only: the manager's update keeps the sensor's motion current.
+    static const sfr::CameraRaceMotion none;
+    const auto known=camera?sensor_motions.end():sensor_motions.find(sensor_record);
+    const sfr::CameraRaceMotion& motion=camera?camera_motion:known!=sensor_motions.end()?known->second.motion:none;
     const uint32_t owner=memory().load<uint32_t>(actor+1680);
     if(!owner)return;
     const uint32_t results=memory().load<uint32_t>(owner+3220);
@@ -600,17 +634,20 @@ SFR_INPUT_HOOK(sub_822B60F8) {
     if(!entries || !data)return;
     const uint32_t read=entries+84*memory().load<uint32_t>(results+28);
     const std::array<uint32_t,6> now{memory().load<uint32_t>(read+4),memory().load<uint32_t>(read+8),
-        memory().load<uint32_t>(data+44),memory().load<uint32_t>(state+400),uint32_t(camera_motion.crouch()),uint32_t(camera_motion.jump())};
+        memory().load<uint32_t>(data+44),memory().load<uint32_t>(state+400),uint32_t(motion.crouch()),uint32_t(motion.jump())};
     static std::unordered_map<uint32_t,std::array<uint32_t,6>> previous;
     if(previous.contains(actor) && previous.at(actor)==now)return;
     previous.insert_or_assign(actor,now);
+    static sfr::TraceRate rate(30);
+    if(!rate.allow())return;
     std::cerr<<"CAMERA_RACE_ACTOR actor=0x"<<std::hex<<actor<<" ring=0x"<<results+16
              <<" written=0x"<<memory().load<uint32_t>(entries+84*memory().load<uint32_t>(results+24)+4)
              <<" flags=0x"<<now[0]<<" released=0x"<<now[1]
              <<" mask1=0x"<<memory().load<uint32_t>(results+36)<<" mask2=0x"<<memory().load<uint32_t>(results+40)<<std::dec
              <<" anim="<<now[2]<<" state="<<now[3]<<" crouch="<<now[4]<<" jump="<<now[5]
              <<" enabled="<<unsigned(memory().load<uint8_t>(actor+1989))<<" block="<<load_float(actor+2080)
-             <<" block2636="<<unsigned(memory().load<uint8_t>(actor+2636))<<'\n';
+             <<" block2636="<<unsigned(memory().load<uint8_t>(actor+2636))<<" source="<<(camera?"camera":"kinect")
+             <<" dropped="<<rate.dropped()<<'\n';
 }
 
 void finish_camera_overthrow(uint32_t detector,uint32_t results,uint64_t& result) {
@@ -632,7 +669,7 @@ void finish_sensor_detector(PPCContext& ctx,uint8_t* base,uint32_t address,uint3
                             uint32_t results) {
     if(address!=0x822C8778 && address!=0x822CB840 && address!=0x822C9050 && address!=0x822CA6B0)return;
     const bool bridge=sensor_fallback("SFR_KINECT_BODY_GESTURES");
-    static const bool trace=[] {const char* p=std::getenv("SFR_CAMERA_RACE_TRACE");return p && *p=='1';}();
+    static const bool trace=sfr::motion_trace_enabled();
     const uint32_t record=body_of_source(ctx,base,source);
     if(!record)return;
     auto& motion=sensor_motion(record);
@@ -644,10 +681,17 @@ void finish_sensor_detector(PPCContext& ctx,uint8_t* base,uint32_t address,uint3
     if(!trace)return;
     static std::unordered_map<uint32_t,std::pair<uint32_t,uint32_t>> last;
     const std::pair now{original,ctx.r3.u32};
-    if(last.contains(address) && last[address]==now)return;
+    // A jump is a one-frame pulse: always written, so a lost one shows.
+    if(last.contains(address) && last[address]==now && !(address==0x822C9050 && motion.jump()))return;
     last[address]=now;
+    static sfr::TraceRate rate(20);
+    if(!rate.allow())return;
+    // primary/secondary: the bits this detector's result entry holds now.
     std::cerr<<"KINECT_GESTURE address=0x"<<std::hex<<address<<std::dec<<" original="<<original
-             <<" result="<<ctx.r3.u32<<" crouch="<<motion.crouch()<<" jump="<<motion.jump()<<'\n';
+             <<" result="<<ctx.r3.u32<<" crouch="<<motion.crouch()<<" jump="<<motion.jump()
+             <<" record=0x"<<std::hex<<record<<" primary=0x"<<memory().load<uint32_t>(entry(results)+4)
+             <<" secondary=0x"<<memory().load<uint32_t>(entry(results)+20)<<std::dec
+             <<" generation="<<sfr::kinect_frame_generation()<<" dropped="<<rate.dropped()<<'\n';
 }
 
 // One detector override: while the pad drives the race the body decides,

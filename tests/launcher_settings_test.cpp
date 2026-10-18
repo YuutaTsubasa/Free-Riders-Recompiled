@@ -405,6 +405,28 @@ void menu_steady_settings() {
                 "an out-of-range circle keeps the default");
 }
 
+void motion_trace_settings() {
+    const sfr::LauncherSettings defaults;
+    require(!defaults.motion_trace && sfr::format_launcher_settings(defaults).find("motion_trace=0\n") != std::string::npos,
+            "the motion trace defaults to off");
+    require(value_of(defaults, "SFR_CAMERA_RACE_TRACE").empty(), "with the trace off the game writes no trace");
+    for (const char* camera : {"kinect", "motion"}) {
+        const auto traced = sfr::parse_launcher_settings(sfr::format_launcher_settings(sfr::parse_launcher_settings(
+            std::string("camera=") + camera + "\nmotion_trace=1\n")));
+        require(traced.motion_trace && sfr::format_launcher_settings(traced).find("motion_trace=1\n") != std::string::npos,
+                "the motion trace survives a save and a load");
+        require(value_of(traced, "SFR_CAMERA_RACE_TRACE") == "1", "the motion trace reaches the game for a body camera");
+    }
+    for (const char* camera : {"off", "picture"}) {
+        const auto pad = sfr::parse_launcher_settings(std::string("camera=") + camera + "\nmotion_trace=1\n");
+        require(pad.motion_trace && value_of(pad, "SFR_CAMERA_RACE_TRACE").empty(),
+                "without a Kinect or the motion camera there is nothing to trace, but the choice is kept");
+    }
+    for (const char* flag : {"0", "false", "invalid"})
+        require(!sfr::parse_launcher_settings(std::string("camera=kinect\nmotion_trace=") + flag + "\n").motion_trace,
+                "false or invalid trace flags keep the trace off");
+}
+
 void camera_debug_settings() {
     const sfr::LauncherSettings defaults;
     require(sfr::format_launcher_settings(defaults).find("camera_debug=0\n") != std::string::npos,
@@ -660,6 +682,7 @@ int main() {
         custom_window_size();
         aspect_settings();
         camera_debug_settings();
+        motion_trace_settings();
         menu_steady_settings();
         save_directory_settings();
         title_stats_settings();
