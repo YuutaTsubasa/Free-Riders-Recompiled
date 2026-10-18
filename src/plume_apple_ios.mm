@@ -5,6 +5,7 @@
 // threads get the last size read while a fresh one is fetched.
 #include "plume_apple.h"
 
+#import <QuartzCore/CAMetalLayer.h>
 #import <UIKit/UIKit.h>
 #include <cmath>
 
@@ -12,9 +13,28 @@ namespace plume {
     RenderDeviceVendor getRenderDeviceVendor(uint64_t) { return RenderDeviceVendor::APPLE; }
 
     namespace {
+        // SDL's Metal layer (SDL_Metal_CreateView) in the window's views.
+        CAMetalLayer* findMetalLayer(UIView* view, int depth) {
+            if ([view.layer isKindOfClass:CAMetalLayer.class]) return (CAMetalLayer*)view.layer;
+            if (depth <= 0) return nil;
+            for (UIView* child in view.subviews)
+                if (CAMetalLayer* layer = findMetalLayer(child, depth - 1)) return layer;
+            return nil;
+        }
+
         CocoaWindowAttributes readAttributes(void* handle) {
             UIWindow* window = (__bridge UIWindow*)handle;
+            // The swap chain takes the layer's own size in pixels, the size
+            // MoltenVK holds the swap chain to: one of another size makes
+            // every present suboptimal (Issue #185).
             const CGRect bounds = window.bounds;
+            CAMetalLayer* layer = findMetalLayer(window, 4);
+            if (layer && layer.bounds.size.width >= 1 && layer.bounds.size.height >= 1) {
+                const CGFloat scale = layer.contentsScale;
+                return {int(std::lround(bounds.origin.x)), int(std::lround(bounds.origin.y)),
+                        // truncated, as MoltenVK does
+                        int(layer.bounds.size.width * scale), int(layer.bounds.size.height * scale)};
+            }
             const CGFloat scale = window.screen ? window.screen.nativeScale : UIScreen.mainScreen.nativeScale;
             return {int(std::lround(bounds.origin.x)), int(std::lround(bounds.origin.y)),
                     int(std::lround(bounds.size.width * scale)), int(std::lround(bounds.size.height * scale))};

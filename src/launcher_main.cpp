@@ -505,6 +505,12 @@ void apply_language(const std::string& setting) {
 }
 constexpr std::array<std::pair<const char*, Text>, 3> languages{{
     {"auto", LanguageSystem}, {"en", LanguageEnglish}, {"zh-TW", LanguageChinese}}};
+// A language's name in the chooser. Without a font for Chinese its own
+// name would be boxes: it is then written in Latin letters (and greyed out).
+const char* language_name(std::string_view code, Text name) {
+    if (!chinese_available && code == "zh-TW") return "Traditional Chinese";
+    return tr(name);
+}
 
 // A disc image or folder dropped on the window (or the launcher started
 // with one) becomes the install source.
@@ -728,9 +734,9 @@ Fonts load_fonts(float scale) {
     fonts.heading = load(files.heading, files.chinese_bold, 23.0f);
     fonts.title = load(files.title, {}, 36.0f);
     fonts.tiny = load(files.heading, files.chinese_bold, 15.0f);
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(SFR_IOS)
     // The characters beyond Latin (Chinese, the status dots) come from
-    // Android's own text renderer (launcher_platform.h).
+    // the system's own text renderer (launcher_platform.h).
     std::vector<unsigned int> wide;
     for (const auto& text : texts)
         for (const char* at : {text[0], text[1]})
@@ -1702,7 +1708,7 @@ struct Launcher {
                 for (const auto& [code, name] : languages) {
                     const bool chosen = settings.language == code;
                     const bool usable = chinese_available || std::string_view(code) != "zh-TW";
-                    if (ImGui::Selectable(tr(name), chosen, usable ? 0 : ImGuiSelectableFlags_Disabled)) set_language(code);
+                    if (ImGui::Selectable(language_name(code, name), chosen, usable ? 0 : ImGuiSelectableFlags_Disabled)) set_language(code);
                     if (chosen) ImGui::SetItemDefaultFocus();
                 }
                 ImGui::EndCombo();
@@ -1750,7 +1756,7 @@ struct Launcher {
             for (const auto& [code, name] : languages) {
                 const bool chosen = settings.language == code;
                 const bool usable = chinese_available || std::string_view(code) != "zh-TW";
-                if (ImGui::Selectable(tr(name), chosen, usable ? 0 : ImGuiSelectableFlags_Disabled, ImVec2(200 * scale, ImGui::GetFrameHeight())))
+                if (ImGui::Selectable(language_name(code, name), chosen, usable ? 0 : ImGuiSelectableFlags_Disabled, ImVec2(200 * scale, ImGui::GetFrameHeight())))
                     set_language(code);
             }
             ImGui::EndPopup();
