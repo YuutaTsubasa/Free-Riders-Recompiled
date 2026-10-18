@@ -5,6 +5,7 @@
 
 #include "native_graphics.h"
 #include "host_core_plan.h"
+#include "host_thread_stats.h"
 #include "performance_hint.h"
 #include "native_raster_state.h"
 #include "gltf_model.h"
@@ -646,9 +647,15 @@ struct NativePresentation::Impl {
         });
     }
     void run_render_thread() {
+#ifdef __ANDROID__
+        RenderBurstClock burst;  // host_thread_stats.h (HOST_THREADS)
+#endif
         for (;;) {
             const uint64_t head = queue_head.load(std::memory_order_relaxed);
             if (head != queue_tail.load(std::memory_order_seq_cst)) {
+#ifdef __ANDROID__
+                if (!burst.running()) burst.begin();
+#endif
                 auto& slot = slots[head % queue_capacity];
                 if (!worker_failed.load(std::memory_order_relaxed)) {
                     try {
@@ -677,6 +684,9 @@ struct NativePresentation::Impl {
                 const long value = text && *text ? std::strtol(text, nullptr, 10) : 2000;
                 return int(value >= 0 && value <= 100000 ? value : 2000);
             }();
+#ifdef __ANDROID__
+            burst.end();
+#endif
             bool found = false;
             for (int i = 0; i < spin && !found; ++i) {
                 found = head != queue_tail.load(std::memory_order_acquire);
@@ -695,6 +705,17 @@ struct NativePresentation::Impl {
     }
     // Waits until the render thread has consumed entry target - 1.
     void wait_for_head(uint64_t target) {
+#ifdef __ANDROID__
+        // How long the main thread waits for the render thread (HOST_THREADS).
+        if (queue_head.load(std::memory_order_acquire) >= target) return;
+        struct Timed {
+            uint64_t start = host_monotonic_ns();
+            ~Timed() {
+                render_thread_stats.wait_ns.fetch_add(host_monotonic_ns() - start, std::memory_order_relaxed);
+                render_thread_stats.waits.fetch_add(1, std::memory_order_relaxed);
+            }
+        } timed;
+#endif
         for (int i = 0; i < 4000 && queue_head.load(std::memory_order_acquire) < target; ++i)
             std::this_thread::yield();
         if (queue_head.load(std::memory_order_seq_cst) >= target) return;

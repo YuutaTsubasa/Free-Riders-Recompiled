@@ -79,7 +79,13 @@ private:
 class RaceFrameSkip {
 public:
     static constexpr uint64_t frame_ns = 16'666'667;
-    explicit RaceFrameSkip(uint32_t max_skips = 4) : max_skips_(max_skips) {}
+    // skip_slow (SFR_TEST_RACE_SKIP_SLOW, an experiment): skip also when
+    // undrawn frames are a frame or longer, if they are under three quarters
+    // of a drawn one. The race then cannot keep real time, but comes closer
+    // to it than by drawing every frame (Issue #176: a Pixel 10a's undrawn
+    // frames took ~17 ms in a race's busiest parts, its drawn ones ~35).
+    explicit RaceFrameSkip(uint32_t max_skips = 4, bool skip_slow = false)
+        : max_skips_(max_skips), skip_slow_(skip_slow) {}
     struct Decision {
         bool draw = true;      // draw the next frame
         uint64_t wait_ns = 0;  // wait this long first (the frame ended early)
@@ -102,17 +108,19 @@ public:
             skipped_ = 0;
             last_ns_ = now_ns;
             undrawn_ns_ = 0;
+            drawn_ns_ = 0;
             frames_ = 0;
             return {};
         }
-        // How long the frame that just ended took, when it was not drawn: a
-        // slow average, each frame counted as at most two, so a hitch now and
+        // How long the frame that just ended took, undrawn and drawn apart: a
+        // slow average of each, each frame counted as at most two, so a hitch now and
         // then (a load, a shader) does not stop the skipping (on an AYN Thor
         // it held skips back 204 times in a race whose undrawn frames
         // averaged 6 ms).
-        if (skipped_ && now_ns > last_ns_) {
+        if (now_ns > last_ns_) {
             const uint64_t took = (std::min)(now_ns - last_ns_, 2 * frame_ns);
-            undrawn_ns_ = undrawn_ns_ ? (undrawn_ns_ * 7 + took) / 8 : took;
+            uint64_t& average = skipped_ ? undrawn_ns_ : drawn_ns_;
+            average = average ? (average * 7 + took) / 8 : took;
         }
         last_ns_ = now_ns;
         ++frames_;
@@ -142,7 +150,8 @@ public:
         // Not when undrawn frames are no shorter than a frame (the game
         // itself too slow): they could not catch up, and the screen would
         // only show fewer frames. Tried again once a second.
-        const bool helps = undrawn_ns_ < frame_ns || frames_ % 60 == 0;
+        const bool helps = undrawn_ns_ < frame_ns || frames_ % 60 == 0 ||
+                           (skip_slow_ && undrawn_ns_ * 4 < drawn_ns_ * 3);
         if (late > frame_ns && skipped_ < max_skips_ && !helps) ++blocked_;
         if (late > frame_ns && skipped_ < max_skips_ && helps) {
             ++skipped_;
@@ -153,11 +162,13 @@ public:
     }
 private:
     uint32_t max_skips_;
+    bool skip_slow_;
     bool started_ = false;
     uint64_t due_ns_ = 0;   // when the frame being run should end
     uint32_t skipped_ = 0;  // undrawn frames in a row
     uint64_t last_ns_ = 0;     // when the frame that just ended began
     uint64_t undrawn_ns_ = 0;  // how long an undrawn frame takes (average)
+    uint64_t drawn_ns_ = 0;    // and a drawn one
     uint64_t frames_ = 0;
     uint64_t resyncs_ = 0, blocked_ = 0;
 public:
@@ -166,6 +177,7 @@ public:
     uint64_t resyncs() const { return resyncs_; }
     uint64_t blocked() const { return blocked_; }
     uint64_t undrawn_ns() const { return undrawn_ns_; }
+    uint64_t drawn_ns() const { return drawn_ns_; }
 };
 
 // SFR_RACE_FRAMESKIP=1|0: frame skipping on or off. On by default: a race
