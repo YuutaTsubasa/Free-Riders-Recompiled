@@ -71,7 +71,7 @@ public:
     [[nodiscard]] bool target_is_surface() const noexcept;
     // The current target's colour texture and its size in pixels.
     plume::RenderTexture& target_color();
-    // Its depth texture (D32_FLOAT_S8_UINT, also for the framebuffer).
+    // Its depth texture (NativeGraphics::depth_format, also for the framebuffer).
     plume::RenderTexture& target_depth();
     // The current render surface, as an identity (null for the framebuffer).
     [[nodiscard]] const void* target_identity() const noexcept;

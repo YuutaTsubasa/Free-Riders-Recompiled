@@ -7,7 +7,10 @@
 #include <string>
 #include <vector>
 
+#include "spirv_bounded_descriptors.h"
+
 namespace plume {
+enum class RenderFormat;
 struct RenderCommandQueue;
 struct RenderDevice;
 }
@@ -45,13 +48,22 @@ public:
     // (spirv_bounded_descriptors.h). SFR_TEST_NO_DESCRIPTOR_INDEXING=1 makes
     // the device without the features to try it on a GPU that has them.
     [[nodiscard]] bool bounded_descriptors() const noexcept;
+    // The bounded layout's texture bindings: the full one, or the compact one
+    // for a driver with fewer textures a stage.
+    [[nodiscard]] BoundedLengths bounded_lengths() const noexcept;
+    // The format of every depth target and of the pipelines drawing into
+    // them: D32_FLOAT_S8_UINT, or D24_UNORM_S8_UINT on a Vulkan driver
+    // without it (an old Mali's). SFR_TEST_DEPTH_D24S8=1 takes D24S8 on any
+    // Vulkan device.
+    [[nodiscard]] plume::RenderFormat depth_format() const noexcept;
     // Whether shader_code changes SPIR-V on this device: the bounded layout,
-    // or vertex shaders without their clip distance (spirv_clip_distance.h:
-    // Mali, or a device without shaderClipDistance).
+    // vertex shaders without their clip distance (spirv_clip_distance.h:
+    // Mali, or a device without shaderClipDistance), or SPIR-V 1.3 for a
+    // Vulkan 1.1 device (spirv_version.h).
     [[nodiscard]] bool rewrites_shaders() const noexcept;
     // The shader's code as this device takes it: SPIR-V without its clip
-    // distance and in the bounded layout as the device needs, otherwise as
-    // it is.
+    // distance, in the bounded layout and as SPIR-V 1.3 as the device needs,
+    // otherwise as it is.
     [[nodiscard]] std::vector<uint8_t> shader_code(std::span<const uint8_t> code) const;
     // Linux: the SDL window Plume's Vulkan instance was made for (hidden
     // until presentation shows it). Null on Windows.

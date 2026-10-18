@@ -1143,7 +1143,7 @@ void NativePresentation::Impl::build_model() {
     pipeline_desc.renderTargetCount = 1;
     // The game's own frame, not the swap chain: its colour and depth formats.
     pipeline_desc.renderTargetFormat[0] = plume::RenderFormat::B8G8R8A8_UNORM;
-    pipeline_desc.depthTargetFormat = plume::RenderFormat::D32_FLOAT_S8_UINT;
+    pipeline_desc.depthTargetFormat = graphics->depth_format();
     pipeline_desc.renderTargetBlend[0] = plume::RenderBlendDesc::Copy();
     model_pipeline = device.createGraphicsPipeline(pipeline_desc);
     pipeline_desc.cullMode = plume::RenderCullMode::NONE;
@@ -1388,7 +1388,7 @@ NativePresentation::NativePresentation(NativeGraphics& graphics, uint32_t width,
     implementation->color = graphics.device().createTexture(
         plume::RenderTextureDesc::ColorTarget(implementation->render_width, implementation->render_height, plume::RenderFormat::B8G8R8A8_UNORM));
     implementation->depth = graphics.device().createTexture(
-        plume::RenderTextureDesc::DepthTarget(implementation->render_width, implementation->render_height, plume::RenderFormat::D32_FLOAT_S8_UINT));
+        plume::RenderTextureDesc::DepthTarget(implementation->render_width, implementation->render_height, graphics.depth_format()));
     if (!implementation->color) unavailable("color texture");
     if (!implementation->depth) unavailable("depth texture");
 #ifdef _WIN32
@@ -1551,7 +1551,7 @@ void NativePresentation::set_target(uint64_t key, uint32_t surface_width, uint32
         made->color = device.createTexture(
             plume::RenderTextureDesc::ColorTarget(made->width, made->height, plume::RenderFormat::B8G8R8A8_UNORM));
         made->depth = device.createTexture(
-            plume::RenderTextureDesc::DepthTarget(made->width, made->height, plume::RenderFormat::D32_FLOAT_S8_UINT));
+            plume::RenderTextureDesc::DepthTarget(made->width, made->height, impl_->graphics->depth_format()));
         if (!made->color || !made->depth) throw std::runtime_error("render surface texture creation failed");
         const plume::RenderTexture* attachment = made->color.get();
         made->framebuffer = device.createFramebuffer(plume::RenderFramebufferDesc(&attachment, 1, made->depth.get()));

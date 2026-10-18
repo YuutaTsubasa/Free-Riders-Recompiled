@@ -73,10 +73,56 @@ Set 0 與 set 1 是只填了一部分的 4096 張貼圖與 256 個取樣器陣�
 - 有界佈局本身需要 `shaderSampledImageArrayDynamicIndexing`、每個 stage 48 張貼圖、16 個取樣器、
   5 個 dynamic uniform buffer、合計 70 個資源與 3 個 set；連這些都沒有的驅動程式仍會停止，並列出
   缺少的項目。
+- 舊的 Mali 驅動程式（Galaxy S9 的 Mali-G72，r19：每個 stage 只有 16 張貼圖）放不下 48 張，改用
+  緊湊佈局（`BoundedLengths`，`NATIVE_DESCRIPTORS ... compact=1`）：binding 0 是 14 張 2D，binding
+  1、2 各 1 張（反正只有 2D 貼圖，另兩種一律讀到 0）。元素 0 讀到 0，其後依序放這次繪製用到的不同
+  2D 貼圖，共用常數的 2D 索引改寫成元素編號；超過 13 張時其餘讀到 0，並記一次
+  `NATIVE_DESCRIPTORS bounded_overflow`（實際比賽沒有出現）。每個 stage 少於 10 張就停止。
+  `SFR_TEST_BOUNDED_TEXTURES=<n>` 把每個 stage 的貼圖上限當成 n，在其他顯示卡上測試這個佈局。
 - `SFR_TEST_NO_DESCRIPTOR_INDEXING=1` 讓 Plume 建立裝置時不開 descriptor indexing 功能
   （`patches/plume-descriptor-indexing-test-switch.patch`），在有這些功能的顯示卡上也走有界佈局；
   搭配 `-DSFR_VULKAN_VALIDATION=ON` 與驗證層，可檢查是否還用到裝置沒開的功能。
 - 有 descriptor indexing 的 Vulkan 與 D3D12 不受影響。
+
+### Vulkan 1.1 的驅動程式
+
+Plume 原本把 `VK_EXT_scalar_block_layout` 與 `VK_KHR_buffer_device_address` 列為必要擴充功能，
+沒有的驅動程式（Huawei P30 Pro 的 Mali-G76、Android 10、Vulkan 1.1，Issue #169）連裝置都建立不了。
+實際上兩者都用不到：
+
+- 著色器包的 476 個 SPIR-V 模組沒有一個宣告 `PhysicalStorageBufferAddresses`（常數已改由 set 2
+  的 uniform buffer 讀取），`spirv-val` 不加 `--scalar-block-layout` 也全部通過（`-fvk-use-dx-layout`
+  的偏移量符合 Vulkan 1.1 的 relaxed block layout）。渲染器也不再取緩衝區位址。
+- `patches/plume-optional-scalar-layout-device-address.patch` 把兩者改成選用：有就照舊開啟，沒有時
+  capabilities 回報 `scalarBlockLayout=0`、`bufferDeviceAddress=0`，緩衝區不加
+  `SHADER_DEVICE_ADDRESS` 用途。
+
+但 DXC 輸出的是 SPIR-V 1.5，需要 Vulkan 1.2。實例與裝置版本中較低者小於 1.2 時，建立著色器前把
+模組改成 SPIR-V 1.3（`src/spirv_version.h`）：版本號改為 1.3，進入點介面只留 Input/Output 變數
+（1.4 起介面列出所有用到的全域變數）。遇到 1.3 沒有的東西（1.4/1.5 指令、組合型別的
+`OpSelect`、Vulkan 記憶體模型、physical storage buffer）直接停止並說明原因。整個著色器包（原樣，
+以及加上拿掉 clip distance 與有界佈局兩種改寫之後）改成 1.3 後，`spirv-val --target-env vulkan1.1`
+全部通過。`game.log` 記 `NATIVE_SPIRV api=… version=1.3|1.5 scalar_block_layout=… device_address=…`。
+
+測試開關（只在 Vulkan 生效）：
+
+- `SFR_TEST_VULKAN_1_1=1`：Vulkan 實例只要求 1.1，驗證層就以 1.1 的規則檢查裝置與著色器，
+  著色器也改成 SPIR-V 1.3。
+- `SFR_TEST_NO_SCALAR_LAYOUT=1`、`SFR_TEST_NO_DEVICE_ADDRESS=1`：建立裝置時不開這兩個功能與擴充。
+- `SFR_TEST_DEPTH_D24S8=1`：深度格式改用 D24S8（見下）。
+- 以上加上 `SFR_TEST_NO_DESCRIPTOR_INDEXING=1`、`SFR_TEST_NO_CLIP_DISTANCE=1` 與
+  `SFR_TEST_BOUNDED_TEXTURES=16`，大致就是舊 Mali 的情況。
+
+### 深度格式
+
+所有深度目標（畫面、render surface、解析出的深度）與繪製管線都用 `NativeGraphics::depth_format`：
+optimal tiling 能當 depth-stencil attachment 又能取樣的話用 `D32_SFLOAT_S8_UINT`，否則用
+`D24_UNORM_S8_UINT`（`patches/plume-d24s8-depth.patch` 在 Plume 的 `RenderFormat` 最後加上它），
+兩者都沒有就停止並說明原因。`game.log` 記 `NATIVE_DEPTH format=D32S8|D24S8 d32s8=… d24s8=… forced=…`。
+
+Firebase Test Lab 的 Galaxy S9（Mali-G72，Android 10，驅動程式 r19，Vulkan 1.1.108）回報
+`scalar_block_layout=1 device_address=0`：改版前一樣會停在建立裝置。它也沒有 `D32_SFLOAT_S8_UINT`
+（只有 D24S8），因此需要上面的深度格式。
 
 本專案自己加進著色器的部分：
 

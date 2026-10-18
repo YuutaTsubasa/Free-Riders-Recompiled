@@ -140,7 +140,8 @@ private:
 #endif
 
 std::unique_ptr<plume::RenderPipeline> create_draw_pipeline(plume::RenderDevice& device,
-        const plume::RenderPipelineLayout* layout, const NativeDraw& draw, GraphicsBackend backend) {
+        const plume::RenderPipelineLayout* layout, const NativeDraw& draw, GraphicsBackend backend,
+        plume::RenderFormat depth_format) {
     const std::array<plume::RenderInputSlot, 2> slots{plume::RenderInputSlot(0, draw.stride),
                                                        plume::RenderInputSlot(zero_slot, 0)};
         plume::RenderGraphicsPipelineDesc desc;
@@ -165,7 +166,7 @@ std::unique_ptr<plume::RenderPipeline> create_draw_pipeline(plume::RenderDevice&
             desc.stencilFrontFace = draw.stencil_front;
             desc.stencilBackFace = draw.stencil_back;
         }
-        desc.depthTargetFormat = plume::RenderFormat::D32_FLOAT_S8_UINT;
+        desc.depthTargetFormat = depth_format;
         desc.renderTargetCount = 1;
         desc.renderTargetFormat[0] = plume::RenderFormat::B8G8R8A8_UNORM;
         desc.renderTargetBlend[0] = draw.blend.description(draw.write_mask);
@@ -576,6 +577,8 @@ struct NativeRenderer::Impl {
 // frame: a race frame's draws bind a few dozen distinct combinations. Sets
 // come from pools of the upload ring they were made with (the same lifetime:
 // reset when the ring is reused, after the GPU has finished with it).
+// The compact layout (BoundedLengths) numbers a draw's distinct 2D textures
+// instead of its fetch constants.
 struct BoundedDescriptors {
     static constexpr uint32_t count = bounded_descriptor_count;
     static constexpr uint32_t sets_per_pool = 256;
@@ -606,8 +609,9 @@ struct BoundedDescriptors {
     std::array<std::unique_ptr<plume::RenderTexture>, 3> null_textures;
     std::array<std::unique_ptr<plume::RenderTextureView>, 3> null_views;
     std::array<VkImageView, 3> null{};
+    BoundedLengths lengths;
     uint64_t sets_made = 0;
-    bool reported_type = false;
+    bool reported_type = false, reported_overflow = false;
 
     ~BoundedDescriptors() {
         for (auto& ring : rings)
@@ -624,7 +628,7 @@ struct BoundedDescriptors {
         for (;;) {
             if (ring.current == ring.pools.size()) {
                 const std::array<VkDescriptorPoolSize, 2> sizes{{
-                    {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, sets_per_pool * 3 * count},
+                    {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, sets_per_pool * lengths.textures()},
                     {VK_DESCRIPTOR_TYPE_SAMPLER, sets_per_pool * count}}};
                 VkDescriptorPoolCreateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
                 info.maxSets = 2 * sets_per_pool;
@@ -650,46 +654,75 @@ struct BoundedDescriptors {
             ++ring.current;
         }
     }
+    // The view a texture descriptor index holds; null when none.
+    VkImageView view_of(uint32_t index) const {
+        return index >= first_texture && index < views.size() ? views[index] : VK_NULL_HANDLE;
+    }
     // The pair for these shared constants, which are rewritten to point into
-    // it: fetch constant s reads element s of each binding. The top bit of a
-    // 2D index (a resolved framebuffer, NativeDraw::shared) stays.
+    // it: fetch constant s reads element s of each binding, or in the compact
+    // layout, the element of its 2D texture. The top bit of a 2D index (a
+    // resolved framebuffer, NativeDraw::shared) stays.
     std::pair<VkDescriptorSet, VkDescriptorSet> bind(Ring& ring, SharedConstants& shared,
                                                      const std::vector<std::unique_ptr<plume::RenderSampler>>& samplers) {
         TextureKey textures;
         SamplerKey sampler_key;
+        // Compact layout: element 0 reads zero, then each distinct texture.
+        std::array<uint32_t, count> distinct{};
+        uint32_t distinct_count = 0;
         for (uint32_t s = 0; s < count; ++s) {
             textures[s] = shared.texture_2d[s] & 0x7fffffffu;
             textures[count + s] = shared.texture_2d_array[s];
             textures[2 * count + s] = shared.texture_cube[s];
             sampler_key[s] = shared.sampler[s];
-            shared.texture_2d[s] = (shared.texture_2d[s] & 0x80000000u) | s;
-            shared.texture_2d_array[s] = shared.texture_cube[s] = shared.sampler[s] = s;
+            uint32_t element = s;
+            if (lengths.compact()) {
+                element = 0;
+                if (view_of(textures[s])) {
+                    const auto known = std::find(distinct.begin(), distinct.begin() + distinct_count, textures[s]);
+                    if (known != distinct.begin() + distinct_count) element = uint32_t(known - distinct.begin()) + 1;
+                    else if (distinct_count + 1 < lengths.texture_2d) {
+                        distinct[distinct_count++] = textures[s];
+                        element = distinct_count;
+                    } else if (!reported_overflow) {
+                        reported_overflow = true;
+                        std::cerr << "NATIVE_DESCRIPTORS bounded_overflow textures=" << lengths.texture_2d - 1
+                                  << " (the rest read as zero)\n";
+                    }
+                }
+            }
+            shared.texture_2d[s] = (shared.texture_2d[s] & 0x80000000u) | element;
+            shared.texture_2d_array[s] = shared.texture_cube[s] = lengths.compact() ? 0 : s;
+            shared.sampler[s] = s;
         }
         auto& texture_set = ring.texture_sets[textures];
         if (!texture_set) {
             texture_set = allocate(ring, texture_layout);
             std::array<VkDescriptorImageInfo, 3 * count> images{};
-            for (uint32_t i = 0; i < images.size(); ++i) {
-                const uint32_t binding = i / count, index = textures[i];
-                // Only 2D textures exist; the 2D array and cube elements are
-                // the null descriptors the guest code puts there.
-                VkImageView view = binding == 0 && index >= first_texture && index < views.size() ? views[index]
-                                                                                                    : VK_NULL_HANDLE;
-                if (binding != 0 && index != (binding == 1 ? null_2d_array : null_cube) && !reported_type) {
-                    reported_type = true;
-                    std::cerr << "NATIVE_DESCRIPTORS bounded_unsupported_view binding=" << binding << " index="
-                              << index << " (read as zero)\n";
+            uint32_t at = 0;
+            for (uint32_t binding = 0; binding < 3; ++binding)
+                for (uint32_t e = 0; e < lengths.of(binding); ++e) {
+                    // Only 2D textures exist; the 2D array and cube elements are
+                    // the null descriptors the guest code puts there.
+                    const uint32_t index = lengths.compact() ? (binding == 0 && e ? distinct[e - 1] : null_2d)
+                                                             : textures[binding * count + e];
+                    if (!lengths.compact() && binding != 0 && index != (binding == 1 ? null_2d_array : null_cube) &&
+                        !reported_type) {
+                        reported_type = true;
+                        std::cerr << "NATIVE_DESCRIPTORS bounded_unsupported_view binding=" << binding << " index="
+                                  << index << " (read as zero)\n";
+                    }
+                    const VkImageView view =
+                        binding == 0 && (!lengths.compact() || e <= distinct_count) ? view_of(index) : VK_NULL_HANDLE;
+                    images[at++] = {VK_NULL_HANDLE, view ? view : null[binding], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
                 }
-                images[i] = {VK_NULL_HANDLE, view ? view : null[binding], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-            }
             std::array<VkWriteDescriptorSet, 3> writes{};
-            for (uint32_t b = 0; b < 3; ++b) {
+            for (uint32_t b = 0, first = 0; b < 3; first += lengths.of(b), ++b) {
                 writes[b] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
                 writes[b].dstSet = texture_set;
                 writes[b].dstBinding = b;
-                writes[b].descriptorCount = count;
+                writes[b].descriptorCount = lengths.of(b);
                 writes[b].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-                writes[b].pImageInfo = images.data() + b * count;
+                writes[b].pImageInfo = images.data() + first;
             }
             vkUpdateDescriptorSets(device, uint32_t(writes.size()), writes.data(), 0, nullptr);
         }
@@ -831,7 +864,7 @@ void NativeRenderer::prepare_pipelines() {
                     state.pixel_shader = backend == 0 && ps->specialization_mask ?
                         specialized(*ps, recipe.pixel_link_constants) : shader(*ps);
                     auto pipeline = create_draw_pipeline(impl_->graphics.device(), impl_->layout.get(), state,
-                                                         impl_->graphics.backend());
+                                                         impl_->graphics.backend(), impl_->graphics.depth_format());
                     if (pipeline) {
                         impl_->recipe_pipelines.emplace(key, std::move(pipeline));
                         ++compiled;
@@ -885,7 +918,8 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
     textures.begin();
     if (bounded) {
         // 2D, 2D array and cube textures (spirv_bounded_descriptors.h).
-        for (uint32_t binding = 0; binding < 3; ++binding) textures.addTexture(binding, bounded_descriptor_count);
+        for (uint32_t binding = 0; binding < 3; ++binding)
+            textures.addTexture(binding, graphics.bounded_lengths().of(binding));
         textures.end();
     } else {
         textures.addTexture(0, texture_capacity);
@@ -978,6 +1012,7 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
     impl_->set_sampler(0, impl_->sampler_objects.back().get());
     if (bounded) {
         auto& sets = *(impl_->bounded = std::make_unique<BoundedDescriptors>());
+        sets.lengths = graphics.bounded_lengths();
         sets.device = static_cast<plume::VulkanDevice&>(device).vk;
         sets.texture_layout = static_cast<plume::VulkanDescriptorSet*>(impl_->textures.get())->setLayout->vk;
         sets.sampler_layout = static_cast<plume::VulkanDescriptorSet*>(impl_->samplers.get())->setLayout->vk;
@@ -1012,8 +1047,9 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
         list->end();
         graphics.queue().executeCommandLists(list.get(), fence.get());
         graphics.queue().waitForCommandFence(fence.get());
-        std::cerr << "NATIVE_DESCRIPTORS bounded=1 textures=" << 3 * bounded_descriptor_count
-                  << " samplers=" << bounded_descriptor_count << '\n';
+        std::cerr << "NATIVE_DESCRIPTORS bounded=1 textures=" << sets.lengths.texture_2d << '+'
+                  << sets.lengths.texture_2d_array << '+' << sets.lengths.texture_cube
+                  << " compact=" << sets.lengths.compact() << " samplers=" << bounded_descriptor_count << '\n';
     }
 
     // Vertex inputs the declaration does not provide read slot 15: zeros.
@@ -1333,7 +1369,7 @@ static uint32_t own_resolve(NativeRenderer::Impl& impl, uint32_t physical, uint3
 uint32_t NativeRenderer::adopt_resolved_target(uint32_t physical, bool depth) {
     auto& presentation = impl_->presentation;
     const auto [width, height] = presentation.target_size();
-    const auto format = depth ? plume::RenderFormat::D32_FLOAT_S8_UINT : plume::RenderFormat::B8G8R8A8_UNORM;
+    const auto format = depth ? impl_->graphics.depth_format() : plume::RenderFormat::B8G8R8A8_UNORM;
     auto* source = depth ? &presentation.target_depth() : &presentation.target_color();
     NonWritingRecords records(presentation);
     if (const void* surface = presentation.target_identity(); surface && aliased_resolves()) {
@@ -1736,7 +1772,8 @@ void NativeRenderer::draw(const NativeDraw& draw) {
     }
     if (!pipeline) {
         const auto pipeline_start = std::chrono::steady_clock::now();
-        pipeline = create_draw_pipeline(device, impl_->layout.get(), draw, impl_->graphics.backend());
+        pipeline = create_draw_pipeline(device, impl_->layout.get(), draw, impl_->graphics.backend(),
+                                        impl_->graphics.depth_format());
         if (!pipeline) unsupported(0, "native graphics pipeline creation failed");
         ++impl_->pipelines_created;
         impl_->pipeline_ms += std::chrono::duration<double, std::milli>(
