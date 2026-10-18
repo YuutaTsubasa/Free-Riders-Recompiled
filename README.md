@@ -196,6 +196,8 @@ with [docs/progress.md](docs/progress.md).
   The launcher scrolls with a finger and has wider scrollbars on touch screens (#186); the on-screen game controls come back with a touch even when a controller or keyboard is connected (#177). On iPhone the app has its icon, the launcher fits the screen, and a disc image in the app's Files folder is found without the picker (#185).
 - [v0.10.6 — Mac at full speed, iPhone starts](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.6)
   On Apple Silicon Macs, races run at full speed: the GPU went from 6.5 to 60 fps on an M1. On iPhone the game no longer stops at its first frame (#185), and the launcher shows Chinese. On phones the game stays in landscape instead of turning with the phone (#177).
+- [v0.10.7 — Every race action on touch](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.7)
+  The on-screen controls gain the power-skill punches (LB/RB), a right stick to reach for Rings, and LT to hold hands in Tag races (#177), and now also draw on Windows touch screens. Android logs where race frame time goes, to find why some phones run slowly (#176).
 
 ## System Requirements
 
