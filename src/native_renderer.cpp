@@ -6,6 +6,7 @@
 #include "runtime_shader_cache.h"
 #include "shader_set_use.h"
 #include "spirv_bounded_descriptors.h"
+#include "spirv_vertex_inputs.h"
 #include "bounded_descriptor_cache.h"
 #include <thread>
 #include <exception>
@@ -52,6 +53,7 @@ namespace {
 constexpr uint32_t texture_capacity = 4096, sampler_capacity = 256;
 constexpr uint32_t null_2d = 0, null_2d_array = 1, null_cube = 2, first_texture = 3;
 constexpr uint32_t zero_slot = 15;
+
 constexpr uint64_t ring_size = 64ull << 20;
 // The skinning palette constant buffer, as vertex_palette.cpp declares it.
 constexpr uint64_t palette_bytes = 1024 * 16;
@@ -175,6 +177,15 @@ std::unique_ptr<plume::RenderPipeline> create_draw_pipeline(plume::RenderDevice&
         desc.inputSlotsCount = uint32_t(slots.size());
         desc.inputElements = draw.elements.data();
         desc.inputElementsCount = uint32_t(draw.elements.size());
+        // A device with fewer vertex attributes than the draw declares (an
+        // old Mali's 16, Issue #169): only what the shader reads, at the
+        // locations its inputs were compacted to (spirv_vertex_inputs.h).
+        std::vector<plume::RenderInputElement> compacted;
+        if (const auto inputs = VertexInputUse::of(draw.vertex_shader)) {
+            compacted = compact_vertex_elements(std::span<const plume::RenderInputElement>(draw.elements), *inputs);
+            desc.inputElements = compacted.data();
+            desc.inputElementsCount = uint32_t(compacted.size());
+        }
         auto pipeline = device.createGraphicsPipeline(desc);
         if (!pipeline) return {};
         if (backend == GraphicsBackend::vulkan) {
@@ -871,8 +882,9 @@ void NativeRenderer::prepare_pipelines() {
                         if (!result) {
                             auto bytes = entry.code(backend == 1);
                             std::vector<uint8_t> bounded;
+                            std::optional<std::vector<uint32_t>> vertex_inputs;
                             if (backend == 1 && impl_->graphics.rewrites_shaders()) {
-                                bounded = impl_->graphics.shader_code(bytes);
+                                bounded = impl_->graphics.shader_code(bytes, &vertex_inputs);
                                 bytes = bounded;
                             }
                             result = impl_->graphics.device().createShader(bytes.data(), bytes.size(), "shaderMain",
@@ -880,6 +892,7 @@ void NativeRenderer::prepare_pipelines() {
                             if (!result || (backend == 1 &&
                                 static_cast<const plume::VulkanShader*>(result.get())->vk == VK_NULL_HANDLE))
                                 throw std::runtime_error("prepared shader creation failed");
+                            if (vertex_inputs) VertexInputUse::note(result.get(), std::move(*vertex_inputs));
 #ifdef __APPLE__
                             if (backend == 1) ShaderSetUse::note(result.get(), bytes);
 #endif
@@ -927,6 +940,32 @@ void NativeRenderer::prepare_pipelines() {
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
     std::cerr << "PIPELINE_PREWARM complete=1 total=" << total << " compiled=" << compiled
               << " skipped=" << skipped << " milliseconds=" << ms << '\n';
+}
+
+std::vector<NativeDraw> NativeRenderer::prepared_draws() {
+    std::vector<NativeDraw> draws;
+    const uint32_t backend = uint32_t(impl_->graphics.backend());
+    for (const auto& [key, recipe] : impl_->recipes) {
+        if (!impl_->recipe_pipelines.contains(key)) continue;
+        const auto* vs = packed_pipeline_shader(ShaderStage::vertex, recipe.vertex.hash, recipe.vertex.size);
+        const auto* ps = packed_pipeline_shader(ShaderStage::pixel, recipe.pixel.hash, recipe.pixel.size);
+        const auto vertex = vs ? impl_->prepared_shaders.find(vs) : impl_->prepared_shaders.end();
+        if (vertex == impl_->prepared_shaders.end()) continue;
+        NativeDraw state = recipe.state;
+        state.vertex_shader = vertex->second.get();
+        if (backend == 0 && ps->specialization_mask) {
+            state.pixel_shader = specialized(*ps, recipe.pixel_link_constants);
+        } else {
+            const auto pixel = impl_->prepared_shaders.find(ps);
+            if (pixel == impl_->prepared_shaders.end()) continue;
+            state.pixel_shader = pixel->second.get();
+        }
+        state.vertex_entry = vs;
+        state.pixel_entry = ps;
+        state.pixel_link_constants = recipe.pixel_link_constants;
+        draws.push_back(std::move(state));
+    }
+    return draws;
 }
 
 NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& presentation)

@@ -4350,7 +4350,17 @@ void call_indirect(PPCContext& ctx, uint8_t* base, uint32_t address) {
 }
 }
 
+#if !defined(__ANDROID__) && !(defined(__APPLE__) && TARGET_OS_IPHONE)
+int sfr_graphics_selftest();
+#endif
+
 int main(int argc, char** argv) {
+#if !defined(__ANDROID__) && !(defined(__APPLE__) && TARGET_OS_IPHONE)
+    // The graphics self test (graphics_selftest.cpp) in place of the game, as
+    // Android's GraphicsTestActivity runs it.
+    if (const char* selftest = std::getenv("SFR_GRAPHICS_SELFTEST"); selftest && *selftest == '1')
+        return sfr_graphics_selftest();
+#endif
     const auto host_timing = sfr::configure_host_timing();  // before any thread starts
     // The trace is written through std::cerr, which is unbuffered: one write
     // per insertion dominated the run time. Buffer it (1 MiB); normal exits

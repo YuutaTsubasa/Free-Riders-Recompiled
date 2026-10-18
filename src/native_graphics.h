@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -56,15 +57,24 @@ public:
     // without it (an old Mali's). SFR_TEST_DEPTH_D24S8=1 takes D24S8 on any
     // Vulkan device.
     [[nodiscard]] plume::RenderFormat depth_format() const noexcept;
+    // Vulkan with fewer vertex attributes than the twenty input locations
+    // every draw declares (an old Mali's 16, Issue #169): each vertex shader
+    // takes its inputs at compacted locations and its pipelines declare only
+    // those (spirv_vertex_inputs.h). SFR_TEST_VERTEX_ATTRIBUTES=<n> takes n
+    // as the device's attributes.
+    [[nodiscard]] bool compacts_vertex_inputs() const noexcept;
     // Whether shader_code changes SPIR-V on this device: the bounded layout,
     // vertex shaders without their clip distance (spirv_clip_distance.h:
-    // Mali, or a device without shaderClipDistance), or SPIR-V 1.3 for a
-    // Vulkan 1.1 device (spirv_version.h).
+    // Mali, or a device without shaderClipDistance), with compacted inputs,
+    // or SPIR-V 1.3 for a Vulkan 1.1 device (spirv_version.h).
     [[nodiscard]] bool rewrites_shaders() const noexcept;
     // The shader's code as this device takes it: SPIR-V without its clip
-    // distance, in the bounded layout and as SPIR-V 1.3 as the device needs,
-    // otherwise as it is.
-    [[nodiscard]] std::vector<uint8_t> shader_code(std::span<const uint8_t> code) const;
+    // distance, with compacted vertex inputs, in the bounded layout and as
+    // SPIR-V 1.3 as the device needs, otherwise as it is. A vertex shader
+    // whose inputs were compacted gets their original locations in
+    // vertex_inputs (for VertexInputUse::note once it is made).
+    [[nodiscard]] std::vector<uint8_t> shader_code(std::span<const uint8_t> code,
+                                                   std::optional<std::vector<uint32_t>>* vertex_inputs = nullptr) const;
     // Linux: the SDL window Plume's Vulkan instance was made for (hidden
     // until presentation shows it). Null on Windows.
     [[nodiscard]] void* host_window() const noexcept;
