@@ -21,7 +21,9 @@ int16_t axis(float value) { return int16_t(std::lround(std::clamp(value, -1.0f, 
 std::mutex published_mutex;
 std::atomic<bool> racing_now{false};
 GamepadState published_state;
-TouchOverlay published_overlay;
+// The controls at rest until touches are first read (never, on Windows,
+// which has no touch reader: SFR_TOUCH_CONTROLS=1 shows them there).
+TouchOverlay published_overlay = TouchControls{}.overlay();
 }
 
 std::array<float, 3> TouchControls::layout(Button button) {
@@ -34,45 +36,65 @@ std::array<float, 3> TouchControls::layout(Button button) {
     case y: return {cx, cy - step, r};
     case trigger: return {0.66f, 0.84f, 0.065f};
     case start: return {0.5f, 0.08f, 0.05f};
+    // The race HUD keeps the screen's edges free between its corners (Rings
+    // and items above, the place and lap below on the left; the map above,
+    // the air gauge below on the right), so the punches sit there, each on
+    // its own side.
+    case lb: return {0.065f, 0.44f, 0.07f};
+    case rb: return {0.935f, 0.44f, 0.07f};
+    case lt: return {0.34f, 0.86f, 0.055f};
+    case right_stick: return {0.70f, 0.46f, 0.09f};
     }
     return {};
+}
+
+namespace {
+// Where a finger on a stick puts its knob: (dx, dy) in -1..1 from the base.
+std::array<float, 2> stick_offset(const TouchPoint& finger, std::array<float, 2> base, float radius) {
+    float dx = (finger.x - base[0]) * aspect / radius;
+    float dy = (finger.y - base[1]) / radius;
+    const float length = std::hypot(dx, dy);
+    if (length > 1.0f) { dx /= length; dy /= length; }
+    return {dx, dy};
+}
 }
 
 void TouchControls::update(std::span<const TouchPoint> touches, float tilt, bool racing) {
     namespace button = gamepad_button;
     state_ = {};
     pressed_.fill(false);
-    // The stick follows the finger that started it until that finger lifts.
-    const auto stick_touch = std::find_if(touches.begin(), touches.end(),
-                                          [&](const TouchPoint& t) { return t.id == stick_finger_; });
-    if (stick_touch == touches.end()) {
+    // Each stick follows the finger that started it until that finger lifts.
+    const auto held = [&](int64_t finger) {
+        return std::find_if(touches.begin(), touches.end(), [&](const TouchPoint& t) { return t.id == finger; });
+    };
+    if (held(stick_finger_) == touches.end()) {
         stick_active_ = false;
         stick_finger_ = -1;
     }
+    if (held(right_finger_) == touches.end()) right_finger_ = -1;
     const float stick_radius = layout(stick)[2];
+    const auto [right_x, right_y, right_radius] = layout(right_stick);
     for (const TouchPoint& touch : touches) {
-        if (touch.id == stick_finger_) continue;
+        if (touch.id == stick_finger_ || touch.id == right_finger_) continue;
         bool on_button = false;
-        for (size_t index = a; index <= start; ++index) {
+        for (size_t index = a; index <= lt; ++index) {
             const auto [bx, by, br] = layout(Button(index));
             if (distance(bx, by, touch.x, touch.y) <= br * touch_slack) {
                 pressed_[index] = true;
                 on_button = true;
             }
         }
-        if (!on_button && !stick_active_ && touch.x < stick_region && touch.x >= 0.0f) {
+        if (on_button) continue;
+        if (right_finger_ < 0 && distance(right_x, right_y, touch.x, touch.y) <= right_radius * touch_slack) {
+            right_finger_ = touch.id;
+        } else if (!stick_active_ && touch.x < stick_region && touch.x >= 0.0f) {
             stick_active_ = true;
             stick_finger_ = touch.id;
             stick_base_ = {touch.x, std::clamp(touch.y, stick_radius, 1.0f - stick_radius)};
         }
     }
     if (stick_active_) {
-        const auto finger = std::find_if(touches.begin(), touches.end(),
-                                         [&](const TouchPoint& t) { return t.id == stick_finger_; });
-        float dx = (finger->x - stick_base_[0]) * aspect / stick_radius;
-        float dy = (finger->y - stick_base_[1]) / stick_radius;
-        const float length = std::hypot(dx, dy);
-        if (length > 1.0f) { dx /= length; dy /= length; }
+        const auto [dx, dy] = stick_offset(*held(stick_finger_), stick_base_, stick_radius);
         stick_knob_ = {stick_base_[0] + dx * stick_radius / aspect, stick_base_[1] + dy * stick_radius};
         if (racing) {
             state_.thumb_lx = axis(dx);
@@ -86,12 +108,26 @@ void TouchControls::update(std::span<const TouchPoint> touches, float tilt, bool
     } else if (racing && tilt != 0.0f) {
         state_.thumb_lx = axis(tilt);
     }
+    right_knob_ = {right_x, right_y};
+    if (right_finger_ >= 0) {
+        // The right stick is analog everywhere: the race's reach and arms up,
+        // the menus' hand cursor. The race's own dead zone ignores a resting
+        // thumb's wobble.
+        const auto [dx, dy] = stick_offset(*held(right_finger_), {right_x, right_y}, right_radius);
+        right_knob_ = {right_x + dx * right_radius / aspect, right_y + dy * right_radius};
+        state_.thumb_rx = axis(dx);
+        state_.thumb_ry = axis(-dy);
+        pressed_[right_stick] = true;
+    }
     if (pressed_[a]) state_.buttons |= button::a;
     if (pressed_[b]) state_.buttons |= button::b;
     if (pressed_[x]) state_.buttons |= button::x;
     if (pressed_[y]) state_.buttons |= button::y;
     if (pressed_[start]) state_.buttons |= button::start;
+    if (pressed_[lb]) state_.buttons |= button::left_shoulder;
+    if (pressed_[rb]) state_.buttons |= button::right_shoulder;
     if (pressed_[trigger]) state_.right_trigger = 255;
+    if (pressed_[lt]) state_.left_trigger = 255;
 }
 
 TouchOverlay TouchControls::overlay() const {
@@ -102,7 +138,55 @@ TouchOverlay TouchControls::overlay() const {
         overlay.circle[index] = {cx, cy, radius, pressed_[index] ? 2.0f : 1.0f};
     }
     overlay.knob = stick_active_ ? stick_knob_ : std::array<float, 2>{layout(stick)[0], layout(stick)[1]};
+    overlay.right_knob = right_knob_;
     return overlay;
+}
+
+uint16_t float_to_half(float value) {
+    uint32_t bits;
+    std::memcpy(&bits, &value, sizeof bits);
+    const uint16_t sign = uint16_t((bits >> 16) & 0x8000);
+    const uint32_t biased = (bits >> 23) & 0xFF;
+    uint32_t mantissa = bits & 0x7FFFFF;
+    if (biased == 0xFF) return uint16_t(sign | 0x7C00 | (mantissa ? 0x200 : 0));
+    const int exponent = int(biased) - 127 + 15;
+    if (exponent >= 31) return uint16_t(sign | 0x7C00);
+    if (exponent <= 0) {  // a subnormal half, or zero
+        if (exponent < -10) return sign;
+        mantissa |= 0x800000;
+        const int shift = 14 - exponent;
+        uint32_t half = mantissa >> shift;
+        if ((mantissa >> (shift - 1)) & 1) ++half;
+        return uint16_t(sign | half);
+    }
+    // Rounded to nearest; a carry out of the mantissa steps the exponent.
+    uint32_t half = (uint32_t(exponent) << 10) | (mantissa >> 13);
+    if (mantissa & 0x1000) ++half;
+    return uint16_t(sign | (half > 0x7C00 ? 0x7C00 : half));
+}
+
+float half_to_float(uint16_t half) {
+    const uint32_t exponent = (half >> 10) & 0x1F, mantissa = half & 0x3FF;
+    float magnitude;
+    if (exponent == 0) magnitude = std::ldexp(float(mantissa), -24);
+    else if (exponent == 31) magnitude = mantissa ? std::numeric_limits<float>::quiet_NaN() : std::numeric_limits<float>::infinity();
+    else magnitude = std::ldexp(float(mantissa | 0x400), int(exponent) - 25);
+    return (half & 0x8000) ? -magnitude : magnitude;
+}
+
+std::array<uint32_t, touch_constant_words> pack_touch_overlay(const TouchOverlay& overlay) {
+    const auto pair = [](float low, float high) {
+        return uint32_t(float_to_half(low)) | (uint32_t(float_to_half(high)) << 16);
+    };
+    std::array<uint32_t, touch_constant_words> words{};
+    words[0] = pair(overlay.knob[0], overlay.knob[1]);
+    words[1] = pair(overlay.right_knob[0], overlay.right_knob[1]);
+    for (size_t i = 0; i < TouchOverlay::circles; ++i) {
+        const auto& c = overlay.circle[i];
+        words[2 + i * 2] = pair(c[0], c[1]);
+        words[3 + i * 2] = pair(c[2], c[3]);
+    }
+    return words;
 }
 
 void publish_touch_controls(const GamepadState& state, const TouchOverlay& overlay) {

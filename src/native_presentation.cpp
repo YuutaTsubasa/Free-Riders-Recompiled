@@ -36,6 +36,7 @@
 #include <vector>
 #include <stdexcept>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -887,7 +888,7 @@ void NativePresentation::Impl::build_blit() {
     samplers.end();
     blit_sampler = samplers.create(&device);
     layout.addDescriptorSet(samplers);
-    // The sampled area and stick knob, then the touch controls' circles (blit.hlsl).
+    // The sampled area, then the touch controls packed as half floats (blit.hlsl).
     layout.addPushConstant(0, 2, sizeof(float) * 32,
                            plume::RenderShaderStageFlag::VERTEX | plume::RenderShaderStageFlag::PIXEL);
     layout.end();
@@ -1918,13 +1919,15 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
     const uint32_t out_width = impl_->swap_chain->getWidth(), out_height = impl_->swap_chain->getHeight();
     const bool can_copy = impl_->graphics->backend() != GraphicsBackend::vulkan ||
         (static_cast<plume::VulkanSwapChain*>(impl_->swap_chain.get())->createInfo.imageUsage & VK_IMAGE_USAGE_TRANSFER_DST_BIT);
-    // The Pause Gesture's gauge is drawn by the blit too, so it takes the blit.
+    // The Pause Gesture's gauge and the touch controls are drawn by the blit
+    // too, so they take the blit.
     const float pause = pause_gauge();
+    const bool touch_shown = touch_controls_active();
     // While the Avatar's model loads, the frame is drawn (not copied) so a
     // line can be written over it.
     const uint32_t model_loading = impl_->model_overlay.load(std::memory_order_relaxed);
     const bool stretch = !can_copy || part || out_width != impl_->render_width || out_height != impl_->render_height ||
-                         pause > 0.0f || model_loading != ~0u;
+                         pause > 0.0f || touch_shown || model_loading != ~0u;
     // The copy to the swap-chain texture follows the frame's draws in their
     // own list; pipelined, the frame is submitted without waiting for it.
     const bool pipelined = Impl::pipelined();
@@ -1969,20 +1972,16 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
         // The shown part of the framebuffer (all of it when the game names no
         // area: 0 here would sample its corner texel over the whole window).
         const auto shown = impl_->render_rectangle({0, 0, int32_t(shown_width), int32_t(shown_height)});
-        std::array<float, 32> constants{float(shown.right) / float(impl_->render_width),
-                                        float(shown.bottom) / float(impl_->render_height)};
-        if (touch_controls_active()) {
-            const TouchOverlay overlay = touch_overlay();
-            constants[2] = overlay.knob[0];
-            constants[3] = overlay.knob[1];
-            for (size_t i = 0; i < TouchOverlay::circles; ++i)
-                for (size_t j = 0; j < 4; ++j) constants[4 + i * 4 + j] = overlay.circle[i][j];
-        }
-        if (pause > 0.0f) {
-            // The last circle (START's) becomes the gauge: state 3 plus how far.
-            const float gauge[4] = {0.075f, 0.86f, 0.05f, 3.0f + (std::min)(pause, 1.0f)};
-            for (size_t j = 0; j < 4; ++j) constants[4 + (TouchOverlay::circles - 1) * 4 + j] = gauge[j];
-        }
+        // The area as floats, then the touch controls as half floats (blit.hlsl).
+        std::array<uint32_t, 32> constants{};
+        const float area[2] = {float(shown.right) / float(impl_->render_width),
+                               float(shown.bottom) / float(impl_->render_height)};
+        std::memcpy(constants.data(), area, sizeof area);
+        TouchOverlay overlay = touch_shown ? touch_overlay() : TouchOverlay{};
+        // START's circle becomes the gauge: state 3 plus how far.
+        if (pause > 0.0f) overlay.circle[TouchControls::start] = {0.075f, 0.86f, 0.05f, 3.0f + (std::min)(pause, 1.0f)};
+        const auto touch_words = pack_touch_overlay(overlay);
+        std::copy(touch_words.begin(), touch_words.end(), constants.begin() + 2);
         impl_->touch_view = {viewport.x, viewport.y, viewport.width, viewport.height, float(out_width), float(out_height)};
         impl_->command_list->setGraphicsPushConstants(0, constants.data());
         impl_->command_list->drawInstanced(3, 1, 0, 0);
@@ -2232,6 +2231,17 @@ void NativePresentation::Impl::read_touch_controls() {
     if (!touches.empty()) note_touch();
     touch_controls.update(touches, tilt, touch_racing());
     publish_touch_controls(touch_controls.state(), touch_controls.overlay());
+    // SFR_TOUCH_TRACE=1: each change of the pad the touches make.
+    static const bool trace = [] { const char* text = std::getenv("SFR_TOUCH_TRACE"); return text && *text == '1'; }();
+    if (trace) {
+        static GamepadState last;
+        const GamepadState now = touch_controls.state();
+        if (!(now == last))
+            std::fprintf(stderr, "TOUCH_PAD buttons=0x%04x lt=%u rt=%u left=%d,%d right=%d,%d\n", now.buttons,
+                         unsigned(now.left_trigger), unsigned(now.right_trigger), now.thumb_lx, now.thumb_ly,
+                         now.thumb_rx, now.thumb_ry);
+        last = now;
+    }
 }
 #endif
 

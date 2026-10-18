@@ -329,8 +329,9 @@ beside itself. Linux and Android builds, and what each step does, are in
 | Hand cursor (Kinect-only menus) | I J K L | Right stick |
 
 Xbox and PlayStation controllers both work. On Android, translucent touch
-buttons cover the same actions when no controller is connected, and tilting
-the phone steers in a race. Details: [docs/race-controls.md](docs/race-controls.md),
+buttons cover the same actions when no controller is connected (punches on
+the screen's left and right edges, a small right stick for reaching), and
+tilting the phone steers in a race. Details: [docs/race-controls.md](docs/race-controls.md),
 [docs/pad-menus.md](docs/pad-menus.md).
 
 ## Kinect and Kinect v2
