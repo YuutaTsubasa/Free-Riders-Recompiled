@@ -127,12 +127,17 @@ TouchOverlay touch_overlay() {
     return published_overlay;
 }
 
-namespace { std::atomic<bool> controller_present{false}; }
+namespace { std::atomic<bool> controller_present{false}, touched_last{false}; }
 
 void note_controller(bool present) { controller_present.store(present, std::memory_order_relaxed); }
 
+void note_controller_input() { touched_last.store(false, std::memory_order_relaxed); }
+
+void note_touch() { touched_last.store(true, std::memory_order_relaxed); }
+
 bool touch_controls_active() {
-    return touch_controls_enabled() && !controller_present.load(std::memory_order_relaxed);
+    return touch_controls_enabled() && (!controller_present.load(std::memory_order_relaxed) ||
+                                        touched_last.load(std::memory_order_relaxed));
 }
 
 bool touch_controls_enabled() {

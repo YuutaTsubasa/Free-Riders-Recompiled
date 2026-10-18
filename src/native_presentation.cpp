@@ -2098,7 +2098,9 @@ void NativePresentation::pump_events() {
         if (event.type == SDL_KEYUP && event.key.keysym.scancode == SDL_SCANCODE_AC_BACK) impl_->back_down_ms = 0;
 #endif
     }
-    if (touch_controls_active()) impl_->read_touch_controls();
+    // Touches are read whenever the controls are on: one brings them back
+    // over a connected controller (touch_controls.h).
+    if (touch_controls_enabled()) impl_->read_touch_controls();
 #ifdef __ANDROID__
     if (impl_->back_down_ms && SDL_GetTicks() - impl_->back_down_ms >= 1000) {
         impl_->back_down_ms = 0;
@@ -2154,6 +2156,7 @@ void NativePresentation::Impl::read_touch_controls() {
             }
         }
     }
+    if (!touches.empty()) note_touch();
     touch_controls.update(touches, tilt, touch_racing());
     publish_touch_controls(touch_controls.state(), touch_controls.overlay());
 }
