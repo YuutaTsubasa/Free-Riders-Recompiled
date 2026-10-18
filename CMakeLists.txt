@@ -652,7 +652,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui/imgui.cpp")
             add_executable(sfr_launcher ${SFR_LAUNCHER_SOURCES} src/ios_document_picker.mm src/ios_screen.mm)
             set_target_properties(sfr_launcher PROPERTIES OUTPUT_NAME FreeRidersRecompiled)
             target_link_libraries(sfr_launcher PRIVATE SDL2::SDL2main "-framework UIKit" "-framework Foundation"
-                "-framework UniformTypeIdentifiers" "-framework CoreText")
+                "-framework UniformTypeIdentifiers" "-framework CoreText" "-framework CoreGraphics")
             target_link_options(sfr_launcher PRIVATE "-Wl,-rpath,@executable_path/Frameworks")
             # iOS 27 stops an app linked against its SDK at launch unless the app
             # adopts the UIScene life cycle, which SDL 2 does not. The SDK the
