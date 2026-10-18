@@ -94,5 +94,39 @@ class ShaderPackageTests(unittest.TestCase):
                         package.desktop_files('linux', root, pack)
 
 
+class IosIconTests(unittest.TestCase):
+    """Issue #185: the iOS app had no icon, so the home screen drew a blank one."""
+
+    def test_icon_catalog_has_every_size_and_is_named_in_info_plist(self):
+        import json
+        import plistlib
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append(command)
+            if command[0] == 'sips':
+                Path(command[command.index('--out') + 1]).write_bytes(b'png')
+            elif command[:2] == ['xcrun', 'actool']:
+                catalog = Path(command[2])
+                icons = json.loads((catalog / 'AppIcon.appiconset/Contents.json').read_text())['images']
+                for image in icons:
+                    self.assertTrue((catalog / 'AppIcon.appiconset' / image['filename']).is_file())
+                with open(command[command.index('--output-partial-info-plist') + 1], 'wb') as stream:
+                    plistlib.dump({'CFBundleIcons': {'CFBundlePrimaryIcon': {'CFBundleIconName': 'AppIcon'}}}, stream)
+            return mock.Mock(returncode=0)
+
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(package.subprocess, 'run', run):
+            keys = package.ios_icon(Path(directory))
+        self.assertEqual(keys['CFBundleIcons']['CFBundlePrimaryIcon']['CFBundleIconName'], 'AppIcon')
+        sizes = {int(command[2]) for command in calls if command[0] == 'sips'}
+        # The home screen on 2x and 3x iPhones and on iPads, and the 1024 px one.
+        for size in (120, 180, 152, 167, 1024):
+            self.assertIn(size, sizes)
+        actool = next(command for command in calls if command[:2] == ['xcrun', 'actool'])
+        self.assertEqual(actool[actool.index('--app-icon') + 1], 'AppIcon')
+        self.assertTrue(all(str(package.ROOT / 'packaging/icon/app.png') in command
+                            for command in calls if command[0] == 'sips'))
+
+
 if __name__ == '__main__':
     unittest.main()

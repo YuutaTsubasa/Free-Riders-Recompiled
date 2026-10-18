@@ -30,6 +30,7 @@
 #endif
 #ifdef SFR_IOS
 #include "ios_document_picker.h"
+#include "ios_screen.h"
 #include <dlfcn.h>
 #endif
 
@@ -384,9 +385,10 @@ std::optional<fs::path> pick_path(const fs::path& start, bool folders, FileFilte
     source_names[picked_path] = picked_name.empty() ? picked_path : picked_name;
     return fs::path(picked_path);
 #elif defined(SFR_IOS)
-    (void)start;
     (void)folders;
-    const auto chosen = ios_pick_document(filter == FileFilter::AvatarModel);
+    std::error_code error;
+    const fs::path folder = fs::is_directory(start, error) ? start : start.parent_path();
+    const auto chosen = ios_pick_document(filter == FileFilter::AvatarModel, utf8(folder));
     if (!chosen) return std::nullopt;
     return fs::path(std::u8string(chosen->begin(), chosen->end()));
 #elif defined(__APPLE__)
@@ -590,6 +592,27 @@ FontFiles font_files() {
             {fonts / "RobotoStatic-Medium.ttf", fonts / "Roboto-Medium.ttf", fonts / "RobotoStatic-Regular.ttf"},
             {fonts / "Roboto-BlackItalic.ttf", fonts / "Roboto-Bold.ttf", fonts / "RobotoStatic-Regular.ttf"},
             {},  // Chinese: add_system_glyphs
+            {}};
+#elif defined(SFR_IOS)
+    // iOS keeps Arial and PingFang elsewhere than macOS, and the places move
+    // between releases: CoreText says where (Issue #185: none was found, so
+    // the launcher drew ImGui's small bitmap font, scaled up).
+    const auto system = [](std::initializer_list<const char*> names, std::initializer_list<const char*> known) {
+        std::vector<fs::path> paths;
+        for (const char* name : names)
+            if (const std::string file = ios_font_file(name); !file.empty()) paths.emplace_back(file);
+        for (const char* file : known) paths.emplace_back(file);
+        return paths;
+    };
+    return {system({"ArialMT"}, {"/System/Library/Fonts/WebFonts/Arial.ttf", "/System/Library/Fonts/CoreAddition/Arial.ttf"}),
+            system({"Arial-BoldMT"}, {"/System/Library/Fonts/WebFonts/ArialBold.ttf",
+                                      "/System/Library/Fonts/CoreAddition/ArialBold.ttf"}),
+            system({"Arial-BoldItalicMT"}, {"/System/Library/Fonts/WebFonts/ArialBoldItalic.ttf",
+                                            "/System/Library/Fonts/CoreAddition/ArialBoldItalic.ttf"}),
+            // No Chinese: iOS's PingFang is a file ImGui cannot read (it stops
+            // the font atlas), and the Hiragino faces lack some of the
+            // launcher's characters. Without one the launcher stays English.
+            {},
             {}};
 #elif defined(__APPLE__)
     // macOS has no fontconfig: Arial and STHeiti, which every macOS carries.

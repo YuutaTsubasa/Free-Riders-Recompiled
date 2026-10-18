@@ -40,7 +40,7 @@ UIViewController* top_view_controller() {
 }
 }  // namespace
 
-std::optional<std::string> ios_pick_document(bool avatar_model) {
+std::optional<std::string> ios_pick_document(bool avatar_model, const std::string& folder) {
     @autoreleasepool {
         UIViewController* parent = top_view_controller();
         if (!parent) return std::nullopt;
@@ -49,11 +49,18 @@ std::optional<std::string> ios_pick_document(bool avatar_model) {
             for (NSString* extension in @[@"vrm", @"glb"])
                 if (UTType* type = [UTType typeWithFilenameExtension:extension]) [types addObject:type];
         }
-        if (types.count == 0) [types addObject:UTTypeItem];
+        if (types.count == 0) {
+            // A disc image by name and kind, then anything: every file stays
+            // choosable, whatever type the provider gives it.
+            if (UTType* iso = [UTType typeWithFilenameExtension:@"iso"]) [types addObject:iso];
+            [types addObjectsFromArray:@[UTTypeDiskImage, UTTypeData, UTTypeItem]];
+        }
         UIDocumentPickerViewController* picker =
             [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:types asCopy:NO];
         SFRDocumentPickerDelegate* delegate = [SFRDocumentPickerDelegate new];
         picker.delegate = delegate;
+        if (!folder.empty())
+            picker.directoryURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:folder.c_str()] isDirectory:YES];
         [parent presentViewController:picker animated:YES completion:nil];
         // The launcher waits here, as it does for a desktop dialog; UIKit
         // keeps running through the main run loop.

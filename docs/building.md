@@ -161,7 +161,11 @@ This makes an `.ipa` for sideloading, signed ad hoc (sideloading tools sign it
 again). The app is one process: the launcher is its program, and Play loads
 the game's library (`FreeRidersGame.framework`) with the settings already in
 the environment; the app ends with the game. The installed game, settings,
-saves and `game.log` are in the app's Documents, which the Files app shows.
+saves and `game.log` are in the app's Documents, which the Files app shows;
+a disc image copied there is found by the launcher's Install page. The home
+screen icon is `packaging/icon/app.png`, compiled by `actool` into the app's
+`Assets.car`. The launcher draws in pixels inside the screen's safe area
+(`src/launcher_screen_fit.h`).
 iOS 16.3 or later. Not yet run on a device: in the Simulator the launcher and
 the game's start work, but the Simulator's GPU lacks the
 `VK_KHR_buffer_device_address` the renderer needs.

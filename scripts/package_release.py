@@ -31,6 +31,7 @@ Usage: python scripts/package_release.py windows|linux|android|macos|ios --versi
 import argparse
 import hashlib
 import io
+import json
 import plistlib
 import shutil
 import subprocess
@@ -186,6 +187,51 @@ IOS_ENTITLEMENTS = {
 }
 
 
+# The iOS icon's sizes in points with their scales, by device (Xcode's list):
+# the home screen, Spotlight, Settings and notifications, and the 1024 px one
+# the system and sideloading tools show.
+IOS_ICONS = [
+    ('iphone', '20x20', ('2x', '3x')), ('iphone', '29x29', ('2x', '3x')), ('iphone', '40x40', ('2x', '3x')),
+    ('iphone', '60x60', ('2x', '3x')),
+    ('ipad', '20x20', ('1x', '2x')), ('ipad', '29x29', ('1x', '2x')), ('ipad', '40x40', ('1x', '2x')),
+    ('ipad', '76x76', ('1x', '2x')), ('ipad', '83.5x83.5', ('2x',)),
+    ('ios-marketing', '1024x1024', ('1x',)),
+]
+
+
+def ios_icon(app):
+    """The app's icon (Issue #185: there was none, so the home screen showed
+    a blank one): an asset catalog of the PNG the other platforms use, compiled
+    by actool into the app as Assets.car and the PNGs older readers look for.
+    Returns the Info.plist keys that name it."""
+    work = Path(tempfile.mkdtemp())
+    catalog = work / 'Assets.xcassets'
+    icons = catalog / 'AppIcon.appiconset'
+    icons.mkdir(parents=True)
+    (catalog / 'Contents.json').write_text(json.dumps({'info': {'author': 'xcode', 'version': 1}}))
+    images = []
+    for idiom, size, scales in IOS_ICONS:
+        for scale in scales:
+            pixels = round(float(size.split('x')[0]) * int(scale[0]))
+            name = f'icon-{pixels}.png'
+            if not (icons / name).exists():
+                subprocess.run(['sips', '-z', str(pixels), str(pixels), str(ROOT / 'packaging/icon/app.png'),
+                                '--out', str(icons / name)], check=True, stdout=subprocess.DEVNULL)
+            images.append({'filename': name, 'idiom': idiom, 'scale': scale, 'size': size})
+    (icons / 'Contents.json').write_text(json.dumps({'images': images, 'info': {'author': 'xcode', 'version': 1}}))
+    partial = work / 'icon-info.plist'
+    subprocess.run(['xcrun', 'actool', str(catalog), '--compile', str(app), '--platform', 'iphoneos',
+                    '--minimum-deployment-target', '16.3', '--app-icon', 'AppIcon',
+                    '--target-device', 'iphone', '--target-device', 'ipad',
+                    '--output-partial-info-plist', str(partial), '--errors', '--warnings'],
+                   check=True, stdout=subprocess.DEVNULL)
+    with open(partial, 'rb') as stream:
+        keys = plistlib.load(stream)
+    if 'CFBundleIcons' not in keys:
+        sys.exit('actool named no app icon')
+    return keys
+
+
 def ios_app(app, version, build, pack, moltenvk, licenses, readme):
     """FreeRidersRecompiled.app for iOS: the launcher is the app's program,
     the game a framework it loads at Play (src/ios_game_entry.cpp), SDL and
@@ -221,8 +267,10 @@ def ios_app(app, version, build, pack, moltenvk, licenses, readme):
         (app / inside).parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, app / inside)
     (app / 'README.txt').write_bytes(readme)
+    icon_keys = ios_icon(app)
     with open(app / 'Info.plist', 'wb') as stream:
         plistlib.dump({
+            **icon_keys,
             'CFBundleName': 'Free Riders Recompiled',
             'CFBundleDisplayName': 'Free Riders',
             'CFBundleIdentifier': 'com.freeriders.recompiled',

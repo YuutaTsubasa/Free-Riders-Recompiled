@@ -64,7 +64,8 @@ Kinect v2 目前屬實驗性支援，仍待實機驗證。
    的版本：Windows 的 zip、Linux 的 tar.gz，或 Android 的 APK。
 2. 解壓縮到一個獨立的資料夾（Android 則安裝 APK）。
 3. 執行 `FreeRidersRecompiled`，在啟動器要求時選擇你的光碟映像檔（`.iso`），它會把遊戲資料
-   複製到旁邊。然後按 **開始遊戲**。
+   複製到旁邊。然後按 **開始遊戲**。在 iOS 上也可以用「檔案」App 把 `.iso` 放進
+   **我的 iPhone › Free Riders**，啟動器會在那裡找到它。
 
 ## 設定分類
 
