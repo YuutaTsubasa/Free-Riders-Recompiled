@@ -60,5 +60,8 @@
                 <data android:mimeType="application/javascript" />
             </intent-filter>
         </activity>
+        <!-- Its scenarios: 1 keeps the vertex shaders' clip distance, 2
+             removes it (GraphicsTestActivity). -->
+        <meta-data android:name="com.google.test.loops" android:value="2" />
     </application>
 </manifest>

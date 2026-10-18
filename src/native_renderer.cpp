@@ -811,7 +811,7 @@ void NativeRenderer::prepare_pipelines() {
                         if (!result) {
                             auto bytes = entry.code(backend == 1);
                             std::vector<uint8_t> bounded;
-                            if (backend == 1 && impl_->graphics.bounded_descriptors()) {
+                            if (backend == 1 && impl_->graphics.rewrites_shaders()) {
                                 bounded = impl_->graphics.shader_code(bytes);
                                 bytes = bounded;
                             }

@@ -7,6 +7,7 @@
 #endif
 #include "plume_render_interface.h"
 #include "spirv_bounded_descriptors.h"
+#include "spirv_clip_distance.h"
 
 #include <chrono>
 #include <cstdlib>
@@ -174,6 +175,7 @@ struct NativeGraphics::Impl {
     std::unique_ptr<plume::RenderCommandFence> idle_signal;
     std::unique_ptr<NativePipelineCache> pipeline_cache;
     bool bounded_descriptors = false;
+    bool without_clip_distance = false;
 };
 
 NativeGraphics::NativeGraphics() = default;
@@ -279,6 +281,23 @@ void NativeGraphics::initialize() {
                   << limits.maxPerStageDescriptorSamplers << " resources_per_stage=" << limits.maxPerStageResources << '\n';
     }
 
+    // Every vertex shader writes a clip distance (spirv_clip_distance.h).
+    // Mali drivers crash compiling that write (Issues #166, #169); a device
+    // without shaderClipDistance may not take it at all. Either way the
+    // shaders go without it. SFR_TEST_NO_CLIP_DISTANCE=1 does the same on any
+    // Vulkan device, to try it, and =0 keeps it, to see the crash.
+    bool without_clip_distance = false;
+    if (backend == GraphicsBackend::vulkan) {
+        const VkPhysicalDevice physical = static_cast<plume::VulkanDevice*>(render_device.get())->physicalDevice;
+        VkPhysicalDeviceFeatures features{};
+        vkGetPhysicalDeviceFeatures(physical, &features);
+        const char* no_clip = std::getenv("SFR_TEST_NO_CLIP_DISTANCE");
+        const bool forced = no_clip && (std::strcmp(no_clip, "1") == 0 || std::strcmp(no_clip, "0") == 0);
+        without_clip_distance = forced ? no_clip[0] == '1' : !features.shaderClipDistance;
+        std::cerr << "NATIVE_CLIP_DISTANCE supported=" << features.shaderClipDistance << " forced=" << forced
+                  << " removed=" << without_clip_distance << '\n';
+    }
+
     auto render_queue = render_device->createCommandQueue(plume::RenderCommandListType::DIRECT);
     if (!render_queue)
         throw std::runtime_error(std::string("failed to create a ") + name + " direct command queue");
@@ -286,6 +305,7 @@ void NativeGraphics::initialize() {
     auto implementation = std::make_unique<Impl>();
     implementation->backend = backend;
     implementation->bounded_descriptors = bounded_descriptors;
+    implementation->without_clip_distance = without_clip_distance;
 #ifndef _WIN32
     implementation->window = window;
 #endif
@@ -328,12 +348,24 @@ bool NativeGraphics::bounded_descriptors() const noexcept {
     return impl_ && impl_->bounded_descriptors;
 }
 
+bool NativeGraphics::rewrites_shaders() const noexcept {
+    return impl_ && (impl_->bounded_descriptors || impl_->without_clip_distance);
+}
+
 std::vector<uint8_t> NativeGraphics::shader_code(std::span<const uint8_t> code) const {
-    if (!bounded_descriptors()) return {code.begin(), code.end()};
+    std::vector<uint8_t> result(code.begin(), code.end());
     std::string why;
-    auto rewritten = bounded_descriptor_spirv(code, &why);
-    if (!rewritten) throw std::runtime_error("a shader cannot use the bounded descriptor layout: " + why);
-    return std::move(*rewritten);
+    if (impl_ && impl_->without_clip_distance) {
+        auto rewritten = without_clip_distance_spirv(result, &why);
+        if (!rewritten) throw std::runtime_error("a shader cannot go without its clip distance: " + why);
+        result = std::move(*rewritten);
+    }
+    if (bounded_descriptors()) {
+        auto rewritten = bounded_descriptor_spirv(result, &why);
+        if (!rewritten) throw std::runtime_error("a shader cannot use the bounded descriptor layout: " + why);
+        result = std::move(*rewritten);
+    }
+    return result;
 }
 
 bool NativeGraphics::initialized() const noexcept {
