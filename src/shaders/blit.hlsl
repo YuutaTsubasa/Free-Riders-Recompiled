@@ -3,35 +3,49 @@
 // build time to DXIL and SPIR-V (CMakeLists.txt, sfr_embed_shader).
 // The pixel shader also draws the touch controls (touch_controls.h) over the
 // image: per circle (x, y, radius, state) in image coordinates, state 0 for
-// none; the stick's knob is at g_AreaKnob.zw. A state of 3 to 4 is the Pause
+// none; the sticks' knobs are g_Knobs. A state of 3 to 4 is the Pause
 // Gesture's gauge instead (state - 3 is how far the hold has got): a
 // ring that fills clockwise from the top, on a dark disc, around a figure in
 // the pose.
+//
+// The constants are 32 words, the 128 bytes of push constants every Vulkan
+// device has: the sampled area as two floats, then pairs of half floats
+// (touch_controls.h, pack_touch_overlay): the two knobs, then two words per
+// circle, (x, y) and (radius, state).
 
+#define CIRCLES 11
 struct BlitConstants {
-    float4 areaKnob;   // sampled area (xy), stick knob (zw)
-    float4 circles[7];
+    float2 area;    // sampled area
+    uint2 knobs;    // stick knob, right stick knob
+    uint4 circles[7];
 };
 #ifdef __spirv__
 [[vk::push_constant]] ConstantBuffer<BlitConstants> g_Blit;
-#define g_AreaKnob g_Blit.areaKnob
+#define g_Area g_Blit.area
+#define g_Knobs g_Blit.knobs
 #define g_Circles g_Blit.circles
 #else
-cbuffer Blit : register(b0, space2) { float4 g_AreaKnob; float4 g_Circles[7]; };
+cbuffer Blit : register(b0, space2) { float2 g_Area; uint2 g_Knobs; uint4 g_Circles[7]; };
 #endif
+float2 unpack_halves(uint word) { return float2(f16tof32(word), f16tof32(word >> 16)); }
+float4 circle_at(int i) {
+    const uint4 pair = g_Circles[i >> 1];
+    const uint2 words = (i & 1) != 0 ? pair.zw : pair.xy;
+    return float4(unpack_halves(words.x), unpack_halves(words.y));
+}
 struct Vertex { float4 position : SV_Position; float2 texCoord : TEXCOORD0; float2 image : TEXCOORD1; };
 Vertex vertexMain(uint index : SV_VertexID) {
     const float2 corner = float2((index << 1) & 2, index & 2);
     Vertex vertex;
     vertex.position = float4(corner * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
-    vertex.texCoord = corner * g_AreaKnob.xy;
+    vertex.texCoord = corner * g_Area;
     vertex.image = corner;
     return vertex;
 }
 Texture2D<float4> g_Source : register(t0, space0);
 SamplerState g_Sampler : register(s0, space1);
 
-static const float3 g_Colors[7] = {
+static const float3 g_Colors[CIRCLES] = {
     float3(1.0, 1.0, 1.0),     // stick
     float3(0.25, 0.85, 0.3),   // A
     float3(0.95, 0.25, 0.25),  // B
@@ -39,6 +53,10 @@ static const float3 g_Colors[7] = {
     float3(1.0, 0.85, 0.2),    // Y
     float3(0.75, 0.75, 0.75),  // RT
     float3(1.0, 1.0, 1.0),     // START
+    float3(1.0, 0.55, 0.15),   // LB
+    float3(1.0, 0.55, 0.15),   // RB
+    float3(0.75, 0.75, 0.75),  // LT
+    float3(0.35, 0.9, 1.0),    // right stick
 };
 
 // The smooth union of two distances: rounded where they meet, by k.
@@ -94,23 +112,39 @@ float disc(float2 image, float2 centre, float radius, float2 pixel) {
     return 1.0 - smoothstep(-pixel.y, pixel.y, d);
 }
 
+// An arrow pointing to the punch's side (-1 left, 1 right) in a circle's
+// units, +y down.
+float arrow(float2 p, float side, float edge) {
+    p.x *= side;
+    const float d = min(limb(p, float2(-0.05, -0.32), float2(0.25, 0.0), 0.08, 0.08),
+                        limb(p, float2(-0.05, 0.32), float2(0.25, 0.0), 0.08, 0.08));
+    return 1.0 - smoothstep(-edge, edge, d);
+}
+
 float4 pixelMain(Vertex vertex) : SV_Target {
     float4 color = g_Source.Sample(g_Sampler, vertex.texCoord);
     const float2 pixel = fwidth(vertex.image);
-    [unroll] for (int i = 0; i < 7; ++i) {
-        const float4 c = g_Circles[i];
+    [unroll] for (int i = 0; i < CIRCLES; ++i) {
+        const float4 c = circle_at(i);
         if (c.w <= 0.0) continue;
         if (c.w >= 3.0) {
             color.rgb = gauge(color.rgb, vertex.image, c, pixel);
             continue;
         }
+        const bool pressed = c.w > 1.5;
         const float inside = disc(vertex.image, c.xy, c.z, pixel);
         const float core = disc(vertex.image, c.xy, c.z * 0.82, pixel);
-        const float alpha = (c.w > 1.5 ? 0.55 : 0.22) * core + (inside - core) * (c.w > 1.5 ? 0.9 : 0.5);
+        const float alpha = (pressed ? 0.55 : 0.22) * core + (inside - core) * (pressed ? 0.9 : 0.5);
         color.rgb = lerp(color.rgb, g_Colors[i], alpha);
-        if (i == 0) {  // the stick's knob
-            const float knob = disc(vertex.image, g_AreaKnob.zw, c.z * 0.45, pixel);
-            color.rgb = lerp(color.rgb, float3(1.0, 1.0, 1.0), knob * (c.w > 1.5 ? 0.6 : 0.3));
+        if (i == 0 || i == CIRCLES - 1) {  // the sticks' knobs
+            const float2 knob = unpack_halves(i == 0 ? g_Knobs.x : g_Knobs.y);
+            const float shown = disc(vertex.image, knob, c.z * 0.45, pixel);
+            color.rgb = lerp(color.rgb, float3(1.0, 1.0, 1.0), shown * (pressed ? 0.6 : 0.3));
+        }
+        if (i == 7 || i == 8) {  // LB, RB: which side the punch goes
+            const float2 p = (vertex.image - c.xy) * float2(16.0 / 9.0, 1.0) / c.z;
+            color.rgb = lerp(color.rgb, float3(1.0, 1.0, 1.0),
+                             arrow(p, i == 7 ? -1.0 : 1.0, pixel.y / c.z) * (pressed ? 0.85 : 0.55));
         }
     }
     return color;
