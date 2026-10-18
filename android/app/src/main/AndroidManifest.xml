@@ -61,7 +61,7 @@
             </intent-filter>
         </activity>
         <!-- Its scenarios: 1 keeps the vertex shaders' clip distance, 2
-             removes it (GraphicsTestActivity). -->
-        <meta-data android:name="com.google.test.loops" android:value="2" />
+             removes it, 3 to 8 draw with the pipelines (GraphicsTestActivity). -->
+        <meta-data android:name="com.google.test.loops" android:value="8" />
     </application>
 </manifest>

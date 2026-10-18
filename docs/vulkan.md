@@ -130,6 +130,38 @@ Firebase Test Lab 的 Galaxy S9（Mali-G72，Android 10，驅動程式 r19，Vul
 `scalar_block_layout=1 device_address=0`：改版前一樣會停在建立裝置。它也沒有 `D32_SFLOAT_S8_UINT`
 （只有 D24S8），因此需要上面的深度格式。
 
+### 頂點屬性數
+
+每個繪製都為 XenosRecomp 頂點著色器可能讀的 20 個輸入位置各宣告一個頂點屬性
+（`native_vertex_layout.cpp`，宣告裡沒有的讀 slot 15 的零）。Vulkan 只保證 16 個
+（`maxVertexInputAttributes`，位置也要小於它），舊 Mali 正好是 16：v0.10.3 在 Huawei P30 Pro
+（Mali-G76，驅動程式 r18）上第一個繪製就讓 GPU 停住，`vkWaitForFences` 回 `VK_ERROR_DEVICE_LOST`，
+整支手機卡住（Issue #169）。Firebase Test Lab 的 Galaxy S9（Mali-G72，r19）用圖形自我測試的繪製
+重現了同樣的停住：遊戲的頂點著色器配 20 個屬性就停在第一個繪製；換成不讀輸入的頂點著色器，
+或遊戲的像素著色器配簡單的頂點著色器，455 條管線都畫得完。桌面驗證層看不到，因為桌面驅動程式
+有 28 個以上；用 profiles 層把上限報成 16 時，驗證層對每條管線都報
+`VUID-VkPipelineVertexInputStateCreateInfo-vertexAttributeDescriptionCount-00614` 與
+`VUID-VkVertexInputAttributeDescription-location-00620`。
+
+屬性不到 20 個的裝置上（`NativeGraphics::compacts_vertex_inputs`），每個頂點著色器的輸入依原本
+位置的順序改到 0、1、2…（`spirv_vertex_inputs.h`，原位置記在 `VertexInputUse`），它的管線只宣告
+它讀的那些屬性，搬到新位置。包裡 287 個頂點著色器最多讀 14 個輸入，133 個讀到 15 以上的位置。
+屬性夠的裝置不變。`game.log` 記 `NATIVE_VERTEX_ATTRIBUTES limit=… forced=… compacted=0|1`；
+`SFR_TEST_VERTEX_ATTRIBUTES=<n>` 把裝置的屬性數當成 n（16 在任何顯示卡上試這條路，32 在舊 Mali
+上關掉它）。
+
+### 圖形自我測試的繪製
+
+`graphics_selftest.cpp`（Android 由 `GraphicsTestActivity` 啟動，桌面設 `SFR_GRAPHICS_SELFTEST=1`
+執行 `sfr_cpu_diagnostic`）準備完包裡的管線後，用每條管線畫一次（`NativeRenderer::prepared_draws`，
+走遊戲的繪製路徑，頂點與常數是 [-1, 1] 的數，貼圖有一般的、解析出的顏色與深度和空的），每個繪製
+單獨送出並等它完成，等了三秒以上就記 `draws hung at=<n>` 並停止。開關：
+`SFR_SELFTEST_ORDER=class`（著色器越簡單越先畫：沒有迴圈、switch、取樣的先）、
+`SFR_SELFTEST_VS=trivial|few|uniform`、`SFR_SELFTEST_PS=trivial|sample`（換成
+`graphics_selftest_shaders.h` 的替身著色器）、`SFR_SELFTEST_NO_ELEMENTS=1`、`SFR_SELFTEST_NO_DEPTH=1`、
+`SFR_SELFTEST_TEXTURES=mixed|plain|nodepth|null`、`SFR_SELFTEST_BATCH=<n>`、`SFR_SELFTEST_LIMIT=<n>`、
+`SFR_SELFTEST_DRAWS=0`（不畫）。Game loop 的情境 3 到 8 是 `GraphicsTestActivity.DRAW_SCENARIOS`。
+
 本專案自己加進著色器的部分：
 
 | 內容 | D3D12 | Vulkan |

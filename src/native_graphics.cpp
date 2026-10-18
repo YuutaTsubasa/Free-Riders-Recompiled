@@ -9,6 +9,7 @@
 #include "spirv_bounded_descriptors.h"
 #include "spirv_clip_distance.h"
 #include "spirv_version.h"
+#include "spirv_vertex_inputs.h"
 
 #include <algorithm>
 #include <chrono>
@@ -181,6 +182,8 @@ struct NativeGraphics::Impl {
     plume::RenderFormat depth_format = plume::RenderFormat::D32_FLOAT_S8_UINT;
     bool without_clip_distance = false;
     bool spirv_1_3 = false;
+    // The device's vertex attributes when fewer than vertex_input_locations.
+    uint32_t vertex_attributes = 0;
 };
 
 NativeGraphics::NativeGraphics() = default;
@@ -369,6 +372,25 @@ void NativeGraphics::initialize() {
                   << " d32s8=" << d32s8 << " d24s8=" << d24s8 << " forced=" << forced << '\n';
     }
 
+    // Every draw declares an attribute at each of the twenty locations a
+    // vertex shader may read (native_vertex_layout.cpp). Vulkan guarantees
+    // 16, an old Mali (G72, G76) has no more, and twenty hung its GPU at the
+    // first draw (Issue #169): there each vertex shader takes its inputs at
+    // compacted locations and its pipelines declare only those
+    // (spirv_vertex_inputs.h). SFR_TEST_VERTEX_ATTRIBUTES=<n> takes n as the
+    // device's attributes.
+    uint32_t vertex_attributes = 0;
+    if (backend == GraphicsBackend::vulkan) {
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(static_cast<plume::VulkanDevice*>(render_device.get())->physicalDevice, &properties);
+        uint32_t attributes = properties.limits.maxVertexInputAttributes;
+        const char* forced = std::getenv("SFR_TEST_VERTEX_ATTRIBUTES");
+        if (forced && std::atoi(forced) > 0) attributes = uint32_t(std::atoi(forced));
+        if (attributes < vertex_input_locations) vertex_attributes = attributes;
+        std::cerr << "NATIVE_VERTEX_ATTRIBUTES limit=" << properties.limits.maxVertexInputAttributes
+                  << " forced=" << (forced && std::atoi(forced) > 0) << " compacted=" << (vertex_attributes != 0) << '\n';
+    }
+
     auto render_queue = render_device->createCommandQueue(plume::RenderCommandListType::DIRECT);
     if (!render_queue)
         throw std::runtime_error(std::string("failed to create a ") + name + " direct command queue");
@@ -380,6 +402,7 @@ void NativeGraphics::initialize() {
     implementation->depth_format = depth_format;
     implementation->without_clip_distance = without_clip_distance;
     implementation->spirv_1_3 = spirv_1_3;
+    implementation->vertex_attributes = vertex_attributes;
 #ifndef _WIN32
     implementation->window = window;
 #endif
@@ -430,13 +453,26 @@ plume::RenderFormat NativeGraphics::depth_format() const noexcept {
     return impl_ ? impl_->depth_format : plume::RenderFormat::D32_FLOAT_S8_UINT;
 }
 
-bool NativeGraphics::rewrites_shaders() const noexcept {
-    return impl_ && (impl_->bounded_descriptors || impl_->without_clip_distance || impl_->spirv_1_3);
+bool NativeGraphics::compacts_vertex_inputs() const noexcept {
+    return impl_ && impl_->vertex_attributes;
 }
 
-std::vector<uint8_t> NativeGraphics::shader_code(std::span<const uint8_t> code) const {
+bool NativeGraphics::rewrites_shaders() const noexcept {
+    return impl_ && (impl_->bounded_descriptors || impl_->without_clip_distance || impl_->spirv_1_3 ||
+                     impl_->vertex_attributes);
+}
+
+std::vector<uint8_t> NativeGraphics::shader_code(std::span<const uint8_t> code,
+                                                 std::optional<std::vector<uint32_t>>* vertex_inputs) const {
     std::vector<uint8_t> result(code.begin(), code.end());
     std::string why;
+    if (vertex_inputs) vertex_inputs->reset();
+    if (impl_ && impl_->vertex_attributes) {
+        auto compacted = compact_vertex_inputs_spirv(result, impl_->vertex_attributes, &why);
+        if (!compacted) throw std::runtime_error("a vertex shader cannot take its inputs at compacted locations: " + why);
+        result = std::move(compacted->code);
+        if (compacted->vertex && vertex_inputs) *vertex_inputs = std::move(compacted->locations);
+    }
     if (impl_ && impl_->without_clip_distance) {
         auto rewritten = without_clip_distance_spirv(result, &why);
         if (!rewritten) throw std::runtime_error("a shader cannot go without its clip distance: " + why);

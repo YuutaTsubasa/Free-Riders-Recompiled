@@ -1,6 +1,7 @@
 #include "spirv_bounded_descriptors.h"
 #include "spirv_clip_distance.h"
 #include "spirv_version.h"
+#include "spirv_vertex_inputs.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -147,8 +148,8 @@ void refuses_what_spirv_1_3_lacks() {
 }
 
 // SFR_SHADER_PACK=<shaders.pack>: every SPIR-V shader of a real pack is
-// lowered as it is, and after both other rewrites (in the compact bounded
-// layout), as an old Mali would take it. SFR_SPIRV_1_3_DUMP=<directory>
+// lowered as it is, and after the other rewrites (compacted vertex inputs,
+// the compact bounded layout), as an old Mali would take it. SFR_SPIRV_1_3_DUMP=<directory>
 // keeps each result for
 // spirv-val --target-env vulkan1.1.
 void lowers_a_shader_pack() {
@@ -174,7 +175,9 @@ void lowers_a_shader_pack() {
         std::string why;
         const auto plain = sfr::spirv_1_3(code, &why);
         require(plain.has_value(), "pack shader " + std::to_string(i) + " is lowered: " + why);
-        auto rewritten = sfr::without_clip_distance_spirv(code, &why);
+        const auto compacted = sfr::compact_vertex_inputs_spirv(code, 16, &why);
+        require(compacted.has_value(), "pack shader " + std::to_string(i) + " compacts its vertex inputs: " + why);
+        auto rewritten = sfr::without_clip_distance_spirv(compacted->code, &why);
         require(rewritten.has_value(), "pack shader " + std::to_string(i) + " loses its clip distance: " + why);
         rewritten = sfr::bounded_descriptor_spirv(*rewritten, &why, *sfr::bounded_lengths(16));
         require(rewritten.has_value(), "pack shader " + std::to_string(i) + " is bounded: " + why);

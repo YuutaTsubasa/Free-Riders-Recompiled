@@ -151,6 +151,9 @@ public:
     // Called once at initial device setup, before the title's first frame.
     // Compiles known recipes while the presentation thread remains responsive.
     void prepare_pipelines();
+    // The graphics self test's: the state of each pipeline prepare_pipelines
+    // made, with its shaders, to draw with (graphics_selftest.cpp).
+    std::vector<NativeDraw> prepared_draws();
     // Room in the upload ring for the next draw's vertices (and, after them,
     // the rest of that draw's data with index_bytes of indices), so the
     // caller writes the vertices there instead of into scratch that draw()

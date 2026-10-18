@@ -52,6 +52,14 @@ public class GameActivity extends SDLActivity {
             setenv("SFR_GRAPHICS_SELFTEST", "1", true);
             String clip = getIntent().getStringExtra(GraphicsTestActivity.CLIP_DISTANCE);
             if (clip != null) setenv("SFR_TEST_NO_CLIP_DISTANCE", clip, true);
+            // NAME=VALUE pairs separated by ';' for the scenario (GraphicsTestActivity).
+            String settings = getIntent().getStringExtra(GraphicsTestActivity.SETTINGS);
+            if (settings != null) {
+                for (String pair : settings.split(";")) {
+                    int equals = pair.indexOf('=');
+                    if (equals > 0) setenv(pair.substring(0, equals), pair.substring(equals + 1), true);
+                }
+            }
         }
         super.loadLibraries();
     }

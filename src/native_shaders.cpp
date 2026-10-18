@@ -3,6 +3,7 @@
 #include "native_graphics.h"
 #include "runtime_shader_cache.h"
 #include "shader_set_use.h"
+#include "spirv_vertex_inputs.h"
 #include <plume_render_interface.h>
 #include <algorithm>
 #include <span>
@@ -78,14 +79,17 @@ uint32_t NativeShaders::create(ShaderStage stage, uint32_t container) {
     // the renderer's bounded layout (NativeGraphics::bounded_descriptors),
     // and a Mali its vertex shaders without the clip distance.
     std::vector<uint8_t> bounded;
+    std::optional<std::vector<uint32_t>> vertex_inputs;
     if(vulkan && !code.empty() && impl_->graphics.rewrites_shaders()) {
-        bounded=impl_->graphics.shader_code(code);
+        bounded=impl_->graphics.shader_code(code,&vertex_inputs);
         code=bounded;
     }
     if(!code.empty() && (vulkan || !found->specialization_mask)) {
         next->shader=impl_->graphics.device().createShader(code.data(),code.size(),"shaderMain",
             vulkan?plume::RenderShaderFormat::SPIRV:plume::RenderShaderFormat::DXIL);
         if(!next->shader) unsupported(container,"native shader bytecode ownership failed");
+        // Its pipelines declare the vertex inputs it reads at their compacted locations.
+        if(vertex_inputs) VertexInputUse::note(next->shader.get(),std::move(*vertex_inputs));
 #ifdef __APPLE__
         if(vulkan) ShaderSetUse::note(next->shader.get(),code);
 #endif
