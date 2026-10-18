@@ -72,6 +72,47 @@ int main() {
             webcam.update(lifted,1.f/60);webcam.update(lifted,1.f/60);
             require(!webcam.jump(),"over the ankles the body rises together: no hop without a floor");
         }
+        {
+            // A Kinect's samples come 30 a second; the floor is fixed at
+            // calibration, 0.75 m under the hips (kinect_sensor.md).
+            const auto over=[](float hip_y) {
+                auto p=pose();for(auto* point:{&p.hip,&p.shoulder})(*point)[1]+=hip_y;
+                p.floor_y=-.75f;return p;
+            };
+            const auto run=[&](sfr::CameraRaceMotion& motion,std::initializer_list<float> path) {
+                int jumps=0;
+                for(float y:path){motion.update(over(y),1.f/30);jumps+=motion.jump();}
+                return jumps;
+            };
+            // Issue #165's log: a crouch, then a rise that went on into the
+            // air, logged a crouch-and-spring jump and, a sample later, a hop
+            // (KINECT_MOTION jump height=0.8719 then jump height=0.8929).
+            sfr::CameraRaceMotion spring;
+            for(int i=0;i<60;++i)spring.update(over(0),1.f/30);
+            require(spring.ready(),"a Kinect stance calibrates at 30 samples a second");
+            int jumps=run(spring,{-.1f,-.2f,-.2f,-.2f,-.2f,-.2f,-.2f,-.2f,-.2f,-.2f,-.2f});
+            require(spring.crouch() && jumps==0,"a held crouch arms the jump");
+            jumps=run(spring,{-.12f,-.08f,-.04f,0,.04f,.08f,.12f,.15f,.16f,.12f,.06f,0,-.04f,-.02f,0,0,0,0,0,0});
+            require(jumps==1,"springing out of a crouch into the air is one jump, not a jump and a hop");
+            // The same log: the standing height crept up while the player
+            // hopped (0.7589 to 0.8376 over 45 jumps) though the stance
+            // between hops stayed where it was. The jump threshold rose with
+            // it, and a normal hop stopped counting.
+            sfr::CameraRaceMotion hopping;
+            for(int i=0;i<60;++i)hopping.update(over(0),1.f/30);
+            const float standing=hopping.standing_height();
+            int hops=0;
+            for(int hop=0;hop<20;++hop) {
+                hops+=run(hopping,{-.03f,-.06f,-.04f,.03f,.09f,.14f,.17f,.18f,.16f,.11f,.05f,-.01f,-.05f,-.03f,-.01f,.01f,0});
+                for(int i=0;i<30;++i)hopping.update(over(0),1.f/30);
+            }
+            require(hops==20,"each hop is a jump");
+            require(std::abs(hopping.standing_height()-standing)<.01f,
+                    "hopping in place does not raise the standing height");
+            // Standing a little taller for a while is still learnt.
+            for(int i=0;i<300;++i)hopping.update(over(.03f),1.f/30);
+            require(hopping.standing_height()>standing+.02f,"a taller stance held still is learnt");
+        }
         sfr::CameraRaceMotion m;
         frames(m,pose(),60);
         require(m.ready() && m.lean()==0 && !m.boost() && !m.crouch() && !m.jump(),"standing calibrates without input");
