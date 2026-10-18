@@ -62,8 +62,14 @@ Set 0 與 set 1 是只填了一部分的 4096 張貼圖與 256 個取樣器陣�
 - 每次繪製依共用常數裡 16 個 fetch constant 的貼圖與取樣器索引取得（或建立）一對 set，第 s 個
   元素就是 fetch constant s 的貼圖，共用常數改寫成 0–15 再寫進上傳環（2D 索引的最高位，即解析
   過的畫面，保留）。沒用到的元素放讀起來是 0 的同型別貼圖，因為沒有 partially bound 時每個元素
-  都必須有效。同一個畫格內相同組合共用同一對 set；set 來自所屬上傳環的 pool，環被重用（GPU 已
-  完成）時整個 pool 重設。
+  都必須有效。set 來自所屬上傳環的 pool，依內容保留到下一個畫格（`src/bounded_descriptor_cache.h`）：
+  貼圖 set 以每個元素的 2D 貼圖索引為鍵（沒有 view 的記成 `null_2d`；緊湊佈局以不同貼圖的清單
+  為鍵），只要這些索引的 view 沒換過就繼續用（以時間戳記判斷，因為驅動程式可能把已銷毀 view 的
+  handle 給新的 view）；取樣器 set 以取樣器索引為鍵。set 寫好後不再改寫：貼圖換過就在 pool 裡
+  丟下舊的、另建一個。環被重用（GPU 已完成）時，丟下的超過 256 個或保留的超過 2048 個才整個
+  pool 重設。只重新綁定有變的那個 set。比賽中每畫格約 2 個新 set、約 100 個 descriptor 寫入
+  （原本每畫格重建約 270 個 set、寫 12,600 個）；`SFR_FRAME_METRICS=1` 的 `NATIVE_PRESENT` 記
+  `descriptor_sets`、`descriptor_writes`、`descriptor_binds` 與 `descriptor_ms`。
 - 著色器包不變：建立著色器時改寫 SPIR-V（`src/spirv_bounded_descriptors.h`）。set 0/1 的
   runtime array 改成長度 16 的陣列，三種貼圖依型別移到 binding 0/1/2，拿掉
   `RuntimeDescriptorArray`、`ShaderNonUniform`、`SPV_EXT_descriptor_indexing` 與 `NonUniform`，
