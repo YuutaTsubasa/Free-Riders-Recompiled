@@ -1,4 +1,5 @@
 #include "touch_controls.h"
+#include <cstdlib>
 #include <iostream>
 #include <stdexcept>
 #include <vector>
@@ -60,11 +61,35 @@ void run() {
     controls.update(std::vector<TouchPoint>{{6, 0.6f, 0.3f}});
     require(controls.state() == sfr::GamepadState{}, "the empty right side does nothing");
 }
+
+// Issue #177: a touch brings the controls back over a connected controller,
+// and the controller's input hides them again.
+void controller_handover() {
+    require(sfr::touch_controls_enabled(), "SFR_TOUCH_CONTROLS=1 turns the controls on");
+    sfr::note_controller(false);
+    require(sfr::touch_controls_active(), "without a controller the controls are on");
+    sfr::note_controller(true);
+    require(!sfr::touch_controls_active(), "a controller hides them");
+    sfr::note_touch();
+    require(sfr::touch_controls_active(), "a touch brings them back with a controller connected");
+    sfr::note_controller(true);
+    require(sfr::touch_controls_active(), "they stay while the controller does nothing");
+    sfr::note_controller_input();
+    require(!sfr::touch_controls_active(), "the controller's input hides them again");
+    sfr::note_controller(false);
+    require(sfr::touch_controls_active(), "unplugging the controller shows them");
+}
 }
 
 int main() {
+#ifdef _WIN32
+    _putenv_s("SFR_TOUCH_CONTROLS", "1");
+#else
+    setenv("SFR_TOUCH_CONTROLS", "1", 1);
+#endif
     try {
         run();
+        controller_handover();
         std::cout << "Touch control checks passed\n";
         return 0;
     } catch (const std::exception& error) {

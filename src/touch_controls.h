@@ -70,8 +70,14 @@ void publish_pause_gauge(float progress);
 float pause_gauge();
 // SFR_TOUCH_CONTROLS: 1 on Android by default, 0 elsewhere.
 bool touch_controls_enabled();
-// A controller answered for player 1 (native_input): the on-screen buttons
-// are not drawn or read while one is connected.
+// A controller answered for player 1 (native_input). The on-screen buttons
+// are drawn and read when none is connected, and also with one whenever the
+// screen was touched after the controller's last input: a touch brings them
+// back, the controller's next button or stick hides them. Android lists some
+// keyboards and built-in keys as game controllers (Issue #177, a POCO X3 GT:
+// the buttons vanished as the game started and never came back).
 void note_controller(bool present);
+void note_controller_input();
+void note_touch();
 bool touch_controls_active();
 }

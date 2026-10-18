@@ -507,7 +507,15 @@ NativeInput NativeInput::sdl(std::function<void*()> focus_window, std::function<
         SDL_GameController* controller = pads->get(user);
         if (user == 0) note_controller(controller != nullptr);
         if (!controller) return std::nullopt;
-        return read_sdl_pad(controller);
+        const GamepadState state = read_sdl_pad(controller);
+        // A button or a stick past a small dead zone takes over from the
+        // touch controls (touch_controls.h).
+        constexpr int dead_zone = 8000;
+        if (user == 0 && (state.buttons || state.left_trigger > 30 || state.right_trigger > 30 ||
+                          std::abs(state.thumb_lx) > dead_zone || std::abs(state.thumb_ly) > dead_zone ||
+                          std::abs(state.thumb_rx) > dead_zone || std::abs(state.thumb_ry) > dead_zone))
+            note_controller_input();
+        return state;
     };
     // One reader per player, each with that player's own keys. Only the
     // first player's carries the on-screen touch controls: they are one pair
