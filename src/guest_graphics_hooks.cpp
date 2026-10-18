@@ -661,6 +661,10 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
               << " pipelines=" << pipeline_work.created << " pipeline_ms=" << pipeline_work.milliseconds
               << " ring_flushes=" << pipeline_work.ring_flushes
               << " resolve_copies=" << pipeline_work.resolve_copies
+              << " descriptor_sets=" << pipeline_work.descriptor_sets
+              << " descriptor_writes=" << pipeline_work.descriptor_writes
+              << " descriptor_binds=" << pipeline_work.descriptor_binds
+              << " descriptor_ms=" << pipeline_work.descriptor_milliseconds
               << " watch_faults=" << sfr::GuestMemory::watch_faults.exchange(0, std::memory_order_relaxed)
               << " constant_upload_bytes=" << pipeline_work.constant_upload_bytes
               << " constant_reusable_bytes=" << pipeline_work.constant_reusable_bytes

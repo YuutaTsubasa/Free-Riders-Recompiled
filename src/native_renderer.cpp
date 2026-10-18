@@ -271,6 +271,17 @@ uint32_t guest_view(GuestMemory& memory, uint32_t physical, uint64_t size) {
 
 struct BoundedDescriptors;
 
+// Whether the frame metrics are on (as guest_graphics_hooks.cpp turns them
+// on), so the renderer's own timers are worth their clock reads.
+static bool frame_metrics_timed() {
+    static const bool timed = [] {
+        const char* metrics = std::getenv("SFR_FRAME_METRICS");
+        const char* trace = std::getenv("SFR_TRACE_GRAPHICS");
+        return metrics ? *metrics != '0' : !trace || *trace != '0';
+    }();
+    return timed;
+}
+
 struct NativeRenderer::Impl {
     // What the presentation's current command list has bound (its
     // list_generation): the layout, sets and zero stream stay bound from draw
@@ -611,6 +622,12 @@ struct BoundedDescriptors {
     std::array<VkImageView, 3> null{};
     BoundedLengths lengths;
     uint64_t sets_made = 0;
+    // For the frame metrics (take_pipeline_work): sets allocated and
+    // descriptors written by the draws, pairs bound by the render thread,
+    // and the draws' time in bind().
+    uint32_t frame_sets = 0, frame_writes = 0;
+    std::atomic<uint32_t> frame_binds{0};
+    double frame_ms = 0;
     bool reported_type = false, reported_overflow = false;
 
     ~BoundedDescriptors() {
@@ -647,6 +664,7 @@ struct BoundedDescriptors {
             const VkResult result = vkAllocateDescriptorSets(device, &info, &set);
             if (result == VK_SUCCESS) {
                 ++sets_made;
+                ++frame_sets;
                 return set;
             }
             if (result != VK_ERROR_OUT_OF_POOL_MEMORY && result != VK_ERROR_FRAGMENTED_POOL)
@@ -725,6 +743,7 @@ struct BoundedDescriptors {
                 writes[b].pImageInfo = images.data() + first;
             }
             vkUpdateDescriptorSets(device, uint32_t(writes.size()), writes.data(), 0, nullptr);
+            frame_writes += lengths.textures();
         }
         auto& sampler_set = ring.sampler_sets[sampler_key];
         if (!sampler_set) {
@@ -741,6 +760,7 @@ struct BoundedDescriptors {
             write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
             write.pImageInfo = infos.data();
             vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+            frame_writes += count;
         }
         return {texture_set, sampler_set};
     }
@@ -1162,6 +1182,14 @@ NativeRenderer::PipelineWork NativeRenderer::take_pipeline_work() noexcept {
     work.constant_saved_bytes = impl_->constant_saved_bytes;
     impl_->constant_saved_bytes = 0;
     work.resolve_copies = impl_->resolve_copies;
+    if (auto* bounded = impl_->bounded.get()) {
+        work.descriptor_sets = bounded->frame_sets;
+        work.descriptor_writes = bounded->frame_writes;
+        work.descriptor_binds = bounded->frame_binds.exchange(0, std::memory_order_relaxed);
+        work.descriptor_milliseconds = bounded->frame_ms;
+        bounded->frame_sets = bounded->frame_writes = 0;
+        bounded->frame_ms = 0;
+    }
     impl_->resolve_copies = 0;
     impl_->pipelines_created = 0;
     impl_->pipeline_ms = 0;
@@ -1464,11 +1492,7 @@ uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
     // guest changed it, and the upload when it did. Only for the frame
     // metrics (on as guest_graphics_hooks.cpp turns them on): a race frame
     // asks hundreds of times, two clock reads each.
-    static const bool timed = [] {
-        const char* metrics = std::getenv("SFR_FRAME_METRICS");
-        const char* trace = std::getenv("SFR_TRACE_GRAPHICS");
-        return metrics ? *metrics != '0' : !trace || *trace != '0';
-    }();
+    static const bool timed = frame_metrics_timed();
     struct TextureTimer {
         Impl& impl; std::chrono::steady_clock::time_point start;
         ~TextureTimer() {
@@ -1867,8 +1891,13 @@ void NativeRenderer::draw(const NativeDraw& draw) {
             for (auto& descriptor : shared.texture_2d)
                 if (descriptor < texture_capacity && impl_->resolved_texture_indices.test(descriptor)) descriptor |= 0x80000000u;
         }
+        const auto bind_start = frame_metrics_timed() ? std::chrono::steady_clock::now()
+                                                      : std::chrono::steady_clock::time_point{};
         std::tie(bounded_textures, bounded_samplers) =
             impl_->bounded->bind(impl_->bounded->rings[impl_->ring_index], shared, impl_->sampler_objects);
+        if (frame_metrics_timed())
+            impl_->bounded->frame_ms +=
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - bind_start).count();
         std::memcpy(mapped + shared_rel, &shared, sizeof(shared));
     } else {
         std::memcpy(mapped + shared_rel, &draw.shared, sizeof(draw.shared));
@@ -1925,6 +1954,7 @@ void NativeRenderer::draw(const NativeDraw& draw) {
             impl->bounded_generation = generation;
             impl->bound_texture_set = bounded_textures;
             impl->bound_sampler_set = bounded_samplers;
+            impl->bounded->frame_binds.fetch_add(1, std::memory_order_relaxed);
             const VkDescriptorSet sets[2] = {bounded_textures, bounded_samplers};
             vkCmdBindDescriptorSets(static_cast<plume::VulkanCommandList&>(list).vk, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                     static_cast<const plume::VulkanPipelineLayout*>(impl->layout.get())->vk, 0, 2, sets,

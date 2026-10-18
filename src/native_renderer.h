@@ -196,6 +196,11 @@ public:
         // Resolves copied this frame: each ends the render pass, which a tiling
         // GPU pays for with a store and a reload of the whole color and depth.
         uint32_t resolve_copies = 0;
+        // The bounded descriptor layout (Vulkan without descriptor indexing):
+        // sets allocated, descriptors written, pairs bound, and the time the
+        // draws spent choosing and writing their sets.
+        uint32_t descriptor_sets = 0, descriptor_writes = 0, descriptor_binds = 0;
+        double descriptor_milliseconds = 0;
     };
     PipelineWork take_pipeline_work() noexcept;
     // Unchanged while texture() and sampler() would answer the same fetch
