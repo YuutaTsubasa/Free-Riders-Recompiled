@@ -4,6 +4,7 @@
 #include "native_thread.h"
 
 #include "guest_memory.h"
+#include "host_core_plan.h"
 #include "portable_waitables.h"
 
 #include <pthread.h>
@@ -260,8 +261,20 @@ uint64_t NativeThread::set_guest_processor(uint32_t guest_cpu) {
     // scheduler; they do not require physical host affinity. Preserve the
     // inherited mask and let Android place workers. Keep the old mapping as
     // an explicit diagnostic control for matched performance comparisons.
+    // The core plan may still keep workers to a set of cores (host_core_plan.h).
     const char* affinity = std::getenv("SFR_WORKER_AFFINITY");
-    if (!affinity || *affinity != '1') return affinity_mask();
+    if (!affinity || *affinity != '1') {
+        if (const uint64_t mask = host_role_mask(HostThreadRole::worker)) {
+            cpu_set_t set;
+            CPU_ZERO(&set);
+            for (int cpu = 0; cpu < 64; ++cpu)
+                if (mask >> cpu & 1) CPU_SET(cpu, &set);
+            // Refused (EINVAL) while the app's cpuset holds none of these
+            // cores, as in the background: the thread keeps what it has.
+            (void)set_thread_affinity(impl_->thread, set);
+        }
+        return affinity_mask();
+    }
 #endif
     static std::mutex order_lock;
     static uint64_t ordered_for = 0;

@@ -4361,6 +4361,7 @@ int main(int argc, char** argv) {
     if (const char* selftest = std::getenv("SFR_GRAPHICS_SELFTEST"); selftest && *selftest == '1')
         return sfr_graphics_selftest();
 #endif
+    const uint64_t test_cpus = sfr::apply_test_process_cpus();  // before this process starts threads of its own
     const auto host_timing = sfr::configure_host_timing();  // before any thread starts
     // The trace is written through std::cerr, which is unbuffered: one write
     // per insertion dominated the run time. Buffer it (1 MiB); normal exits
@@ -4370,6 +4371,7 @@ int main(int argc, char** argv) {
     std::setvbuf(stderr, trace_buffer, _IOFBF, sizeof trace_buffer);
     std::cerr.unsetf(std::ios::unitbuf);
     std::cerr << host_timing.describe() << '\n';
+    if (test_cpus) std::cerr << "TEST_CPUS mask=0x" << std::hex << test_cpus << std::dec << '\n';
     struct TraceFlush { ~TraceFlush() { std::cerr.flush(); std::fflush(stderr); } } trace_flush;
 #if defined(__APPLE__)
     sfr::preload_bundled_vulkan();
@@ -4917,9 +4919,9 @@ int main(int argc, char** argv) {
             std::cerr << "MAIN_HOST_AFFINITY unpinned processors=" << host_processors << '\n';
         }
 #else
-        if (sfr::host_core_plan() & 2)
-            std::cerr << "MAIN_HOST_AFFINITY fastest mask=0x" << std::hex << sfr::prefer_fastest_host_processors()
-                      << std::dec << '\n';
+        if (const auto plan = sfr::describe_core_plan(); !plan.empty()) std::cerr << plan << '\n';
+        if (const uint64_t mask = sfr::place_host_thread(sfr::HostThreadRole::main))
+            std::cerr << "MAIN_HOST_AFFINITY mask=0x" << std::hex << mask << std::dec << '\n';
 #endif
         ctx.fpscr.loadFromHost();
         {
