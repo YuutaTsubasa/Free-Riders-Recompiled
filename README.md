@@ -194,6 +194,8 @@ with [docs/progress.md](docs/progress.md).
   Old Mali phones (Mali-G72/G76) no longer freeze on the first frame (#169). Phones with little CPU cores, such as the Pixel 10a, keep the game's helper threads off them (#176). Kinect v2: a Motion trace switch in the launcher and two jump fixes (#165). The fallback renderer for GPUs without descriptor indexing writes far fewer descriptors (#134).
 - [v0.10.5 — Touch-friendly launcher, first iPhone fixes](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.5)
   The launcher scrolls with a finger and has wider scrollbars on touch screens (#186); the on-screen game controls come back with a touch even when a controller or keyboard is connected (#177). On iPhone the app has its icon, the launcher fits the screen, and a disc image in the app's Files folder is found without the picker (#185).
+- [v0.10.6 — Mac at full speed, iPhone starts](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.6)
+  On Apple Silicon Macs, races run at full speed: the GPU went from 6.5 to 60 fps on an M1. On iPhone the game no longer stops at its first frame (#185), and the launcher shows Chinese. On phones the game stays in landscape instead of turning with the phone (#177).
 
 ## System Requirements
 
