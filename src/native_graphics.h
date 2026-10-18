@@ -66,7 +66,8 @@ public:
     // Whether shader_code changes SPIR-V on this device: the bounded layout,
     // vertex shaders without their clip distance (spirv_clip_distance.h:
     // Mali, or a device without shaderClipDistance), with compacted inputs,
-    // or SPIR-V 1.3 for a Vulkan 1.1 device (spirv_version.h).
+    // or SPIR-V 1.3 for a Vulkan 1.1 device (spirv_version.h), and on Apple
+    // without XenosRecomp's dispatch loops (spirv_dispatch_loop.h).
     [[nodiscard]] bool rewrites_shaders() const noexcept;
     // The shader's code as this device takes it: SPIR-V without its clip
     // distance, with compacted vertex inputs, in the bounded layout and as
