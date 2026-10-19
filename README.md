@@ -200,6 +200,8 @@ with [docs/progress.md](docs/progress.md).
   The on-screen controls gain the power-skill punches (LB/RB), a right stick to reach for Rings, and LT to hold hands in Tag races (#177), and now also draw on Windows touch screens. Android logs where race frame time goes, to find why some phones run slowly (#176).
 - [v0.10.8 — D3D12 on older drivers, very wide windows](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.8)
   D3D12 no longer stops on drivers that can't flip the depth range, such as older NVIDIA drivers (#177). A very wide window draws as wide as the render size allows (up to about 11:1) instead of black bars from about 5.7:1 (#190).
+- [v0.10.9 — Fly board fix, frame skipping choice](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.9)
+  The Fly board at Dolphin Resort no longer sometimes launches a racer through the wall (#153). The launcher gains a Frame skipping choice for slow CPUs (#177). Phones with one much faster core, such as the Pixel 10a, run the game's main thread on it (#176).
 
 ## System Requirements
 
