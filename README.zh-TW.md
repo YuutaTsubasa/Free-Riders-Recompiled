@@ -298,7 +298,7 @@ Linux／Android 實機 VRM 遊玩仍待更多測試。
 - [Plume](https://github.com/renderbag/plume)（繪圖）、[SDL](https://www.libsdl.org)（Linux 與
   Android）、[Dear ImGui](https://github.com/ocornut/imgui)（啟動器）、
   [DirectX Shader Compiler](https://github.com/microsoft/DirectXShaderCompiler)（經
-  [dxc-bin](https://github.com/renderbag/dxc-bin)）。
+  [dxc-bin](https://github.com/renderbag/dxc-bin)）、[MoltenVK](https://github.com/KhronosGroup/MoltenVK)（macOS 與 iOS 上的 Vulkan）。
 - [Xenia](https://github.com/xenia-project/xenia)：Xbox 360 核心行為的參考。
 - [Xenia Canary 的連線版](https://github.com/AdrianCassar/xenia-canary)（`netplay_canary_experimental`，
   BSD 授權）：線上對戰所回應的 Xbox LIVE 結構與訊息編號的參考。沒有使用它的程式碼。
@@ -314,12 +314,13 @@ Linux／Android 實機 VRM 遊玩仍待更多測試。
 ### 貢獻者
 
 - [knuckleslee](https://github.com/knuckleslee)：程式與研究——Windows 10 上的 D3D12（[#14](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/14)）、Avatar 的體型回覆（[#15](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/15)）、
-  實體 Kinect 遊玩（[#21](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/21)）、效能測試流程（[#51](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/51)）、暫停手勢、選單游標穩定、視窗標題效能、調整視窗與存檔目錄（[#99](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/99)～[#104](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/104)），以及在 4 核心電腦上的詳細效能量測，讓比賽變得更順（[#33](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/33)、[#52](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/52)、[#62](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/62)、[#65](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/65)）。
-- 回報問題、提供 log 與當機記錄、協助測試修正的玩家：[Anim233](https://github.com/Anim233), [dareon88](https://github.com/dareon88), [Didgo1](https://github.com/Didgo1), [Diego-Yoshi](https://github.com/Diego-Yoshi), [francisc0frank0](https://github.com/francisc0frank0), [Infeernuss](https://github.com/Infeernuss), [Janybrito](https://github.com/Janybrito), [Joka2010](https://github.com/Joka2010), [JolTH-dot](https://github.com/JolTH-dot), [KillerBunny12](https://github.com/KillerBunny12), [Koyurofox](https://github.com/Koyurofox), [Larry654](https://github.com/Larry654), [MegaCrashFan](https://github.com/MegaCrashFan), [Minuteworld94](https://github.com/Minuteworld94), [mymes1](https://github.com/mymes1), [shiny-ribbon](https://github.com/shiny-ribbon), [tameradel578-cmyk](https://github.com/tameradel578-cmyk)。
+  實體 Kinect 遊玩（[#21](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/21)）、效能測試流程（[#51](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/51)）、暫停手勢、選單游標穩定、視窗標題效能、調整視窗與存檔目錄（[#99](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/99)～[#104](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/104)）、超寬螢幕與貼齊邊緣的 HUD（[#113](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/pull/113)、[#114](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/pull/114)），以及在 4 核心電腦上的詳細效能量測，讓比賽變得更順（[#33](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/33)、[#52](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/52)、[#62](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/62)、[#65](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/65)）。
+- [Saiyokage](https://github.com/Saiyokage)：在 Android 上長時間測試、逐一檢查每條賽道的裝備區（[#212](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/212)），以及讓 Fly 滑板問題得以修正的影片（[#153](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/153)）。
+- 回報問題、提供 log 與當機記錄、協助測試修正的玩家：[18Spiderman15](https://github.com/18Spiderman15), [Anim233](https://github.com/Anim233), [ArtisIan97](https://github.com/ArtisIan97), [CODEX0827](https://github.com/CODEX0827), [Crappy-Productions](https://github.com/Crappy-Productions), [dareon88](https://github.com/dareon88), [Didgo1](https://github.com/Didgo1), [Diego-Yoshi](https://github.com/Diego-Yoshi), [francisc0frank0](https://github.com/francisc0frank0), [Infeernuss](https://github.com/Infeernuss), [ITSeniy](https://github.com/ITSeniy), [Janybrito](https://github.com/Janybrito), [Joka2010](https://github.com/Joka2010), [JolTH-dot](https://github.com/JolTH-dot), [KillerBunny12](https://github.com/KillerBunny12), [KnivesDevilish](https://github.com/KnivesDevilish), [Koyurofox](https://github.com/Koyurofox), [Larry654](https://github.com/Larry654), [MegaCrashFan](https://github.com/MegaCrashFan), [Minuteworld94](https://github.com/Minuteworld94), [mymes1](https://github.com/mymes1), [Mysterion2006](https://github.com/Mysterion2006), [NeoCharmy](https://github.com/NeoCharmy), [Saiyokage](https://github.com/Saiyokage), [shiny-ribbon](https://github.com/shiny-ribbon), [shireon12](https://github.com/shireon12), [tameradel578-cmyk](https://github.com/tameradel578-cmyk)。
 
 謝謝大家。每一份附上 `game.log` 或當機記錄的回報，都讓修正成為可能。
 
-本專案在 AI 模型 GPT-6 與 Claude Opus 5 的協助下開發。
+本專案在 AI 模型 GPT-6、Claude Opus 5 與 Claude Opus 5.5 的協助下開發。
 
 授權與確切版本見 [THIRD_PARTY.md](THIRD_PARTY.md) 與
 [config/dependencies.lock.json](config/dependencies.lock.json)。
