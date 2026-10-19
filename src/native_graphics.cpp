@@ -28,6 +28,10 @@
 #include <wrl/client.h>
 #else
 #include <SDL.h>
+#include <dlfcn.h>
+#endif
+#if defined(__APPLE__)
+#include "apple_vulkan_loader.h"
 #endif
 
 namespace plume {
@@ -155,6 +159,37 @@ std::string graphics_driver_version(GraphicsBackend backend, uint32_t vendor_id,
     return text.str();
 }
 
+// The driver's name and version (Vulkan 1.2's driver properties) and the
+// library Vulkan's entry points came from: the driver itself (the app's
+// MoltenVK on macOS and iOS) or a Vulkan loader.
+static std::string vulkan_driver_description(VkPhysicalDevice physical, uint32_t api_version) {
+    std::ostringstream text;
+    if (api_version >= VK_API_VERSION_1_2 && vkGetPhysicalDeviceProperties2) {
+        VkPhysicalDeviceDriverProperties driver{};
+        driver.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES;
+        VkPhysicalDeviceProperties2 properties{};
+        properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+        properties.pNext = &driver;
+        vkGetPhysicalDeviceProperties2(physical, &properties);
+        text << "name=\"" << driver.driverName << "\" info=\"" << driver.driverInfo << "\" ";
+    }
+    std::string library = "unknown";
+#ifdef _WIN32
+    HMODULE module = nullptr;
+    char path[MAX_PATH];
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCSTR>(vkGetInstanceProcAddr), &module) &&
+        GetModuleFileNameA(module, path, MAX_PATH))
+        library = path;
+#else
+    Dl_info info{};
+    if (vkGetInstanceProcAddr && dladdr(reinterpret_cast<void*>(vkGetInstanceProcAddr), &info) && info.dli_fname)
+        library = info.dli_fname;
+#endif
+    text << "library=" << library;
+    return text.str();
+}
+
 struct NativeGraphics::Impl {
     GraphicsBackend backend = GraphicsBackend::d3d12;
     std::unique_ptr<plume::RenderInterface> render_interface;
@@ -208,6 +243,12 @@ void NativeGraphics::initialize() {
         return backend == GraphicsBackend::vulkan && value && std::strcmp(value, "1") == 0;
     };
     plume::VulkanInterface::testApiVersion = test_switch("SFR_TEST_VULKAN_1_1") ? VK_API_VERSION_1_1 : 0;
+#if defined(__APPLE__)
+    // The app's own MoltenVK, not a Vulkan SDK's loader and driver that
+    // volk would find first (Issue #207; apple_vulkan_loader.h).
+    plume::VulkanInterface::getInstanceProcAddr =
+        reinterpret_cast<PFN_vkGetInstanceProcAddr>(bundled_vulkan_get_instance_proc_addr());
+#endif
 #ifdef _WIN32
     // SFR_D3D12_DEBUG=1: the D3D12 debug layer (Windows' Graphics Tools),
     // its messages on the log as D3D12_DEBUG lines.
@@ -254,6 +295,7 @@ void NativeGraphics::initialize() {
     if (!render_interface) SDL_DestroyWindow(window);
 #endif
     plume::VulkanInterface::testApiVersion = 0;
+    plume::VulkanInterface::getInstanceProcAddr = nullptr;
     if (!render_interface)
         throw std::runtime_error(std::string("failed to create the ") + name + " render interface");
 
@@ -325,6 +367,9 @@ void NativeGraphics::initialize() {
         std::cerr << "NATIVE_SPIRV api=" << VK_API_VERSION_MAJOR(version) << '.' << VK_API_VERSION_MINOR(version)
                   << " version=" << (spirv_1_3 ? "1.3" : "1.5") << " scalar_block_layout="
                   << capabilities.scalarBlockLayout << " device_address=" << capabilities.bufferDeviceAddress << '\n';
+        // Which driver, and which library, runs the game: a Mac with the
+        // Vulkan SDK installed ran the SDK's MoltenVK, not the app's (Issue #207).
+        std::cerr << "NATIVE_VULKAN_DRIVER " << vulkan_driver_description(vulkan_device->physicalDevice, version) << '\n';
     }
 
     // The renderer binds every texture through one array of 4096 that is
