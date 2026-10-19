@@ -8,6 +8,7 @@
 #include "host_thread_stats.h"
 #include "performance_hint.h"
 #include "native_raster_state.h"
+#include "native_depth_flip.h"
 #include "gltf_model.h"
 #include "touch_controls.h"
 #include "title_stats.h"
@@ -63,6 +64,12 @@
 #include "blit_ps_spirv.h"
 #include "model_vs_spirv.h"
 #include "model_ps_spirv.h"
+#ifdef _WIN32
+// Inverted viewport depth where D3D12 cannot do it (native_depth_flip.h).
+#include "depth_flip_point_gs_dxil.h"
+#include "depth_flip_line_gs_dxil.h"
+#include "depth_flip_triangle_gs_dxil.h"
+#endif
 
 namespace {
 #ifdef _WIN32
@@ -304,7 +311,7 @@ struct NativePresentation::Impl {
     }
     // The title's viewport and scissor at the render resolution.
     void scaled_raster(plume::RenderViewport& viewport, plume::RenderRect& scissor) const {
-        viewport = raster_state->viewport();
+        viewport = raster_state->device_viewport();
         const float x = target ? float(target->width) / target_logical_width : float(render_width) / width;
         const float y = target ? float(target->height) / target_logical_height : float(render_height) / height;
         viewport.x *= x; viewport.width *= x;
@@ -329,6 +336,8 @@ struct NativePresentation::Impl {
     bool start_fullscreen = false;
     bool ready = false;
     std::unique_ptr<NativeRasterState> raster_state;
+    // Made only where the device cannot invert viewport depth: points, lines, triangles.
+    std::array<std::unique_ptr<plume::RenderShader>, 3> depth_flip_shaders;
     std::unique_ptr<plume::RenderSwapChain> swap_chain;
     std::unique_ptr<plume::RenderTexture> color;
     std::unique_ptr<plume::RenderTexture> depth;
@@ -1263,6 +1272,7 @@ void NativePresentation::Impl::draw_model(const AvatarFrameTransform& frame) {
         for (int channel = 0; channel < 4; ++channel) constants[20 + size_t(channel)] = part.colour[channel];
         constants[24] = part.cutoff;
         constants[25] = part.unlit ? 1.0f : 0.0f;
+        constants[26] = raster_state->flips_depth() ? 1.0f : 0.0f;
         command_list->setGraphicsDescriptorSet(model_picture_sets[part.picture].get(), 0);
         command_list->setGraphicsPushConstants(0, constants.data());
         command_list->drawIndexedInstanced(part.count, 1, part.first, 0, 0);
@@ -1317,6 +1327,20 @@ NativePresentation::NativePresentation(NativeGraphics& graphics, uint32_t width,
     const auto step = [](const char* name) { std::cerr << "NATIVE_PRESENTATION step=" << name << '\n'; };
     step("raster_state");
     implementation->raster_state = std::make_unique<NativeRasterState>(graphics, width, height);
+#ifdef _WIN32
+    if (graphics.backend() == GraphicsBackend::d3d12 && !implementation->raster_state->inverted_depth_supported()) {
+        const std::array<std::pair<const unsigned char*, size_t>, 3> code{{
+            {depth_flip_point_gs_dxil, sizeof(depth_flip_point_gs_dxil)},
+            {depth_flip_line_gs_dxil, sizeof(depth_flip_line_gs_dxil)},
+            {depth_flip_triangle_gs_dxil, sizeof(depth_flip_triangle_gs_dxil)}}};
+        const char* entries[] = {"pointMain", "lineMain", "triangleMain"};
+        for (size_t i = 0; i < code.size(); ++i) {
+            implementation->depth_flip_shaders[i] = graphics.device().createShader(
+                code[i].first, code[i].second, entries[i], plume::RenderShaderFormat::DXIL);
+            if (!implementation->depth_flip_shaders[i]) unavailable("depth flip geometry shader");
+        }
+    }
+#endif
     step("window");
 
 #ifdef _WIN32
@@ -1562,6 +1586,15 @@ void NativePresentation::set_raster_state(const plume::RenderViewport& viewport,
 }
 
 const NativeRasterState& NativePresentation::raster_state() const noexcept { return *impl_->raster_state; }
+
+const plume::RenderShader* NativePresentation::depth_flip_shader(plume::RenderPrimitiveTopology topology) const noexcept {
+    switch (depth_flip_stage(topology)) {
+    case DepthFlipStage::point: return impl_->depth_flip_shaders[0].get();
+    case DepthFlipStage::line: return impl_->depth_flip_shaders[1].get();
+    case DepthFlipStage::triangle: return impl_->depth_flip_shaders[2].get();
+    default: return nullptr;
+    }
+}
 
 void NativePresentation::set_target(uint64_t key, uint32_t surface_width, uint32_t surface_height,
                                     uint32_t logical_width, uint32_t logical_height) {

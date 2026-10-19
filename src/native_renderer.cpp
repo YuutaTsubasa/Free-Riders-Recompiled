@@ -19,6 +19,7 @@
 #include "native_formats.h"
 #include "native_graphics.h"
 #include "native_presentation.h"
+#include "native_raster_state.h"
 #include <plume_render_interface.h>
 #include <plume_render_interface_builders.h>
 #include <algorithm>
@@ -144,12 +145,14 @@ private:
 
 std::unique_ptr<plume::RenderPipeline> create_draw_pipeline(plume::RenderDevice& device,
         const plume::RenderPipelineLayout* layout, const NativeDraw& draw, GraphicsBackend backend,
-        plume::RenderFormat depth_format) {
+        plume::RenderFormat depth_format, const plume::RenderShader* depth_flip = nullptr) {
     const std::array<plume::RenderInputSlot, 2> slots{plume::RenderInputSlot(0, draw.stride),
                                                        plume::RenderInputSlot(zero_slot, 0)};
         plume::RenderGraphicsPipelineDesc desc;
         desc.pipelineLayout = layout;
         desc.vertexShader = draw.vertex_shader;
+        // Only under an inverted viewport the device cannot invert (native_depth_flip.h).
+        desc.geometryShader = depth_flip;
         desc.pixelShader = draw.pixel_shader;
         const plume::RenderSpecConstant spec(0, draw.pixel_spec_constants);
         if (draw.pixel_spec_constants) {
@@ -413,10 +416,15 @@ struct NativeRenderer::Impl {
     };
     std::unordered_map<std::vector<uint8_t>, std::shared_ptr<plume::RenderPipeline>, KeyHash> pipelines;
     std::unordered_map<std::vector<uint8_t>, std::shared_ptr<plume::RenderPipeline>, KeyHash> recipe_pipelines;
+    // The same, with z flipped by a geometry shader: draws under an inverted
+    // viewport on a device that cannot invert one (native_depth_flip.h).
+    std::unordered_map<std::vector<uint8_t>, std::shared_ptr<plume::RenderPipeline>, KeyHash> flipped_pipelines;
+    std::unordered_map<std::vector<uint8_t>, std::shared_ptr<plume::RenderPipeline>, KeyHash> recipe_flipped_pipelines;
     std::map<std::vector<uint8_t>, PipelineRecipe> recipes;
     // The previous draw's key and its entry in pipelines.
     std::vector<uint8_t> last_pipeline_key;
     std::shared_ptr<plume::RenderPipeline>* last_pipeline = nullptr;
+    bool last_pipeline_flipped = false;
     std::unordered_map<const ShaderCacheEntry*, std::unique_ptr<plume::RenderShader>> prepared_shaders;
     std::filesystem::path learned_manifest;
     bool manifest_dirty = false, preparation_started = false;
@@ -861,6 +869,10 @@ void NativeRenderer::prepare_pipelines() {
     size_t skipped = 0, compiled = 0;
     std::exception_ptr failure;
     const size_t total = impl_->recipes.size();
+    // Without inverted viewport depth on the device, the flipped pipelines:
+    // the title draws everything under an inverted viewport.
+    const bool flip = !impl_->presentation.raster_state().inverted_depth_supported();
+    auto& prepared = flip ? impl_->recipe_flipped_pipelines : impl_->recipe_pipelines;
     // Present once before any worker/driver activity, including creation of
     // the preparation screen's own blit resources.
     if (!impl_->presentation.preparation_progress(0, total))
@@ -903,10 +915,14 @@ void NativeRenderer::prepare_pipelines() {
                     state.vertex_shader = shader(*vs);
                     state.pixel_shader = backend == 0 && ps->specialization_mask ?
                         specialized(*ps, recipe.pixel_link_constants) : shader(*ps);
+                    const plume::RenderShader* depth_flip = nullptr;
+                    if (flip && !(depth_flip = impl_->presentation.depth_flip_shader(state.topology)))
+                        throw std::runtime_error("no depth flip geometry shader for the topology");
                     auto pipeline = create_draw_pipeline(impl_->graphics.device(), impl_->layout.get(), state,
-                                                         impl_->graphics.backend(), impl_->graphics.depth_format());
+                                                         impl_->graphics.backend(), impl_->graphics.depth_format(),
+                                                         depth_flip);
                     if (pipeline) {
-                        impl_->recipe_pipelines.emplace(key, std::move(pipeline));
+                        prepared.emplace(key, std::move(pipeline));
                         ++compiled;
                     } else {
                         ++skipped;
@@ -939,14 +955,14 @@ void NativeRenderer::prepare_pipelines() {
     impl_->presentation.finish_preparation();
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
     std::cerr << "PIPELINE_PREWARM complete=1 total=" << total << " compiled=" << compiled
-              << " skipped=" << skipped << " milliseconds=" << ms << '\n';
+              << " skipped=" << skipped << " depth_flip=" << flip << " milliseconds=" << ms << '\n';
 }
 
 std::vector<NativeDraw> NativeRenderer::prepared_draws() {
     std::vector<NativeDraw> draws;
     const uint32_t backend = uint32_t(impl_->graphics.backend());
     for (const auto& [key, recipe] : impl_->recipes) {
-        if (!impl_->recipe_pipelines.contains(key)) continue;
+        if (!impl_->recipe_pipelines.contains(key) && !impl_->recipe_flipped_pipelines.contains(key)) continue;
         const auto* vs = packed_pipeline_shader(ShaderStage::vertex, recipe.vertex.hash, recipe.vertex.size);
         const auto* ps = packed_pipeline_shader(ShaderStage::pixel, recipe.pixel.hash, recipe.pixel.size);
         const auto vertex = vs ? impl_->prepared_shaders.find(vs) : impl_->prepared_shaders.end();
@@ -1816,10 +1832,14 @@ void NativeRenderer::draw(const NativeDraw& draw) {
     // before them: compared with its key (some six hundred bytes), the key
     // needs no hash and no lookup. Map entries are never erased, so the
     // remembered one stays valid.
-    if (!impl_->last_pipeline || key != impl_->last_pipeline_key) {
-        impl_->last_pipeline = &impl_->pipelines[key];  // copies the key only when inserting
+    const bool flip = impl_->presentation.raster_state().flips_depth();
+    if (!impl_->last_pipeline || flip != impl_->last_pipeline_flipped || key != impl_->last_pipeline_key) {
+        // copies the key only when inserting
+        impl_->last_pipeline = &(flip ? impl_->flipped_pipelines : impl_->pipelines)[key];
         impl_->last_pipeline_key = key;
+        impl_->last_pipeline_flipped = flip;
     }
+    auto& recipe_pipelines = flip ? impl_->recipe_flipped_pipelines : impl_->recipe_pipelines;
     auto& pipeline = *impl_->last_pipeline;
     const std::array<plume::RenderInputSlot, 2> slots{plume::RenderInputSlot(0, draw.stride),
                                                        plume::RenderInputSlot(zero_slot, 0)};
@@ -1833,7 +1853,7 @@ void NativeRenderer::draw(const NativeDraw& draw) {
             recipe->pixel_link_constants = draw.pixel_link_constants;
             recipe->state = draw;
             recipe_key = pipeline_recipe_key(*recipe);
-            if (const auto found = impl_->recipe_pipelines.find(recipe_key); found != impl_->recipe_pipelines.end()) {
+            if (const auto found = recipe_pipelines.find(recipe_key); found != recipe_pipelines.end()) {
                 pipeline = found->second;
                 ++impl_->prewarm_hits;
                 std::cerr << "PIPELINE_PREWARM hit=" << impl_->prewarm_hits << '\n';
@@ -1845,14 +1865,17 @@ void NativeRenderer::draw(const NativeDraw& draw) {
     }
     if (!pipeline) {
         const auto pipeline_start = std::chrono::steady_clock::now();
+        const plume::RenderShader* depth_flip = nullptr;
+        if (flip && !(depth_flip = impl_->presentation.depth_flip_shader(draw.topology)))
+            unsupported(uint32_t(draw.topology), "no depth flip geometry shader for the topology");
         pipeline = create_draw_pipeline(device, impl_->layout.get(), draw, impl_->graphics.backend(),
-                                        impl_->graphics.depth_format());
+                                        impl_->graphics.depth_format(), depth_flip);
         if (!pipeline) unsupported(0, "native graphics pipeline creation failed");
         ++impl_->pipelines_created;
         impl_->pipeline_ms += std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - pipeline_start).count();
         if (recipe) {
-            impl_->recipe_pipelines.emplace(recipe_key, pipeline);
+            recipe_pipelines.emplace(recipe_key, pipeline);
             if (impl_->recipes.size() < pipeline_manifest_max_recipes) {
                 // Round-trip removes per-draw pointers, spans and constants;
                 // only immutable owned pipeline state is retained.

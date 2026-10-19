@@ -1,5 +1,6 @@
 #include "native_raster_state.h"
 
+#include "native_depth_flip.h"
 #include "native_graphics.h"
 #ifdef _WIN32
 #include "plume_d3d12.h"
@@ -7,6 +8,8 @@
 #include "plume_render_interface.h"
 
 #include <cmath>
+#include <cstdlib>
+#include <iostream>
 #include <stdexcept>
 
 #ifndef _WIN32
@@ -38,6 +41,12 @@ NativeRasterState::NativeRasterState(NativeGraphics& graphics, uint32_t target_w
         inverted_depth = SUCCEEDED(native_device->d3d->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS13, &options,
                                                                             sizeof(options))) &&
                          options.InvertedViewportDepthFlipsZSupported != FALSE;
+        const bool device_inverts = inverted_depth;
+        if (inverted_depth_disabled_for_test(std::getenv("SFR_TEST_NO_INVERTED_DEPTH"))) inverted_depth = false;
+        // Without it the title's inverted viewports are drawn with z flipped
+        // in a geometry shader instead (Issue #177).
+        std::cerr << "NATIVE_DEPTH_RANGE inverted=" << (inverted_depth ? "device" : "flipped")
+                  << " device_support=" << device_inverts << std::endl;
     }
 #endif
 
@@ -59,8 +68,6 @@ void NativeRasterState::set(const plume::RenderViewport& viewport, const plume::
     if (!std::isfinite(viewport.minDepth) || !std::isfinite(viewport.maxDepth) ||
         viewport.minDepth < 0 || viewport.minDepth > 1 || viewport.maxDepth < 0 || viewport.maxDepth > 1)
         throw std::invalid_argument("viewport depth values must be finite and between zero and one");
-    if (viewport.minDepth > viewport.maxDepth && !inverted_depth_supported_)
-        throw std::runtime_error("inverted viewport depth is unsupported by the device");
     if (scissor.left < 0 || scissor.top < 0 || scissor.left > scissor.right || scissor.top > scissor.bottom ||
         static_cast<uint32_t>(scissor.right) > target_width_ || static_cast<uint32_t>(scissor.bottom) > target_height_)
         throw std::invalid_argument("scissor must be ordered and within the target bounds");
@@ -70,11 +77,15 @@ void NativeRasterState::set(const plume::RenderViewport& viewport, const plume::
 }
 
 void NativeRasterState::apply(plume::RenderCommandList& command_list) const {
-    command_list.setViewports(viewport_);
+    command_list.setViewports(device_viewport());
     command_list.setScissors(scissor_);
 }
 
 const plume::RenderViewport& NativeRasterState::viewport() const noexcept { return viewport_; }
 const plume::RenderRect& NativeRasterState::scissor() const noexcept { return scissor_; }
 bool NativeRasterState::inverted_depth_supported() const noexcept { return inverted_depth_supported_; }
+plume::RenderViewport NativeRasterState::device_viewport() const noexcept {
+    return depth_flip_viewport(viewport_, inverted_depth_supported_);
+}
+bool NativeRasterState::flips_depth() const noexcept { return depth_flip_needed(viewport_, inverted_depth_supported_); }
 }

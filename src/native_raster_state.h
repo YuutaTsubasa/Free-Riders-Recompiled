@@ -21,6 +21,11 @@ public:
     [[nodiscard]] const plume::RenderViewport& viewport() const noexcept;
     [[nodiscard]] const plume::RenderRect& scissor() const noexcept;
     [[nodiscard]] bool inverted_depth_supported() const noexcept;
+    // The viewport as the device gets it: with an inverted depth range put
+    // in order where the device cannot invert it (native_depth_flip.h).
+    [[nodiscard]] plume::RenderViewport device_viewport() const noexcept;
+    // Whether draws under the current viewport flip z in a geometry shader.
+    [[nodiscard]] bool flips_depth() const noexcept;
 
 private:
     uint32_t target_width_ = 0;

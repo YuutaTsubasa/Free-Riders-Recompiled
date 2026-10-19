@@ -1,6 +1,11 @@
 #include "native_graphics.h"
 #include "native_raster_state.h"
 
+// Built with the game's own (CMakeLists.txt, sfr_embed_shader).
+#include "depth_flip_triangle_gs_dxil.h"
+#include "depth_flip_test_vs_dxil.h"
+#include "depth_flip_test_ps_dxil.h"
+
 #include "plume_d3d12.h"
 #include "plume_render_interface.h"
 
@@ -9,12 +14,14 @@
 #include <d3dcompiler.h>
 #include <wrl/client.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -73,18 +80,28 @@ void construction_and_validation_retain_only_valid_state() {
     state.set(plume::RenderViewport(0, 0, 1, 1), plume::RenderRect(3, 3, 3, 3));
     require(state.scissor() == plume::RenderRect(3, 3, 3, 3), "ordered empty scissor is accepted");
 
+    // Reverse depth is retained either way; without device support it is
+    // given to the device in order and its draws flip z (Issue #177).
     const plume::RenderViewport reverse(0, 0, 8, 6, 1, 0);
+    state.set(reverse, plume::RenderRect(0, 0, 8, 6));
+    require(state.viewport() == reverse, "reverse depth is retained");
     if (state.inverted_depth_supported()) {
-        state.set(reverse, plume::RenderRect(0, 0, 8, 6));
-        require(state.viewport() == reverse, "reported inverted-depth support accepts reverse depth");
+        require(!state.flips_depth() && state.device_viewport() == reverse, "a capable device gets reverse depth as it is");
     } else {
-        const auto before_viewport = state.viewport();
-        const auto before_scissor = state.scissor();
-        require(rejects_with<std::runtime_error>([&] { state.set(reverse, plume::RenderRect(0, 0, 8, 6)); }),
-                "actual lack of inverted-depth support explicitly rejects reverse depth");
-        require(state.viewport() == before_viewport && state.scissor() == before_scissor,
-                "unsupported reverse depth preserves prior state");
+        require(state.flips_depth() && state.device_viewport() == plume::RenderViewport(0, 0, 8, 6, 0, 1),
+                "a device without inverted depth gets the range in order and flips z");
     }
+    state.set(valid, valid_scissor);
+    require(!state.flips_depth() && state.device_viewport() == valid, "an ordered range is never flipped");
+
+    // The test switch takes the flipped path on any device.
+    _putenv_s("SFR_TEST_NO_INVERTED_DEPTH", "1");
+    sfr::NativeRasterState forced(graphics, 8, 6);
+    _putenv_s("SFR_TEST_NO_INVERTED_DEPTH", "");
+    require(!forced.inverted_depth_supported(), "SFR_TEST_NO_INVERTED_DEPTH=1 disables inverted depth");
+    forced.set(reverse, plume::RenderRect(0, 0, 8, 6));
+    require(forced.flips_depth() && forced.device_viewport() == plume::RenderViewport(0, 0, 8, 6, 0, 1),
+            "the forced state flips reverse depth");
 }
 
 ComPtr<ID3DBlob> compile_shader(const char* source, const char* entry, const char* target) {
@@ -99,12 +116,19 @@ ComPtr<ID3DBlob> compile_shader(const char* source, const char* entry, const cha
     return code;
 }
 
+// A DXIL program in place of the test's own shaders: a vertex shader with a
+// XenosRecomp vertex output, an optional geometry shader, a pixel shader.
+struct Program {
+    D3D12_SHADER_BYTECODE vs{}, gs{}, ps{};
+};
+
 struct DrawReadback {
     std::vector<std::array<uint8_t, 4>> color;
     std::vector<float> depth;
 };
 
-DrawReadback draw_triangle(sfr::NativeGraphics& graphics, const sfr::NativeRasterState& state, uint32_t width, uint32_t height) {
+DrawReadback draw_triangle(sfr::NativeGraphics& graphics, const sfr::NativeRasterState& state, uint32_t width, uint32_t height,
+                           const Program* program = nullptr) {
     auto* device = static_cast<plume::D3D12Device*>(&graphics.device())->d3d;
     require(device != nullptr, "native device is available");
     auto commands = graphics.queue().createCommandList();
@@ -166,6 +190,11 @@ DrawReadback draw_triangle(sfr::NativeGraphics& graphics, const sfr::NativeRaste
     pso_desc.pRootSignature = root.Get();
     pso_desc.VS = {vs->GetBufferPointer(), vs->GetBufferSize()};
     pso_desc.PS = {ps->GetBufferPointer(), ps->GetBufferSize()};
+    if (program) {
+        pso_desc.VS = program->vs;
+        pso_desc.GS = program->gs;
+        pso_desc.PS = program->ps;
+    }
     pso_desc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     pso_desc.SampleMask = UINT_MAX;
     pso_desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
@@ -285,6 +314,53 @@ void actual_gpu_draw_obeys_retained_viewport_scissor_and_depth_mapping() {
                     "inverted viewport maps synthetic z 0.25 to depth 0.75 on a new command list");
     }
 }
+
+// Issue #177: the geometry shader that flips z under an ordered range stores
+// the depth an inverted viewport stores, and passes the interpolators on.
+void flipped_depth_matches_the_inverted_viewport() {
+    constexpr uint32_t width = 16, height = 16;
+    sfr::NativeGraphics graphics;
+    graphics.initialize();
+    const plume::RenderViewport reverse(0, 0, float(width), float(height), 1, 0);
+    const plume::RenderRect scissor(0, 0, int32_t(width), int32_t(height));
+    _putenv_s("SFR_TEST_NO_INVERTED_DEPTH", "1");
+    sfr::NativeRasterState flipped_state(graphics, width, height);
+    _putenv_s("SFR_TEST_NO_INVERTED_DEPTH", "");
+    flipped_state.set(reverse, scissor);
+    require(flipped_state.flips_depth(), "the forced state flips");
+    Program flipped{{depth_flip_test_vs_dxil, sizeof(depth_flip_test_vs_dxil)},
+                    {depth_flip_triangle_gs_dxil, sizeof(depth_flip_triangle_gs_dxil)},
+                    {depth_flip_test_ps_dxil, sizeof(depth_flip_test_ps_dxil)}};
+    const auto emulated = draw_triangle(graphics, flipped_state, width, height, &flipped);
+
+    sfr::NativeRasterState state(graphics, width, height);
+    state.set(reverse, scissor);
+    std::optional<DrawReadback> native;
+    if (state.inverted_depth_supported()) {
+        Program plain = flipped;
+        plain.gs = {};
+        native = draw_triangle(graphics, state, width, height, &plain);
+    }
+    size_t differing = 0;
+    float largest = 0;
+    for (uint32_t y = 0; y < height; ++y) for (uint32_t x = 0; x < width; ++x) {
+        const auto index = static_cast<size_t>(y) * width + x;
+        require(emulated.color[index] == (std::array<uint8_t, 4>{255, 255, 255, 255}),
+                "the geometry shader passes TEXCOORD15 and COLOR0..1 on");
+        const float depth = emulated.depth[index];
+        require(depth > 0.2f && depth < 0.9f, "flipped depth is 1 - z/w (z/w between 0.125 and 0.75)");
+        if (native) {
+            require(native->color[index] == emulated.color[index], "colour matches the device's inverted viewport");
+            if (native->depth[index] != depth) ++differing;
+            largest = (std::max)(largest, std::fabs(native->depth[index] - depth));
+        }
+    }
+    if (native) {
+        std::cout << "flipped depth: " << differing << " of " << width * height
+                  << " pixels differ from the inverted viewport, by at most " << largest << std::endl;
+        require(largest <= 4 * std::numeric_limits<float>::epsilon(), "flipped depth matches the inverted viewport");
+    }
+}
 }
 
 int main() {
@@ -293,9 +369,12 @@ int main() {
         std::cout << "SKIP native raster state checks (D3D12 only)\n";
         return 0;
     }
+    // The checks set the test switch themselves where they want it.
+    _putenv_s("SFR_TEST_NO_INVERTED_DEPTH", "");
     try {
         construction_and_validation_retain_only_valid_state();
         actual_gpu_draw_obeys_retained_viewport_scissor_and_depth_mapping();
+        flipped_depth_matches_the_inverted_viewport();
         std::cout << "Native raster state checks passed\n";
         return 0;
     } catch (const std::exception& e) {

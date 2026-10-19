@@ -226,7 +226,9 @@ void avatar_draws_keep_viewport_order_and_independent_poses(uint32_t percent = 1
     presentation.draw_player_model(frame);
     require_occluded();
 
-    if (presentation.raster_state().inverted_depth_supported()) {
+    // Where the device cannot invert viewport depth the model flips z itself
+    // (native_depth_flip.h): the same pixels either way.
+    {
         const plume::RenderViewport reversed(8, 8, 48, 32, 1, 0);
         presentation.set_raster_state(reversed, scissor);
         clear.depth_value = 0;

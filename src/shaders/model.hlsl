@@ -9,7 +9,8 @@ struct ModelConstants {
     float4x4 transform;  // model to clip space
     float4 light;        // xyz the direction light comes from, w the ambient part
     float4 tint;         // rgb multiplied into the shade, a the opacity
-    float4 options;      // x: anything less see-through than this is not drawn
+    float4 options;      // x: anything less see-through than this is not drawn,
+                         // y: unlit, z: flip z (an inverted viewport the device cannot invert)
 };
 #ifdef __spirv__
 [[vk::push_constant]] ConstantBuffer<ModelConstants> g_Model;
@@ -32,6 +33,8 @@ struct Vertex { float4 position : SV_Position; float3 normal : TEXCOORD0; float2
 Vertex vertexMain(Input input) {
     Vertex vertex;
     vertex.position = mul(g_Transform, float4(input.position, 1.0));
+    // As shaders/depth_flip.hlsl does for the title's own draws.
+    if (g_Options.z > 0.5) vertex.position.z = vertex.position.w - vertex.position.z;
     vertex.normal = input.normal;
     vertex.texcoord = input.texcoord;
     return vertex;
