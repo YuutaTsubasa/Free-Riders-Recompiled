@@ -58,10 +58,10 @@ void race_layout() {
     require(race_layout_width(1280) == 880, "16:9 keeps the 880-wide race layout");
     require(race_layout_width(1706) == 1172, "21:9 (1706 wide) widens it to 1172");
     require(race_layout_width(2560) == 1762, "32:9 (2560 wide) takes two pixels more than double");
-    for (uint32_t width = 1282; width <= 4096; width += 2)
+    for (uint32_t width = 1282; width <= 8192; width += 2)
         require(race_layout_width(width) / 2 != 880 && race_layout_width(width) / 2 != 1280,
                 "a half is never 880 or 1280 wide, which the title's own views are");
-    for (uint32_t width : {1300u, 1706u, 2000u, 2560u, 4096u})
+    for (uint32_t width : {1300u, 1706u, 2000u, 2560u, 4096u, 7680u, 8192u})
         require(race_layout_width(width) % 2 == 0, "the layout is even, so the halves are whole");
 }
 
