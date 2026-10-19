@@ -1140,7 +1140,7 @@ if(SFR_BUILD_DIAGNOSTIC)
     target_sources(sfr_cpu_diagnostic PRIVATE src/heap_hooks.cpp src/guest_heap.cpp)
     target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_o1heap)
     target_sources(sfr_cpu_diagnostic PRIVATE src/native_winsock.cpp)
-    # Xbox LIVE on this project's own service (SFR_LIVE_SERVER; scripts/live_server.py).
+    # Xbox LIVE on this project's own service (SFR_LIVE_SERVER; server/live_server.py).
     target_sources(sfr_cpu_diagnostic PRIVATE src/live_client.cpp src/live_connect.cpp src/live_imports.cpp src/live_service.cpp src/live_hooks.cpp)
     target_sources(sfr_cpu_diagnostic PRIVATE src/guest_timers.cpp)
     target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_native_notifications)

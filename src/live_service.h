@@ -4,14 +4,15 @@
 #include <string>
 
 namespace sfr {
-// This project's online service (the same protocol as scripts/live_server.py,
+// This project's online service (the same protocol as server/live_server.py,
 // described there) inside the game: SFR_LIVE_HOST=1 runs it on this device,
 // on SFR_LIVE_PORT (47800), and the game then connects to it itself, so any
 // device (a PC, a handheld, a phone) can be the one the others connect to.
 class LiveService {
 public:
     // Starts listening on all interfaces; null (logged) when the port is taken.
-    static std::unique_ptr<LiveService> start(uint16_t port);
+    // A password (SFR_LIVE_PASSWORD) must come with PASS before HELLO.
+    static std::unique_ptr<LiveService> start(uint16_t port, const std::string& password = {});
     ~LiveService();
     LiveService(const LiveService&) = delete;
     LiveService& operator=(const LiveService&) = delete;

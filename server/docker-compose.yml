@@ -1,0 +1,24 @@
+# Free Riders Recompiled's online server. Start it with:
+#   docker compose up -d
+# Players enter this machine's public address under
+# Launcher > General > Online play > Server address.
+services:
+  free-riders-server:
+    image: ghcr.io/yuutatsubasa/free-riders-server:latest
+    # To build this folder instead of pulling the published image:
+    # build: .
+    restart: unless-stopped
+    ports:
+      # Both protocols: TCP for the lobbies, UDP for the race itself.
+      - "47800:47800/tcp"
+      - "47800:47800/udp"
+    environment:
+      # The room password players enter under Online play > Password.
+      # Empty: anyone who knows the address can join.
+      SFR_LIVE_PASSWORD: ""
+      SFR_LIVE_MAX_CONSOLES: "64"
+      SFR_LIVE_MAX_SESSIONS: "32"
+      SFR_LIVE_LOG_LEVEL: "info"
+    # On a host whose firewall rules get in the way of Docker's published
+    # ports, the host's network works too (remove "ports:" then):
+    # network_mode: host

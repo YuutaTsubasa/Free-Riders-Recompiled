@@ -728,6 +728,30 @@ void environment_follows_settings() {
         require(sfr::parse_launcher_settings("player2_device=mouse\n").player2_device == "gamepad",
                 "a device nobody has is ignored");
     }
+    {
+        // Online play: the room password is kept and reaches the game only
+        // while online is on.
+        sfr::LauncherSettings online;
+        online.online_server = "rider.example:47800";
+        online.online_name = "Rider";
+        online.online_password = "ride \xc3\xb6n";
+        require(value_of(online, "SFR_LIVE_PASSWORD").empty() && value_of(online, "SFR_LIVE_SERVER").empty(),
+                "nothing online while it is off");
+        online.online = true;
+        const auto parsed = sfr::parse_launcher_settings(sfr::format_launcher_settings(online));
+        require(parsed.online && parsed.online_password == online.online_password && parsed.online_name == "Rider" &&
+                    parsed.online_server == online.online_server,
+                "the online settings survive a save");
+        require(value_of(online, "SFR_LIVE_PASSWORD") == online.online_password &&
+                    value_of(online, "SFR_LIVE_SERVER") == online.online_server,
+                "joining: the server and its password reach the game");
+        online.online_host = true;
+        require(value_of(online, "SFR_LIVE_PASSWORD") == online.online_password && value_of(online, "SFR_LIVE_HOST") == "1",
+                "hosting: the password the others need");
+        require(sfr::parse_launcher_settings("online_password=" + std::string(sfr::online_password_limit + 1, 'x') + "\n")
+                    .online_password.empty(),
+                "a password past the limit is not taken");
+    }
     require(value_of(settings, "SFR_FULLSCREEN") == "1" && value_of(settings, "SFR_WINDOW_WIDTH") == "1280",
             "borderless by default, with the 1280x720 window size kept for Windowed");
     settings.fullscreen = false;

@@ -137,6 +137,7 @@ enum Text {
     InstallIntroIos,
     FrameskipLabel, FrameskipHint, FrameskipAuto, FrameskipAlways, FrameskipOff,
     TabTest, TestIntro, TestDefault, TestReset, TestActive, TestActiveNone,
+    OnlinePasswordLabel, OnlinePasswordHint, OnlinePasswordHostHint, OnlineReachPasswordRequired, OnlineReachWrongPassword,
     TextCount
 };
 
@@ -499,6 +500,15 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Reset all test options", "全部恢復預設"},
     {"Test options not at Default: %d", "不是預設值的測試選項：%d 個"},
     {"All test options are at Default.", "所有測試選項都是預設值。"},
+    {"Password", "密碼"},
+    {"The server's room password, if it has one. Leave empty for none. It is sent unencrypted: don't reuse a password you use elsewhere.",
+     "伺服器的房間密碼（如果有設定）。沒有就留空。密碼以未加密方式傳送：請勿使用你在其他地方用的密碼。"},
+    {"Friends must enter this password to join. Leave empty to let anyone on the network join. It is sent unencrypted: don't reuse a password you use elsewhere.",
+     "朋友必須輸入這個密碼才能加入。留空則網路上的任何人都能加入。密碼以未加密方式傳送：請勿使用你在其他地方用的密碼。"},
+    {"The server at %s needs a password. Enter it under Password.",
+     "%s 的伺服器需要密碼。請在「密碼」欄位輸入。"},
+    {"The server at %s answered, but the password is wrong. Ask the host for the right one.",
+     "%s 的伺服器有回應，但密碼錯誤。請向主持者確認正確的密碼。"},
 }};
 
 int language = 0;
@@ -1499,8 +1509,8 @@ struct Launcher {
         online_checked = settings.online_server;
         online_check_starts = then_start;
         online_result.clear();
-        std::thread([check, server = settings.online_server] {
-            check->result = sfr::check_live_server(server, 3000);
+        std::thread([check, server = settings.online_server, password = settings.online_password] {
+            check->result = sfr::check_live_server(server, 3000, password);
             check->done.store(true, std::memory_order_release);
         }).detach();
     }
@@ -1518,7 +1528,9 @@ struct Launcher {
                         : check.reach == sfr::LiveReach::bad_address ? OnlineReachBadAddress
                         : check.reach == sfr::LiveReach::not_found ? OnlineReachNotFound
                         : check.reach == sfr::LiveReach::refused ? OnlineReachRefused
-                        : check.reach == sfr::LiveReach::no_answer ? OnlineReachNoAnswer : OnlineReachUnexpected;
+                        : check.reach == sfr::LiveReach::no_answer ? OnlineReachNoAnswer
+                        : check.reach == sfr::LiveReach::password_required ? OnlineReachPasswordRequired
+                        : check.reach == sfr::LiveReach::wrong_password ? OnlineReachWrongPassword : OnlineReachUnexpected;
         char line[640];
         std::snprintf(line, sizeof line, tr(text), host.c_str(), port);
         return line;
@@ -2286,6 +2298,17 @@ struct Launcher {
                     }
                 }
             }
+            setting_row(tr(OnlinePasswordLabel), tr(settings.online_host ? OnlinePasswordHostHint : OnlinePasswordHint),
+                        260 * scale, scale, [&] {
+                char text[sfr::online_password_limit + 1] = {};
+                std::snprintf(text, sizeof text, "%s", settings.online_password.c_str());
+                ImGui::SetNextItemWidth(260 * scale);
+                // Masked; the launcher never logs it.
+                if (ImGui::InputText("##online_password", text, sizeof text, ImGuiInputTextFlags_Password)) {
+                    settings.online_password = text;
+                    online_result.clear();  // it was about another password
+                }
+            });
             setting_row(tr(OnlineNameLabel), tr(OnlineNameHint), 260 * scale, scale, [&] {
                 char text[16] = {};
                 std::snprintf(text, sizeof text, "%s", settings.online_name.c_str());

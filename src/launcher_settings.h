@@ -122,13 +122,18 @@ struct LauncherSettings {
     // device hosts it (SFR_LIVE_HOST) or connects to online_server
     // (SFR_LIVE_SERVER, host[:port]); online_name is the gamertag shown
     // (SFR_LIVE_NAME), which leaves the profile's saves where they are.
+    // online_password is the room password (SFR_LIVE_PASSWORD): the one the
+    // others need while hosting, the server's while joining; empty for none.
     bool online = false, online_host = false;
-    std::string online_server, online_name;
+    std::string online_server, online_name, online_password;
     // The Test options page (test_options.h): variable -> the chosen value,
     // one of the option's choices. An option not here is at Default and
     // exports nothing.
     std::map<std::string, std::string> test_options;
 };
+
+// The longest room password kept (bytes of UTF-8).
+constexpr size_t online_password_limit = 63;
 
 // Unknown keys and malformed values are ignored (the default stays), so an
 // older or hand-edited file still loads.

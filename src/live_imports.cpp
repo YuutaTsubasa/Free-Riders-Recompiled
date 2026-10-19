@@ -185,7 +185,7 @@ std::string contexts_text() {
     return hex(bytes.data(), bytes.size());
 }
 
-// A search result line (scripts/live_server.py): session key host-ip host-mac
+// A search result line (server/live_server.py): session key host-ip host-mac
 // host-machine flags public private filled-public filled-private props contexts.
 struct Found {
     std::array<uint8_t, 8> id{};

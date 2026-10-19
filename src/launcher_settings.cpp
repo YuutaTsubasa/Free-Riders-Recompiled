@@ -168,6 +168,7 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         else if (key == "online_host") read_flag(value, settings.online_host);
         else if (key == "online_server" && value.size() <= 127) settings.online_server = value;
         else if (key == "online_name" && value.size() <= 15) settings.online_name = value;
+        else if (key == "online_password" && value.size() <= online_password_limit) settings.online_password = value;
         // test_option.<variable>=<value>: only a listed option and one of its
         // choices; anything else stays at Default.
         else if (key.starts_with(test_option_key_prefix)) {
@@ -239,6 +240,7 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "online_host=" << s.online_host << '\n'
         << "online_server=" << s.online_server << '\n'
         << "online_name=" << s.online_name << '\n'
+        << "online_password=" << s.online_password << '\n'
         << "language=" << s.language << '\n'
         << "game_language=" << validated_game_language(s.game_language) << '\n'
         << "voice_language=" << s.voice_language << '\n'
@@ -390,6 +392,9 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         {"SFR_LIVE_HOST", s.online && s.online_host ? "1" : ""},
         {"SFR_LIVE_SERVER", s.online && !s.online_host ? s.online_server : ""},
         {"SFR_LIVE_NAME", s.online ? s.online_name : ""},
+        // The room password: the one friends need when hosting, the server's
+        // when joining. Never written to game.log, nor to a diagnostic ZIP.
+        {"SFR_LIVE_PASSWORD", s.online ? s.online_password : ""},
 #ifdef __ANDROID__
         {"SFR_TOUCH_CONTROLS", s.touch_controls ? "1" : "0"},
         {"SFR_TILT", s.tilt ? "1" : "0"},

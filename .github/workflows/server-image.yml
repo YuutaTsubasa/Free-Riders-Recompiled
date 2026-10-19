@@ -1,0 +1,78 @@
+# The online server's Docker image (server/README.md). A published release
+# pushes ghcr.io/yuutatsubasa/free-riders-server:<version> and :latest, for
+# x86-64 and ARM64 hosts (Oracle Cloud's free VMs are ARM64). A pull request
+# that touches server/ builds the image without pushing it.
+name: server image
+
+on:
+  release:
+    types: [published]
+  pull_request:
+    paths:
+      - "server/**"
+      - ".github/workflows/server-image.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/yuutatsubasa/free-riders-server
+
+jobs:
+  image:
+    name: Build${{ github.event_name == 'release' && ' and push' || '' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Server tests
+        run: python -m unittest discover -s tests -p "test_live_server.py" -v
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          # v0.10.11 -> 0.10.11; latest only for a release.
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ github.event_name == 'release' }}
+            type=ref,event=pr
+      - name: Sign in to GitHub Container Registry
+        if: github.event_name == 'release'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build${{ github.event_name == 'release' && ' and push' || '' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: server
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name == 'release' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      # The amd64 image answers PING once started (the arm64 one is the
+      # same Python file on another base).
+      - name: Smoke test
+        run: |
+          docker buildx build --load -t free-riders-server:test server
+          docker run -d --name frs -p 47800:47800/tcp -p 47800:47800/udp -e SFR_LIVE_PASSWORD=ci free-riders-server:test
+          for i in $(seq 1 20); do
+            python server/live_server.py --check 127.0.0.1:47800 && break
+            sleep 1
+          done
+          python server/live_server.py --check 127.0.0.1:47800 | grep -q "OK freeriders 1 password"
+          docker logs frs
+          docker rm -f frs
