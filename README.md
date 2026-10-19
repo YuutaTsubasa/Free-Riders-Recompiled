@@ -204,6 +204,8 @@ with [docs/progress.md](docs/progress.md).
   The Fly board at Dolphin Resort no longer sometimes launches a racer through the wall (#153). The launcher gains a Frame skipping choice for slow CPUs (#177). Phones with one much faster core, such as the Pixel 10a, run the game's main thread on it (#176).
 - [v0.10.10 — Test options, macOS with a Vulkan SDK installed](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.10)
   The launcher gains a Test options page, so switches asked for in an issue are a choice instead of a command line. On macOS the game always uses its own MoltenVK, so an older Vulkan SDK on the Mac no longer stops it while preparing shaders (#207).
+- [v0.10.11 — Online server for the cloud, room passwords](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.11)
+  The online server comes as a Docker image to run on a cloud machine, so friends on different networks can race without anyone opening ports at home. A server can have a room password, entered in the launcher's Online play settings.
 
 ## System Requirements
 

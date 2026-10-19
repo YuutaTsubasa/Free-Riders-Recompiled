@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 PROJECT = ROOT / 'android' / 'app' / 'src' / 'main'
 SDL_JAVA = ROOT / 'tools' / 'SDL' / 'android-project' / 'app' / 'src' / 'main' / 'java'
 MIN_SDK, TARGET_SDK = 28, 35
-VERSION_CODE, VERSION_NAME = 58, '0.10.10'
+VERSION_CODE, VERSION_NAME = 59, '0.10.11'
 
 
 def version_key(path):
