@@ -363,6 +363,29 @@ void title_stats_settings() {
             "turned off, the title is left alone and it stays off");
 }
 
+void race_frameskip_settings() {
+    const sfr::LauncherSettings defaults;
+    require(defaults.race_frameskip == "auto" && value_of(defaults, "SFR_RACE_FRAMESKIP") == "1" &&
+                sfr::format_launcher_settings(defaults).find("race_frameskip=auto\n") != std::string::npos,
+            "frame skipping is Auto by default");
+    require(value_of(defaults, "SFR_TEST_RACE_SKIP_SLOW").empty(),
+            "the experiment's old switch is removed, so an inherited one cannot override the choice");
+    for (const auto& [name, env] : {std::pair{"auto", "1"}, std::pair{"always", "2"}, std::pair{"off", "0"}}) {
+        const auto read = sfr::parse_launcher_settings(std::string("race_frameskip=") + name + "\n");
+        const auto saved = sfr::parse_launcher_settings(sfr::format_launcher_settings(read));
+        require(read.race_frameskip == name && saved.race_frameskip == name,
+                "each frame skipping choice survives a round trip");
+        require(value_of(saved, "SFR_RACE_FRAMESKIP") == env, "each frame skipping choice reaches the game");
+    }
+    for (const char* text : {"race_frameskip=2\n", "race_frameskip=ALWAYS\n", "race_frameskip=\n", "race_frameskip=on\n"})
+        require(sfr::parse_launcher_settings(text).race_frameskip == "auto", "an unknown frame skipping value keeps Auto");
+    sfr::LauncherSettings odd;
+    odd.race_frameskip = "sometimes";
+    require(value_of(odd, "SFR_RACE_FRAMESKIP") == "1" &&
+                sfr::format_launcher_settings(odd).find("race_frameskip=auto\n") != std::string::npos,
+            "a value off the list is written and exported as Auto");
+}
+
 void save_directory_settings() {
     const auto root = std::filesystem::temp_directory_path() / "sfr_launcher_saves_test";
     std::filesystem::remove_all(root);
@@ -686,6 +709,7 @@ int main() {
         menu_steady_settings();
         save_directory_settings();
         title_stats_settings();
+        race_frameskip_settings();
         avatar_model_settings();
         malformed_values_keep_defaults();
         display_mode_defaults_to_borderless();

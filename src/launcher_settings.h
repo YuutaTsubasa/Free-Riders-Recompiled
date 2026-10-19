@@ -43,6 +43,11 @@ struct LauncherSettings {
     bool vertex_cache = true;        // SFR_VERTEX_CACHE
     bool gpu_pipeline = true;        // SFR_GPU_PIPELINE
     uint32_t race_render_every = 1;  // SFR_RENDER_EVERY
+    // Frame skipping in a race that falls behind (race_frame_clock.h): "auto"
+    // skips drawing only while undrawn frames are short enough to catch up
+    // (SFR_RACE_FRAMESKIP=1); "always" also when they are not, if they are
+    // well shorter than drawn ones (=2, Issue #177); "off" draws every frame (=0).
+    std::string race_frameskip = "auto";
     bool title_stats = true;         // SFR_TITLE_STATS: frame rate and more in the game window's title
     bool ui_sounds = true;           // the launcher's own sounds
     bool vulkan = true;             // legacy settings key; selects Vulkan or D3D12

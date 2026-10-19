@@ -538,9 +538,17 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
     // could then never catch up.
     double pacing_ms=0;
     bool race_paced=false;
+    {
+        // Once, for a bug report: which frame skipping the run uses.
+        static const bool told=[]{
+            std::cerr << "RACE_FRAMESKIP mode=" << sfr::race_frameskip_name(sfr::race_frameskip_mode()) << '\n';
+            return true;
+        }();
+        (void)told;
+    }
     if(sfr::race_frameskip_enabled()) {
-        // SFR_TEST_RACE_SKIP_SLOW=1 (experiment): race_frame_clock.h skip_slow.
-        static sfr::RaceFrameSkip skip(4,[]{ const char* t=std::getenv("SFR_TEST_RACE_SKIP_SLOW"); return t && *t=='1'; }());
+        // SFR_RACE_FRAMESKIP=2 (Always when behind): race_frame_clock.h skip_slow.
+        static sfr::RaceFrameSkip skip(4,sfr::race_frameskip_mode()==sfr::RaceFrameskipMode::always);
         // SFR_TEST_RACE_FRAME_MS=<ms> (testing): every race frame, drawn or
         // not, takes that much longer, as on a phone whose cores run the
         // game's own work slower (with SFR_TEST_RACE_DRAW_MS, a Pixel 10a's

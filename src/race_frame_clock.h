@@ -79,11 +79,14 @@ private:
 class RaceFrameSkip {
 public:
     static constexpr uint64_t frame_ns = 16'666'667;
-    // skip_slow (SFR_TEST_RACE_SKIP_SLOW, an experiment): skip also when
-    // undrawn frames are a frame or longer, if they are under three quarters
-    // of a drawn one. The race then cannot keep real time, but comes closer
-    // to it than by drawing every frame (Issue #176: a Pixel 10a's undrawn
-    // frames took ~17 ms in a race's busiest parts, its drawn ones ~35).
+    // skip_slow (SFR_RACE_FRAMESKIP=2, "Always when behind" in the
+    // launcher): skip also when undrawn frames are a frame or longer, if
+    // they are under three quarters of a drawn one. The race then cannot
+    // keep real time, but comes closer to it than by drawing every frame
+    // (Issue #176: a Pixel 10a's undrawn frames took ~17 ms in a race's
+    // busiest parts, its drawn ones ~35; Issue #177: a laptop's undrawn
+    // ~18.7 ms). Not the default: where undrawn frames cannot catch up, the
+    // screen shows fewer frames for a race that is still slow.
     explicit RaceFrameSkip(uint32_t max_skips = 4, bool skip_slow = false)
         : max_skips_(max_skips), skip_slow_(skip_slow) {}
     struct Decision {
@@ -180,17 +183,38 @@ public:
     uint64_t drawn_ns() const { return drawn_ns_; }
 };
 
-// SFR_RACE_FRAMESKIP=1|0: frame skipping on or off. On by default: a race
-// keeps real time wherever drawing cannot keep 60 fps (a phone, a handheld
-// PC, a slow GPU), and on Android it also keeps the race's step fixed
-// (race_frame_clock_hooks.cpp). A device that keeps 60 draws every frame.
-inline bool race_frameskip_enabled() {
-    static const bool enabled = [] {
-        if (const char* value = std::getenv("SFR_RACE_FRAMESKIP")) return *value && *value != '0';
-        return true;
-    }();
-    return enabled;
+// SFR_RACE_FRAMESKIP, the launcher's "Frame skipping":
+//   1, or unset (Auto): skip drawing a frame when the race is behind, while
+//     undrawn frames are shorter than a frame (RaceFrameSkip; tried again
+//     once a second). The default: a race keeps real time wherever drawing
+//     cannot keep 60 fps (a phone, a handheld PC, a slow GPU), and on
+//     Android it also keeps the race's step fixed
+//     (race_frame_clock_hooks.cpp). A device that keeps 60 draws every frame.
+//   2 (Always when behind): RaceFrameSkip's skip_slow as well.
+//   0 (Off): every frame is drawn, and a slow race slows down.
+// SFR_TEST_RACE_SKIP_SLOW=1, the experiment's earlier name, still turns 1
+// into 2 (it does not turn skipping back on when it is 0).
+enum class RaceFrameskipMode { off, automatic, always };
+
+inline RaceFrameskipMode race_frameskip_mode(const char* frameskip, const char* skip_slow) {
+    RaceFrameskipMode mode = RaceFrameskipMode::automatic;
+    if (frameskip && *frameskip == '0') mode = RaceFrameskipMode::off;
+    else if (frameskip && *frameskip == '2') mode = RaceFrameskipMode::always;
+    if (mode == RaceFrameskipMode::automatic && skip_slow && *skip_slow == '1') mode = RaceFrameskipMode::always;
+    return mode;
 }
+
+inline const char* race_frameskip_name(RaceFrameskipMode mode) {
+    return mode == RaceFrameskipMode::off ? "off" : mode == RaceFrameskipMode::always ? "always" : "auto";
+}
+
+inline RaceFrameskipMode race_frameskip_mode() {
+    static const RaceFrameskipMode mode =
+        race_frameskip_mode(std::getenv("SFR_RACE_FRAMESKIP"), std::getenv("SFR_TEST_RACE_SKIP_SLOW"));
+    return mode;
+}
+
+inline bool race_frameskip_enabled() { return race_frameskip_mode() != RaceFrameskipMode::off; }
 
 // SFR_PRESENT_LIMIT_RACING=N (guest_graphics_hooks.cpp): the run ends at the
 // Nth present with the title's race flag set, so the menus and the loading

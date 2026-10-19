@@ -77,10 +77,15 @@ drawing some frames instead (`RaceFrameSkip` in `src/race_frame_clock.h`):
 - It is on everywhere by default (desktops too since 2026-10-16: a handheld
   PC or a slow GPU falls under 60 as a phone does); a device that keeps 60
   draws every frame. `SFR_RACE_FRAMESKIP=0` turns it off (the step then
-  follows `SFR_REALTIME_RACE` as before).
+  follows `SFR_REALTIME_RACE` as before). `SFR_RACE_FRAMESKIP=2` also skips
+  when undrawn frames are a frame or longer, if they are under three quarters
+  of a drawn one (Issues #176, #177; `SFR_TEST_RACE_SKIP_SLOW=1` is its old
+  name). The launcher's Graphics > Advanced performance options > Frame
+  skipping sets it: Auto (1), Always when behind (2), Off (0).
   `SFR_RACE_SKIP_DRAWING=0` keeps all of the game's drawing on undrawn
   frames (as 0.8.x).
-- `game.log` has `RACE_FRAMESKIP frames= skipped= speed=` every 600 race
+- `game.log` has `RACE_FRAMESKIP mode=` (auto, always or off) once at the
+  first frame, and `RACE_FRAMESKIP frames= skipped= speed=` every 600 race
   frames; `speed` is the race's frames against real time (1 is full speed).
 - `SFR_TEST_RACE_DRAW_MS=<ms>` (testing) makes each drawn race frame take
   that much longer, as on a device whose GPU cannot keep 60.
