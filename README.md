@@ -578,7 +578,8 @@ saves and local reference checkouts.
 - [Plume](https://github.com/renderbag/plume) (rendering),
   [SDL](https://www.libsdl.org) (Linux and Android), [Dear ImGui](https://github.com/ocornut/imgui)
   (launcher), [DirectX Shader Compiler](https://github.com/microsoft/DirectXShaderCompiler)
-  (through [dxc-bin](https://github.com/renderbag/dxc-bin)).
+  (through [dxc-bin](https://github.com/renderbag/dxc-bin)),
+  [MoltenVK](https://github.com/KhronosGroup/MoltenVK) (Vulkan on macOS and iOS).
 - [Xenia](https://github.com/xenia-project/xenia): reference for the Xbox 360
   kernel's behaviour and GPU texture formats/layouts.
 - [Xenia Canary's netplay build](https://github.com/AdrianCassar/xenia-canary)
@@ -597,14 +598,15 @@ saves and local reference checkouts.
 ### Contributors
 
 - [knuckleslee](https://github.com/knuckleslee): code and research — D3D12 on Windows 10 ([#14](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/14)), the Avatar's body
-  type ([#15](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/15)), playing with a real Kinect ([#21](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/21)), the benchmark workflow ([#51](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/51)), the pause gestures, steadier menus, window statistics, adjustment windows and save folder ([#99](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/99)–[#104](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/104)), and detailed
+  type ([#15](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/15)), playing with a real Kinect ([#21](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/21)), the benchmark workflow ([#51](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/51)), the pause gestures, steadier menus, window statistics, adjustment windows and save folder ([#99](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/99)–[#104](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/104)), ultrawide screens with an edge-anchored HUD ([#113](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/pull/113), [#114](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/pull/114)), and detailed
   performance measurements on a 4-core PC that led to faster races ([#33](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/33), [#52](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/52), [#62](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/62), [#65](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/65)).
-- Players who reported problems, sent logs and crash dumps, and tested fixes: [Anim233](https://github.com/Anim233), [dareon88](https://github.com/dareon88), [Didgo1](https://github.com/Didgo1), [Diego-Yoshi](https://github.com/Diego-Yoshi), [francisc0frank0](https://github.com/francisc0frank0), [Infeernuss](https://github.com/Infeernuss), [Janybrito](https://github.com/Janybrito), [Joka2010](https://github.com/Joka2010), [JolTH-dot](https://github.com/JolTH-dot), [KillerBunny12](https://github.com/KillerBunny12), [Koyurofox](https://github.com/Koyurofox), [Larry654](https://github.com/Larry654), [MegaCrashFan](https://github.com/MegaCrashFan), [Minuteworld94](https://github.com/Minuteworld94), [mymes1](https://github.com/mymes1), [shiny-ribbon](https://github.com/shiny-ribbon), [tameradel578-cmyk](https://github.com/tameradel578-cmyk).
+- [Saiyokage](https://github.com/Saiyokage): long test sessions on Android, a check of every course's gear sections ([#212](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/212)), and the clips that led to the Fly board fix ([#153](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/153)).
+- Players who reported problems, sent logs and crash dumps, and tested fixes: [18Spiderman15](https://github.com/18Spiderman15), [Anim233](https://github.com/Anim233), [ArtisIan97](https://github.com/ArtisIan97), [CODEX0827](https://github.com/CODEX0827), [Crappy-Productions](https://github.com/Crappy-Productions), [dareon88](https://github.com/dareon88), [Didgo1](https://github.com/Didgo1), [Diego-Yoshi](https://github.com/Diego-Yoshi), [francisc0frank0](https://github.com/francisc0frank0), [Infeernuss](https://github.com/Infeernuss), [ITSeniy](https://github.com/ITSeniy), [Janybrito](https://github.com/Janybrito), [Joka2010](https://github.com/Joka2010), [JolTH-dot](https://github.com/JolTH-dot), [KillerBunny12](https://github.com/KillerBunny12), [KnivesDevilish](https://github.com/KnivesDevilish), [Koyurofox](https://github.com/Koyurofox), [Larry654](https://github.com/Larry654), [MegaCrashFan](https://github.com/MegaCrashFan), [Minuteworld94](https://github.com/Minuteworld94), [mymes1](https://github.com/mymes1), [Mysterion2006](https://github.com/Mysterion2006), [NeoCharmy](https://github.com/NeoCharmy), [Saiyokage](https://github.com/Saiyokage), [shiny-ribbon](https://github.com/shiny-ribbon), [shireon12](https://github.com/shireon12), [tameradel578-cmyk](https://github.com/tameradel578-cmyk).
 
 Thank you all. Every report with a `game.log` or a dump made a fix possible.
 
-This project was developed with the help of AI models: GPT-6 and Claude
-Opus 5.
+This project was developed with the help of AI models: GPT-6, Claude
+Opus 5 and Claude Opus 5.5.
 
 Licences and exact revisions: [THIRD_PARTY.md](THIRD_PARTY.md),
 [config/dependencies.lock.json](config/dependencies.lock.json).
