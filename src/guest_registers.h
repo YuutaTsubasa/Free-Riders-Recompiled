@@ -32,11 +32,23 @@ template<unsigned First> bool eligible_stack(uint32_t sp) {
 // On a boundary/special page the caller executes the original instructions,
 // retaining partial stores/loads before a later fault. No checkpoint may run
 // between the complete range check and these accesses.
+// With GuestMemory::direct_guest_access the generated code stores to base +
+// address without any check (SFR_DIRECT_MEMORY), and so does the original
+// body these replace: the save and restore then do the same, without asking
+// the checked path about a stack page every call (2-4% of a race's main
+// thread on Windows and the AYN Thor).
 template<unsigned First, typename Context>
 bool try_save_gprs(GuestMemory& memory, const Context& ctx) {
     const uint32_t sp = ctx.r1.u32;
-    if (!detail::eligible_stack<First>(sp)) return false;
     constexpr uint32_t distance = 8 * (33 - First);
+#if SFR_DIRECT_MEMORY
+    if (GuestMemory::direct_guest_access) [[likely]] {
+        if (sp & 7 || sp < distance) return false;
+        detail::save_gprs<First>(memory.base() + (sp - distance), ctx, std::make_index_sequence<32 - First>{});
+        return true;
+    }
+#endif
+    if (!detail::eligible_stack<First>(sp)) return false;
     auto* bytes = memory.fast_write(sp - distance, distance - 4);
     if (!bytes) return false;
     detail::save_gprs<First>(bytes, ctx, std::make_index_sequence<32 - First>{});
@@ -45,8 +57,15 @@ bool try_save_gprs(GuestMemory& memory, const Context& ctx) {
 template<unsigned First, typename Context>
 bool try_restore_gprs(GuestMemory& memory, Context& ctx) {
     const uint32_t sp = ctx.r1.u32;
-    if (!detail::eligible_stack<First>(sp)) return false;
     constexpr uint32_t distance = 8 * (33 - First);
+#if SFR_DIRECT_MEMORY
+    if (GuestMemory::direct_guest_access) [[likely]] {
+        if (sp & 7 || sp < distance) return false;
+        detail::restore_gprs<First>(memory.base() + (sp - distance), ctx, std::make_index_sequence<32 - First>{});
+        return true;
+    }
+#endif
+    if (!detail::eligible_stack<First>(sp)) return false;
     const auto* bytes = memory.fast_read(sp - distance, distance - 4);
     if (!bytes) return false;
     detail::restore_gprs<First>(bytes, ctx, std::make_index_sequence<32 - First>{});

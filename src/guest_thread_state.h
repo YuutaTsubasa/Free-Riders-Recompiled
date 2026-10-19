@@ -54,6 +54,10 @@ struct GuestEntryState {
 struct GuestThreadState {
     GuestEntryState entry;
     GuestReservation reservation;
+    // The host thread that bound a context to this state (its system thread
+    // identity), so a context used on another thread is caught without
+    // asking TLS (diagnostic_main.cpp's enter_function_observed).
+    uint64_t host_thread = 0;
 };
 inline thread_local GuestThreadState guest_thread_state;
 }

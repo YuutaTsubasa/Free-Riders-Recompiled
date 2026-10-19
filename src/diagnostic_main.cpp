@@ -296,6 +296,10 @@ struct UnselectedUserObservation {
     uint32_t index = 0, manager = 0, record = 0, reset_virtual = 0;
 };
 static thread_local UnselectedUserObservation unselected_user;
+// How many threads have that audit active: call_indirect asks this first, as
+// reading the thread_local on every virtual call was a call to the linker's
+// TLS resolver on Android.
+static std::atomic<uint32_t> unselected_user_audits{0};
 static thread_local bool sampler_inline_mip_pending = false;
 static NativeWinsock* native_winsock = nullptr;
 static NativeNotifications* native_notifications = nullptr;
@@ -587,8 +591,7 @@ static void lock_with_report(std::mutex& lock, const char* name, std::atomic<uin
                   << " waiter_function=0x" << guest_thread_state.entry.current_address << std::dec
                   << " frame=" << present_count.load() << std::endl;
 }
-static void graphics_lock_entry(const PPCContext& ctx, uint32_t address) {
-    auto& entry = guest_thread_state.entry;
+static void graphics_lock_entry(const PPCContext& ctx, uint32_t address, GuestEntryState& entry) {
     const bool graphics = test_hook_bit(graphics_hook_bits, address);
     if (entry.graphics_stack_pointer) {
         if (graphics) entry.graphics_stack_pointer = (std::max)(entry.graphics_stack_pointer, ctx.r1.u32);
@@ -605,8 +608,7 @@ static void graphics_lock_entry(const PPCContext& ctx, uint32_t address) {
     graphics_holder_function.store(address, std::memory_order_relaxed);
     entry.graphics_stack_pointer = ctx.r1.u32;
 }
-void hook_scope_exit() noexcept {
-    auto& entry = guest_thread_state.entry;
+void hook_scope_exit(GuestEntryState& entry) noexcept {
     if (entry.graphics_stack_pointer) {
         entry.graphics_stack_pointer = 0;
         graphics_lock.unlock();
@@ -660,22 +662,22 @@ static void hook_lock_entry(const PPCContext& ctx, uint32_t address, const uint6
     holder_function.store(address, std::memory_order_relaxed);
     stack_pointer = ctx.r1.u32;
 }
-static void input_lock_entry(const PPCContext& ctx, uint32_t address) {
-    hook_lock_entry(ctx, address, input_hook_bits, input_lock, guest_thread_state.entry.input_stack_pointer,
+static void input_lock_entry(const PPCContext& ctx, uint32_t address, GuestEntryState& entry) {
+    hook_lock_entry(ctx, address, input_hook_bits, input_lock, entry.input_stack_pointer,
                     "input", input_holder, input_holder_function);
 }
-static void menu_lock_entry(const PPCContext& ctx, uint32_t address) {
-    hook_lock_entry(ctx, address, menu_hook_bits, menu_lock, guest_thread_state.entry.menu_stack_pointer,
+static void menu_lock_entry(const PPCContext& ctx, uint32_t address, GuestEntryState& entry) {
+    hook_lock_entry(ctx, address, menu_hook_bits, menu_lock, entry.menu_stack_pointer,
                     "menu", menu_holder, menu_holder_function);
 }
-static void parallel_function_entry(const PPCContext& ctx, uint32_t address) {
+static void parallel_function_entry(const PPCContext& ctx, uint32_t address, GuestEntryState& entry) {
     static const bool hook_stats = [] { const char* t = std::getenv("SFR_PARALLEL_HOOK_STATS"); return t && *t == '1'; }();
     if (parallel_main) {
         // Menu, then input, then graphics: a menu hook's original reads the
         // skeletons and draws, never the other way round.
-        menu_lock_entry(ctx, address);
-        input_lock_entry(ctx, address);
-        graphics_lock_entry(ctx, address);
+        menu_lock_entry(ctx, address, entry);
+        input_lock_entry(ctx, address, entry);
+        graphics_lock_entry(ctx, address, entry);
     }
     if (execution_permit->detached()) {
         if (!is_hook(address)) return;
@@ -713,11 +715,11 @@ static void parallel_function_entry(const PPCContext& ctx, uint32_t address) {
             }
         }
         if (hook_stats) { hook_attached_at = std::chrono::steady_clock::now(); hook_attached = address; }
-        guest_thread_state.entry.hook_stack_pointer = ctx.r1.u32;
-    } else if (guest_thread_state.entry.hook_stack_pointer) {
-        if (is_hook(address)) guest_thread_state.entry.hook_stack_pointer = (std::max)(guest_thread_state.entry.hook_stack_pointer, ctx.r1.u32);
-        else if (ctx.r1.u32 > guest_thread_state.entry.hook_stack_pointer) {
-            guest_thread_state.entry.hook_stack_pointer = 0;
+        entry.hook_stack_pointer = ctx.r1.u32;
+    } else if (entry.hook_stack_pointer) {
+        if (is_hook(address)) entry.hook_stack_pointer = (std::max)(entry.hook_stack_pointer, ctx.r1.u32);
+        else if (ctx.r1.u32 > entry.hook_stack_pointer) {
+            entry.hook_stack_pointer = 0;
             if (hook_attached) {
                 const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - hook_attached_at).count();
                 if (ms >= 5.0)
@@ -727,9 +729,9 @@ static void parallel_function_entry(const PPCContext& ctx, uint32_t address) {
             }
             execution_permit->detach();
         }
-    } else if (guest_thread_state.entry.detach_at_entry) {
-        guest_thread_state.entry.detach_at_entry = false;
-        if (is_hook(address)) guest_thread_state.entry.hook_stack_pointer = ctx.r1.u32;
+    } else if (entry.detach_at_entry) {
+        entry.detach_at_entry = false;
+        if (is_hook(address)) entry.hook_stack_pointer = ctx.r1.u32;
         else execution_permit->detach();
     }
 }
@@ -1051,6 +1053,7 @@ void zero_cache_block(uint32_t address) {
                   << " aligned=0x" << (address & ~uint32_t{31}) << std::dec << " bytes=32\n";
 }
 #endif
+#if !SFR_DIRECT_MEMORY  // inline in diagnostic_hooks.h
 void load_vector_left(uint32_t address, uint8_t (&destination)[16]) {
     if (!active_memory) throw RuntimeStop("memory-context", address, "guest memory is not initialized");
     const auto value = load_vector_left(*active_memory, address);
@@ -1073,6 +1076,7 @@ void store_vector_right(uint32_t address, const uint8_t (&source)[16]) {
     std::copy(std::begin(source), std::end(source), value.begin());
     store_vector_right(*active_memory, address, value);
 }
+#endif
 #if !SFR_DIRECT_MEMORY
 void zero_cache_line(uint32_t address) {
     if (!active_memory) throw RuntimeStop("memory-context", address, "guest memory is not initialized");
@@ -1729,6 +1733,7 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         ctx.r3.u64 = profile_signin_state(index);
         if ((live_probe() || live_enabled()) && ctx.r3.u32 == 1) ctx.r3.u64 = 2;  // signed in to Live
         if (ctx.lr == 0x822344D8 && ctx.r3.u32 == 0) {
+            if (!unselected_user.active) unselected_user_audits.fetch_add(1, std::memory_order_relaxed);
             unselected_user = {true, false, false, index, ctx.r30.u32, ctx.r31.u32, 0};
             refresh_entry_observation();
         }
@@ -3677,18 +3682,33 @@ static void refresh_entry_observation() {
 
 static void observe_function_entry(PPCContext&, const char*, uint32_t) __attribute__((noinline));
 
+// The calling host thread's system identity, without a TLS lookup (which is
+// a call to the linker's resolver in Android's dynamically loaded libmain).
+static uint64_t host_thread_identity() noexcept {
+#ifdef _WIN32
+    return GetCurrentThreadId();
+#else
+    return uint64_t(pthread_self());
+#endif
+}
+
 GuestThreadState& bind_guest_thread_state(uint64_t& slot) noexcept {
     slot = reinterpret_cast<uint64_t>(&guest_thread_state);
+    guest_thread_state.host_thread = host_thread_identity();
     return guest_thread_state;
 }
 
 void enter_function_observed(PPCContext& ctx, const char* name, uint32_t address) {
+    // The state the context holds: through TLS, every hook a frame enters
+    // paid the resolver several times on Android.
+    auto& state = entry_thread_state(ctx);
     // A context bound on another host thread would share that thread's state.
-    if (ctx.reserved.u64 != reinterpret_cast<uint64_t>(&guest_thread_state))
+    if (state.host_thread != host_thread_identity()) [[unlikely]]
         throw RuntimeStop("thread-state", address, "a guest context was bound on another host thread");
-    auto& entry = guest_thread_state.entry;
-    if (entry.parallel) parallel_function_entry(ctx, address);
-    guest_checkpoint();
+    auto& entry = state.entry;
+    if (entry.parallel) parallel_function_entry(ctx, address, entry);
+    if (entry.checkpoint_countdown) [[likely]] --entry.checkpoint_countdown;
+    else guest_checkpoint_permit();
     // Cheap enough to keep either way: a stop still names the function it
     // happened in.
     entry.current_function = name;
@@ -3719,6 +3739,7 @@ static void observe_function_entry(PPCContext& ctx, const char* name, uint32_t a
         std::cerr << "ORIGINAL_USER_NAME_CONVERSION_RETURN index=" << unselected_user.index
                   << " characters=1 lr=0x822345ec\n";
         unselected_user.active = false;
+        unselected_user_audits.fetch_sub(1, std::memory_order_relaxed);
         refresh_entry_observation();
     }
     if (!diagnostic_entries) return;
@@ -4344,7 +4365,8 @@ static void observe_function_entry(PPCContext& ctx, const char* name, uint32_t a
 void call_indirect(PPCContext& ctx, uint8_t* base, uint32_t address) {
     const auto function = functions.find(address);
     if (!function) throw RuntimeStop("indirect-call", address, "no verified function mapping");
-    const bool user_reset = unselected_user.active && unselected_user.reset_entered &&
+    const bool user_reset = unselected_user_audits.load(std::memory_order_relaxed) &&
+        unselected_user.active && unselected_user.reset_entered &&
         guest_thread_state.entry.current_address == 0x82232598 && ctx.lr == 0x82232A30 && ctx.r3.u32 == unselected_user.record + 32;
     function(ctx, base);
     if (user_reset) unselected_user.reset_virtual = address;

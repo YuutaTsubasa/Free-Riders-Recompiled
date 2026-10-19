@@ -16,6 +16,7 @@
 #include "memory_update_forms.h"
 #include "vector_integer.h"
 #include "counted_branch.h"
+#include "direct_vector_memory.h"
 struct PPCContext;
 namespace sfr {
 extern GuestMemory* active_memory;
@@ -119,17 +120,7 @@ inline void guest_checkpoint() {
 }
 void enter_function_observed(PPCContext&, const char*, uint32_t);
 // Gives back the permit and graphics lock the outermost hook's entry took.
-void hook_scope_exit() noexcept;
-struct HookScope {
-    HookScope() { ++guest_thread_state.entry.hook_depth; }
-    ~HookScope() {
-        auto& entry = guest_thread_state.entry;
-        if (!--entry.hook_depth && (entry.hook_stack_pointer || entry.graphics_stack_pointer || entry.input_stack_pointer))
-            hook_scope_exit();
-    }
-    HookScope(const HookScope&) = delete;
-    HookScope& operator=(const HookScope&) = delete;
-};
+void hook_scope_exit(GuestEntryState& entry) noexcept;
 // The calling thread's state, kept in the context's reservation register,
 // which the generated code never uses (sfr::load_reserved_word keeps the
 // reservation in GuestThreadState). On Android libmain is loaded after start,
@@ -147,6 +138,20 @@ inline GuestThreadState& entry_thread_state(Context& ctx) {
         return guest_thread_state;
     }
 }
+// Around every hook, with the state its context holds (thousands of graphics
+// hooks a frame paid the TLS resolver twice each on Android).
+struct HookScope {
+    template <class Context>
+    explicit HookScope(Context& ctx) : entry_(entry_thread_state(ctx).entry) { ++entry_.hook_depth; }
+    ~HookScope() {
+        if (!--entry_.hook_depth && (entry_.hook_stack_pointer || entry_.graphics_stack_pointer || entry_.input_stack_pointer))
+            hook_scope_exit(entry_);
+    }
+    HookScope(const HookScope&) = delete;
+    HookScope& operator=(const HookScope&) = delete;
+private:
+    GuestEntryState& entry_;
+};
 // The checkpoint at every loop label of the generated code, with the state
 // its context holds: through TLS, each label not dominated by another paid
 // the resolver again.
@@ -224,8 +229,20 @@ inline void load_vector_memory(uint32_t address, uint8_t (&destination)[16]) {
 inline void store_vector_memory(uint32_t address, const uint8_t (&source)[16]) {
     reverse_vector(source, guest_base + (address & ~0xFu));
 }
-void load_vector_left(uint32_t, uint8_t (&)[16]);
-void load_vector_right(uint32_t, uint8_t (&)[16]);
+// lvlx/lvrx/stvlx/stvrx inline, as the generated code's own accesses are
+// (direct_vector_memory.h), instead of calls into the checked GuestMemory paths.
+inline void load_vector_left(uint32_t address, uint8_t (&destination)[16]) {
+    direct::load_vector_left(guest_base, address, destination);
+}
+inline void load_vector_right(uint32_t address, uint8_t (&destination)[16]) {
+    direct::load_vector_right(guest_base, address, destination);
+}
+inline void store_vector_left(uint32_t address, const uint8_t (&source)[16]) {
+    direct::store_vector_left(guest_base, address, source);
+}
+inline void store_vector_right(uint32_t address, const uint8_t (&source)[16]) {
+    direct::store_vector_right(guest_base, address, source);
+}
 inline void zero_cache_block(uint32_t address) { std::memset(guest_base + (address & ~31u), 0, 32); }
 inline void zero_cache_line(uint32_t address) { std::memset(guest_base + (address & ~127u), 0, 128); }
 #else
@@ -249,10 +266,10 @@ inline void store_vector_memory(uint32_t address, const uint8_t (&source)[16]) {
 }
 void zero_cache_block(uint32_t);
 void zero_cache_line(uint32_t);
-#endif
-void store_vector_word(uint32_t, const uint8_t (&)[16]);
 void store_vector_left(uint32_t, const uint8_t (&)[16]);
 void store_vector_right(uint32_t, const uint8_t (&)[16]);
+#endif
+void store_vector_word(uint32_t, const uint8_t (&)[16]);
 void synchronize_resource_memory(PPCContext&);
 // Frames presented so far (guest_graphics_hooks.cpp).
 extern std::atomic<uint32_t> present_count;
@@ -381,7 +398,7 @@ inline constexpr sfr::NoFastPath sfr_fast{};
 // NuiSkeletonGetNextFrame, stalling the whole game for its time slices.)
 #define SFR_SCOPED_HOOK(x, registration) [[maybe_unused]] static const bool x##_hook = registration; \
     static void x##_hooked(PPCContext& __restrict ctx, uint8_t* base); \
-    PPC_FUNC(x) { ::sfr::HookScope scope; x##_hooked(ctx, base); } \
+    PPC_FUNC(x) { ::sfr::HookScope scope(ctx); x##_hooked(ctx, base); } \
     static void x##_hooked(PPCContext& __restrict ctx, uint8_t* base)
 #define SFR_HOOK(x) SFR_SCOPED_HOOK(x, ::sfr::register_hook(#x))
 // A Direct3D replacement that touches only the native device and guest memory

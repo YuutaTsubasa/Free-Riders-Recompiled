@@ -130,6 +130,17 @@ int main() {
                 "declining special range does not call provider or partly write");
         memory.add_import_variable(0x117f8, "test");
         rejected(memory, 0x11800);
+#if SFR_DIRECT_MEMORY
+        // Direct guest access: the same bytes and registers without the
+        // checked path, and the same alignment and wrap refusals.
+        sfr::GuestMemory direct;
+        direct.map(0x10000, 0x2000);
+        sfr::GuestMemory::direct_guest_access = true;
+        all_entries(direct, std::make_index_sequence<18>{});
+        rejected(direct, 0x10801);
+        rejected(direct, 8);
+        sfr::GuestMemory::direct_guest_access = false;
+#endif
         std::cout << "Grouped register save/restore passed\n";
         return 0;
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
