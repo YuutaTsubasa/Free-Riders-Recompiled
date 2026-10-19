@@ -2278,3 +2278,54 @@ Evidence: `out/cpu-profile-v047/directlog-memory-vulkan-u`, including
 `verification.json`, `analysis-provenance.json`, `attribution.txt` and
 `indexed-draw-annotated.asm.txt`. ETL SHA256:
 `335aa84b08cc7bf743b3afe9c1df342cc1c54e1fc44235542eb2b310ec437fb6`.
+
+## 2026-10-20: Main-thread work per race frame (Issue #176)
+
+A Pixel 10a's X4 needs about 12-13 ms of main-thread CPU per race frame at full
+clock (an AYN Thor about 10), so thermal throttling pushes it past the 16.7 ms
+budget. This pass looked for the runtime's own costs around the generated code.
+
+**Where the time goes.** simpleperf on the Thor (main thread, 40 s of a moving
+Dolphin Resort race, release 0.10.11 code, frame metrics off), about 14.3 ms of
+CPU per frame including the pacing spin: generated guest code 37%, graphics HLE
+15% (`native_draw` 3.3%, the constants' `swap_words_into` 3.0%, `set_texture`,
+vertex cache, texture lookup, render queue), runtime guest-memory helpers 11%
+(the grouped GPR save/restore hooks and lvlx/lvrx/stvlx/stvrx through
+GuestMemory's checked paths, `check_write`'s `check_store_access` and
+`mark_written`), permit/entry bookkeeping 6% (`guest_checkpoint_permit` at every
+32nd entry, the observed entry of every hook), the linker's TLS resolver 3.4%
+(thread_locals in the dynamically loaded libmain), mutex atomics 4% (mostly the
+graphics lock taken by every graphics hook), and `clock_gettime` 3.7% plus kernel
+time 6% (mostly the pacing loop's yields and clock reads, which is slack rather
+than work; one clock read costs 67 ns on the Thor, `HOST_TIMING clock_read_ns`).
+A Windows sample (`SFR_MAIN_PROFILE`, which inflates drawing because it suspends
+the thread in the driver) had the same shape, with the helpers at 15% as x86 also
+lacked their NEON fast paths.
+
+**Changes.** The helpers access memory as the direct-memory generated code does;
+`check_write` is inline for one ordinary unwatched page; hooks use the thread
+state their context holds instead of thread_locals, and virtual calls no longer
+read a thread_local audit flag; the checkpoint interval is 256 everywhere
+(checkpoint-interval.md); HOST_THREADS's per-draw timers sample one draw in
+eight (four clock reads a draw were ~0.2 ms a frame). HOST_THREADS now also
+prints on Windows.
+
+**Thor A/B** (HOST_THREADS, frames 13000-21000, moving race, frame metrics off,
+release-equivalent build vs this branch, runs interleaved):
+
+| Build | drawn_ms | undrawn_ms | cpu_ms | frames skipped of 9600 |
+| --- | --- | --- | --- | --- |
+| 0.10.11 code | 16.72 / 16.66 / 16.51 | 10.77 / 11.09 / 10.91 | 14.77 / 14.74 / 14.47 | 773 / 836 / 721 |
+| this branch | 16.30 / 15.98 | 9.00 / 9.94 | 13.81 / 14.26 | 65 / 213 |
+
+With `SFR_TEST_RACE_DRAW_MS=10` (drawn frames made 10 ms longer, so 60-65% of
+frames go undrawn, as on a slow phone): undrawn_ms 10.60 / 10.53 before, 9.36 /
+10.15 after. Windows (i9, Vulkan, same race, noisy because of other load on that
+machine): undrawn_ms 5.88 / 6.22 before and 5.14 / 5.75 after with the same
+forced skipping; drawn frames showed no difference beyond the noise. draw_ms is
+now an estimate from one draw in eight and reads about 0.1 ms higher than the
+full timing did.
+
+Measured but left alone: the graphics lock per hook (an uncontended mutex pair,
+~2%), the constants swap (8 KB a draw), the pacing spin on Android (a 2 ms
+margin, as sleeps overshoot by ~0.8 ms there).
