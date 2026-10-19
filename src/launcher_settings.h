@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -123,6 +124,10 @@ struct LauncherSettings {
     // (SFR_LIVE_NAME), which leaves the profile's saves where they are.
     bool online = false, online_host = false;
     std::string online_server, online_name;
+    // The Test options page (test_options.h): variable -> the chosen value,
+    // one of the option's choices. An option not here is at Default and
+    // exports nothing.
+    std::map<std::string, std::string> test_options;
 };
 
 // Unknown keys and malformed values are ignored (the default stays), so an
