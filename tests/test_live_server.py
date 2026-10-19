@@ -1,6 +1,7 @@
 import asyncio
 import io
 import logging
+import os
 import struct
 import subprocess
 import sys
@@ -305,6 +306,24 @@ class LiveServerTest(unittest.TestCase):
                 stdout=subprocess.PIPE)
             await process.communicate()
             self.assertEqual(process.returncode, 1, 'nothing there any more')
+        self.run_async(test)
+
+    def test_relay_check(self):
+        """--check-relay sends a datagram between two test consoles (what
+        an operator runs to see that UDP reaches the server)."""
+        async def test():
+            async with Running(password='room') as server:
+                results = []
+                for password in ('room', 'wrong'):
+                    process = await asyncio.create_subprocess_exec(
+                        sys.executable, str(ROOT / 'server' / 'live_server.py'), '--check-relay',
+                        '127.0.0.1:%d' % server.port, stdout=subprocess.PIPE,
+                        env=dict(os.environ, SFR_LIVE_PASSWORD=password))
+                    out, _ = await process.communicate()
+                    results.append((process.returncode, out))
+                self.assertEqual(results[0][0], 0, results[0][1])
+                self.assertEqual(results[1][0], 1)
+                self.assertIn(b'wrong password', results[1][1])
         self.run_async(test)
 
 

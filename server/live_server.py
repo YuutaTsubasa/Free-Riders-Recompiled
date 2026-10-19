@@ -505,6 +505,62 @@ def check(address, timeout=3.0):
     return 0 if first.startswith('OK freeriders ') else 1
 
 
+def check_relay(address, password='', timeout=3.0):
+    """0 when a datagram goes from one test console to another through the
+    server at host[:port], over UDP (the race's path, which a firewall may
+    block while TCP works); 1 otherwise. Joins as two consoles named "Check"
+    for a moment."""
+    host, _, port = address.rpartition(':') if ':' in address else (address, '', str(DEFAULT_PORT))
+    port = int(port)
+    try:
+        target = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_DGRAM)[0][4]
+        consoles = []
+        for xuid in (0x0009FFFFFFFF0001, 0x0009FFFFFFFF0002):
+            control = socket.create_connection((host, port), timeout=timeout)
+            reader = control.makefile('rb')
+
+            def ask(line, control=control, reader=reader):
+                control.sendall((line + '\n').encode())
+                lines = []
+                while (got := reader.readline().decode('utf-8', 'replace').rstrip('\r\n')) != '.':
+                    if not got and not lines:
+                        raise OSError('connection closed')
+                    lines.append(got)
+                return lines
+
+            if password:
+                answer = ask('PASS ' + password.encode('utf-8').hex())
+                if answer[:1] == ['ERR wrong password']:
+                    print('wrong password')
+                    return 1
+            words = ask('HELLO %016x Check' % xuid)[0].split()
+            if words[0] != 'OK' or len(words) < 6:
+                print('HELLO: %s' % ' '.join(words))
+                return 1
+            udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            udp.settimeout(timeout)
+            udp.connect(target)
+            consoles.append((control, udp, int(words[1]), int(words[2], 16), bytes.fromhex(words[5])))
+        for _ in range(3):
+            for _, udp, number, _, token in consoles:
+                udp.send(b'\x00' + struct.pack('>I', number) + token)
+            time.sleep(0.2)
+            (_, sender, _, source, _), (_, receiver, _, destination, _) = consoles
+            sent = b'\x01' + struct.pack('>IHIH', destination, 1000, source, 1000) + b'free riders'
+            sender.send(sent)
+            try:
+                if receiver.recv(2048) == sent:
+                    print('OK: a datagram went through the server over UDP')
+                    return 0
+            except socket.timeout:
+                pass
+        print('no datagram came back over UDP: is UDP port %d open?' % port)
+        return 1
+    except (OSError, IndexError, ValueError) as error:
+        print('no answer: %s' % error)
+        return 1
+
+
 async def serve(settings):
     service = Service(settings)
     loop = asyncio.get_running_loop()
@@ -526,9 +582,14 @@ def main(arguments=None):
                         help='UDP address, when not --host (SFR_LIVE_UDP_BIND; fly-global-services on Fly.io)')
     parser.add_argument('--port', type=int, default=settings.port, help='TCP and UDP port (SFR_LIVE_PORT)')
     parser.add_argument('--check', metavar='HOST[:PORT]', help='ask a server PING and exit 0 when it answers')
+    parser.add_argument('--check-relay', metavar='HOST[:PORT]',
+                        help='send a datagram between two test consoles through a server (UDP); '
+                             'the password comes from SFR_LIVE_PASSWORD')
     args = parser.parse_args(arguments)
     if args.check:
         return check(args.check)
+    if args.check_relay:
+        return check_relay(args.check_relay, settings.password)
     settings.host, settings.udp_host, settings.port = args.host, args.udp_host, args.port
     level = getattr(logging, settings.log_level.upper(), None)
     if not isinstance(level, int):

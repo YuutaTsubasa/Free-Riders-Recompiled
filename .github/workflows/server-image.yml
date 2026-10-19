@@ -46,6 +46,11 @@ jobs:
             type=semver,pattern={{version}}
             type=raw,value=latest,enable=${{ github.event_name == 'release' }}
             type=ref,event=pr
+          # The image's own, not the repository's description.
+          labels: |
+            org.opencontainers.image.title=Free Riders Recompiled online server
+            org.opencontainers.image.description=Lobbies and the relay for Free Riders Recompiled's online play (Xbox LIVE mode)
+            org.opencontainers.image.licenses=GPL-3.0-or-later
       - name: Sign in to GitHub Container Registry
         if: github.event_name == 'release'
         uses: docker/login-action@v3
@@ -74,5 +79,7 @@ jobs:
             sleep 1
           done
           python server/live_server.py --check 127.0.0.1:47800 | grep -q "OK freeriders 1 password"
+          # A datagram between two test consoles, through the published UDP port.
+          SFR_LIVE_PASSWORD=ci python server/live_server.py --check-relay 127.0.0.1:47800
           docker logs frs
           docker rm -f frs

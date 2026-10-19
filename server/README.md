@@ -116,7 +116,16 @@ a few lobbies. What matters is where it is (see Latency above) and that
    if it has one, for example `sudo ufw allow 47800/tcp` and
    `sudo ufw allow 47800/udp`.
 4. Check from a player's PC: Launcher → Online play → Server address →
-   **Test connection**, or `python3 server/live_server.py --check <address>`.
+   **Test connection** (TCP only), and the race's UDP path with this
+   repository's script:
+
+   ```bash
+   SFR_LIVE_PASSWORD=the-room-password python3 server/live_server.py --check-relay <address>
+   ```
+
+   It joins as two test consoles for a moment and sends a datagram from one
+   to the other through the server. "OK" means TCP and UDP both work; "no
+   datagram came back" means UDP 47800 is blocked on the way.
 
 ### Oracle Cloud free VM
 
@@ -199,4 +208,5 @@ password (accepted, refused, never logged), the limits, idle connections, and
 datagrams relayed only between registered games. The game's own server and
 client have the same checks in `tests/live_connect_test.cpp`. The workflow
 `.github/workflows/server-image.yml` builds the image for linux/amd64 and
-linux/arm64 and answers a PING from a container before anything is pushed.
+linux/arm64, and checks that a container answers PING and relays a datagram
+over UDP (`--check-relay`) before anything is pushed.
