@@ -51,6 +51,20 @@ int main() {
         require(sfr::host_role_mask(HostThreadRole::render, 1, thor, 0, 0xf7) == 0x77, "the process test mask limits the plan");
         require(sfr::host_role_mask(HostThreadRole::main, 2, thor, 0, 0x07) == 0x07,
                 "a plan mask outside the process test mask falls back to it");
+        // Plan 32: a lone fastest core well ahead of the rest takes the main thread.
+        long pixel[64] = {191, 191, 191, 191, 741, 741, 741, 1024};  // Pixel 10a, as its game.log reports
+        require(sfr::lone_fastest_core(pixel) == 0x80, "Pixel 10a: the X4 is alone and well ahead");
+        require(!sfr::lone_fastest_core(thor), "Thor: the next tier has 83%, so no lone core");
+        require(!sfr::lone_fastest_core(clocks), "8 Gen 1 by clock: 83%, no lone core");
+        require(!sfr::lone_fastest_core(two) && !sfr::lone_fastest_core(same) && !sfr::lone_fastest_core(none),
+                "two fastest, alike or unreported cores: no lone core");
+        require(!sfr::lone_fastest_core(g99), "only little cores besides the fastest: placement stays the system's");
+        require(sfr::host_role_mask(HostThreadRole::main, 45, pixel, 0, 0) == 0x80, "plan 45 on the Pixel: main on the X4");
+        require(sfr::host_role_mask(HostThreadRole::worker, 45, pixel, 0, 0) == 0x70, "plan 45 on the Pixel: workers on the A720s");
+        require(sfr::host_role_mask(HostThreadRole::render, 45, pixel, 0, 0) == 0x7f, "plan 45 on the Pixel: render off the X4");
+        require(sfr::host_role_mask(HostThreadRole::main, 45, thor, 0, 0) == 0xf8, "plan 45 on the Thor: as plan 13");
+        require(sfr::host_role_mask(HostThreadRole::worker, 45, thor, 0, 0) == 0xf8, "plan 45 on the Thor: workers as plan 13");
+        require(sfr::host_role_mask(HostThreadRole::main, 13, pixel, 0, 0) == 0xf0, "without bit 32 the Pixel is as before");
         require(sfr::parse_cpu_mask("0xf7") == 0xf7 && sfr::parse_cpu_mask("78") == 0x78 && !sfr::parse_cpu_mask(""),
                 "masks are hexadecimal");
         std::cout << "host core plan tests passed\n";

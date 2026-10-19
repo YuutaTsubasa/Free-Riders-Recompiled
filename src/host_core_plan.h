@@ -14,13 +14,21 @@
 // Snapdragon's scheduler (WALT) keeps them off the little cores by itself;
 // the Pixel's apparently did not (to be confirmed on a Tensor). Bits 4 and 8
 // keep them off the little cores on any phone with four or more big ones.
-// SFR_CORE_PLAN (bits; default 1|4|8 = 13 on Android, 0 elsewhere; 0 = the
-// system places every thread):
+// With them, the Pixel's main thread still ran mostly on an A720 (capacity
+// 741) instead of the X4 (1024): ~13 ms of CPU a frame, and 11-16 ms undrawn
+// frames once heat held the A720s to 1.8 GHz (Issue #176). Bit 32 gives the
+// main thread a lone fastest core when it is well ahead of the rest.
+// SFR_CORE_PLAN (bits; default 1|4|8|32 = 45 on Android, 0 elsewhere; 0 =
+// the system places every thread):
 //   1  the render thread avoids the fastest cores,
 //   2  the title's main thread runs only on the fastest cores,
 //   4  the other guest threads avoid the little cores,
 //   8  the title's main thread avoids the little cores,
-//  16  the render thread avoids the little cores too.
+//  16  the render thread avoids the little cores too,
+//  32  where one core alone is the fastest and every other has less than
+//      80% of its speed (a Tensor's X4; not a Thor's CPU 7, whose next
+//      tier has 83%), the title's main thread runs only on it and the
+//      other guest threads avoid it.
 // Bit 1 only where cores other than the fastest have at least 70% of their
 // capacity: a phone whose second tier is little cores (a Helio G99's A55s
 // beside two A76s) keeps the render thread's placement to the system. Bits
@@ -54,7 +62,7 @@ inline unsigned host_core_plan() {
         const char* text = std::getenv("SFR_CORE_PLAN");
         if (text && *text) return unsigned(std::strtoul(text, nullptr, 10));
 #if defined(__ANDROID__)
-        return 1u | 4u | 8u;
+        return 1u | 4u | 8u | 32u;
 #else
         return 0u;
 #endif
@@ -105,6 +113,19 @@ inline uint64_t big_cores(const long (&speed)[64]) {
     return little && count >= 4 ? big : 0;
 }
 
+// The fastest core where it stands alone, with every other core below 80%
+// of its speed; 0 otherwise.
+inline uint64_t lone_fastest_core(const long (&speed)[64]) {
+    const CoreSplit split = split_cores(speed);
+    if (!split.fastest || (split.fastest & (split.fastest - 1))) return 0;
+    long best = 0, next = 0;
+    for (const long value : speed) {
+        if (value > best) next = best, best = value;
+        else if (value < best && value > next) next = value;
+    }
+    return next * 10 < best * 8 ? split.fastest : 0;
+}
+
 enum class HostThreadRole { main, worker, render };
 
 // What a thread of the role is allowed: the test mask, or the plan's choice,
@@ -115,13 +136,16 @@ inline uint64_t host_role_mask(HostThreadRole role, unsigned plan, const long (&
     if (!mask) {
         const CoreSplit split = split_cores(speed);
         const uint64_t big = big_cores(speed);
+        const uint64_t lone = plan & 32 ? lone_fastest_core(speed) : 0;
         switch (role) {
         case HostThreadRole::main:
             if (plan & 2) mask = split.fastest;
+            else if (lone) mask = lone;
             else if (plan & 8) mask = big;
             break;
         case HostThreadRole::worker:
             if (plan & 4) mask = big;
+            if (lone && (mask & ~lone)) mask &= ~lone;
             break;
         case HostThreadRole::render:
             if (plan & 1) mask = split.rest;
