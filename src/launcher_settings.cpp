@@ -2,6 +2,7 @@
 #include "game_language.h"
 #include "render_scale.h"
 #include "aspect_settings.h"
+#include "test_options.h"
 #include <algorithm>
 #include <charconv>
 #include <cstdio>
@@ -167,6 +168,13 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         else if (key == "online_host") read_flag(value, settings.online_host);
         else if (key == "online_server" && value.size() <= 127) settings.online_server = value;
         else if (key == "online_name" && value.size() <= 15) settings.online_name = value;
+        // test_option.<variable>=<value>: only a listed option and one of its
+        // choices; anything else stays at Default.
+        else if (key.starts_with(test_option_key_prefix)) {
+            const std::string variable = key.substr(test_option_key_prefix.size());
+            if (const TestOption* option = find_test_option(variable); option && find_test_choice(*option, value))
+                settings.test_options[variable] = value;
+        }
     }
     // render_scale=X drew X% of 720 lines. 100 is Original; another becomes
     // the nearest step of the window that draws about as many lines.
@@ -237,6 +245,11 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "image_directory=" << path_utf8(s.image_directory) << '\n'
         << "asset_directory=" << path_utf8(s.asset_directory) << '\n'
         << "save_directory=" << path_utf8(s.save_directory) << '\n';
+    // Test options away from Default only, in the table's order.
+    for (const auto& option : test_options())
+        if (const auto chosen = s.test_options.find(option.variable);
+            chosen != s.test_options.end() && find_test_choice(option, chosen->second))
+            out << test_option_key_prefix << option.variable << '=' << chosen->second << '\n';
     return out.str();
 }
 
@@ -292,7 +305,7 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
     const auto [window_width, window_height] = window_size(s);
     const InternalResolution internal = internal_resolution(s);
     const bool original = s.aspect_ratio == "16:9";
-    return {
+    std::vector<std::pair<std::string, std::string>> environment{
         // Playing: no diagnostic time or call limits, no traces.
         {"SFR_CALL_BUDGET", "18446744073709551615"},
         {"SFR_WATCHDOG_SECONDS", "31536000"},
@@ -382,6 +395,14 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         {"SFR_TILT", s.tilt ? "1" : "0"},
 #endif
     };
+    // Test options (test_options.h): only those chosen, and only where they
+    // mean something. Default adds nothing, so the variable is left as the
+    // launcher found it.
+    for (const auto& option : test_options())
+        if (const auto chosen = s.test_options.find(option.variable); chosen != s.test_options.end() &&
+            test_option_applies(option) && find_test_choice(option, chosen->second))
+            environment.emplace_back(option.variable, chosen->second);
+    return environment;
 }
 
 std::vector<std::wstring> game_arguments(const LauncherSettings& s) {

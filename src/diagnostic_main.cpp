@@ -69,6 +69,7 @@
 #include "native_audio.h"
 #include "guest_printf.h"
 #include "native_presentation.h"
+#include "test_options.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -4371,6 +4372,9 @@ int main(int argc, char** argv) {
     std::setvbuf(stderr, trace_buffer, _IOFBF, sizeof trace_buffer);
     std::cerr.unsetf(std::ios::unitbuf);
     std::cerr << host_timing.describe() << '\n';
+    // The launcher's Test options (and the same variables set by hand) this
+    // run started with, once, so a bug report's game.log shows them.
+    std::cerr << sfr::describe_test_options([](const char* name) -> const char* { return std::getenv(name); }) << '\n';
     if (test_cpus) std::cerr << "TEST_CPUS mask=0x" << std::hex << test_cpus << std::dec << '\n';
     struct TraceFlush { ~TraceFlush() { std::cerr.flush(); std::fflush(stderr); } } trace_flush;
 #if defined(__APPLE__)

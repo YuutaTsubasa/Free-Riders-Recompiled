@@ -40,6 +40,7 @@
 #include "voice_commands.h"
 #include "launcher_settings.h"
 #include "launcher_screen_fit.h"
+#include "test_options.h"
 #ifdef SFR_IOS
 #include "disc_image_search.h"
 #include "ios_screen.h"
@@ -135,6 +136,7 @@ enum Text {
     MotionTrace, MotionTraceHint,
     InstallIntroIos,
     FrameskipLabel, FrameskipHint, FrameskipAuto, FrameskipAlways, FrameskipOff,
+    TabTest, TestIntro, TestDefault, TestReset, TestActive, TestActiveNone,
     TextCount
 };
 
@@ -487,10 +489,32 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Auto", "自動"},
     {"Always when behind", "落後時一律略過"},
     {"Off", "關閉"},
+    {"Test options", "測試選項"},
+    {"Switches for finding the cause of a problem. Change one only when a GitHub issue asks you to, then play "
+     "and attach game.log, which lists the ones in use. Leave them at Default otherwise. Changes apply on the "
+     "next game launch.",
+     "用來找出問題原因的開關。請只在 GitHub 的 issue 要求時才變更，然後遊玩並附上 game.log（其中會列出使用中的"
+     "選項）。其他時候請保持預設。設定於下次啟動遊戲時套用。"},
+    {"Default", "預設"},
+    {"Reset all test options", "全部恢復預設"},
+    {"Test options not at Default: %d", "不是預設值的測試選項：%d 個"},
+    {"All test options are at Default.", "所有測試選項都是預設值。"},
 }};
 
 int language = 0;
 const char* tr(Text text) { return texts[text][language]; }
+
+// Every text the launcher may show in either language: the table above and
+// the Test options' own (test_options.h), for the fonts' glyphs.
+template <class Visit>
+void for_each_text(Visit visit) {
+    for (const auto& text : texts) { visit(text[0]); visit(text[1]); }
+    for (const auto& group : sfr::test_group_names) { visit(group[0]); visit(group[1]); }
+    for (const auto& option : sfr::test_options()) {
+        for (int i = 0; i < 2; ++i) { visit(option.label[i]); visit(option.hint[i]); }
+        for (const auto& choice : option.choices) { visit(choice.label[0]); visit(choice.label[1]); }
+    }
+}
 
 // A paragraph broken into lines that fit width (pixels, from the cursor)
 // the way Chinese is set: ImGui on its own breaks only at spaces, which
@@ -705,7 +729,7 @@ Fonts load_fonts(float scale) {
     static ImVector<ImWchar> ranges;
     ImFontGlyphRangesBuilder builder;
     builder.AddRanges(io.Fonts->GetGlyphRangesDefault());
-    for (const auto& text : texts) { builder.AddText(text[0]); builder.AddText(text[1]); }
+    for_each_text([&](const char* text) { builder.AddText(text); });
     builder.AddText("%0123456789x\xE2\x97\x8F\xE2\x97\x8B");  // and the status dots
     builder.BuildRanges(&ranges);
 
@@ -748,13 +772,13 @@ Fonts load_fonts(float scale) {
     // The characters beyond Latin (Chinese, the status dots) come from
     // the system's own text renderer (launcher_platform.h).
     std::vector<unsigned int> wide;
-    for (const auto& text : texts)
-        for (const char* at : {text[0], text[1]})
-            while (*at) {
-                unsigned int codepoint = 0;
-                at += ImTextCharFromUtf8(&codepoint, at, nullptr);
-                if (codepoint >= 0x2000 && std::find(wide.begin(), wide.end(), codepoint) == wide.end()) wide.push_back(codepoint);
-            }
+    for_each_text([&](const char* at) {
+        while (*at) {
+            unsigned int codepoint = 0;
+            at += ImTextCharFromUtf8(&codepoint, at, nullptr);
+            if (codepoint >= 0x2000 && std::find(wide.begin(), wide.end(), codepoint) == wide.end()) wide.push_back(codepoint);
+        }
+    });
     for (unsigned int codepoint : {0x25CFu, 0x25CBu})
         if (std::find(wide.begin(), wide.end(), codepoint) == wide.end()) wide.push_back(codepoint);
     sfr::launcher::add_system_glyphs(fonts.body, 19.0f * scale, false, wide);
@@ -1338,7 +1362,7 @@ float draw_prompt(ImDrawList* draw, ImVec2 at, float size, InputKind kind, Promp
 
 // ---------------------------------------------------------------- app
 enum class Page { Settings, Stopped, Install, Installing, Installed };
-enum Tab { GeneralTab, DisplayTab, SoundTab, ControlsTab, MotionTab, AvatarTab, ModsTab, FilesTab, TabCount };
+enum Tab { GeneralTab, DisplayTab, SoundTab, ControlsTab, MotionTab, AvatarTab, ModsTab, FilesTab, TestTab, TabCount };
 enum class Question { none, quit, cancel_install, quit_during_install, online_unreachable };
 
 // An installation running on its own thread; the page reads its progress.
@@ -1899,11 +1923,13 @@ struct Launcher {
     void tab_list(ImVec2 size) {
         const float left = ImGui::GetCursorPosX();
         ImGui::PushFont(fonts.heading);
-        constexpr Text names[TabCount] = {TabGeneral, TabDisplay, TabSound, TabControls, TabMotion, TabAvatar, TabMods, TabFiles};
+        constexpr Text names[TabCount] = {TabGeneral, TabDisplay, TabSound, TabControls, TabMotion, TabAvatar, TabMods, TabFiles, TabTest};
         for (int i = 0; i < TabCount; ++i) {
             ImGui::SetCursorPosX(left);
             const ImVec2 at = ImGui::GetCursorScreenPos();
-            const float height = ImGui::GetTextLineHeight() + 22 * scale;
+            // Closer together when they would not all fit above the bottom.
+            const float spacing = ImGui::GetStyle().ItemSpacing.y;
+            const float height = (std::min)(ImGui::GetTextLineHeight() + 22 * scale, (size.y + spacing) / float(int(TabCount)) - spacing);
             ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.0f, 0.5f));
             ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0, 0, 0, 0));
             ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(1, 1, 1, 0.06f));
@@ -2843,6 +2869,74 @@ struct Launcher {
         });
     }
 
+    // ------------------------------------------------ test options
+    // Diagnosis switches (test_options.h), each at Default (nothing exported)
+    // until a bug report asks for another choice. Only the ones that mean
+    // something on this platform are shown.
+    void test_settings() {
+        ImGui::PushStyleColor(ImGuiCol_Text, dim_text);
+        ImGui::TextWrapped("%s", wrapped(tr(TestIntro), room()).c_str());
+        ImGui::PopStyleColor();
+        int changed = 0;
+        for (const auto& option : sfr::test_options())
+            if (sfr::test_option_applies(option) && settings.test_options.count(option.variable)) ++changed;
+        ImGui::Dummy(ImVec2(0, 4 * scale));
+        ImGui::AlignTextToFramePadding();
+        if (changed) ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.35f, 1), tr(TestActive), changed);
+        else ImGui::TextColored(dim_text, "%s", tr(TestActiveNone));
+        if (small_button(tr(TestReset), scale)) {
+            settings.test_options.clear();
+            ::play(sfr::UiSound::confirm);
+        }
+        const float combo_width = 220 * scale;
+        int group = -1;
+        for (const auto& option : sfr::test_options()) {
+            if (!sfr::test_option_applies(option)) continue;
+            if (int(option.group) != group) {
+                group = int(option.group);
+                ImGui::Dummy(ImVec2(0, 4 * scale));
+                ImGui::PushStyleColor(ImGuiCol_Text, cyan);
+                ImGui::SeparatorText(sfr::test_group_names[group][language]);
+                ImGui::PopStyleColor();
+                ImGui::Dummy(ImVec2(0, 4 * scale));
+            }
+            // The variable and the issue, so a request in an issue can name
+            // either and the player finds the row.
+            std::string hint = option.hint[language];
+            hint += "  (";
+            hint += option.variable;
+            if (*option.issue) hint += std::string(", Issue ") + option.issue;
+            hint += ')';
+            setting_row(option.label[language], hint.c_str(), combo_width, scale, [&] {
+                const auto chosen = settings.test_options.find(option.variable);
+                const sfr::TestChoice* current =
+                    chosen == settings.test_options.end() ? nullptr : sfr::find_test_choice(option, chosen->second);
+                ImGui::SetNextItemWidth(combo_width);
+                // A choice away from Default stands out.
+                if (current) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.75f, 0.35f, 1));
+                const bool open = ImGui::BeginCombo((std::string("##") + option.variable).c_str(),
+                                                    current ? current->label[language] : tr(TestDefault));
+                if (current) ImGui::PopStyleColor();
+                if (open) {
+                    if (ImGui::Selectable(tr(TestDefault), !current)) {
+                        settings.test_options.erase(option.variable);
+                        ::play(sfr::UiSound::confirm);
+                    }
+                    if (!current) ImGui::SetItemDefaultFocus();
+                    for (const auto& choice : option.choices) {
+                        const bool selected = current == &choice;
+                        if (ImGui::Selectable(choice.label[language], selected)) {
+                            settings.test_options[option.variable] = choice.value;
+                            ::play(sfr::UiSound::confirm);
+                        }
+                        if (selected) ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+            });
+        }
+    }
+
     void reset_settings() {
         ImGui::Dummy(ImVec2(0, 6 * scale));
         if (small_button(tr(Defaults), scale)) {
@@ -3043,6 +3137,7 @@ struct Launcher {
         case AvatarTab: avatar_model_settings(); break;
         case ModsTab: mods_settings(); break;
         case FilesTab: file_settings(); break;
+        case TestTab: test_settings(); break;
         }
         ImGui::PopTextWrapPos();
         ImGui::EndChild();

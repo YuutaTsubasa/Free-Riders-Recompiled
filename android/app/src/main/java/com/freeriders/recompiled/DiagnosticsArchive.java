@@ -31,7 +31,14 @@ final class DiagnosticsArchive {
         "SFR_RENDER_SCALE", "SFR_WINDOW_WIDTH", "SFR_WINDOW_HEIGHT", "SFR_GRAPHICS",
         "SFR_VSYNC", "SFR_FRAME_LIMIT", "SFR_RENDER_EVERY", "SFR_RACE_FRAMESKIP", "SFR_PARALLEL_WORKER",
         "SFR_VERTEX_CACHE", "SFR_GPU_PIPELINE", "SFR_SKIP_MOVIES", "SFR_AUDIO",
-        "SFR_FRAME_METRICS", "SFR_TRACE_GRAPHICS", "SFR_DIAGNOSTIC_ENTRIES", "SFR_TRACE_IMPORTS"));
+        "SFR_FRAME_METRICS", "SFR_TRACE_GRAPHICS", "SFR_DIAGNOSTIC_ENTRIES", "SFR_TRACE_IMPORTS",
+        // The launcher's Test options (src/test_options.h; tests/test_test_options.py
+        // checks that every one is here).
+        "SFR_TEST_DISPATCH_LOOP", "SFR_TEST_NO_DESCRIPTOR_INDEXING", "SFR_TEST_NO_CLIP_DISTANCE",
+        "SFR_TEST_DEPTH_D24S8", "SFR_TEST_NO_DEVICE_ADDRESS", "SFR_TEST_NO_INVERTED_DEPTH",
+        "SFR_RENDER_THREAD", "SFR_INDEX_CACHE", "SFR_CONSTANT_UPLOAD_REUSE", "SFR_CORE_PLAN",
+        "SFR_MAIN_AFFINITY", "SFR_HOST_TIMING", "SFR_STEP_WAITS_COLLISION", "SFR_GPU_TIMING",
+        "SFR_AUDIO_CUES"));
 
     static void write(File root, OutputStream output, String device) throws IOException {
         write(root, output, device, Collections.emptyList());

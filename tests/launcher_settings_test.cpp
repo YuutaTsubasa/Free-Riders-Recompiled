@@ -1,6 +1,11 @@
 #include "launcher_settings.h"
 #include "render_scale.h"
+#include "test_options.h"
 
+#include <cstring>
+#include <map>
+#include <set>
+#include <string_view>
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
@@ -386,6 +391,129 @@ void race_frameskip_settings() {
             "a value off the list is written and exported as Auto");
 }
 
+// The Test options table (test_options.h) is well formed.
+void test_option_table() {
+    const auto options = sfr::test_options();
+    require(!options.empty(), "the table lists test options");
+    std::set<std::string_view> variables;
+    for (const auto& option : options) {
+        require(std::string_view(option.variable).starts_with("SFR_"), "each option is a game variable");
+        require(variables.insert(option.variable).second, "each variable is listed once");
+        require(sfr::find_test_option(option.variable) == &option, "each option is found by its variable");
+        require(option.platforms != 0 && (option.platforms & ~sfr::test_platform::all) == 0,
+                "each option is shown somewhere");
+        require(int(option.group) >= 0 && size_t(option.group) < std::size(sfr::test_group_names),
+                "each option has a section");
+        for (int language = 0; language < 2; ++language) {
+            require(option.label[language] && *option.label[language], "each option is named in both languages");
+            require(option.hint[language] && *option.hint[language], "each option is explained in both languages");
+        }
+        require(std::string_view(option.hint[0]).starts_with("For testing"), "each hint says it is for testing");
+        require(std::string_view(option.hint[1]).starts_with("測試用"), "each Chinese hint says it is for testing");
+        require(!option.choices.empty(), "each option has a choice besides Default");
+        std::set<std::string_view> values;
+        for (const auto& choice : option.choices) {
+            require(choice.value && *choice.value, "a choice sets a value (Default is the one that sets none)");
+            require(values.insert(choice.value).second, "an option's values differ");
+            require(sfr::find_test_choice(option, choice.value) == &choice, "each choice is found by its value");
+            for (int language = 0; language < 2; ++language)
+                require(choice.label[language] && *choice.label[language], "each choice is named in both languages");
+        }
+        require(!sfr::find_test_choice(option, "") && !sfr::find_test_choice(option, "default"),
+                "Default is not a choice with a value");
+    }
+    require(!sfr::find_test_option("SFR_NOT_AN_OPTION"), "an unknown variable is no option");
+    // The switches asked of players so far are on the page.
+    for (const char* variable : {"SFR_TEST_DISPATCH_LOOP", "SFR_CORE_PLAN", "SFR_STEP_WAITS_COLLISION",
+                                 "SFR_TEST_NO_INVERTED_DEPTH", "SFR_MAIN_AFFINITY", "SFR_INDEX_CACHE"})
+        require(sfr::find_test_option(variable), "a switch asked of players is a test option");
+    // None is set by the launcher's own settings: the page would fight them.
+    sfr::LauncherSettings defaults;
+    for (const auto& [name, value] : sfr::game_environment(defaults))
+        require(!sfr::find_test_option(name), "no test option is also a launcher setting");
+    require(sfr::test_option_applies(*sfr::find_test_option("SFR_TEST_DISPATCH_LOOP")),
+            "an option for every platform applies here");
+    const auto* core_plan = sfr::find_test_option("SFR_CORE_PLAN");
+    require(sfr::test_option_applies(*core_plan, sfr::test_platform::android) &&
+                !sfr::test_option_applies(*core_plan, sfr::test_platform::windows),
+            "the core placement is an Android option");
+}
+
+void test_option_settings() {
+    using Environment = std::vector<std::pair<std::string, std::string>>;
+    const auto exported = [](const Environment& environment, std::string_view name) -> const std::string* {
+        for (const auto& [key, value] : environment)
+            if (key == name) return &value;
+        return nullptr;
+    };
+    // Default: nothing saved, nothing exported, so a player who never opens
+    // the page runs the game exactly as before.
+    const sfr::LauncherSettings defaults;
+    require(defaults.test_options.empty(), "every test option starts at Default");
+    require(sfr::format_launcher_settings(defaults).find("test_option.") == std::string::npos,
+            "Default writes nothing to settings.ini");
+    const auto base = sfr::game_environment(defaults);
+    for (const auto& option : sfr::test_options())
+        require(!exported(base, option.variable), "Default exports nothing");
+
+    // Each choice survives settings.ini and reaches the game where it applies.
+    for (const auto& option : sfr::test_options())
+        for (const auto& choice : option.choices) {
+            sfr::LauncherSettings settings;
+            settings.test_options[option.variable] = choice.value;
+            const std::string text = sfr::format_launcher_settings(settings);
+            require(text.find(std::string("test_option.") + option.variable + '=' + choice.value + '\n') != std::string::npos,
+                    "a chosen test option is written");
+            const auto read = sfr::parse_launcher_settings(text);
+            require(read.test_options == settings.test_options, "a chosen test option survives a round trip");
+            const auto environment = sfr::game_environment(read);
+            const std::string* value = exported(environment, option.variable);
+            if (sfr::test_option_applies(option)) require(value && *value == choice.value, "a chosen test option reaches the game");
+            else require(!value, "an option for another platform is not exported here");
+            require(environment.size() == base.size() + (value ? 1 : 0), "a test option adds only its own variable");
+        }
+
+    // Several at once, in the table's order in the file.
+    sfr::LauncherSettings several;
+    several.test_options["SFR_STEP_WAITS_COLLISION"] = "0";
+    several.test_options["SFR_TEST_DISPATCH_LOOP"] = "1";
+    const std::string text = sfr::format_launcher_settings(several);
+    require(text.find("test_option.SFR_TEST_DISPATCH_LOOP=1\n") < text.find("test_option.SFR_STEP_WAITS_COLLISION=0\n"),
+            "test options are written in the table's order");
+    require(sfr::parse_launcher_settings(text).test_options == several.test_options, "several test options survive");
+
+    // What a hand-edited or older file may hold stays at Default.
+    for (const char* line : {"test_option.SFR_TEST_DISPATCH_LOOP=2\n", "test_option.SFR_TEST_DISPATCH_LOOP=\n",
+                             "test_option.SFR_TEST_DISPATCH_LOOP=default\n", "test_option.SFR_NOT_AN_OPTION=1\n",
+                             "test_option.=1\n", "test_option.SFR_CALL_BUDGET=1\n", "test_option.SFR_TEST_NO_CLIP_DISTANCE=0\n",
+                             "test_option.SFR_CORE_PLAN=45\n"})
+        require(sfr::parse_launcher_settings(line).test_options.empty(), "an unknown test option or value keeps Default");
+    sfr::LauncherSettings odd;
+    odd.test_options["SFR_TEST_DISPATCH_LOOP"] = "7";
+    odd.test_options["SFR_NOT_AN_OPTION"] = "1";
+    require(sfr::format_launcher_settings(odd).find("test_option.") == std::string::npos &&
+                sfr::game_environment(odd).size() == base.size(),
+            "a value set in code that is no choice is neither written nor exported");
+
+    // Reset all test options: an empty map, which is Default for each.
+    several.test_options.clear();
+    require(sfr::game_environment(several).size() == base.size(), "a reset exports nothing again");
+
+    // The game's TEST_OPTIONS line.
+    std::map<std::string, std::string> environment;
+    const auto get = [&](const char* name) -> const char* {
+        const auto found = environment.find(name);
+        return found == environment.end() ? nullptr : found->second.c_str();
+    };
+    require(sfr::describe_test_options(get) == "TEST_OPTIONS none", "no test option says none");
+    environment["SFR_STEP_WAITS_COLLISION"] = "0";
+    environment["SFR_TEST_DISPATCH_LOOP"] = "1";
+    environment["SFR_FRAME_METRICS"] = "";        // empty: not set
+    environment["SFR_CALL_BUDGET"] = "12";        // not a test option
+    require(sfr::describe_test_options(get) == "TEST_OPTIONS SFR_TEST_DISPATCH_LOOP=1 SFR_STEP_WAITS_COLLISION=0",
+            "the log line lists the test options set, in the table's order");
+}
+
 void save_directory_settings() {
     const auto root = std::filesystem::temp_directory_path() / "sfr_launcher_saves_test";
     std::filesystem::remove_all(root);
@@ -710,6 +838,8 @@ int main() {
         save_directory_settings();
         title_stats_settings();
         race_frameskip_settings();
+        test_option_table();
+        test_option_settings();
         avatar_model_settings();
         malformed_values_keep_defaults();
         display_mode_defaults_to_borderless();
