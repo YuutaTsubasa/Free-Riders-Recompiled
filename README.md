@@ -206,6 +206,8 @@ with [docs/progress.md](docs/progress.md).
   The launcher gains a Test options page, so switches asked for in an issue are a choice instead of a command line. On macOS the game always uses its own MoltenVK, so an older Vulkan SDK on the Mac no longer stops it while preparing shaders (#207).
 - [v0.10.11 — Online server for the cloud, room passwords](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.11)
   The online server comes as a Docker image to run on a cloud machine, so friends on different networks can race without anyone opening ports at home. A server can have a room password, entered in the launcher's Online play settings.
+- [v0.10.12 — Less work per frame](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.12)
+  The game's main thread does about 13% less work in a race frame on an Android handheld, so slower or hotter phones fall behind less often (#176).
 
 ## System Requirements
 
