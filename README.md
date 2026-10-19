@@ -198,6 +198,8 @@ with [docs/progress.md](docs/progress.md).
   On Apple Silicon Macs, races run at full speed: the GPU went from 6.5 to 60 fps on an M1. On iPhone the game no longer stops at its first frame (#185), and the launcher shows Chinese. On phones the game stays in landscape instead of turning with the phone (#177).
 - [v0.10.7 — Every race action on touch](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.7)
   The on-screen controls gain the power-skill punches (LB/RB), a right stick to reach for Rings, and LT to hold hands in Tag races (#177), and now also draw on Windows touch screens. Android logs where race frame time goes, to find why some phones run slowly (#176).
+- [v0.10.8 — D3D12 on older drivers, very wide windows](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.8)
+  D3D12 no longer stops on drivers that can't flip the depth range, such as older NVIDIA drivers (#177). A very wide window draws as wide as the render size allows (up to about 11:1) instead of black bars from about 5.7:1 (#190).
 
 ## System Requirements
 
