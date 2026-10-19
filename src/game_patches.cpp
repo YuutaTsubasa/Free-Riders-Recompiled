@@ -14,6 +14,7 @@
 #include <bit>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -223,11 +224,99 @@ void acquire_lifetime(sfr::JobLifetime::Lease& lease) {
 }
 }
 
+// 823B5D40 is also the collision batch: at its end it pairs up the collision
+// bodies that touch, sweeping each body from its owner's previous position
+// along the last step's motion, both read live from the owner (823B6178).
+// The Fly board (Issue #153) hands its launch direction only to the racers
+// its sweep test listed. The main thread waits for the batch (823B6D40)
+// after the next frame's race step (8249F048) and starts the next batch right
+// after that wait, so on the console the batch, done long before, never sees
+// the race step move the racers. Here it sometimes still runs when the next
+// race step starts (about one race frame in 100 on an AYN Thor): it then
+// sweeps the new positions, the next batch sweeps them again, and the step
+// between is never swept. A racer that reached the Fly board's sphere in that
+// step was never listed, boarded with the race-start direction (0,0,1) and
+// flew out through the right wall. So the race step waits for the batch the
+// previous frame started. SFR_STEP_WAITS_COLLISION=0 turns this off.
+namespace {
+bool step_waits_collision() {
+    static const bool on=[]{ const char* t=std::getenv("SFR_STEP_WAITS_COLLISION"); return !t || *t!='0'; }();
+    return on;
+}
+struct CollisionBatchGate {
+    enum class State { idle, due, running };
+    std::mutex mutex;
+    std::condition_variable changed;
+    State state=State::idle;
+};
+CollisionBatchGate collision_gate;
+// Whether this 823B6D40 call got to its wait (the WaitForSingleObject that
+// returns to 823B6DD8): frames that skip it, before the race or paused,
+// start no batch.
+thread_local bool collision_wait_reached=false;
+void collision_batch_due() {
+    std::lock_guard lock(collision_gate.mutex);
+    if(collision_gate.state==CollisionBatchGate::State::idle)
+        collision_gate.state=CollisionBatchGate::State::due;
+}
+void collision_batch_running() {
+    { std::lock_guard lock(collision_gate.mutex); collision_gate.state=CollisionBatchGate::State::running; }
+    collision_gate.changed.notify_all();
+}
+void collision_batch_finished() {
+    { std::lock_guard lock(collision_gate.mutex); collision_gate.state=CollisionBatchGate::State::idle; }
+    collision_gate.changed.notify_all();
+}
+// Before the main thread's race step: a batch the last wait let start has
+// started within a millisecond here; one that has not after 8 ms is taken as
+// never started. A running batch is waited for (at most 1000 ms, reported).
+void wait_for_collision_batch() {
+    if(!step_waits_collision() || sfr::current_guest_thread_id()!=1) return;
+    using State=CollisionBatchGate::State;
+    {
+        std::lock_guard lock(collision_gate.mutex);
+        if(collision_gate.state==State::idle) return;
+    }
+    struct Wait { bool finished=false, never_started=false; } wait;
+    sfr::traced_host_wait([](void* argument) {
+        auto& result=*static_cast<Wait*>(argument);
+        std::unique_lock lock(collision_gate.mutex);
+        if(!collision_gate.changed.wait_for(lock,std::chrono::milliseconds(8),
+                                            []{ return collision_gate.state!=State::due; })) {
+            collision_gate.state=State::idle;
+            result.never_started=true;
+            return;
+        }
+        result.finished=collision_gate.changed.wait_for(lock,std::chrono::milliseconds(1000),
+                                                        []{ return collision_gate.state==State::idle; });
+    },&wait,"collision_batch",1000000000);
+    static std::atomic<uint32_t> waits{0},unstarted{0},timeouts{0};
+    const uint32_t count=++waits;
+    const uint32_t not_started=unstarted+=wait.never_started;
+    const bool late=!wait.finished && !wait.never_started;
+    const uint32_t late_count=timeouts+=late;
+    if(count==1 || count%1024==0 || (wait.never_started && not_started<=8) || (late && late_count<=8))
+        std::cerr << "GAME_PATCH collision_batch_wait count=" << count << " not_started=" << not_started
+                  << " timeouts=" << late_count << '\n';
+}
+}
+
+PPC_FUNC_IMPL(__imp__sub_823B6D40);
+SFR_CONCURRENT_HOOK(sub_823B6D40) {
+    sfr::enter_function(ctx,"sub_823B6D40",0x823B6D40);
+    collision_wait_reached=false;
+    __imp__sub_823B6D40(ctx,base);
+    if(collision_wait_reached && step_waits_collision() && sfr::current_guest_thread_id()==1) collision_batch_due();
+    collision_wait_reached=false;
+}
+
 PPC_FUNC_IMPL(__imp__sub_823B5D40);
 SFR_CONCURRENT_HOOK(sub_823B5D40) {
     sfr::enter_function(ctx,"sub_823B5D40",0x823B5D40);
     sfr::JobLifetime::Lease batch(job_lifetime,sfr::JobLifetime::Kind::batch);
     acquire_lifetime(batch);
+    collision_batch_running();
+    struct Finished { ~Finished() { collision_batch_finished(); } } finished;
     __imp__sub_823B5D40(ctx,base);
 }
 
@@ -385,6 +474,7 @@ namespace sfr { std::atomic<uint32_t> race_jobs_dispatching{0}; }
 // the racer readers that run outside it).
 SFR_CONCURRENT_HOOK(sub_8249F048) {
     sfr::enter_function(ctx,"sub_8249F048",0x8249F048);
+    wait_for_collision_batch();
     sfr::race_jobs_dispatching.fetch_add(1,std::memory_order_relaxed);
     struct Done { ~Done() { sfr::race_jobs_dispatching.fetch_sub(1,std::memory_order_relaxed); } } done;
     __imp__sub_8249F048(ctx,base);
@@ -406,6 +496,7 @@ SFR_CONCURRENT_HOOK(sub_824D0150) {
         const long value=text?std::strtol(text,nullptr,10):1000;
         return uint32_t(value>0?value:1000);
     }();
+    if(ctx.lr==0x823B6DD8) collision_wait_reached=true;  // 823B6D40's wait for the collision batch
     const bool race_jobs=ctx.lr==0x8249F114 && ctx.r4.u32==16;
     if(race_jobs) {
         static std::atomic<bool> reported{false};
