@@ -13,6 +13,8 @@
 #include "spirv_vertex_inputs.h"
 
 #include <algorithm>
+#include <mutex>
+#include <unordered_map>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -207,6 +209,18 @@ void NativeGraphics::initialize() {
     };
     plume::VulkanInterface::testApiVersion = test_switch("SFR_TEST_VULKAN_1_1") ? VK_API_VERSION_1_1 : 0;
 #ifdef _WIN32
+    // SFR_D3D12_DEBUG=1: the D3D12 debug layer (Windows' Graphics Tools),
+    // its messages on the log as D3D12_DEBUG lines.
+    const bool d3d12_debug = backend == GraphicsBackend::d3d12 && [] {
+        const char* value = std::getenv("SFR_D3D12_DEBUG");
+        return value && std::strcmp(value, "1") == 0;
+    }();
+    if (d3d12_debug) {
+        Microsoft::WRL::ComPtr<ID3D12Debug> debug;
+        const bool enabled = SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(debug.GetAddressOf())));
+        if (enabled) debug->EnableDebugLayer();
+        std::cerr << "NATIVE_D3D12_DEBUG layer=" << enabled << '\n';
+    }
     auto render_interface = backend == GraphicsBackend::vulkan ? plume::CreateVulkanInterface() : plume::CreateD3D12Interface();
 #else
 #if defined(__ANDROID__) || defined(SFR_IOS)
@@ -257,6 +271,29 @@ void NativeGraphics::initialize() {
     plume::VulkanDevice::disableBufferDeviceAddress = false;
     if (!render_device)
         throw std::runtime_error(std::string("failed to create a ") + name + " render device");
+#ifdef _WIN32
+    if (d3d12_debug) {
+        Microsoft::WRL::ComPtr<ID3D12InfoQueue1> queue;
+        DWORD cookie = 0;
+        const bool callback = SUCCEEDED(static_cast<plume::D3D12Device*>(render_device.get())->d3d->QueryInterface(
+                                  IID_PPV_ARGS(queue.GetAddressOf()))) &&
+            SUCCEEDED(queue->RegisterMessageCallback(
+                [](D3D12_MESSAGE_CATEGORY, D3D12_MESSAGE_SEVERITY severity, D3D12_MESSAGE_ID id, LPCSTR text, void*) {
+                    // The first few of each kind, then every 1000th with its count.
+                    static std::mutex lock;
+                    static std::unordered_map<int, uint64_t> counts;
+                    uint64_t count;
+                    {
+                        std::lock_guard guard(lock);
+                        count = ++counts[int(id)];
+                    }
+                    if (count <= 5 || count % 1000 == 0)
+                        std::cerr << "D3D12_DEBUG severity=" << int(severity) << " id=" << int(id) << " count=" << count
+                                  << ' ' << text << '\n';
+                }, D3D12_MESSAGE_CALLBACK_FLAG_NONE, nullptr, &cookie));
+        std::cerr << "NATIVE_D3D12_DEBUG messages=" << callback << '\n';
+    }
+#endif
     // Which adapter the game runs on, for a performance report (scripts/
     // benchmark_summary.py reads this line): a laptop with two GPUs, or an
     // external one, can land on the wrong one. The type is Vulkan's; D3D12

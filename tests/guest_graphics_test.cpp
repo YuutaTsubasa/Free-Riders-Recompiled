@@ -161,14 +161,9 @@ void viewport_state() {
         memory.store<uint32_t>(viewport+20,std::bit_cast<uint32_t>(far_depth));
     };
     auto field = [&](uint32_t offset) { return std::bit_cast<float>(memory.load<uint32_t>(device+offset)); };
-    const bool reversed=guest.presentation().raster_state().inverted_depth_supported();
-    const float near_depth=reversed?1.0f:0.0f,far_depth=reversed?0.0f:1.0f;
-    if(!reversed) {
-        set_descriptor(2,1,40,20,1,0);
-        rejects([&]{guest.set_viewport(device,viewport);});
-        require(field(0x3218)==0 && field(0x3220)==19 && field(0x3228)==0 && field(0x322C)==1,
-                "unsupported reversed depth preserves original guest viewport");
-    }
+    // The title's reversed depth, accepted on every device: where D3D12
+    // cannot invert viewport depth its draws flip z (native_depth_flip.h).
+    const float near_depth=1.0f,far_depth=0.0f;
     memory.store<uint64_t>(device+16,0x1000000000000000);
     memory.store<uint32_t>(device+0x28C4,0x80008000);
     memory.store<uint32_t>(device+0x28C8,0x80008000);

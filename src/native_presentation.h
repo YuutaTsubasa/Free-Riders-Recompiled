@@ -13,7 +13,9 @@
 namespace plume {
 struct RenderCommandList;
 struct RenderRect;
+struct RenderShader;
 struct RenderTexture;
+enum class RenderPrimitiveTopology;
 struct RenderViewport;
 }
 
@@ -56,6 +58,10 @@ public:
     void clear(const NativeClear& clear, std::span<const plume::RenderRect> rectangles = {});
     void set_raster_state(const plume::RenderViewport&, const plume::RenderRect&);
     const NativeRasterState& raster_state() const noexcept;
+    // The geometry shader that flips z for draws of this topology under an
+    // inverted viewport the device cannot invert (native_depth_flip.h), or
+    // null where it can.
+    [[nodiscard]] const plume::RenderShader* depth_flip_shader(plume::RenderPrimitiveTopology) const noexcept;
     // Where the following draws and clears go, as Unleashed and Marathon
     // Recompiled do it: key 0 is the framebuffer; any other key names one of
     // the title's own render surfaces (surface_width x surface_height guest
