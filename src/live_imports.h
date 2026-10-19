@@ -8,7 +8,7 @@ namespace sfr {
 class GuestMemory;
 
 // Xbox LIVE for the title, served by this project's own service
-// (scripts/live_server.py, src/live_client.h) when SFR_LIVE_SERVER is set:
+// (server/live_server.py, src/live_client.h) when SFR_LIVE_SERVER is set:
 // sign-in, privileges, XNet addresses, QoS, virtual sockets and the XSession
 // messages of the XGI app. Without SFR_LIVE_SERVER nothing here is used.
 bool live_enabled();

@@ -9,7 +9,7 @@
 #include "live_connect.h"
 
 namespace sfr {
-// The connection to this project's own online service (scripts/live_server.py)
+// The connection to this project's own online service (server/live_server.py)
 // that stands in for Xbox LIVE. SFR_LIVE_SERVER=host[:port] turns it on (port
 // 47800 by default). The service puts this game on a virtual network: an
 // address 10.77.x.y, a MAC address and a machine id. Every datagram the title

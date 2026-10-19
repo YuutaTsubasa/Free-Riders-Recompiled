@@ -56,16 +56,180 @@ void answers_are_read() {
     require(!sfr::parse_live_ping("OK 1 0a4d0001 024652000001 fa00000000000001"), "a HELLO answer is not PING's");
     require(!sfr::parse_live_ping("ERR unknown request"), "an older server's answer");
     require(!sfr::parse_live_ping("HTTP/1.1 400 Bad Request"), "a web server");
+
+    // The room password and the UDP token.
+    require(sfr::parse_live_ping("OK freeriders 1 password") == 1, "a password server's PING answer is still read");
+    require(sfr::live_ping_wants_password("OK freeriders 1 password"), "and says it wants one");
+    require(!sfr::live_ping_wants_password("OK freeriders 1"), "a server without one");
+    require(!sfr::live_ping_wants_password("ERR password"), "an error is no PING answer");
+    require(sfr::live_password_hex("ab \xc3\xbc") == "616220c3bc", "the password's UTF-8 bytes as hex");
+    const auto token = sfr::parse_live_hello("OK 3 0a4d0003 024652000003 fa00000000000003 0011223344556677");
+    require(token && token->token && (*token->token)[0] == 0x00 && (*token->token)[7] == 0x77, "HELLO's token");
+    require(hello && !hello->token, "a server from before the token gives none");
+    const auto with = sfr::live_udp_registration(*token);
+    require(with.size() == 13 && with[0] == 0 && with[4] == 3 && with[5] == 0x00 && with[12] == 0x77,
+            "the registration carries the token");
+    const auto without = sfr::live_udp_registration(*hello);
+    require(without.size() == 5 && without[4] == 3, "and without one, the old five bytes");
 }
 
 // The game's own service on a port of this device that is free.
-std::unique_ptr<sfr::LiveService> start_service(uint16_t& port) {
+std::unique_ptr<sfr::LiveService> start_service(uint16_t& port, const std::string& password = {}) {
     for (port = 47911; port < 47960; ++port)
-        if (auto service = sfr::LiveService::start(port)) return service;
+        if (auto service = sfr::LiveService::start(port, password)) return service;
     throw std::runtime_error("no free port for the service");
 }
 
 std::string at(uint16_t port) { return "127.0.0.1:" + std::to_string(port); }
+
+sfr::LiveSocket connect_to(uint16_t port) {
+    sfr::LiveReach failure = sfr::LiveReach::ok;
+    const auto socket = sfr::open_live_connection(*sfr::parse_live_server(at(port)), 3000, failure);
+    require(socket != sfr::no_live_socket, "a connection to the service");
+    return socket;
+}
+
+void the_room_password_is_asked_for() {
+    uint16_t port = 0;
+    auto service = start_service(port, "ride \xc3\xb6n");
+    {
+        const auto check = sfr::check_live_server(at(port), 3000);
+        require(check.reach == sfr::LiveReach::password_required && check.password, "a check without the password");
+        require(sfr::check_live_server(at(port), 3000, "ride on").reach == sfr::LiveReach::wrong_password,
+                "a check with a wrong one");
+        const auto right = sfr::check_live_server(at(port), 3000, "ride \xc3\xb6n");
+        require(right.reach == sfr::LiveReach::ok && right.password, "a check with the right one");
+    }
+    {
+        // A game from before passwords says HELLO at once, and is told why not.
+        const auto socket = connect_to(port);
+        std::string pending;
+        auto answer = sfr::live_exchange(socket, "HELLO 0009000000000001 Old", pending, 3000);
+        require(!answer.empty() && answer[0] == "ERR password required", "an old game is refused, saying why");
+        answer = sfr::live_exchange(socket, "SEARCH 4", pending, 3000);
+        require(!answer.empty() && answer[0] == "ERR hello first", "nothing else before HELLO");
+        sfr::close_live_connection(socket);
+    }
+    {
+        const auto socket = connect_to(port);
+        std::string pending;
+        const auto none = sfr::live_sign_in(socket, "", 1, "Rider", pending, 3000);
+        require(!none.hello && none.failure == sfr::LiveReach::password_required, "joining without the password");
+        sfr::close_live_connection(socket);
+    }
+    {
+        const auto socket = connect_to(port);
+        std::string pending;
+        const auto wrong = sfr::live_sign_in(socket, "ride on", 1, "Rider", pending, 3000);
+        require(!wrong.hello && wrong.failure == sfr::LiveReach::wrong_password, "joining with a wrong one");
+        // One try per connection: the service closes it.
+        const auto after = sfr::live_exchange(socket, "PING", pending, 1000);
+        require(after.empty(), "a wrong password ends the connection");
+        sfr::close_live_connection(socket);
+    }
+    {
+        const auto socket = connect_to(port);
+        std::string pending;
+        const auto right = sfr::live_sign_in(socket, "ride \xc3\xb6n", 1, "Rider", pending, 3000);
+        require(right.hello && right.hello->token, "joining with the password, and a UDP token");
+        const auto search = sfr::live_exchange(socket, "SEARCH 4", pending, 3000);
+        require(!search.empty() && search[0] == "OK 0", "the console's requests work");
+        sfr::close_live_connection(socket);
+    }
+    {
+        // A server without a password takes PASS (a game that has one set
+        // still joins a friend's open server).
+        uint16_t open_port = 0;
+        auto open = start_service(open_port);
+        require(sfr::check_live_server(at(open_port), 3000, "anything").reach == sfr::LiveReach::ok,
+                "a password given to an open server");
+        const auto socket = connect_to(open_port);
+        std::string pending;
+        require(sfr::live_sign_in(socket, "anything", 1, "Rider", pending, 3000).hello.has_value(), "joining an open server");
+        sfr::close_live_connection(socket);
+    }
+}
+
+// A UDP socket on the loopback that waits up to 1 s for each datagram.
+struct Datagrams {
+#ifdef _WIN32
+    SOCKET socket_ = INVALID_SOCKET;
+#else
+    int socket_ = -1;
+#endif
+    sockaddr_in server{};
+    explicit Datagrams(uint16_t port) {
+        socket_ = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        sockaddr_in local{};
+        local.sin_family = AF_INET;
+        local.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        bind(socket_, reinterpret_cast<sockaddr*>(&local), sizeof(local));
+        server.sin_family = AF_INET;
+        server.sin_port = htons(port);
+        server.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+#ifdef _WIN32
+        const DWORD wait = 1000;
+        setsockopt(socket_, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&wait), sizeof(wait));
+#else
+        const timeval wait{1, 0};
+        setsockopt(socket_, SOL_SOCKET, SO_RCVTIMEO, &wait, sizeof(wait));
+#endif
+    }
+    ~Datagrams() { sfr::close_live_connection(sfr::LiveSocket(socket_)); }
+    void send(const std::vector<uint8_t>& data) {
+        sendto(socket_, reinterpret_cast<const char*>(data.data()), int(data.size()), 0,
+               reinterpret_cast<const sockaddr*>(&server), sizeof(server));
+    }
+    std::vector<uint8_t> receive() {
+        std::vector<uint8_t> data(2048);
+        const int got = recv(socket_, reinterpret_cast<char*>(data.data()), int(data.size()), 0);
+        data.resize(got > 0 ? size_t(got) : 0);
+        return data;
+    }
+};
+
+std::vector<uint8_t> relayed(uint32_t to, uint32_t from, uint8_t payload) {
+    return {1, uint8_t(to >> 24), uint8_t(to >> 16), uint8_t(to >> 8), uint8_t(to), 0x03, 0xE8,
+            uint8_t(from >> 24), uint8_t(from >> 16), uint8_t(from >> 8), uint8_t(from), 0x03, 0xE8, payload};
+}
+
+void datagrams_go_only_between_registered_consoles() {
+    uint16_t port = 0;
+    auto service = start_service(port, "room");
+    std::vector<sfr::LiveSocket> controls;
+    std::vector<sfr::LiveHello> hellos;
+    for (uint64_t xuid = 1; xuid <= 2; ++xuid) {
+        controls.push_back(connect_to(port));
+        std::string pending;
+        const auto joined = sfr::live_sign_in(controls.back(), "room", xuid, "Rider", pending, 3000);
+        require(joined.hello.has_value(), "a console joins");
+        hellos.push_back(*joined.hello);
+    }
+    Datagrams one(port), two(port), stranger(port);
+    // A password server takes no registration without the token.
+    two.send({0, 0, 0, 0, uint8_t(hellos[1].console)});
+    one.send(sfr::live_udp_registration(hellos[0]));
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    one.send(relayed(hellos[1].address, hellos[0].address, 1));
+    require(two.receive().empty(), "console 2 is not registered yet");
+    two.send(sfr::live_udp_registration(hellos[1]));
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    one.send(relayed(hellos[1].address, hellos[0].address, 2));
+    const auto got = two.receive();
+    require(got.size() == 14 && got[13] == 2, "a datagram from console 1 reaches console 2");
+    // Nobody can take console 2's datagrams with a wrong token, send as
+    // another console, or send without registering.
+    auto forged = sfr::live_udp_registration(hellos[1]);
+    forged[12] ^= 1;
+    stranger.send(forged);
+    one.send(relayed(hellos[1].address, hellos[1].address, 3));
+    stranger.send(relayed(hellos[1].address, hellos[0].address, 4));
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    one.send(relayed(hellos[1].address, hellos[0].address, 5));
+    const auto next = two.receive();
+    require(next.size() == 14 && next[13] == 5, "only console 1's own datagram arrives, at console 2 still");
+    for (const auto socket : controls) sfr::close_live_connection(socket);
+}
 
 void the_game_service_answers() {
     uint16_t port = 0;
@@ -176,6 +340,8 @@ int main() {
         addresses_are_read();
         answers_are_read();
         the_game_service_answers();
+        the_room_password_is_asked_for();
+        datagrams_go_only_between_registered_consoles();
         nothing_listening_is_refused();
         unknown_names_are_not_found();
         other_servers_are_told_apart();

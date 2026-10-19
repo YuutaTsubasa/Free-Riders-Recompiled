@@ -461,6 +461,8 @@ lobby and online races. Windows, Linux and Android players can race together.
    server cannot be reached, the launcher says why (address not found, nothing
    listening, no answer) before the game starts. A game started before the
    host's keeps trying every 5 seconds, and its Xbox LIVE opens once it is in.
+   The host may set a room **Password**; the others enter the same one (it is
+   sent unencrypted, so don't reuse a real password).
 4. In the game, open **Main Menu → Xbox LIVE**. The host chooses
    **Create Match**; the others choose **Quick Match** and press **A** on the
    lobby they find. The host starts the race.
@@ -469,6 +471,13 @@ Tested on a home network: three devices in one race, the host on a PC or on an
 AYN Thor, and a player leaving mid-race. Playing over the internet needs
 port 47800 forwarded to the host; that has not been tested. Leaderboards,
 Xbox LIVE Party, voice chat and achievements are not supported.
+
+**Playing with friends far away:** instead of forwarding ports, run the server
+in the cloud (a VPS or a free cloud VM). Each release publishes it as a Docker
+image, `ghcr.io/yuutatsubasa/free-riders-server`; every player enters that
+machine's address, and only the server needs TCP and UDP port 47800. Every
+race packet goes through it, so pick a region near all the players. Steps:
+[server/README.md](server/README.md).
 
 Details and how it works: [Online play](docs/xbox-live.md).
 

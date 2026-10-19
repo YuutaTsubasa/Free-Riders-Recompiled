@@ -94,6 +94,11 @@ struct LiveClient::Impl {
     std::map<uint16_t, std::deque<Datagram>> queues;
     std::thread receiver;
     bool stopping = false;
+    std::vector<uint8_t> registration;  // live_udp_registration
+    void register_datagrams() {
+        sendto(datagrams, reinterpret_cast<const char*>(registration.data()), int(registration.size()), 0,
+               reinterpret_cast<const sockaddr*>(&server), server_size);
+    }
 };
 
 LiveClient* LiveClient::instance() {
@@ -117,8 +122,11 @@ LiveClient* LiveClient::instance() {
             client.store(made.release());
             return;
         }
-        // Its own service is there or not for good; a wrong address stays wrong.
-        if (hosted || failure == LiveReach::bad_address) return;
+        // Its own service is there or not for good; a wrong address, or a
+        // wrong or missing password, stays wrong.
+        if (hosted || failure == LiveReach::bad_address || failure == LiveReach::wrong_password ||
+            failure == LiveReach::password_required)
+            return;
         std::thread([server, failure]() mutable {
             for (int attempt = 1;; ++attempt) {
                 std::this_thread::sleep_for(std::chrono::seconds(5));
@@ -166,12 +174,13 @@ bool LiveClient::connect(const std::string& server, LiveReach& failure, bool qui
 
     const std::string name = live_gamertag();
     xuid_ = live_xuid();
-    char line[128];
-    std::snprintf(line, sizeof(line), "HELLO %016llx %s", static_cast<unsigned long long>(xuid_), name.c_str());
-    // A service answers at once; something else on the port may never.
-    const auto answer = live_exchange(LiveSocket(impl_->control), line, impl_->pending, connect_timeout_ms);
-    const auto hello = parse_live_hello(answer.empty() ? std::string_view() : std::string_view(answer[0]));
-    if (!hello) return unreachable(LiveReach::unexpected);
+    // The room password (SFR_LIVE_PASSWORD; never logged). A service answers
+    // at once; something else on the port may never.
+    const char* password = std::getenv("SFR_LIVE_PASSWORD");
+    const auto signed_in = live_sign_in(LiveSocket(impl_->control), password ? password : "", xuid_, name,
+                                        impl_->pending, connect_timeout_ms);
+    const auto& hello = signed_in.hello;
+    if (!hello) return unreachable(signed_in.failure);
     address_ = hello->address;
     mac_ = hello->mac;
     machine_ = hello->machine;
@@ -182,14 +191,19 @@ bool LiveClient::connect(const std::string& server, LiveReach& failure, bool qui
     sockaddr_in any{};
     any.sin_family = AF_INET;
     bind(impl_->datagrams, reinterpret_cast<sockaddr*>(&any), sizeof(any));
-    // Tells the service where this console's datagrams come from; repeated
-    // by the receiver until the first datagram comes back is not needed on a
-    // LAN, so it is sent a few times now.
-    uint8_t hello_datagram[5] = {0};
-    for (int i = 0; i < 4; ++i) hello_datagram[1 + i] = uint8_t(console >> (24 - 8 * i));
-    for (int i = 0; i < 3; ++i)
-        sendto(impl_->datagrams, reinterpret_cast<const char*>(hello_datagram), sizeof(hello_datagram), 0,
-               reinterpret_cast<const sockaddr*>(&impl_->server), impl_->server_size);
+    // Tells the service where this console's datagrams come from: a few
+    // times now, then every few seconds from the receiver, which also keeps
+    // a NAT's mapping open and tells the server this game is still there.
+    impl_->registration = live_udp_registration(*hello);
+    for (int i = 0; i < 3; ++i) impl_->register_datagrams();
+    // The receiver wakes at least once a second to send it again.
+#ifdef _WIN32
+    const DWORD wait_ms = 1000;
+    setsockopt(impl_->datagrams, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&wait_ms), sizeof(wait_ms));
+#else
+    const timeval wait{1, 0};
+    setsockopt(impl_->datagrams, SOL_SOCKET, SO_RCVTIMEO, &wait, sizeof(wait));
+#endif
     impl_->receiver = std::thread([this] { receive_loop(); });
     std::cerr << "LIVE_SERVER connected=" << server << " console=" << console << " address=10.77."
               << (address_ >> 8 & 0xFF) << '.' << (address_ & 0xFF) << " xuid=0x" << std::hex << xuid_ << std::dec
@@ -239,7 +253,12 @@ void LiveClient::send(uint32_t to, uint16_t to_port, uint16_t from_port, const u
 
 void LiveClient::receive_loop() {
     std::vector<uint8_t> buffer(65536);
+    auto registered = std::chrono::steady_clock::now();
     while (!impl_->stopping) {
+        if (const auto now = std::chrono::steady_clock::now(); now - registered >= std::chrono::seconds(10)) {
+            impl_->register_datagrams();
+            registered = now;
+        }
         const int got = recv(impl_->datagrams, reinterpret_cast<char*>(buffer.data()), int(buffer.size()), 0);
         if (got <= 0) {
             if (impl_->stopping) return;

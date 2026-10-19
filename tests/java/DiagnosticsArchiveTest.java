@@ -36,14 +36,19 @@ public class DiagnosticsArchiveTest {
         check(empty.get("device.txt").contains("model=test"), "device metadata");
         writeString(new File(root, "game.log").toPath(), "GPU header\nframe timing\n");
         writeString(new File(root, "settings.env").toPath(),
-                "SFR_RENDER_SCALE=0.5\nSFR_GRAPHICS=vulkan\nSFR_CAMERA_DEVICE=private-device\nSFR_AVATAR_MODEL=/private/model\n");
-        writeString(new File(root, "debug.env").toPath(), "SFR_FRAME_METRICS=1\nSECRET=private\n");
+                "SFR_RENDER_SCALE=0.5\nSFR_GRAPHICS=vulkan\nSFR_CAMERA_DEVICE=private-device\nSFR_AVATAR_MODEL=/private/model\n"
+                + "SFR_LIVE_SERVER=friend.example\nSFR_LIVE_PASSWORD=room-secret\n");
+        writeString(new File(root, "debug.env").toPath(), "SFR_FRAME_METRICS=1\nSECRET=private\nSFR_LIVE_PASSWORD=room-secret\n");
         writeString(new File(root, "save.bin").toPath(), "private-save");
         Map<String, String> small = archive(root);
         check(small.get("game.log").equals("GPU header\nframe timing\n"), "small log preserved");
         check(small.get("settings.env").equals("SFR_RENDER_SCALE=0.5\nSFR_GRAPHICS=vulkan\n"), "settings allowlist");
         check(small.get("debug.env").equals("SFR_FRAME_METRICS=1\n"), "overrides allowlist");
         check(!small.containsKey("save.bin"), "no recursive export");
+        // The room password (SFR_LIVE_PASSWORD) is in settings.env for the
+        // game, never in a ZIP a player shares.
+        for (Map.Entry<String, String> entry : small.entrySet())
+            check(!entry.getValue().contains("room-secret"), "no room password in " + entry.getKey());
         check(!small.containsKey("exits.txt") && small.get("report.txt").contains("exits.txt: none"),
               "no exits recorded: said, no file");
         {

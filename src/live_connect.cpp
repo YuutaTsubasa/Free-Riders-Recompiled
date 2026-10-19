@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <sstream>
@@ -115,7 +116,42 @@ std::optional<LiveHello> parse_live_hello(std::string_view line) {
     hello.address = uint32_t(std::strtoull(address.c_str(), nullptr, 16));
     for (size_t i = 0; i < 6; ++i) hello.mac[i] = uint8_t(std::strtoul(mac.substr(2 * i, 2).c_str(), nullptr, 16));
     hello.machine = std::strtoull(machine.c_str(), nullptr, 16);
+    // A server from before the token sends none; anything else there is
+    // not one.
+    std::string token;
+    if (words >> token && token.size() == 16 && all_hex(token)) {
+        std::array<uint8_t, 8> bytes{};
+        for (size_t i = 0; i < 8; ++i) bytes[i] = uint8_t(std::strtoul(token.substr(2 * i, 2).c_str(), nullptr, 16));
+        hello.token = bytes;
+    }
     return hello;
+}
+
+std::vector<uint8_t> live_udp_registration(const LiveHello& hello) {
+    std::vector<uint8_t> datagram{0, uint8_t(hello.console >> 24), uint8_t(hello.console >> 16),
+                                  uint8_t(hello.console >> 8), uint8_t(hello.console)};
+    if (hello.token) datagram.insert(datagram.end(), hello.token->begin(), hello.token->end());
+    return datagram;
+}
+
+bool live_ping_wants_password(std::string_view line) {
+    if (!parse_live_ping(line)) return false;
+    std::istringstream words{std::string(line)};
+    std::string word;
+    for (int i = 0; i < 3; ++i) words >> word;
+    while (words >> word)
+        if (word == "password") return true;
+    return false;
+}
+
+std::string live_password_hex(std::string_view password) {
+    static const char digits[] = "0123456789abcdef";
+    std::string text;
+    for (unsigned char c : password) {
+        text += digits[c >> 4];
+        text += digits[c & 15];
+    }
+    return text;
 }
 
 std::optional<int> parse_live_ping(std::string_view line) {
@@ -138,6 +174,8 @@ const char* live_reach_name(LiveReach reach) {
     case LiveReach::refused: return "refused";
     case LiveReach::no_answer: return "no-answer";
     case LiveReach::unexpected: return "unexpected";
+    case LiveReach::password_required: return "password-required";
+    case LiveReach::wrong_password: return "wrong-password";
     }
     return "?";
 }
@@ -252,7 +290,32 @@ std::vector<std::string> live_exchange(LiveSocket socket, const std::string& lin
     }
 }
 
-LiveCheck check_live_server(std::string_view text, int timeout_ms) {
+LiveSignIn live_sign_in(LiveSocket socket, std::string_view password, uint64_t xuid, const std::string& gamertag,
+                        std::string& pending, int timeout_ms) {
+    LiveSignIn result;
+    if (!password.empty()) {
+        const auto answer = live_exchange(socket, "PASS " + live_password_hex(password), pending, timeout_ms);
+        if (answer.empty()) {
+            result.failure = LiveReach::unexpected;
+            return result;
+        }
+        if (answer[0] == "ERR wrong password") {
+            result.failure = LiveReach::wrong_password;
+            return result;
+        }
+        // "OK", or a server from before passwords that knows no PASS.
+    }
+    char line[128];
+    std::snprintf(line, sizeof(line), "HELLO %016llx %s", static_cast<unsigned long long>(xuid), gamertag.c_str());
+    const auto answer = live_exchange(socket, line, pending, timeout_ms);
+    const std::string first = answer.empty() ? std::string() : answer[0];
+    result.hello = parse_live_hello(first);
+    if (!result.hello)
+        result.failure = first == "ERR password required" ? LiveReach::password_required : LiveReach::unexpected;
+    return result;
+}
+
+LiveCheck check_live_server(std::string_view text, int timeout_ms, std::string_view password) {
     LiveCheck check;
     const auto server = parse_live_server(text);
     if (!server) return check;
@@ -265,17 +328,29 @@ LiveCheck check_live_server(std::string_view text, int timeout_ms) {
         check.address = dotted(ntohl(peer.sin_addr.s_addr));
     std::string pending;
     const auto answer = live_exchange(socket, "PING", pending, std::max(remaining_ms(deadline), 500));
-    close_live_connection(socket);
     const std::string first = answer.empty() ? std::string() : answer[0];
     if (const auto version = parse_live_ping(first)) {
         check.version = *version;
         check.reach = *version == live_protocol_version ? LiveReach::ok : LiveReach::newer;
+        check.password = live_ping_wants_password(first);
+        if (check.password && check.reach == LiveReach::ok) {
+            if (password.empty()) {
+                check.reach = LiveReach::password_required;
+            } else {
+                const auto passed = live_exchange(socket, "PASS " + live_password_hex(password), pending,
+                                                  std::max(remaining_ms(deadline), 500));
+                if (passed.empty() || passed[0] != "OK")
+                    check.reach = !passed.empty() && passed[0] == "ERR wrong password" ? LiveReach::wrong_password
+                                                                                       : LiveReach::unexpected;
+            }
+        }
     } else if (first == "ERR unknown request" || first == "ERR hello first") {
         // The game's own service and scripts/live_server.py before PING.
         check.reach = LiveReach::older;
     } else {
         check.reach = LiveReach::unexpected;
     }
+    close_live_connection(socket);
     return check;
 }
 

@@ -1,0 +1,3 @@
+# The image needs only live_server.py.
+*
+!live_server.py

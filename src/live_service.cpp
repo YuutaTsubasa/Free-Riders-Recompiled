@@ -20,6 +20,7 @@ static constexpr socket_t no_socket = -1;
 #endif
 
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <array>
 #include <atomic>
@@ -66,7 +67,36 @@ struct Console {
     socket_t control = no_socket;
     sockaddr_storage udp{};
     socklen_t udp_size = 0;
+    bool signed_in = false;  // PASS given, or no password asked
+    bool hello = false;      // a console, not just a check
+    std::array<uint8_t, 8> token{};  // with the UDP registration (live_udp_registration)
+    bool token_used = false;
 };
+
+// The same UDP address: where a console's datagrams came from.
+bool same_address(const sockaddr_storage& a, socklen_t a_size, const sockaddr_storage& b, socklen_t b_size) {
+    if (a_size != b_size || a.ss_family != b.ss_family) return false;
+    if (a.ss_family == AF_INET) {
+        const auto& x = reinterpret_cast<const sockaddr_in&>(a);
+        const auto& y = reinterpret_cast<const sockaddr_in&>(b);
+        return x.sin_port == y.sin_port && x.sin_addr.s_addr == y.sin_addr.s_addr;
+    }
+    return std::memcmp(&a, &b, size_t(a_size)) == 0;
+}
+
+// Compares in a time that does not depend on where the two differ.
+bool same_secret(const std::string& given, const std::string& secret) {
+    unsigned difference = unsigned(given.size() ^ secret.size());
+    for (size_t i = 0; i < given.size(); ++i)
+        difference |= unsigned(uint8_t(given[i]) ^ uint8_t(secret.empty() ? 0 : secret[i % secret.size()]));
+    return difference == 0;
+}
+
+// Limits the in-game host keeps (server/live_server.py has them as settings).
+constexpr size_t max_line = 16384;
+// select() watches at most 64 sockets on Windows: the listener, the
+// datagram socket, and the connections.
+constexpr size_t max_connections = 56;
 
 struct Session {
     std::vector<uint8_t> id, key, nonce, properties, contexts, qos;
@@ -86,7 +116,18 @@ struct LiveService::Impl {
     std::map<uint32_t, Console> consoles;  // by number
     std::map<std::string, Session> sessions;  // by id (hex)
     uint32_t next_number = 1;
+    std::string password;  // SFR_LIVE_PASSWORD: asked with PASS before HELLO; never logged
     std::mt19937_64 random{std::random_device{}()};
+
+    // Numbers fill the low 16 bits of 10.77.x.y: they wrap, past the ones in use.
+    uint32_t new_number() {
+        for (uint32_t tries = 0; tries < 0xFFFE; ++tries) {
+            const uint32_t number = next_number;
+            next_number = number % 0xFFFE + 1;
+            if (!consoles.count(number)) return number;
+        }
+        return 0;
+    }
 
     std::vector<uint8_t> random_bytes(size_t size) {
         std::vector<uint8_t> bytes(size);
@@ -113,17 +154,36 @@ struct LiveService::Impl {
         char text[160];
         // A check that the service is here (the launcher's Test connection):
         // the caller does not become a console.
-        if (verb == "PING") return {"OK freeriders " + std::to_string(live_protocol_version)};
+        if (verb == "PING")
+            return {"OK freeriders " + std::to_string(live_protocol_version) + (password.empty() ? "" : " password")};
+        if (verb == "PASS") {
+            std::string given;
+            if (w.size() > 1 && w[1].size() % 2 == 0 &&
+                std::all_of(w[1].begin(), w[1].end(), [](unsigned char c) { return std::isxdigit(c) != 0; }))
+                for (const uint8_t b : unhex(w[1])) given += char(b);
+            if (password.empty() || same_secret(given, password)) {
+                console.signed_in = true;
+                return {"OK"};
+            }
+            std::cerr << "LIVE_SERVICE wrong-password connection=" << console.number << '\n';
+            return {"ERR wrong password"};
+        }
         if (verb == "HELLO") {
+            if (console.hello) return {"ERR hello again"};
+            if (!console.signed_in) return {"ERR password required"};
+            console.hello = true;
+            for (auto& b : console.token) b = uint8_t(random());
             console.xuid = std::strtoull(w.at(1).c_str(), nullptr, 16);
             console.name.clear();
             for (size_t i = 2; i < w.size(); ++i) console.name += (i > 2 ? " " : "") + w[i];
-            std::snprintf(text, sizeof(text), "OK %u %08x %s %016llx", console.number, console.address,
+            std::snprintf(text, sizeof(text), "OK %u %08x %s %016llx %s", console.number, console.address,
                           hex(std::vector<uint8_t>(console.mac.begin(), console.mac.end())).c_str(),
-                          static_cast<unsigned long long>(console.machine));
+                          static_cast<unsigned long long>(console.machine),
+                          hex(std::vector<uint8_t>(console.token.begin(), console.token.end())).c_str());
             std::cerr << "LIVE_SERVICE console=" << console.number << " gamertag=" << console.name << '\n';
             return {text};
         }
+        if (!console.hello) return {"ERR hello first"};
         if (verb == "CREATE") {
             Session s;
             s.id = random_bytes(8);
@@ -207,11 +267,12 @@ struct LiveService::Impl {
 
     void goodbye(uint32_t number) {
         // A connection that never said HELLO (a check) was not a console.
-        if (consoles[number].xuid) std::cerr << "LIVE_SERVICE left console=" << number << '\n';
+        if (consoles[number].hello) std::cerr << "LIVE_SERVICE left console=" << number << '\n';
         for (auto it = sessions.begin(); it != sessions.end();)
             it = it->second.host == number ? sessions.erase(it) : std::next(it);
         const uint64_t xuid = consoles[number].xuid;
-        for (auto& [id, s] : sessions) s.members.erase(xuid);
+        if (consoles[number].hello)
+            for (auto& [id, s] : sessions) s.members.erase(xuid);
         close_socket(consoles[number].control);
         consoles.erase(number);
     }
@@ -232,9 +293,12 @@ struct LiveService::Impl {
             if (select(int(highest + 1), &readable, nullptr, nullptr, &wait) <= 0) continue;
             if (FD_ISSET(listener, &readable)) {
                 const socket_t accepted = accept(listener, nullptr, nullptr);
-                if (accepted != no_socket) {
+                const uint32_t number = accepted != no_socket && consoles.size() < max_connections ? new_number() : 0;
+                if (accepted != no_socket && !number) close_socket(accepted);  // full
+                if (number) {
                     Console console;
-                    console.number = next_number++;
+                    console.number = number;
+                    console.signed_in = password.empty();
                     console.address = (10u << 24) | (77u << 16) | console.number;
                     console.mac = {0x02, 0x46, 0x52, 0x00, uint8_t(console.number >> 8), uint8_t(console.number)};
                     console.machine = 0xFA00000000000000ull | console.number;
@@ -251,13 +315,32 @@ struct LiveService::Impl {
                     return uint32_t(datagram[at]) << 24 | uint32_t(datagram[at + 1]) << 16 | uint32_t(datagram[at + 2]) << 8 | datagram[at + 3];
                 };
                 if (got >= 5 && datagram[0] == 0) {
-                    const auto console = consoles.find(word(1));
-                    if (console != consoles.end()) {
-                        console->second.udp = from;
-                        console->second.udp_size = from_size;
+                    const auto found = consoles.find(word(1));
+                    if (found != consoles.end() && found->second.hello) {
+                        Console& console = found->second;
+                        // With the token from HELLO; a game from before it
+                        // sends none, which is taken only without a password
+                        // and never in place of a game that sent one.
+                        bool taken = false;
+                        if (got >= 13) {
+                            unsigned difference = 0;
+                            for (size_t i = 0; i < 8; ++i) difference |= unsigned(datagram[5 + i] ^ console.token[i]);
+                            taken = difference == 0;
+                            console.token_used = console.token_used || taken;
+                        } else {
+                            taken = password.empty() && !console.token_used;
+                        }
+                        if (taken) {
+                            console.udp = from;
+                            console.udp_size = from_size;
+                        }
                     }
                 } else if (got >= 13 && datagram[0] == 1) {
-                    Console* to = by_address(word(1));
+                    // Only a console's own datagrams, from its own address.
+                    const Console* sender = nullptr;
+                    for (const auto& [number, console] : consoles)
+                        if (console.udp_size && same_address(console.udp, console.udp_size, from, from_size)) sender = &console;
+                    Console* to = sender && word(7) == sender->address ? by_address(word(1)) : nullptr;
                     if (to && to->udp_size)
                         sendto(datagrams, reinterpret_cast<const char*>(datagram.data()), got, 0,
                                reinterpret_cast<const sockaddr*>(&to->udp), to->udp_size);
@@ -273,6 +356,11 @@ struct LiveService::Impl {
                     continue;
                 }
                 console.pending.append(buffer, size_t(got));
+                if (console.pending.size() > max_line && console.pending.find('\n') == std::string::npos) {
+                    gone.push_back(number);  // not this service's requests
+                    continue;
+                }
+                bool closing = false;
                 for (size_t end; (end = console.pending.find('\n')) != std::string::npos;) {
                     const std::string line = console.pending.substr(0, end);
                     console.pending.erase(0, end + 1);
@@ -288,20 +376,27 @@ struct LiveService::Impl {
                     for (const auto& r : reply) text += r + '\n';
                     text += ".\n";
                     send(console.control, text.data(), int(text.size()), 0);
+                    // A wrong password ends the connection: one try each.
+                    if (reply[0] == "ERR wrong password") {
+                        closing = true;
+                        break;
+                    }
                 }
+                if (closing) gone.push_back(number);
             }
             for (uint32_t number : gone) goodbye(number);
         }
     }
 };
 
-std::unique_ptr<LiveService> LiveService::start(uint16_t port) {
+std::unique_ptr<LiveService> LiveService::start(uint16_t port, const std::string& password) {
 #ifdef _WIN32
     WSADATA data{};
     WSAStartup(MAKEWORD(2, 2), &data);
 #endif
     std::unique_ptr<LiveService> service(new LiveService());
     auto impl = std::make_unique<Impl>();
+    impl->password = password;
     sockaddr_in any{};
     any.sin_family = AF_INET;
     any.sin_port = htons(port);
@@ -328,7 +423,7 @@ std::unique_ptr<LiveService> LiveService::start(uint16_t port) {
         if (impl->datagrams != no_socket) close_socket(impl->datagrams);
         return nullptr;
     }
-    std::cerr << "LIVE_SERVICE started=1 port=" << port << '\n';
+    std::cerr << "LIVE_SERVICE started=1 port=" << port << " password=" << (password.empty() ? 0 : 1) << '\n';
     Impl* raw = impl.get();
     impl->worker = std::thread([raw] { raw->run(); });
     service->impl_ = std::move(impl);
@@ -351,7 +446,8 @@ std::string start_hosted_live_service() {
         const char* port_text = std::getenv("SFR_LIVE_PORT");
         const uint16_t port = uint16_t(port_text && *port_text ? std::strtoul(port_text, nullptr, 10) : 47800);
         // Kept for the life of the process: the other games depend on it.
-        static std::unique_ptr<LiveService> service = LiveService::start(port);
+        const char* password = std::getenv("SFR_LIVE_PASSWORD");
+        static std::unique_ptr<LiveService> service = LiveService::start(port, password ? password : "");
         return service ? "127.0.0.1:" + std::to_string(port) : std::string();
     }();
     return address;

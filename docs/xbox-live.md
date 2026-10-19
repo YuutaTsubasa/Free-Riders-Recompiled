@@ -28,12 +28,29 @@ On every device: **Launcher → General → Online play → Xbox LIVE**.
   - *No answer*: the host's game is not running, the devices are on
     different networks, or the host's firewall drops port 47800.
   - *Not a Free Riders server, or a different version*.
+  - *... needs a password*: the server has a room password and the
+    **Password** box is empty.
+  - *... the password is wrong*.
 
   When the check fails, Start asks: **Start anyway** or **Cancel**. A game
   that starts before the host's keeps trying (below), so starting first is
-  fine.
+  fine; a missing or wrong password is not tried again.
+- **Password** (optional) is the room password. While hosting, the others must
+  enter it to join; while joining, it is the server's. Empty means none. It
+  travels unencrypted (below), so it should not be one used anywhere else.
 - **Online name** is the gamertag the others see. The profile's own name, and
   with it the saves, stays as it is.
+
+### A server in the cloud
+
+`server/` holds the same server as a Docker image,
+`ghcr.io/yuutatsubasa/free-riders-server`, published with each release, for
+a machine that does not play: a VPS or a free cloud VM. Every player then
+enters that machine's address, nobody hosts, and nobody opens ports at home;
+only the server needs TCP and UDP port 47800. Every packet of a race goes
+through it, so it should be in a region near the players.
+[server/README.md](../server/README.md) has the commands, the settings
+(password, limits), and guides for a VPS, Oracle Cloud's free VM and Fly.io.
 
 In the game, open **Main Menu → Xbox LIVE**:
 
@@ -84,10 +101,11 @@ leaving mid-race.
 `LIVE_LOBBY_MESSAGE`, `src/live_hooks.cpp`).
 
 A standalone server for a machine that does not play is in
-`scripts/live_server.py`:
+`server/live_server.py` (also as a Docker image, [server/README.md](../server/README.md);
+`scripts/live_server.py` still runs it):
 
 ```bash
-python scripts/live_server.py --port 47800
+python server/live_server.py --port 47800
 ```
 
 ## How it works
@@ -109,6 +127,30 @@ python scripts/live_server.py --port 47800
   (`OK freeriders <version>`) without making the caller a console, so it
   does not show to the others. A server from before PING answers it with an
   error, which the check takes as "an older release" and lets the game start.
+- **The room password** (`SFR_LIVE_PASSWORD`, the launcher's Password; the
+  same variable sets the password of `server/live_server.py` and of the
+  in-game host). A server with one answers PING with
+  `OK freeriders 1 password`; a game then sends `PASS <password as hex>`
+  before `HELLO`, and the server answers `OK` or `ERR wrong password` and
+  closes the connection. `HELLO` without it gets `ERR password required`.
+  A server without a password answers `PASS` with `OK`, so a game with a
+  password set still joins an open server, and games from before the
+  password (no PASS) join it as before. The launcher's check sends the same
+  PASS after PING (`password-required` and `wrong-password` in
+  `LAUNCHER_ONLINE_CHECK` and `LIVE_SERVER unreachable=`); the game does not
+  retry after either. The password is compared in constant time and never
+  written to a log, and it is not in an Android diagnostic ZIP. It travels as
+  plain hex over TCP: a room key, not account security. The protocol version
+  stays 1: older launchers read only the first three words of PING's answer.
+- **The UDP token.** HELLO's answer ends with an 8-byte token (16 hex), which
+  older games ignore. A game registers its UDP address with `0x00`, its
+  console number and that token, again every 10 s (which also keeps a NAT
+  mapping open and shows the server the game is alive). Without the token,
+  anybody who guessed a console number could take its datagrams; a
+  registration without one (a game from before it) is taken only by a server
+  without a password, and never for a console that sent the token. The
+  server relays a datagram only from a registered UDP address and only when
+  its source field is that console's own virtual address.
 - The server puts every game on a virtual network. Each game gets an address
   `10.77.x.y`, a MAC address and a machine id.
 - The title's sockets are virtual. Every datagram goes to the server over one
