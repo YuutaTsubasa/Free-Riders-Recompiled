@@ -8,6 +8,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include <intrin.h>
 #endif
 
 namespace sfr {
@@ -38,7 +39,7 @@ std::string HostTiming::describe() const {
     text << "HOST_TIMING throttling_opt_out=" << throttling_opt_out
          << " timer_resolution_opt_out=" << timer_resolution_opt_out << " timer_period=" << timer_period
          << " high_resolution_timer=" << high_resolution_timer << " sleep_1ms_ms=" << sleep_1ms_ms
-         << " precise_1ms_ms=" << precise_1ms_ms;
+         << " precise_1ms_ms=" << precise_1ms_ms << " clock_read_ns=" << clock_read_ns;
     return text.str();
 }
 
@@ -58,6 +59,36 @@ void precise_sleep(std::chrono::nanoseconds duration) {
 #endif
     std::this_thread::sleep_for(duration);
 }
+
+#ifdef _WIN32
+uint64_t windows_monotonic_ns() {
+    static const uint64_t frequency = [] {
+        LARGE_INTEGER value{};
+        QueryPerformanceFrequency(&value);
+        return uint64_t(value.QuadPart);
+    }();
+    LARGE_INTEGER now{};
+    QueryPerformanceCounter(&now);
+    const uint64_t ticks = uint64_t(now.QuadPart);
+    return ticks / frequency * 1'000'000'000u + ticks % frequency * 1'000'000'000u / frequency;
+}
+
+uint64_t windows_thread_cpu_ns() {
+    // QueryThreadCycleTime counts time-stamp counter ticks; their rate is
+    // measured against the performance counter since the first call.
+    static const uint64_t first_tsc = __rdtsc(), first_ns = windows_monotonic_ns();
+    ULONG64 cycles = 0;
+    if (!QueryThreadCycleTime(GetCurrentThread(), &cycles)) return 0;
+    const uint64_t elapsed_ns = windows_monotonic_ns() - first_ns, elapsed_tsc = __rdtsc() - first_tsc;
+    if (elapsed_ns < 1'000'000 || !elapsed_tsc) return 0;
+    return uint64_t(double(cycles) * double(elapsed_ns) / double(elapsed_tsc));
+}
+
+int windows_current_cpu() {
+    const DWORD cpu = GetCurrentProcessorNumber();
+    return cpu < 64 ? int(cpu) : -1;
+}
+#endif
 
 HostTiming configure_host_timing() {
     HostTiming result;
@@ -87,6 +118,17 @@ HostTiming configure_host_timing() {
 #endif
     result.sleep_1ms_ms = mean_ms(4, [] { std::this_thread::sleep_for(std::chrono::milliseconds(1)); });
     result.precise_1ms_ms = mean_ms(4, [] { precise_sleep(std::chrono::milliseconds(1)); });
+    // What a clock read costs here: some phones' kernels fall back from the
+    // vDSO to a system call, and the runtime reads the clock thousands of
+    // times a frame.
+    {
+        constexpr int reads = 2000;
+        volatile int64_t sink = 0;
+        const auto start = std::chrono::steady_clock::now();
+        for (int i = 0; i < reads; ++i) sink = std::chrono::steady_clock::now().time_since_epoch().count();
+        (void)sink;
+        result.clock_read_ns = std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - start).count() / reads;
+    }
     return result;
 }
 }
