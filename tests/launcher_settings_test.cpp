@@ -425,7 +425,8 @@ void test_option_table() {
     require(!sfr::find_test_option("SFR_NOT_AN_OPTION"), "an unknown variable is no option");
     // The switches asked of players so far are on the page.
     for (const char* variable : {"SFR_TEST_DISPATCH_LOOP", "SFR_CORE_PLAN", "SFR_STEP_WAITS_COLLISION",
-                                 "SFR_TEST_NO_INVERTED_DEPTH", "SFR_MAIN_AFFINITY", "SFR_INDEX_CACHE"})
+                                 "SFR_TEST_NO_INVERTED_DEPTH", "SFR_MAIN_AFFINITY", "SFR_INDEX_CACHE",
+                                 "SFR_PERF_HINT"})
         require(sfr::find_test_option(variable), "a switch asked of players is a test option");
     // None is set by the launcher's own settings: the page would fight them.
     sfr::LauncherSettings defaults;
@@ -437,6 +438,10 @@ void test_option_table() {
     require(sfr::test_option_applies(*core_plan, sfr::test_platform::android) &&
                 !sfr::test_option_applies(*core_plan, sfr::test_platform::windows),
             "the core placement is an Android option");
+    const auto* hint = sfr::find_test_option("SFR_PERF_HINT");
+    require(sfr::test_option_applies(*hint, sfr::test_platform::android) &&
+                !sfr::test_option_applies(*hint, sfr::test_platform::windows) && sfr::find_test_choice(*hint, "1"),
+            "performance hints are an Android option that turns on");
 }
 
 void test_option_settings() {

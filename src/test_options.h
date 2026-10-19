@@ -135,6 +135,14 @@ inline constexpr TestOption table[] = {
       "left to Android.",
       "測試用：遊戲最忙碌的執行緒要在手機的哪些核心上執行：改回 0.10.8 的配置，或全部交給 Android 決定。"},
      core_plan, "#176"},
+    {"SFR_PERF_HINT", TestGroup::processor, test_platform::android,
+     {"Performance hints", "效能提示"},
+     {"For testing (Android 13 or later): tells Android each frame how long the game worked against a "
+      "sixtieth of a second, so the phone can raise its clocks sooner. For phones whose fast core stays at a "
+      "low clock during a race.",
+      "測試用（Android 13 以上）：每一格告訴 Android 遊戲花了多少時間（目標為六十分之一秒），讓手機更快提高時脈。"
+      "適用於比賽中快核心一直停在低時脈的手機。"},
+     on, "#176"},
     {"SFR_MAIN_AFFINITY", TestGroup::processor, test_platform::windows,
      {"Pin the main thread", "固定主執行緒"},
      {"For testing: keeps the game's main thread on one processor (the default with six or more). Off may help "
