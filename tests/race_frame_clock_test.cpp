@@ -6,6 +6,7 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <string_view>
 
 namespace {
 void require(bool condition, const char* message) {
@@ -240,8 +241,31 @@ void frame_skipping() {
         (void)frame;
     }
 }
+void frameskip_modes() {
+    using sfr::RaceFrameskipMode;
+    using sfr::race_frameskip_mode;
+    require(race_frameskip_mode(nullptr, nullptr) == RaceFrameskipMode::automatic, "unset is Auto");
+    require(race_frameskip_mode("", nullptr) == RaceFrameskipMode::automatic, "empty is Auto (unset)");
+    require(race_frameskip_mode("1", nullptr) == RaceFrameskipMode::automatic, "1 is Auto");
+    require(race_frameskip_mode("2", nullptr) == RaceFrameskipMode::always, "2 is Always when behind");
+    require(race_frameskip_mode("0", nullptr) == RaceFrameskipMode::off, "0 is Off");
+    require(race_frameskip_mode(nullptr, "1") == RaceFrameskipMode::always &&
+                race_frameskip_mode("1", "1") == RaceFrameskipMode::always,
+            "the experiment's old SFR_TEST_RACE_SKIP_SLOW=1 still means Always when behind");
+    require(race_frameskip_mode("0", "1") == RaceFrameskipMode::off, "the old switch does not undo Off");
+    require(race_frameskip_mode("1", "0") == RaceFrameskipMode::automatic &&
+                race_frameskip_mode("2", "0") == RaceFrameskipMode::always && race_frameskip_mode("1", "") ==
+                RaceFrameskipMode::automatic,
+            "the old switch turned off changes nothing");
+    require(std::string_view(sfr::race_frameskip_name(RaceFrameskipMode::off)) == "off" &&
+                std::string_view(sfr::race_frameskip_name(RaceFrameskipMode::automatic)) == "auto" &&
+                std::string_view(sfr::race_frameskip_name(RaceFrameskipMode::always)) == "always",
+            "the log names each mode");
+    // What Always when behind changes (skip_slow) is checked in frame_skipping.
+}
 int main() {
     try {
+        frameskip_modes();
         frame_skipping();
         transitions(); elapsed_time_is_preserved(); discontinuities_are_bounded_and_observable();
         sixty_fps_steps_whole_frames();

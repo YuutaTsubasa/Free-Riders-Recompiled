@@ -71,6 +71,12 @@ std::string path_utf8(const std::filesystem::path& path) {
     const auto text = path.u8string();
     return std::string(text.begin(), text.end());
 }
+
+// The frame skipping choice, Auto for anything not on the list (a value set
+// in code, not read from a file).
+std::string_view race_frameskip_value(const LauncherSettings& s) {
+    return s.race_frameskip == "always" || s.race_frameskip == "off" ? std::string_view(s.race_frameskip) : "auto";
+}
 }
 
 namespace {
@@ -120,6 +126,8 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         else if (key == "vertex_cache") read_flag(value, settings.vertex_cache);
         else if (key == "gpu_pipeline") read_flag(value, settings.gpu_pipeline);
         else if (key == "race_render_every") read_number(value, 1, 4, settings.race_render_every);
+        else if (key == "race_frameskip" && (value == "auto" || value == "always" || value == "off"))
+            settings.race_frameskip = value;
         else if (key == "title_stats") read_flag(value, settings.title_stats);
         else if (key == "ui_sounds") read_flag(value, settings.ui_sounds);
         else if (key == "vulkan") read_flag(value, settings.vulkan);
@@ -193,6 +201,7 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "vertex_cache=" << s.vertex_cache << '\n'
         << "gpu_pipeline=" << s.gpu_pipeline << '\n'
         << "race_render_every=" << s.race_render_every << '\n'
+        << "race_frameskip=" << race_frameskip_value(s) << '\n'
         << "title_stats=" << s.title_stats << '\n'
         << "ui_sounds=" << s.ui_sounds << '\n'
         << "vulkan=" << s.vulkan << '\n'
@@ -294,6 +303,11 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         // A race steps a sixtieth of a second per frame.
         {"SFR_FRAME_LIMIT", "60"},
         {"SFR_RENDER_EVERY", std::to_string(s.race_render_every)},
+        // Frame skipping (race_frame_clock.h): 1 Auto, 2 Always when behind,
+        // 0 Off. The experiment's old switch is cleared so it cannot
+        // override the choice.
+        {"SFR_RACE_FRAMESKIP", race_frameskip_value(s) == "off" ? "0" : race_frameskip_value(s) == "always" ? "2" : "1"},
+        {"SFR_TEST_RACE_SKIP_SLOW", ""},
         // Every guest thread in parallel, always: with one execution permit
         // ("parallel=0", the old "Multi-core execution" switch turned off)
         // the game stopped at start, since v0.6.0 at least (Issue #1). An

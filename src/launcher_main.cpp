@@ -134,6 +134,7 @@ enum Text {
     UiAlignLabel, UiAlignHint, UiAlignEdge, UiAlignCenter,
     MotionTrace, MotionTraceHint,
     InstallIntroIos,
+    FrameskipLabel, FrameskipHint, FrameskipAuto, FrameskipAlways, FrameskipOff,
     TextCount
 };
 
@@ -477,6 +478,15 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
      "where the launcher finds it. Its files are copied into the app's storage and the game's code is prepared from them.",
      "請選擇 Sonic Free Riders 的光碟映像檔（.iso），或用「檔案」App 把它放進「我的 iPhone › Free Riders」，"
      "啟動器會在那裡找到它。檔案會複製到 app 的儲存空間，並從中準備遊戲程式。"},
+    {"Frame skipping", "略過畫格"},
+    {"When a race falls behind, frames are run without being drawn so it keeps its speed. Auto skips only when that "
+     "catches up. Always when behind also skips on a slower CPU: closer to full speed, fewer frames shown. Off draws "
+     "every frame.",
+     "比賽跟不上時，部分畫格只執行不繪製，以維持比賽速度。自動只在能追上時略過；落後時一律略過在較慢的 CPU "
+     "上也會略過，速度更接近正常，但畫面較不流暢；關閉則每格都繪製。"},
+    {"Auto", "自動"},
+    {"Always when behind", "落後時一律略過"},
+    {"Off", "關閉"},
 }};
 
 int language = 0;
@@ -2804,6 +2814,26 @@ struct Launcher {
         setting_row(tr(TitleStats), tr(TitleStatsHint), switch_width, scale, [&] { toggle("##title_stats", &settings.title_stats); });
 #endif
         const float slider_width = 220 * scale;
+        // Frame skipping (race_frame_clock.h, SFR_RACE_FRAMESKIP).
+        setting_row(tr(FrameskipLabel), tr(FrameskipHint), slider_width, scale, [&] {
+            static constexpr std::pair<const char*, Text> modes[] = {
+                {"auto", FrameskipAuto}, {"always", FrameskipAlways}, {"off", FrameskipOff}};
+            const char* shown = tr(FrameskipAuto);
+            for (const auto& [name, text] : modes)
+                if (settings.race_frameskip == name) shown = tr(text);
+            ImGui::SetNextItemWidth(slider_width);
+            if (ImGui::BeginCombo("##race_frameskip", shown)) {
+                for (const auto& [name, text] : modes) {
+                    const bool chosen = settings.race_frameskip == name;
+                    if (ImGui::Selectable(tr(text), chosen)) {
+                        settings.race_frameskip = name;
+                        ::play(sfr::UiSound::confirm);
+                    }
+                    if (chosen) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+        });
         setting_row(tr(RaceEvery), tr(RaceEveryHint), slider_width, scale, [&] {
             int every = int(settings.race_render_every);
             ImGui::SetNextItemWidth(slider_width);
