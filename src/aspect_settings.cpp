@@ -56,8 +56,7 @@ uint32_t decide_width(uint32_t guest_width, uint32_t guest_height) {
     if (const char* ratio = std::getenv("SFR_ASPECT_RATIO"); ratio && *ratio) {
         uint32_t num = 0, den = 0;
         if (parse_ratio(ratio, num, den)) {
-            const uint32_t width = width_for_ratio(guest_width, guest_height, num, den,
-                                                   std::min<uint32_t>(4096, most));
+            const uint32_t width = width_for_ratio(guest_width, guest_height, num, den, most);
             std::cerr << "NATIVE_ASPECT mode=auto ratio=" << num << ':' << den << " logical_width=" << width
                       << " was=" << guest_width << " ui_align=" << (hud_anchor() ? "edge" : "center")
                       << " menu_bg=" << menu_backdrop() << '\n';
@@ -90,9 +89,13 @@ uint32_t decide_width(uint32_t guest_width, uint32_t guest_height) {
     if (!out_width || !out_height) { out_width = guest_width; out_height = guest_height; source = "default"; }
     // As wide as that shape at the title's height, even, within the bounds;
     // 16:9 or narrower (4:3, 16:10) keeps the title's width (letterboxed).
+    // The bound is the render size limit (8192, about 11:1), not a shape a
+    // display has: a wider window draws that much more of the course, the
+    // slower the wider it gets, instead of black bars from 4096 on (Issue
+    // #190). Wider than the limit is still letterboxed.
     const double exact = double(guest_height) * double(out_width) / double(out_height);
     uint32_t width = uint32_t(std::lround(exact / 2.0)) * 2u;
-    width = std::clamp<uint32_t>(width, guest_width, std::min<uint32_t>(4096, most));
+    width = std::clamp<uint32_t>(width, guest_width, most);
     if (!wider_than_16x9(width, guest_height)) width = guest_width;
     std::cerr << "NATIVE_ASPECT mode=auto source=" << source << ' ' << out_width << 'x' << out_height
               << " logical_width=" << width << " was=" << guest_width << " ui_align="
