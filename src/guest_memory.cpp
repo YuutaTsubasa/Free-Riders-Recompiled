@@ -1016,10 +1016,13 @@ bool GuestMemory::store_conditional_doubleword(uint64_t address, uint64_t value)
     return true;
 }
 
-void GuestMemory::check_write(uint64_t address, uint64_t size) const {
+void GuestMemory::check_write_slow(uint64_t address, uint64_t size) const {
     check_store_access(address, size);
-    if (has_reservation())
-        throw RuntimeStop("reservation-interference", address, "ordinary write during live reservation");
+    if (has_reservation()) reservation_interference(address);
+}
+
+void GuestMemory::reservation_interference(uint64_t address) {
+    throw RuntimeStop("reservation-interference", address, "ordinary write during live reservation");
 }
 
 bool GuestMemory::zero_fast(uint32_t address, uint32_t size) {

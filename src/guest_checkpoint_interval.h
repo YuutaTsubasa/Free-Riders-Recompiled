@@ -4,15 +4,13 @@
 #include <string_view>
 
 namespace sfr {
-// Current Windows comparisons support 256; unmeasured platforms retain 32.
-// A larger interval reduces calls but delays cancellation and
-// urgent handoff by up to this many guest entries, not a fixed time in ms.
+// 256 everywhere: measured on Windows (Issue #33) and on an AYN Thor, where
+// the permit call at every 32nd entry, with its thread_local reads, was 3% of
+// a race's main thread (docs/checkpoint-interval.md). A larger interval
+// reduces calls but delays cancellation and urgent handoff by up to this
+// many guest entries, not a fixed time in ms.
 inline uint32_t guest_checkpoint_interval(const char* text) {
-#ifdef _WIN32
     constexpr uint32_t baseline = 256;
-#else
-    constexpr uint32_t baseline = 32;
-#endif
     if (!text || !*text) return baseline;
     const std::string_view value(text);
     uint32_t interval = 0;

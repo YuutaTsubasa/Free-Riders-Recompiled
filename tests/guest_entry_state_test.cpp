@@ -31,12 +31,8 @@ static void require(bool ok, const char* message) {
 }
 
 static void checkpoint_interval_contract() {
-#ifdef _WIN32
     constexpr uint32_t baseline = 256;
-#else
-    constexpr uint32_t baseline = 32;
-#endif
-    require(sfr::guest_checkpoint_interval(nullptr) == baseline, "platform default matches measured support");
+    require(sfr::guest_checkpoint_interval(nullptr) == baseline, "default matches measured support");
     require(sfr::guest_checkpoint_interval("256") == 256, "comparison interval is selectable");
     require(sfr::guest_checkpoint_interval("1") == 1 && sfr::guest_checkpoint_interval("4096") == 4096,
             "supported interval bounds are inclusive");

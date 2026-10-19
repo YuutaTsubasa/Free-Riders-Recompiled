@@ -1,5 +1,6 @@
 #include "guest_memory.h"
 #include "vector_memory.h"
+#include "direct_vector_memory.h"
 
 #include <algorithm>
 #include <array>
@@ -586,9 +587,46 @@ static void partial_load_edges_and_empty_right_preserve_reservations() {
             "selected read-only provider remains readable through checked byte loads");
 }
 
+// The direct forms (SFR_DIRECT_MEMORY's generated code) give the checked
+// forms' results at every offset, and their stores touch the same bytes.
+static void direct_partial_accesses_match_checked_ones_at_all_offsets() {
+    sfr::GuestMemory memory;
+    memory.map(0x40000, 0x1000);
+    for (uint32_t i = 0; i < 64; ++i) memory.store<uint8_t>(0x40100 + i, uint8_t(0x30 + i * 3));
+    for (uint32_t offset = 0; offset < 16; ++offset) {
+        const uint32_t address = 0x40110 + offset;
+        uint8_t left[16], right[16];
+        sfr::direct::load_vector_left(memory.base(), address, left);
+        sfr::direct::load_vector_right(memory.base(), address, right);
+        const auto checked_left = sfr::load_vector_left(memory, address);
+        const auto checked_right = sfr::load_vector_right(memory, address);
+        require(std::equal(checked_left.begin(), checked_left.end(), left), "direct lvlx matches the checked load");
+        require(std::equal(checked_right.begin(), checked_right.end(), right), "direct lvrx matches the checked load");
+    }
+    const auto source = distinct_vector();
+    uint8_t raw[16];
+    std::copy(source.begin(), source.end(), raw);
+    for (uint32_t offset = 0; offset < 16; ++offset) {
+        for (const bool left : {true, false}) {
+            std::fill_n(memory.base() + 0x40200, 0x40, uint8_t(0xcc));
+            std::fill_n(memory.base() + 0x40300, 0x40, uint8_t(0xcc));
+            if (left) {
+                sfr::store_vector_left(memory, 0x40210 + offset, source);
+                sfr::direct::store_vector_left(memory.base(), 0x40310 + offset, raw);
+            } else {
+                sfr::store_vector_right(memory, 0x40210 + offset, source);
+                sfr::direct::store_vector_right(memory.base(), 0x40310 + offset, raw);
+            }
+            require(std::equal(memory.base() + 0x40200, memory.base() + 0x40240, memory.base() + 0x40300),
+                    "direct stvlx/stvrx write the checked stores' bytes and nothing else");
+        }
+    }
+}
+
 int main() {
     try {
-        for (auto test : {load_reverses_guest_block_for_every_effective_address_offset,
+        for (auto test : {direct_partial_accesses_match_checked_ones_at_all_offsets,
+                          load_reverses_guest_block_for_every_effective_address_offset,
                           store_roundtrip_preserves_neighbors_and_source,
                           store_aligns_down_for_every_effective_address_offset,
                           top_address_aligns_to_last_complete_block,

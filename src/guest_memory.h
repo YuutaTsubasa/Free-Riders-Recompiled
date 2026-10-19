@@ -101,7 +101,16 @@ public:
     // exception, and the renderer asks that for every texture of every draw
     // (docs/performance.md).
     bool readable(uint64_t address, uint64_t size) const noexcept;
-    void check_write(uint64_t address, uint64_t size) const;
+    // Inline for the common case, a range in one ordinary page that nothing
+    // watches: the graphics setters preflight several of these per call,
+    // thousands of times a frame. Anything else takes the full check.
+    void check_write(uint64_t address, uint64_t size) const {
+        if ((fast_page(address, size) & fast_access) && !page_pinned(address) && unwatched_page(address)) [[likely]] {
+            if (has_reservation()) reservation_interference(address);
+            return;
+        }
+        check_write_slow(address, size);
+    }
     // Stores bytes as they are, with the checks of a store done once for the
     // whole range.
     void write_bytes(uint64_t address, std::span<const uint8_t> bytes);
@@ -270,6 +279,18 @@ private:
     std::unique_ptr<uint32_t[]> fault_epochs_;
     std::unique_ptr<uint8_t[]> fault_streaks_;
     void disarm_watch(uint64_t address, uint64_t size) const;
+    // No guest page of the host page holding address is watched or armed:
+    // a store there has nothing to record (mark_written would do nothing).
+    bool unwatched_page(uint64_t address) const {
+        const uint64_t per_host = page_size_ / fast_page_size;
+        const uint64_t first = address / fast_page_size / per_host * per_host;
+        uint8_t bits = 0;
+        for (uint64_t page = first; page < first + per_host; ++page)
+            bits |= std::atomic_ref<uint8_t>(watched_pages_[page]).load(std::memory_order_relaxed);
+        return !(bits & (1 | watch_armed));
+    }
+    void check_write_slow(uint64_t address, uint64_t size) const;
+    [[noreturn]] static void reservation_interference(uint64_t address);
     std::atomic<uint32_t> write_epoch_{1};
     void note_watched_write(uint64_t page) const {
         std::atomic_ref<uint8_t>(watched_pages_[page]).fetch_or(2, std::memory_order_relaxed);

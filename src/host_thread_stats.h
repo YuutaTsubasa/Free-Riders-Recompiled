@@ -9,7 +9,7 @@
 // (every clear, present and resolve does), how long the render thread works,
 // which cores each ran on, and the clocks those cores were given.
 //
-// HOST_THREADS (every 120 frames, Linux and Android), averages per frame:
+// HOST_THREADS (every 120 frames, Android and Windows), averages per frame:
 //   drawn            frames drawn of the 120,
 //   drawn_ms         main thread's work in a drawn frame (the frame less its
 //                    pacing wait), undrawn_ms the same for an undrawn one,
@@ -33,6 +33,8 @@
 #if defined(__linux__)
 #include <sched.h>
 #include <time.h>
+#elif defined(_WIN32)
+#include "host_timing.h"
 #endif
 
 namespace sfr {
@@ -48,6 +50,8 @@ inline uint64_t host_monotonic_ns() {
     timespec now{};
     clock_gettime(CLOCK_MONOTONIC, &now);
     return uint64_t(now.tv_sec) * 1'000'000'000u + uint64_t(now.tv_nsec);
+#elif defined(_WIN32)
+    return windows_monotonic_ns();
 #else
     return 0;
 #endif
@@ -58,6 +62,8 @@ inline int host_current_cpu() {
 #if defined(__linux__)
     const int cpu = sched_getcpu();
     return cpu >= 0 && cpu < 64 ? cpu : -1;
+#elif defined(_WIN32)
+    return windows_current_cpu();
 #else
     return -1;
 #endif
@@ -68,6 +74,8 @@ inline uint64_t host_thread_cpu_ns() {
     timespec now{};
     clock_gettime(CLOCK_THREAD_CPUTIME_ID, &now);
     return uint64_t(now.tv_sec) * 1'000'000'000u + uint64_t(now.tv_nsec);
+#elif defined(_WIN32)
+    return windows_thread_cpu_ns();
 #else
     return 0;
 #endif

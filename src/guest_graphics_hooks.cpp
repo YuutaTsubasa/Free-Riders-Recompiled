@@ -367,6 +367,10 @@ static const bool frame_metrics=[] {
 // native_draw, and the renderer's part of it (the upload ring's writes and
 // queueing the draw for the render thread).
 [[maybe_unused]] static std::atomic<uint64_t> quiet_draw_ns{0}, quiet_record_ns{0};
+// Drawing is on the main thread only; these are its sampling state.
+[[maybe_unused]] static constexpr uint32_t quiet_draw_sampling=8;
+[[maybe_unused]] static uint32_t quiet_draw_index=0;
+[[maybe_unused]] static bool quiet_draw_sampled=false;
 static auto metrics_clock() {
     return frame_metrics ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
 }
@@ -610,13 +614,18 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
     const double frame_ms=std::chrono::duration<double,std::milli>(frame_end-previous_frame_end).count();
     previous_frame_end=frame_end;
     sfr::report_frame_work(frame_ms-pacing_ms);  // performance_hint.h (SFR_PERF_HINT)
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(_WIN32)
     {   // host_thread_stats.h: the main and render threads' time and cores
         static sfr::HostThreadWindow threads;
+#ifdef __ANDROID__
+        const auto& speed=sfr::core_plan_detail::system_speeds().speed;
+#else
+        static const long speed[64]={};  // Windows: cores are not told apart
+#endif
         const std::string line=threads.frame(sfr::present_count.load(),frame_ms-pacing_ms,frame_drawn,
                                              double(quiet_draw_ns.exchange(0,std::memory_order_relaxed))/1e6,
                                              double(quiet_record_ns.exchange(0,std::memory_order_relaxed))/1e6,
-                                             sfr::core_plan_detail::system_speeds().speed);
+                                             speed);
         if(!line.empty()) std::cerr << line;
     }
 #endif
@@ -884,13 +893,18 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     const auto draw_start=metrics_clock();
     struct DrawTimer {
         std::chrono::steady_clock::time_point start;
-#ifdef __ANDROID__
-        uint64_t quiet_start=sfr::host_monotonic_ns();  // HOST_THREADS draw_ms, on in quiet runs too
+#if defined(__ANDROID__) || defined(_WIN32)
+        // HOST_THREADS draw_ms, on in quiet runs too: one draw in
+        // quiet_draw_sampling is timed and counted that many times
+        // (quiet_draw_sampled), as four clock reads a draw cost the main
+        // thread of an AYN Thor race about 0.5 ms a frame.
+        uint64_t quiet_start=(quiet_draw_sampled=++quiet_draw_index%quiet_draw_sampling==0) ? sfr::host_monotonic_ns() : 0;
 #endif
         ~DrawTimer() {
             if(frame_metrics) frame_draw_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
-#ifdef __ANDROID__
-            quiet_draw_ns.fetch_add(sfr::host_monotonic_ns()-quiet_start,std::memory_order_relaxed);
+#if defined(__ANDROID__) || defined(_WIN32)
+            if(quiet_start)
+                quiet_draw_ns.fetch_add((sfr::host_monotonic_ns()-quiet_start)*quiet_draw_sampling,std::memory_order_relaxed);
 #endif
         }
     } draw_timer{draw_start};
@@ -1566,10 +1580,11 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
         std::cerr << '\n';
     }
     const auto record_start=metrics_clock();
-#ifdef __ANDROID__
-    const uint64_t quiet_record_start=sfr::host_monotonic_ns();
+#if defined(__ANDROID__) || defined(_WIN32)
+    const uint64_t quiet_record_start=quiet_draw_sampled ? sfr::host_monotonic_ns() : 0;
     graphics().renderer().draw(draw);
-    quiet_record_ns.fetch_add(sfr::host_monotonic_ns()-quiet_record_start,std::memory_order_relaxed);
+    if(quiet_record_start)
+        quiet_record_ns.fetch_add((sfr::host_monotonic_ns()-quiet_record_start)*quiet_draw_sampling,std::memory_order_relaxed);
 #else
     graphics().renderer().draw(draw);
 #endif
