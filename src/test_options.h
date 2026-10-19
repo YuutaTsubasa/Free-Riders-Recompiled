@@ -140,7 +140,7 @@ inline constexpr TestOption table[] = {
      {"For testing: keeps the game's main thread on one processor (the default with six or more). Off may help "
       "a laptop that slows down in heavy parts of a course.",
       "測試用：讓遊戲的主執行緒固定在同一個處理器上（有六個以上處理器時預設如此）。若筆電在賽道的繁重段落變慢，關閉也許有幫助。"},
-     on_off, ""},
+     on_off, "#165"},
     {"SFR_HOST_TIMING", TestGroup::processor, test_platform::windows,
      {"Opt out of power throttling", "不受電源節流影響"},
      {"For testing: Off leaves the game to Windows' power throttling and its coarse timer, as before. For "
@@ -158,17 +158,17 @@ inline constexpr TestOption table[] = {
      {"Frame timing", "畫格時間"},
      {"For testing: writes how long each part of a frame took into game.log. Costs a little speed.",
       "測試用：把每個畫格各部分所花的時間寫進 game.log。會稍微降低速度。"},
-     on, ""},
+     on, "#134"},
     {"SFR_GPU_TIMING", TestGroup::logging, test_platform::all,
      {"GPU timing", "GPU 時間"},
      {"For testing: writes the GPU's time for the frames into game.log.",
       "測試用：把 GPU 繪製畫格所花的時間寫進 game.log。"},
-     on, ""},
+     on, "#134"},
     {"SFR_AUDIO_CUES", TestGroup::logging, test_platform::all,
      {"Sound cue IDs", "音效 cue ID"},
      {"For testing: writes every sound and voice line the game asks for into game.log, to report a wrong one.",
       "測試用：把遊戲要求播放的每個音效與語音寫進 game.log，用來回報播錯的聲音。"},
-     on, ""},
+     on, "#47"},
 };
 }
 
