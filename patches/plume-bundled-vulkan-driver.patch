@@ -1,0 +1,30 @@
+--- a/plume_vulkan.h
++++ b/plume_vulkan.h
+@@ -477,6 +477,10 @@
+         // Vulkan version instead of 1.2, so that the validation layer holds
+         // a device to an older version's rules.
+         static inline uint32_t testApiVersion = 0;
++        // When set, an interface created takes Vulkan's entry points from this
++        // function (a driver the app loaded itself, such as a MoltenVK bundled
++        // with it) instead of from the Vulkan loader volk finds on the system.
++        static inline PFN_vkGetInstanceProcAddr getInstanceProcAddr = nullptr;
+ 
+ #   if SDL_VULKAN_ENABLED
+         VulkanInterface(RenderWindow sdlWindow);
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -4496,7 +4496,13 @@
+ #else
+     VulkanInterface::VulkanInterface() {
+ #endif
+-        VkResult res = volkInitialize();
++        VkResult res = VK_SUCCESS;
++        if (getInstanceProcAddr != nullptr) {
++            volkInitializeCustom(getInstanceProcAddr);
++        }
++        else {
++            res = volkInitialize();
++        }
+         if (res != VK_SUCCESS) {
+             fprintf(stderr, "volkInitialize failed with error code 0x%X.\n", res);
+             return;
