@@ -1,13 +1,14 @@
 # Guest checkpoint interval
 
 Generated guest code visits a checkpoint at function entries and loop labels.
-Calling the execution permit less often reduces host CPU overhead. Windows now
-defaults to 256 entries between permit calls; Android, Linux and macOS retain 32.
-This integrates knuckleslee's checkpoint-interval contribution from Issue #33.
+Calling the execution permit less often reduces host CPU overhead. Every
+platform defaults to 256 entries between permit calls: Windows since Issue #33
+(knuckleslee's checkpoint-interval contribution), Android, Linux and macOS since
+the AYN Thor measurement below (they kept 32 until then).
 
 `SFR_CHECKPOINT_INTERVAL` accepts a complete decimal integer from 1 through 4096.
-Unset, empty, out-of-range or malformed values use the platform default. Use 32
-to compare the earlier Windows behavior. The runtime logs the effective value
+Unset, empty, out-of-range or malformed values use the default. Use 32 to
+compare the earlier behavior. The runtime logs the effective value
 once as `GUEST_CHECKPOINT interval=...`.
 
 Cancellation and urgent waiters are checked at each permit call, while the
@@ -31,7 +32,19 @@ matched draw counts. For the predefined HUD 45–80 second window:
 
 Both other predefined time windows were positive. These are results from one
 i9-14900KF/RTX 4090 host, not a promised gain for every PC or course. Android
-comparisons were inconclusive, which is why its default remains unchanged.
+comparisons by frame rate were inconclusive at the time.
+
+On an AYN Thor (Snapdragon 8 Gen 2, Android) the permit call was measured by
+its main-thread work instead (HOST_THREADS, Dolphin Resort moving race, frames
+13000-21000, same APK with `SFR_CHECKPOINT_INTERVAL` set, two runs each): with
+32, `guest_checkpoint_permit` and the lease check were about 3% of the main
+thread (simpleperf), each call reading several thread_locals, which in Android's
+dynamically loaded libmain are calls to the linker's TLS resolver.
+
+| Interval | drawn_ms | undrawn_ms | frames skipped of 9600 |
+| --- | --- | --- | --- |
+| 32 | 16.02 / 16.11 | 9.31 / 9.99 | 111 / 203 |
+| 256 | 15.76 / 15.85 | 9.20 / 8.41 | 65 / 39 |
 
 Separate instrumented 32/256 pairs on both Windows backends delivered all 18
 scripted left/right/release transitions to both original consumers. Each run's
