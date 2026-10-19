@@ -202,6 +202,8 @@ with [docs/progress.md](docs/progress.md).
   D3D12 no longer stops on drivers that can't flip the depth range, such as older NVIDIA drivers (#177). A very wide window draws as wide as the render size allows (up to about 11:1) instead of black bars from about 5.7:1 (#190).
 - [v0.10.9 — Fly board fix, frame skipping choice](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.9)
   The Fly board at Dolphin Resort no longer sometimes launches a racer through the wall (#153). The launcher gains a Frame skipping choice for slow CPUs (#177). Phones with one much faster core, such as the Pixel 10a, run the game's main thread on it (#176).
+- [v0.10.10 — Test options, macOS with a Vulkan SDK installed](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.10)
+  The launcher gains a Test options page, so switches asked for in an issue are a choice instead of a command line. On macOS the game always uses its own MoltenVK, so an older Vulkan SDK on the Mac no longer stops it while preparing shaders (#207).
 
 ## System Requirements
 
