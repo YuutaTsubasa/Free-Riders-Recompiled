@@ -1,6 +1,9 @@
 #pragma once
 #include "shader_cache.h"
+#include "shader_constant_use.h"
 #include <memory>
+#include <optional>
+#include <vector>
 
 namespace plume { struct RenderShader; }
 namespace sfr {
@@ -10,6 +13,9 @@ struct NativeShader {
     const ShaderCacheEntry* entry = nullptr;
     uint32_t references = 1;
     std::unique_ptr<plume::RenderShader> shader;
+    // The float4 constants its translation reads (shader_constant_use.h);
+    // nothing when that is unknown and a draw uploads all 256.
+    std::optional<std::vector<ConstantRun>> constant_runs;
     ~NativeShader();
 };
 class NativeShaders {

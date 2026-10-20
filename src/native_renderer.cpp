@@ -340,6 +340,13 @@ struct NativeRenderer::Impl {
     };
     std::unique_ptr<ConstantReuseProbe> constant_reuse_probe;
     std::unique_ptr<std::array<NativeConstantUpload, 2>> constant_uploads;
+    // Only the constants a draw's shaders read go into the ring (SFR_CONSTANT_RUNS,
+    // default on); SFR_TEST_CONSTANT_POISON=1 fills the rest of each 4 KiB
+    // block with NaNs first, which shows on screen if a shader reads one.
+    bool constant_runs = constant_runs_enabled(), constant_poison = false;
+    // SFR_CONSTANT_TIMING=1: the constant writes' time and bytes per draw.
+    struct ConstantTiming { uint64_t ns = 0, bytes = 0, draws = 0; };
+    std::unique_ptr<ConstantTiming> constant_timing;
     uint64_t constant_saved_bytes = 0;
     std::set<uint64_t> dynamic_ranges;  // physical starts of rewritten textures
     std::map<uint32_t, TextureRange> texture_ranges;  // by descriptor index
@@ -991,6 +998,10 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
         impl_->constant_reuse_probe = std::make_unique<Impl::ConstantReuseProbe>();
     if (const char* setting = std::getenv("SFR_CONSTANT_UPLOAD_REUSE"); setting && *setting == '1')
         impl_->constant_uploads = std::make_unique<std::array<NativeConstantUpload, 2>>();
+    if (const char* setting = std::getenv("SFR_TEST_CONSTANT_POISON"); setting && *setting == '1')
+        impl_->constant_poison = true;
+    if (const char* setting = std::getenv("SFR_CONSTANT_TIMING"); setting && *setting == '1')
+        impl_->constant_timing = std::make_unique<Impl::ConstantTiming>();
     auto& device = graphics.device();
     plume::RenderPipelineLayoutBuilder layout;
     layout.begin(false, true);
@@ -1896,9 +1907,11 @@ void NativeRenderer::draw(const NativeDraw& draw) {
     const plume::RenderBuffer* const index_buffer = draw.index_buffer;
     const uint64_t index_bytes = (index_buffer ? draw.index_count : draw.indices.size()) * sizeof(uint32_t);
     const uint64_t ring_index_bytes = index_buffer ? 0 : index_bytes;
+    // The skinning palette's bytes: a swapped copy, or the guest's rows plus zeros.
+    const size_t palette_size = draw.palette.empty() ? draw.palette_size : draw.palette.size();
     const uint64_t vs_rel = align(vertex_bytes, 256), ps_rel = vs_rel + 4096,
                    shared_rel = ps_rel + 4096, palette_rel = shared_rel + 512,
-                   loop_rel = palette_rel + (draw.palette.empty() ? 0 : palette_bytes),
+                   loop_rel = palette_rel + (palette_size ? palette_bytes : 0),
                    index_rel = align(loop_rel + 256, 256), total = index_rel + ring_index_bytes;
     if (total > ring_size) unsupported(uint32_t(total), "draw data exceeds the upload ring");
     // Vertices already written in place by the caller (vertex_space), which
@@ -1944,8 +1957,37 @@ void NativeRenderer::draw(const NativeDraw& draw) {
         ps_offset = ps.offset;
         impl_->constant_saved_bytes += (uint64_t(vs.reused) + uint64_t(ps.reused)) * 4096;
     } else if (constant_sources) {
-        swap_words_into({mapped + vs_rel, 4096}, draw.vertex_constants_source);
-        swap_words_into({mapped + ps_rel, 4096}, draw.pixel_constants_source);
+        // Only the registers each shader reads: the rest of its 4 KiB keeps
+        // whatever an earlier draw left, which the shader never reads.
+        const auto timing_start = impl_->constant_timing ? std::chrono::steady_clock::now()
+                                                         : std::chrono::steady_clock::time_point{};
+        uint64_t bytes = 0;
+        const auto upload = [&](uint8_t* to, std::span<const uint8_t> from, const std::vector<ConstantRun>* runs) {
+            if (impl_->constant_poison) std::fill_n(reinterpret_cast<uint32_t*>(to), 1024, 0x7FC00000u);
+            if (!impl_->constant_runs || !runs) {
+                swap_words_into({to, 4096}, from);
+                bytes += 4096;
+                return;
+            }
+            for (const ConstantRun run : *runs) {
+                const size_t at = size_t(run.first) * 16, size = size_t(run.count) * 16;
+                swap_words_into({to + at, size}, from.subspan(at, size));
+                bytes += size;
+            }
+        };
+        upload(mapped + vs_rel, draw.vertex_constants_source, draw.vertex_constant_runs);
+        upload(mapped + ps_rel, draw.pixel_constants_source, draw.pixel_constant_runs);
+        if (auto* timing = impl_->constant_timing.get()) {
+            timing->ns += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - timing_start).count());
+            timing->bytes += bytes;
+            if (++timing->draws == 16384) {
+                std::cerr << "CONSTANT_TIMING draws=" << timing->draws << " ns_per_draw="
+                          << double(timing->ns) / timing->draws << " bytes_per_draw="
+                          << double(timing->bytes) / timing->draws << " runs=" << impl_->constant_runs << '\n';
+                *timing = {};
+            }
+        }
     } else {
         std::memcpy(mapped + vs_rel, draw.vertex_constants.data(), 4096);
         std::memcpy(mapped + ps_rel, draw.pixel_constants.data(), 4096);
@@ -1988,9 +2030,15 @@ void NativeRenderer::draw(const NativeDraw& draw) {
     // allocation keeps whatever an earlier draw left, which a clamped index
     // may read but never reaches past the ring; zeroing sixteen kilobytes for
     // every draw cost more than the draw itself.
-    if (!draw.palette.empty())
+    if (!draw.palette.empty()) {
         std::memcpy(mapped + palette_rel, draw.palette.data(),
                     (std::min)(size_t(palette_bytes), draw.palette.size()));
+    } else if (palette_size) {
+        const size_t rows = (std::min)(size_t(palette_bytes), draw.palette_source.size());
+        const size_t total = (std::min)(size_t(palette_bytes), palette_size);
+        swap_words_into({mapped + palette_rel, rows}, draw.palette_source.first(rows));
+        if (total > rows) std::memset(mapped + palette_rel + rows, 0, total - rows);
+    }
     std::memcpy(mapped + loop_rel, draw.loop_constants.data(), sizeof(draw.loop_constants));
     if (ring_index_bytes) std::memcpy(mapped + index_rel, draw.indices.data(), ring_index_bytes);
     const uint64_t shared_offset = base_offset + shared_rel;
@@ -1999,7 +2047,7 @@ void NativeRenderer::draw(const NativeDraw& draw) {
     // everything it reads is copied here, none of it drawn from `draw` or the
     // frame's locals once this call returns. impl's bound_* fields are the
     // render thread's alone.
-    const bool palette_bound = !draw.palette.empty();
+    const bool palette_bound = palette_size != 0;
     const bool stencil_enabled = draw.stencil_enabled;
     const uint8_t stencil_reference = draw.stencil_reference;
     const uint32_t stride = draw.stride, vertex_count = draw.vertex_count;
