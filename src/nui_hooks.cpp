@@ -308,6 +308,8 @@ uint32_t menu_manager=0;        // last manager whose update ran
 uint64_t menu_manager_frame=0;  // input update count at that time
 uint64_t input_frames=0;
 uint64_t menu_page_frame=0;  // input update count when the first player last had a menu page
+uint32_t menu_page_now=0;  // the first player's menu page at menu_page_frame
+std::atomic<uint32_t> title_waiting_present{0};  // present at which the title screen last waited for START
 // When a ring menu last asked for its step (8246A6D0): the pause menu's wheel
 // runs while the race flag is still set, and the touch stick must then turn
 // it (the D-pad) instead of leaning (Issue #6).
@@ -612,6 +614,16 @@ SFR_INPUT_HOOK(sub_827707B0) {
     // [83E52F8C] is the race flag: the hands leave the menu cursor pose.
     const bool racing=sfr::active_memory->load<uint32_t>(0x83E52F8C) != 0;
     sfr::set_touch_racing(racing && now_ms()-ring_asked_ms.load(std::memory_order_relaxed)>150);
+    {
+        // The title screen waits for START (its state 7..10, updated within
+        // the last few frames) and shows no dialog: a touch there is START.
+        const uint32_t seen=title_waiting_present.load(std::memory_order_relaxed), now=sfr::present_count.load();
+        const bool title=!racing && seen && now-seen<=10 && !(dialog_seen && input_frames-dialog_frame<=30);
+        static bool was_title=false;
+        if(title!=was_title) std::cerr << "NUI_TITLE_WAITING " << (title?"on":"off") << " present=" << now << '\n';
+        was_title=title;
+        sfr::set_touch_title(title);
+    }
     const char* const choice=std::getenv("SFR_CAMERA");
     if(choice && std::string_view(choice)=="kinect") {
         // Every Kinect caller waits for initialization, including one that
@@ -912,6 +924,39 @@ SFR_INPUT_HOOK(sub_827707B0) {
             ++hand_seek.step;
         }
     }
+    // A finger on the screen or the mouse over the game points the menu
+    // cursor (Issue #217): the hand goes where the cursor lands on that spot
+    // and stays there, so the item under it fills and is chosen. The pad's
+    // right stick moves it on from there.
+    {
+        static uint32_t applied_serial=0, last_page=0;
+        static bool last_dialog=false;
+        const sfr::PointerTarget pointer=sfr::pointer_target();
+        auto& pointed=player_routing.reversed()?second_skeleton:skeleton;
+        // A choice made by pointing changes the page or opens or closes a
+        // dialog. The hand then leaves the spot (to the corner where the
+        // cursor waits clear of buttons) unless a finger still holds it:
+        // otherwise it would choose whatever the next page has there.
+        const uint32_t page_now=input_frames-menu_page_frame<=2 ? menu_page_now : 0;
+        const bool dialog_now=dialog_seen && input_frames-dialog_frame<=2;
+        if((page_now!=last_page || dialog_now!=last_dialog) && pointed.pointed() && !pointer.held) {
+            pointed.park_pointed();
+            std::cerr << "NUI_POINTER parked page=0x" << std::hex << page_now << std::dec << " dialog=" << dialog_now
+                      << " frame=" << input_frames << '\n';
+        }
+        last_page=page_now;
+        last_dialog=dialog_now;
+        if(pointer.serial!=applied_serial) {
+            applied_serial=pointer.serial;
+            if(!racing && !use_camera && !hand_seek.button) {
+                pointed.point_right(pointer.x*1280.0f,pointer.y*720.0f);
+                static uint32_t told=0;
+                if(told++<200)
+                    std::cerr << "NUI_POINTER x=" << pointer.x*1280.0f << " y=" << pointer.y*720.0f
+                              << " frame=" << input_frames << '\n';
+            }
+        }
+    }
     if(was_reversed!=player_routing.reversed())
         std::cerr << "NUI_PLAYER_ROUTING first_tracking_id=" << (player_routing.reversed()?2:1)
                   << " second_tracking_id=" << (player_routing.reversed()?1:2) << '\n';
@@ -1065,6 +1110,48 @@ SFR_INPUT_HOOK(sub_82764620) {
 }
 
 PPC_FUNC_IMPL(__imp__sub_82494658);
+
+PPC_FUNC_IMPL(__imp__sub_8244F880);
+// The title screen's update (this+4 its state): 7..9 start the title movie,
+// 10 waits for START (said "start", 82494658 below), 12.. leave for the menus.
+// Its present is noted while it waits, for the touch controls (Issue #217).
+SFR_CONCURRENT_HOOK(sub_8244F880) {
+    sfr::enter_function(ctx,"sub_8244F880",0x8244F880);
+    const uint32_t title=ctx.r3.u32;
+    __imp__sub_8244F880(ctx,base);
+    const uint32_t state=sfr::active_memory->load<uint32_t>(uint64_t(title)+4);
+    if(state>=7 && state<=10)
+        title_waiting_present.store(std::max(1u,sfr::present_count.load()),std::memory_order_relaxed);
+}
+
+PPC_FUNC_IMPL(__imp__sub_8244C7A8);
+
+// The startup logos (Issue #217): the ESRB notice (North American consoles
+// only), SEGA and Sonic Team are one object the title draws itself
+// (8244CA28), not movies. Its update, this one, keeps the step at +20: 2
+// picks the first logo, 3..5 show ESRB, SEGA and Sonic Team, each until its
+// fade ends (8244C710), then 0, and 1 removes the object; the title screen
+// follows as soon as its own loading allows. SFR_SKIP_LOGOS=1 (the launcher's
+// Skip logos) goes straight to the end; without it A, B, START or BACK ends
+// the logos, as they end a movie; so does a touch, which is START there.
+SFR_CONCURRENT_HOOK(sub_8244C7A8) {
+    sfr::enter_function(ctx,"sub_8244C7A8",0x8244C7A8);
+    static const bool skip_all=[]{ const char* t=std::getenv("SFR_SKIP_LOGOS"); return t && *t && *t!='0'; }();
+    constexpr uint16_t skip_buttons=sfr::gamepad_button::a|sfr::gamepad_button::b|sfr::gamepad_button::start|
+                                    sfr::gamepad_button::back;
+    const uint32_t logos=ctx.r3.u32;
+    auto& memory=*sfr::active_memory;
+    const uint32_t step=memory.load<uint32_t>(uint64_t(logos)+20);
+    if(step>=2 && step<=5 && (skip_all || (sfr::nui_gamepad().buttons & skip_buttons))) {
+        memory.store<uint32_t>(uint64_t(logos)+20,0);
+        std::cerr << "NUI_LOGO_SKIP step=" << step << " present=" << sfr::present_count.load()
+                  << (skip_all ? " setting" : " button") << '\n';
+    }
+    __imp__sub_8244C7A8(ctx,base);
+    // A touch on the logos is START too (touch_controls.h).
+    if(memory.load<uint32_t>(uint64_t(logos)+20)>=2)
+        title_waiting_present.store(std::max(1u,sfr::present_count.load()),std::memory_order_relaxed);
+}
 
 PPC_FUNC_IMPL(__imp__sub_824920F8);
 // The title's START screen does not use every later menu-manager path.
@@ -1409,6 +1496,7 @@ SFR_MENU_HOOK(sub_824560A8) {
             line<<(hand?" right[":" left[")<<"flags="<<std::hex<<(input?word(packet+48):0)<<std::dec
                 <<" raise="<<(input?number(packet+432):0)<<" lower="<<(input?number(packet+436):0)
                 <<" state="<<(hands?word(cursor+100):~0u)<<" object="<<std::hex<<(hands?word(cursor+8):0)<<std::dec<<']';
+            if(hands) line<<" cursor="<<number(cursor+40)<<','<<number(cursor+44);
         }
         if(data) for(const uint32_t joint : {sfr::nui_joint::hand_right,sfr::nui_joint::shoulder_right,
                                            sfr::nui_joint::hand_left,sfr::nui_joint::shoulder_left,sfr::nui_joint::head}) {
@@ -1448,7 +1536,7 @@ SFR_MENU_HOOK(sub_824578F0) {
                     cursor_pending=memory.load<uint32_t>(uint64_t(hands)+116+100)!=0;
             }
         }
-        if (player==0 && page) menu_page_frame=input_frames;
+        if (player==0 && page) { menu_page_frame=input_frames; menu_page_now=page; }
         player_routing.observe_menu_page(player,page,page ? memory.load<uint32_t>(page+336) : 0,cursor_pending);
     }
     // SFR_MENU_DUMP=1 reports each menu page: its buttons as type/flags/kind/state

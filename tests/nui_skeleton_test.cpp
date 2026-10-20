@@ -118,6 +118,58 @@ int main() {
         joined.update({});
         require(joined.hand(true)[1] < 0.6f, "identifying again does not raise an engaged hand again");
 
+        // Issue #217: the menu cursor where a finger or the mouse points.
+        // Cursor positions the title showed on the main menu for raised hands
+        // (hand x, hand y, cursor x, cursor y).
+        constexpr float measured[][4] = {{-0.03f, 0.65f, 216.8f, 0.0f},   {0.21f, 0.53f, 722.4f, 0.0f},
+                                         {0.09f, 0.41f, 359.3f, 125.2f},  {0.33f, 0.29f, 1057.6f, 291.3f},
+                                         {-0.03f, 0.17f, 173.7f, 457.5f}, {0.45f, 0.17f, 1202.3f, 457.5f},
+                                         {-0.15f, 0.05f, 96.4f, 623.6f},  {0.21f, 0.05f, 698.1f, 623.6f}};
+        for (const auto& m : measured) {
+            const auto cursor = sfr::NuiSkeletonEmulation::cursor_for_hand(m[0], m[1]);
+            require(std::fabs(cursor[0] - m[2]) < 25.0f && (m[3] == 0.0f || std::fabs(cursor[1] - m[3]) < 2.0f),
+                    "the cursor model matches the title's cursor");
+        }
+        for (float x = 0.0f; x <= 1280.0f; x += 160.0f)
+            for (float y = 0.0f; y <= 700.0f; y += 100.0f) {
+                const auto hand = sfr::NuiSkeletonEmulation::hand_for_cursor(x, y);
+                const auto back = sfr::NuiSkeletonEmulation::cursor_for_hand(hand[0], hand[1]);
+                require(std::fabs(back[0] - x) < 0.5f && std::fabs(back[1] - y) < 0.5f, "hand_for_cursor inverts the model");
+                require(hand[0] >= -0.4f && hand[0] <= 0.7f && hand[1] > -0.1f, "every pointed hand is a raised one");
+            }
+        sfr::NuiSkeletonEmulation pointing;
+        pointing.point_right(1000.0f, 600.0f);
+        pointing.update({});
+        require(pointing.hand(true)[1] > 0.4f, "pointing raises a resting hand first");
+        for (int i = 0; i < 30; ++i) pointing.update({});
+        const auto target = sfr::NuiSkeletonEmulation::hand_for_cursor(1000.0f, 600.0f);
+        require(std::fabs(pointing.hand(true)[0] - target[0]) < 1e-6f && std::fabs(pointing.hand(true)[1] - target[1]) < 1e-6f,
+                "the raise ends where the pointer is");
+        pointing.update({});
+        require(std::fabs(pointing.hand(true)[0] - target[0]) < 1e-6f, "the pointed hand stays without input");
+        pointing.point_right(100.0f, 700.0f);
+        const auto corner = sfr::NuiSkeletonEmulation::hand_for_cursor(100.0f, 700.0f);
+        require(pointing.hand(true)[0] == corner[0] && pointing.hand(true)[2] == 2.25f, "a raised hand goes at once");
+        pointing.update({});
+        require(pointing.hand(true)[0] == corner[0], "the lower left corner is within the hand's reach");
+        pad = {};
+        pad.thumb_rx = 32767;
+        pointing.update(pad);
+        require(pointing.hand(true)[0] > corner[0], "the stick moves on from a pointed hand");
+        require(!pointing.pointed(), "a hand the stick moved is no longer the pointer's");
+        pointing.point_right(1125.0f, 68.0f);
+        require(pointing.pointed(), "a pointed hand is the pointer's");
+        pointing.park_pointed();
+        const auto waiting = pointing.hand(true);
+        require(!pointing.pointed() && waiting[0] < 0.0f && waiting[1] > 0.5f, "a chosen button's cursor goes to its corner");
+        pointing.park_pointed();
+        require(pointing.hand(true) == waiting, "parking twice changes nothing");
+        sfr::NuiSkeletonEmulation raising;
+        raising.point_right(640.0f, 360.0f);
+        raising.park_pointed();
+        for (int i = 0; i < 31; ++i) raising.update({});
+        require(raising.hand(true) == waiting, "a raise for a pointer parked meanwhile ends in the corner");
+
         memory.map(0x20000, 0x1000);
         sfr::write_nui_device_status(memory, 0x20000, sfr::emulated_nui_device_status);
         require(memory.load<uint32_t>(0x2000c) == 3 && memory.load<uint32_t>(0x20008) == 0,

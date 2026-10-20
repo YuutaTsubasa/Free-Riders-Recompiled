@@ -60,8 +60,9 @@ std::array<float, 2> stick_offset(const TouchPoint& finger, std::array<float, 2>
 }
 }
 
-void TouchControls::update(std::span<const TouchPoint> touches, float tilt, bool racing) {
+void TouchControls::update(std::span<const TouchPoint> touches, float tilt, TouchScene scene) {
     namespace button = gamepad_button;
+    const bool racing = scene == TouchScene::race;
     state_ = {};
     pressed_.fill(false);
     // Each stick follows the finger that started it until that finger lifts.
@@ -73,10 +74,13 @@ void TouchControls::update(std::span<const TouchPoint> touches, float tilt, bool
         stick_finger_ = -1;
     }
     if (held(right_finger_) == touches.end()) right_finger_ = -1;
+    // The pointer belongs to the scene it started in: a race takes it away.
+    if (held(pointer_finger_) == touches.end() || racing) pointer_finger_ = -1;
     const float stick_radius = layout(stick)[2];
     const auto [right_x, right_y, right_radius] = layout(right_stick);
+    const auto [stick_x, stick_y, stick_rest_radius] = layout(stick);
     for (const TouchPoint& touch : touches) {
-        if (touch.id == stick_finger_ || touch.id == right_finger_) continue;
+        if (touch.id == stick_finger_ || touch.id == right_finger_ || touch.id == pointer_finger_) continue;
         bool on_button = false;
         for (size_t index = a; index <= lt; ++index) {
             const auto [bx, by, br] = layout(Button(index));
@@ -86,12 +90,27 @@ void TouchControls::update(std::span<const TouchPoint> touches, float tilt, bool
             }
         }
         if (on_button) continue;
+        // Outside a race the stick starts only on its own circle: the rest
+        // of the screen is the pointer.
+        const bool stick_area = racing ? touch.x < stick_region && touch.x >= 0.0f
+                                       : distance(stick_x, stick_y, touch.x, touch.y) <= stick_rest_radius * touch_slack;
         if (right_finger_ < 0 && distance(right_x, right_y, touch.x, touch.y) <= right_radius * touch_slack) {
             right_finger_ = touch.id;
-        } else if (!stick_active_ && touch.x < stick_region && touch.x >= 0.0f) {
+        } else if (!stick_active_ && stick_area) {
             stick_active_ = true;
             stick_finger_ = touch.id;
             stick_base_ = {touch.x, std::clamp(touch.y, stick_radius, 1.0f - stick_radius)};
+        } else if (!racing && pointer_finger_ < 0 && !stick_area) {
+            pointer_finger_ = touch.id;
+        }
+    }
+    pointer_.reset();
+    if (pointer_finger_ >= 0) {
+        if (scene == TouchScene::title) {
+            pressed_[start] = true;  // the title's START, wherever it is touched
+        } else {
+            const TouchPoint& finger = *held(pointer_finger_);
+            pointer_ = std::array<float, 2>{std::clamp(finger.x, 0.0f, 1.0f), std::clamp(finger.y, 0.0f, 1.0f)};
         }
     }
     if (stick_active_) {
@@ -206,6 +225,53 @@ namespace { std::atomic<float> pause_progress{0.0f}; }
 void publish_pause_gauge(float progress) { pause_progress.store(progress, std::memory_order_relaxed); }
 float pause_gauge() { return pause_progress.load(std::memory_order_relaxed); }
 bool touch_racing() { return racing_now.load(std::memory_order_relaxed); }
+
+namespace {
+std::atomic<bool> title_now{false};
+std::mutex pointer_mutex;
+PointerTarget pointer_now;
+std::array<float, 6> pointer_view{};
+}
+
+void set_touch_title(bool waiting) { title_now.store(waiting, std::memory_order_relaxed); }
+
+TouchScene touch_scene() {
+    if (touch_racing()) return TouchScene::race;
+    return title_now.load(std::memory_order_relaxed) ? TouchScene::title : TouchScene::menu;
+}
+
+void publish_pointer(float x, float y, bool landed, bool held) {
+    std::lock_guard lock(pointer_mutex);
+    pointer_now.held = held;
+    if (!landed && pointer_now.serial && pointer_now.x == x && pointer_now.y == y) return;  // resting: nothing new
+    pointer_now.x = x;
+    pointer_now.y = y;
+    if (++pointer_now.serial == 0) pointer_now.serial = 1;
+}
+
+void release_pointer() {
+    std::lock_guard lock(pointer_mutex);
+    pointer_now.held = false;
+}
+
+PointerTarget pointer_target() {
+    std::lock_guard lock(pointer_mutex);
+    return pointer_now;
+}
+
+void set_pointer_view(float x, float y, float width, float height, float out_width, float out_height) {
+    std::lock_guard lock(pointer_mutex);
+    pointer_view = {x, y, width, height, out_width, out_height};
+}
+
+std::optional<std::array<float, 2>> pointer_from_window(float x, float y) {
+    std::lock_guard lock(pointer_mutex);
+    const auto [view_x, view_y, view_width, view_height, out_width, out_height] = pointer_view;
+    if (view_width <= 0.0f || view_height <= 0.0f) return std::nullopt;
+    const float u = (x * out_width - view_x) / view_width, v = (y * out_height - view_y) / view_height;
+    if (u < 0.0f || u > 1.0f || v < 0.0f || v > 1.0f) return std::nullopt;
+    return std::array<float, 2>{u, v};
+}
 
 TouchOverlay touch_overlay() {
     std::lock_guard lock(published_mutex);

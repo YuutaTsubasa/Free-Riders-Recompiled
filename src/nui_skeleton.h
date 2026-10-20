@@ -83,13 +83,29 @@ public:
         right_[1] = y;
         right_[2] = z;
     }
+    // Moves the menu cursor to (x, y), pixels of the title's 1280x720 screen:
+    // a finger or the mouse pointing (Issue #217). A hand at rest is raised
+    // first (the title shows a cursor only after a raise) and goes there as
+    // the raise ends.
+    void point_right(float x, float y);
+    // Whether the hand is where a pointer last put it (not moved by the stick
+    // since), and moving such a hand to the corner where the cursor waits
+    // clear of buttons: a cursor left on a chosen button would choose the
+    // button that the next page has there (nui_hooks.cpp).
+    bool pointed() const { return pointed_now_; }
+    void park_pointed();
+    // Where the title puts the right hand's menu cursor for a raised hand at
+    // (x, y) (camera space, this skeleton's shoulders, z 2.25), and the hand
+    // for a cursor position: measured on the main menu (docs/touch-cursor.md).
+    static std::array<float, 2> cursor_for_hand(float x, float y);
+    static std::array<float, 2> hand_for_cursor(float x, float y);
     // After NuiIdentityIdentify completes the skeleton carries that result
     // instead of "not yet identified": the enrollment of the signed-in
     // profile it was recognised as, or an unenrolled guest.
     static constexpr uint32_t unidentified = 0xFFFFFFFFu, guest = 0xFFFFFFFEu;
     void identify(uint32_t enrollment = guest) {
         enrollment_ = enrollment;
-        if (engage_ == 0) { engage_ = 1; park_ = !hand_starts_centred(); }
+        if (engage_ == 0) { engage_ = 1; park_ = !hand_starts_centred(); pointed_ = false; }
     }
     // Somebody else steps in (a relay's next racer): not yet identified, the
     // hands at rest.
@@ -107,6 +123,9 @@ private:
     std::array<float, 3> right_{0.25f, -0.15f, 2.45f};
     uint32_t engage_ = 0;  // 0 at rest, 1-30 raising, 31 tracking
     bool park_ = false;    // the raise ends parked instead of centred
+    bool pointed_ = false; // the raise ends at pointed_hand_ (point_right)
+    bool pointed_now_ = false;
+    std::array<float, 2> pointed_hand_{};
     std::array<float, 3> left_{-0.25f, -0.15f, 2.45f};
     uint32_t enrollment_ = unidentified;
 };
