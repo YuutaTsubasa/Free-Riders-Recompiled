@@ -2329,3 +2329,57 @@ full timing did.
 Measured but left alone: the graphics lock per hook (an uncontended mutex pair,
 ~2%), the constants swap (8 KB a draw), the pacing spin on Android (a 2 ms
 margin, as sleeps overshoot by ~0.8 ms there).
+
+## 2026-10-20: Only the shader constants a draw reads
+
+Every draw byte-swapped both stages' whole constant files (256 float4 each,
+8 KB) from the device into the upload ring: `swap_words_into` was 3% of an
+AYN Thor race's main thread in the measurement above. The translated shaders
+read far less. XenosRecomp reads a float4 constant only through the name the
+shader's constant table gives it (registers outside the table are the
+shader's own literal definitions, declared as locals), so each native shader
+now records the registers its table declares (`shader_constant_use.cpp`) and
+a draw swaps only those runs. The rest of each 4 KB block keeps whatever an
+earlier draw left there, which the shader never reads. A shader whose ALU
+instructions address constants relatively (a0/aL) may reach any register
+past its array, so it still gets all 256: 33 of the game's 287 vertex
+shaders, none of its 189 pixel shaders. Over the shipped pack a vertex
+shader's table holds 41 registers on average (55 with the relative ones
+counted whole) and a pixel shader's 8. The skinning palette is now swapped
+from guest memory straight into the ring instead of being copied, swapped
+and copied again.
+
+How it was checked (all 476 shaders of the 0.10.13 pack):
+
+- Statically: every constant-buffer read in each shader's SPIR-V
+  (`OpAccessChain` into the stage's uniform block) and DXIL
+  (`cbufferLoadLegacy` on its cbuffer) uses a constant row inside the
+  registers it uploads; the only dynamic rows are in exactly the 33 relative
+  shaders. The game logs the same split (`SFR_CONSTANT_TIMING=1` prints a
+  `SHADER_CONSTANT_RUNS` line per shader it creates).
+- At run time: `SFR_TEST_CONSTANT_POISON=1` fills every register a draw does
+  not write with NaNs. Races on Vulkan and D3D12 with it look as before; a
+  missed read would spread NaNs over the screen.
+- Screenshots cannot be compared pixel for pixel between two runs of this
+  harness: the menus animate in real time and the fixed-step race diverges
+  (two runs of the same build differ in ~520,000 pixels at present 5000).
+  Vulkan with the validation layer: 0 errors, the 455 shipped pipelines.
+
+`SFR_CONSTANT_RUNS=0` (also on the Test options page) restores the full
+upload and the old palette copy; `SFR_CONSTANT_TIMING=1` prints the constant
+writes' time and bytes per draw every 16384 draws (two clock reads included,
+~0.13 us on the Thor).
+
+**Thor A/B** (one APK, `SFR_CONSTANT_RUNS=0` for the baseline, HOST_THREADS
+over frames 13000-21000 of a moving Dolphin Resort race, frame metrics off,
+runs interleaved; drawn_ms is held near 16 ms by the 60 fps pacing):
+
+| Constants | draw_ms | record_ms | cpu_ms | undrawn_ms | frames skipped of 8040 |
+| --- | --- | --- | --- | --- | --- |
+| all (baseline) | 3.75 / 3.73 / 3.73 | 1.04 / 1.01 / 1.01 | 14.36 / 14.27 / 14.25 | 9.82 / 9.81 / 9.57 | 214 / 127 / 124 |
+| read ones | 3.45 / 3.39 / 3.38 | 0.75 / 0.73 / 0.72 | 13.77 / 13.84 / 13.63 | 9.21 / 9.62 / 8.42 | 35 / 34 / 15 |
+
+The constant writes themselves (`SFR_CONSTANT_TIMING=1`, one run each): 561
+ns and 8192 bytes a draw before, 237 ns and 623 bytes after, at about 820
+draws a drawn frame. Windows (i9, Vulkan / D3D12, a machine with other load):
+776 / 778 ns a draw before, 199 / 140 ns after.
