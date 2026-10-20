@@ -41,6 +41,7 @@ struct LauncherSettings {
     bool audio = true;
     uint32_t volume = 100;           // percent
     bool skip_movies = false;
+    bool skip_logos = false;         // SFR_SKIP_LOGOS: the startup SEGA/Sonic Team/rating screens
     bool vertex_cache = true;        // SFR_VERTEX_CACHE
     bool gpu_pipeline = true;        // SFR_GPU_PIPELINE
     uint32_t race_render_every = 1;  // SFR_RENDER_EVERY

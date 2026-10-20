@@ -22,6 +22,7 @@
 #ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
+#include <windowsx.h>
 #else
 #include <SDL.h>
 #if defined(__ANDROID__) || defined(__APPLE__)
@@ -113,6 +114,14 @@ LRESULT CALLBACK presentation_window_proc(HWND window, UINT message, WPARAM wpar
         return 0;
     }
     if (message == WM_SYSCHAR && wparam == VK_RETURN) return 0;  // no beep for Alt+Enter
+    // The mouse moved over the game is the Kinect hand cursor (Issue #217).
+    if (message == WM_MOUSEMOVE) {
+        RECT client{};
+        if (GetClientRect(window, &client) && client.right > 0 && client.bottom > 0)
+            if (const auto at = sfr::pointer_from_window(float(GET_X_LPARAM(lparam)) / float(client.right),
+                                                    float(GET_Y_LPARAM(lparam)) / float(client.bottom)))
+                sfr::publish_pointer((*at)[0], (*at)[1]);
+    }
     if (message == WM_NCCREATE) {
         const auto* create = reinterpret_cast<const CREATESTRUCTW*>(lparam);
         SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
@@ -443,6 +452,11 @@ struct NativePresentation::Impl {
     TouchControls touch_controls;
     SDL_Sensor* tilt_sensor = nullptr;
     bool tilt_sensor_checked = false;
+    // Fingers that went down since the last read (window fractions), kept as
+    // touches for a few reads when they are already up again: a quick tap
+    // can come and go between two reads of the fingers (Issue #217).
+    struct BriefTouch { int64_t id; float x, y; int reads; };
+    std::vector<BriefTouch> brief_touches;
     void read_touch_controls();
 #endif
     std::unique_ptr<plume::RenderDescriptorSet> blit_texture, blit_sampler;
@@ -2037,6 +2051,7 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
         const auto touch_words = pack_touch_overlay(overlay);
         std::copy(touch_words.begin(), touch_words.end(), constants.begin() + 2);
         impl_->touch_view = {viewport.x, viewport.y, viewport.width, viewport.height, float(out_width), float(out_height)};
+        set_pointer_view(viewport.x, viewport.y, viewport.width, viewport.height, float(out_width), float(out_height));
         impl_->command_list->setGraphicsPushConstants(0, constants.data());
         impl_->command_list->drawInstanced(3, 1, 0, 0);
         if (model_loading != ~0u) {
@@ -2064,6 +2079,7 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
             plume::RenderTextureBarrier(swap_texture, plume::RenderTextureLayout::COPY_DEST)};
         impl_->command_list->barriers(plume::RenderBarrierStage::COPY, copy_barriers.data(), 2);
         impl_->command_list->copyTexture(swap_texture, impl_->color.get());
+        set_pointer_view(0.0f, 0.0f, float(out_width), float(out_height), float(out_width), float(out_height));
     }
     impl_->command_list->barriers(plume::RenderBarrierStage::NONE,
         plume::RenderTextureBarrier(swap_texture, plume::RenderTextureLayout::PRESENT));
@@ -2206,6 +2222,20 @@ void NativePresentation::pump_events() {
         if (event.type == SDL_QUIT ||
             (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE))
             impl_->close_requested = true;
+        if (event.type == SDL_FINGERDOWN && impl_->brief_touches.size() < 16)
+            impl_->brief_touches.push_back({int64_t(event.tfinger.fingerId), event.tfinger.x, event.tfinger.y, 6});
+#if !defined(__ANDROID__) && !defined(SFR_IOS)
+        // The mouse moved over the game is the Kinect hand cursor (Issue #217);
+        // touches are read on their own.
+        if (event.type == SDL_MOUSEMOTION && event.motion.which != SDL_TOUCH_MOUSEID) {
+            int window_width = 0, window_height = 0;
+            SDL_GetWindowSize(impl_->window, &window_width, &window_height);
+            if (window_width > 0 && window_height > 0)
+                if (const auto at = pointer_from_window(float(event.motion.x) / float(window_width),
+                                                        float(event.motion.y) / float(window_height)))
+                    publish_pointer((*at)[0], (*at)[1]);
+        }
+#endif
         if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_RETURN && (event.key.keysym.mod & KMOD_ALT) &&
             !event.key.repeat)
             set_fullscreen(impl_->window, !(SDL_GetWindowFlags(impl_->window) & SDL_WINDOW_FULLSCREEN_DESKTOP));
@@ -2253,7 +2283,17 @@ void NativePresentation::Impl::read_touch_controls() {
                                    (finger->y * out_height - view_y) / view_height});
             }
         }
+        // A tap already over counts as a touch of about 100 ms where it landed.
+        for (BriefTouch& brief : brief_touches) {
+            const bool held = std::any_of(touches.begin(), touches.end(),
+                                          [&](const TouchPoint& touch) { return touch.id == brief.id; });
+            if (held) { brief.reads = 0; continue; }
+            touches.push_back({brief.id, (brief.x * out_width - view_x) / view_width,
+                               (brief.y * out_height - view_y) / view_height});
+            --brief.reads;
+        }
     }
+    std::erase_if(brief_touches, [](const BriefTouch& brief) { return brief.reads <= 0; });
     float tilt = 0.0f;
     if (!tilt_sensor_checked) {
         tilt_sensor_checked = true;
@@ -2283,8 +2323,18 @@ void NativePresentation::Impl::read_touch_controls() {
         }
     }
     if (!touches.empty()) note_touch();
-    touch_controls.update(touches, tilt, touch_racing());
+    touch_controls.update(touches, tilt, touch_scene());
     publish_touch_controls(touch_controls.state(), touch_controls.overlay());
+    // The pointer finger moves the Kinect hand cursor (Issue #217).
+    static bool pointing = false;
+    if (const auto pointer = touch_controls.pointer()) {
+        publish_pointer((*pointer)[0], (*pointer)[1], !pointing, true);
+        if (!pointing) std::fprintf(stderr, "TOUCH_POINTER down x=%.3f y=%.3f\n", (*pointer)[0], (*pointer)[1]);
+        pointing = true;
+    } else {
+        if (pointing) release_pointer();
+        pointing = false;
+    }
     // SFR_TOUCH_TRACE=1: each change of the pad the touches make.
     static const bool trace = [] { const char* text = std::getenv("SFR_TOUCH_TRACE"); return text && *text == '1'; }();
     if (trace) {

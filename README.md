@@ -345,7 +345,10 @@ beside itself. Linux and Android builds, and what each step does, are in
 Xbox and PlayStation controllers both work. On Android, translucent touch
 buttons cover the same actions when no controller is connected (punches on
 the screen's left and right edges, a small right stick for reaching), and
-tilting the phone steers in a race. Details: [docs/race-controls.md](docs/race-controls.md),
+tilting the phone steers in a race. Outside races a finger moves the Kinect
+hand cursor: touch anywhere away from the buttons and the cursor goes there
+(rest on an item to choose it, as with a hand); on the title screen a touch is
+START. On a PC the mouse moves the hand cursor the same way. Details: [docs/race-controls.md](docs/race-controls.md),
 [docs/pad-menus.md](docs/pad-menus.md).
 
 ## Kinect and Kinect v2

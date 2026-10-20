@@ -2,6 +2,7 @@
 #include "native_input.h"
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <span>
 
 namespace sfr {
@@ -11,10 +12,11 @@ namespace sfr {
 // are relative to the game image (0..1 across its 16:9 area, y down); radii
 // are fractions of its height.
 //
-//   stick   anywhere in the left 40%: the base appears under the finger and
-//           the knob follows it. In a race it is the left stick (leaning); in
-//           the menus the D-pad once past half-way, one step per push (the
-//           left stick would move the emulated Kinect hand there)
+//   stick   anywhere in the left 40% in a race, on its own circle elsewhere:
+//           the base appears under the finger and the knob follows it. In a
+//           race it is the left stick (leaning); in the menus the D-pad once
+//           past half-way, one step per push (the left stick would move the
+//           emulated Kinect hand there)
 //   A       bottom of the diamond  (green)     hold to crouch, release to jump
 //   B       right of the diamond   (red)       back; brake / grab
 //   X       left of the diamond    (blue)      kick dash
@@ -32,6 +34,15 @@ namespace sfr {
 //
 // In a race, tilting the device like a steering wheel also steers (left
 // stick X), unless the stick is held.
+//
+// Outside races the screen itself is the Kinect hand cursor (Issue #217): a
+// finger that lands away from the controls is the pointer, and the hand
+// cursor goes to it and follows it (the stick then starts only on its own
+// circle). Selection stays the game's own: the cursor rests where the finger
+// left it and the item under it fills and is chosen, as with a hand. On the
+// title screen a touch away from the controls is START.
+enum class TouchScene { menu, race, title };
+
 struct TouchPoint {
     int64_t id;
     float x, y;  // game-image coordinates; may lie outside 0..1 (black bars)
@@ -62,8 +73,14 @@ public:
     enum Button : size_t { stick = 0, a, b, x, y, trigger, start, lb, rb, lt, right_stick };
     // One frame of touches; tilt is the steering angle in -1..1 (0 when the
     // device is level or there is no sensor); racing selects the stick's role.
-    void update(std::span<const TouchPoint> touches, float tilt = 0.0f, bool racing = false);
+    void update(std::span<const TouchPoint> touches, float tilt = 0.0f, bool racing = false) {
+        update(touches, tilt, racing ? TouchScene::race : TouchScene::menu);
+    }
+    void update(std::span<const TouchPoint> touches, float tilt, TouchScene scene);
     GamepadState state() const { return state_; }
+    // The pointer finger in the menus, in game-image coordinates clamped to
+    // 0..1; none when no finger is the pointer.
+    std::optional<std::array<float, 2>> pointer() const { return pointer_; }
     TouchOverlay overlay() const;
     // Resting layout (circle centre and radius) of each control.
     static std::array<float, 3> layout(Button button);
@@ -75,8 +92,36 @@ private:
     std::array<float, 2> stick_base_{}, stick_knob_{};
     int64_t right_finger_ = -1;
     std::array<float, 2> right_knob_{};
+    int64_t pointer_finger_ = -1;  // the menus' hand cursor, or START's on the title
+    std::optional<std::array<float, 2>> pointer_;
     std::array<bool, TouchOverlay::circles> pressed_{};
 };
+
+// Where the Kinect hand cursor should go (Issue #217): the pointer finger,
+// or on a desktop the mouse moved over the game. Positions are game-image
+// coordinates (0..1); each new position gets a new serial, so a resting
+// pointer leaves the hand to the stick.
+struct PointerTarget {
+    float x = 0.0f, y = 0.0f;
+    uint32_t serial = 0;  // 0 until the first one
+    bool held = false;    // a finger is on it (the mouse never holds)
+};
+// landed: a finger that has just touched down (a new target even where the
+// last one was).
+void publish_pointer(float x, float y, bool landed = false, bool held = false);
+// The finger left the screen.
+void release_pointer();
+PointerTarget pointer_target();
+// The window-to-game-image mapping of the last presented frame (the blit's
+// viewport in a window of out_width x out_height), for the mouse.
+void set_pointer_view(float x, float y, float width, float height, float out_width, float out_height);
+// A window position (0..1 across the window's width and height) as
+// game-image coordinates; none outside the image.
+std::optional<std::array<float, 2>> pointer_from_window(float x, float y);
+// Whether the title screen waits for START (the Kinect hooks know); with
+// touch_racing, the scene the touches are read for.
+void set_touch_title(bool waiting);
+TouchScene touch_scene();
 
 // The latest touch state, published by the thread that reads touches (the
 // presentation's event pump) for the input and the blit.

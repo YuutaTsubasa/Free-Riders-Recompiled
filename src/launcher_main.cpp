@@ -86,7 +86,7 @@ enum Text {
     TabDisplay, TabSound, TabGeneral, TabMotion, TabFiles,
     WindowSize, DesktopSize, DisplayMode, DisplayModeHint, DisplayBorderless, DisplayWindowed, VSync, VSyncHint, RenderResolution, RenderResolutionHint, OriginalScale,
     Sound, SoundHint, Volume,
-    SkipMovies, SkipMoviesHint,
+    SkipMovies, SkipMoviesHint, SkipLogos, SkipLogosHint,
     VertexCache, VertexCacheHint, GpuPipeline, GpuPipelineHint, RaceEvery, RaceEveryHint, TitleStats, TitleStatsHint,
     CameraLabel, CameraHint, CameraHintOff, CameraHintPicture, CameraHintKinect, CameraOff, CameraPicture, CameraMotion, CameraDevice, CameraDeviceHint, CameraNone,
     CameraTest, CameraTesting, CameraWorks, CameraSilent, CameraClosed, CameraMirror, CameraMirrorHint,
@@ -169,6 +169,8 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Volume", "音量"},
     {"Skip movies", "略過影片"},
     {"Ends the opening and story movies after their first frames.", "開場與劇情影片只播放開頭便結束。"},
+    {"Skip logos", "略過標誌畫面"},
+    {"Starts at the title screen without the SEGA, Sonic Team and rating screens.", "啟動時不顯示 SEGA、Sonic Team 與分級畫面，直接進入標題畫面。"},
     {"Vertex cache", "頂點快取"},
     {"Keeps geometry that does not change on the GPU. Turn it off if models look out of date.",
      "將沒有變動的幾何資料保留在 GPU 上。若模型顯示不正確，可以關閉。"},
@@ -2240,6 +2242,7 @@ struct Launcher {
         settings_section(SectionPlayback);
         const float switch_width = ImGui::GetFrameHeight() * 1.9f;
         setting_row(tr(SkipMovies), tr(SkipMoviesHint), switch_width, scale, [&] { toggle("##movies", &settings.skip_movies); });
+        setting_row(tr(SkipLogos), tr(SkipLogosHint), switch_width, scale, [&] { toggle("##logos", &settings.skip_logos); });
         settings_section(SectionOnline);
         setting_row(tr(OnlineLabel), tr(OnlineHint), switch_width, scale, [&] { toggle("##online", &settings.online); });
         if (settings.online) {

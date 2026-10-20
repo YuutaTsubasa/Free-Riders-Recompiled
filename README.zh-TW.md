@@ -154,7 +154,8 @@ python scripts/prepare_recomp.py
 | 手部游標（只認 Kinect 的選單） | I J K L | 右類比 |
 
 Xbox 與 PlayStation 手把都能使用。Android 沒有連接手把時，畫面上的半透明觸控按鈕提供相同的
-操作，比賽中也能左右傾斜手機轉彎。
+操作，比賽中也能左右傾斜手機轉彎。比賽以外，用手指點按鈕以外的地方，Kinect 手部游標就移到那裡
+（和用手一樣停留一下就選取）；標題畫面點一下等於 START。電腦上滑鼠也能這樣移動手部游標。
 
 ## Kinect 與 Kinect v2
 

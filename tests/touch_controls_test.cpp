@@ -124,6 +124,67 @@ void race_actions() {
     }
 }
 
+// Issue #217: outside races the screen is the hand cursor, and on the title
+// screen a touch is START.
+void pointer() {
+    using sfr::TouchScene;
+    TouchControls controls;
+    controls.update(std::vector<TouchPoint>{{1, 0.6f, 0.3f}}, 0.0f, TouchScene::menu);
+    require(controls.state() == sfr::GamepadState{} && controls.pointer() &&
+            (*controls.pointer())[0] == 0.6f && (*controls.pointer())[1] == 0.3f,
+            "an empty spot in the menus is the pointer");
+    controls.update(std::vector<TouchPoint>{{1, 0.7f, 0.35f}}, 0.0f, TouchScene::menu);
+    require((*controls.pointer())[0] == 0.7f, "the pointer follows its finger");
+    controls.update(std::vector<TouchPoint>{at(1, TouchControls::a)}, 0.0f, TouchScene::menu);
+    require(!controls.state().buttons && controls.pointer(), "the pointer's finger crosses buttons without pressing them");
+    controls.update(std::vector<TouchPoint>{at(1, TouchControls::a), at(2, TouchControls::b)}, 0.0f, TouchScene::menu);
+    require(controls.state().buttons == button::b, "the buttons work beside the pointer");
+    controls.update(std::vector<TouchPoint>{{1, -0.2f, 1.3f}}, 0.0f, TouchScene::menu);
+    require((*controls.pointer())[0] == 0.0f && (*controls.pointer())[1] == 1.0f, "the pointer stays on the image");
+    controls.update({}, 0.0f, TouchScene::menu);
+    require(!controls.pointer(), "lifting the finger ends the pointer");
+
+    // The stick's side of the screen is the pointer too, except the stick's own circle.
+    controls.update(std::vector<TouchPoint>{{3, 0.05f, 0.2f}}, 0.0f, TouchScene::menu);
+    require(controls.pointer() && controls.overlay().circle[TouchControls::stick][3] == 1.0f,
+            "the upper left is the pointer in the menus");
+    controls.update({}, 0.0f, TouchScene::menu);
+    controls.update(std::vector<TouchPoint>{at(4, TouchControls::stick)}, 0.0f, TouchScene::menu);
+    controls.update(std::vector<TouchPoint>{at(4, TouchControls::stick, 0.1f)}, 0.0f, TouchScene::menu);
+    require(!controls.pointer() && controls.state().buttons == button::dpad_right, "the stick's circle is still the D-pad");
+    controls.update({}, 0.0f, TouchScene::menu);
+    // A race has no pointer: the left side is the stick, the right side nothing.
+    controls.update(std::vector<TouchPoint>{{5, 0.05f, 0.2f}, {6, 0.6f, 0.3f}}, 0.0f, TouchScene::race);
+    require(!controls.pointer() && controls.overlay().circle[TouchControls::stick][3] == 2.0f, "no pointer in a race");
+    controls.update({}, 0.0f, TouchScene::race);
+
+    // The title screen: anywhere away from the controls is START.
+    controls.update(std::vector<TouchPoint>{{7, 0.5f, 0.75f}}, 0.0f, TouchScene::title);
+    require(controls.state().buttons == button::start && !controls.pointer(), "a touch on the title is START");
+    require(controls.overlay().circle[TouchControls::start][3] == 2.0f, "START is drawn pressed");
+    controls.update({}, 0.0f, TouchScene::title);
+    require(!controls.state().buttons, "lifting the finger releases START");
+    controls.update(std::vector<TouchPoint>{at(8, TouchControls::b)}, 0.0f, TouchScene::title);
+    require(controls.state().buttons == button::b, "a button on the title is that button");
+    controls.update({}, 0.0f, TouchScene::title);
+
+    // The published target: each new position, and each new touch, is news.
+    const uint32_t before = sfr::pointer_target().serial;
+    sfr::publish_pointer(0.25f, 0.5f, true);
+    const auto first = sfr::pointer_target();
+    require(first.serial != before && first.x == 0.25f && first.y == 0.5f, "a pointer is published");
+    sfr::publish_pointer(0.25f, 0.5f);
+    require(sfr::pointer_target().serial == first.serial, "a resting pointer is not news");
+    sfr::publish_pointer(0.25f, 0.5f, true);
+    require(sfr::pointer_target().serial != first.serial, "a new touch on the same spot is news");
+    // The mouse: window fractions through the blit's viewport.
+    sfr::set_pointer_view(160.0f, 0.0f, 1600.0f, 900.0f, 1920.0f, 900.0f);
+    const auto inside = sfr::pointer_from_window(960.0f / 1920.0f, 450.0f / 900.0f);
+    require(inside && std::fabs((*inside)[0] - 0.5f) < 1e-6f && std::fabs((*inside)[1] - 0.5f) < 1e-6f,
+            "the window's middle is the image's");
+    require(!sfr::pointer_from_window(100.0f / 1920.0f, 0.5f), "the black bars are not the image");
+}
+
 // The blit's push constants: the overlay as half floats, 30 words after the area.
 void packing() {
     for (float value : {0.0f, 0.065f, 0.44f, 0.935f, 1.0f, 2.0f, 3.5f, 4.0f, -0.25f})
@@ -180,6 +241,7 @@ int main() {
     try {
         run();
         race_actions();
+        pointer();
         packing();
         controller_handover();
         std::cout << "Touch control checks passed\n";

@@ -24,6 +24,9 @@ float axis(int16_t value) {
 Vector rest_position(bool right) { return {right ? 0.25f : -0.25f, -0.15f, 2.45f}; }
 constexpr Vector raised_hand{0.175f, 0.45f, 2.25f}, centred_hand{0.175f, 0.2f, 2.25f};
 constexpr Vector parked_hand{-0.046f, 0.526f, 2.25f};
+// How far the raised right hand reaches sideways: far enough left for a
+// pointed cursor in the lower left corner (point_right).
+constexpr float right_reach_min = -0.4f, right_reach_max = 0.7f;
 
 void move(Vector& hand, float x, float y, bool right, bool push, bool rest) {
     if (rest) { hand = rest_position(right); return; }
@@ -32,7 +35,7 @@ void move(Vector& hand, float x, float y, bool right, bool push, bool rest) {
     // axes cross the screen at roughly 900 px per second.
     constexpr float speed_x = 0.35f / 30.0f, speed_y = 1.0f / 30.0f;
     const float side = right ? 1.0f : -1.0f;
-    hand[0] = std::clamp(hand[0] + x * speed_x, right ? -0.2f : -0.7f, right ? 0.7f : 0.2f);
+    hand[0] = std::clamp(hand[0] + x * speed_x, right ? right_reach_min : -0.7f, right ? right_reach_max : 0.2f);
     hand[1] = std::clamp(hand[1] + y * speed_y, -0.3f, 0.7f);
     hand[2] = push ? 2.1f : (hand[0] * side > 0.3f || hand[1] > -0.1f ? 2.25f : 2.45f);
 }
@@ -61,9 +64,60 @@ bool NuiSkeletonEmulation::hand_starts_centred() {
 
 void NuiSkeletonEmulation::rearm_menu() {
     engage_ = 0;
+    lower_first_ = 0;
     park_ = false;
+    pointed_ = false;
+    pointed_now_ = false;
     left_ = rest_position(false);
     right_ = rest_position(true);
+}
+
+// The menu cursor for a raised right hand (Issue #217), fitted to 38 cursor
+// positions read from the title's cursor object on the main menu
+// (docs/touch-cursor.md; within 22 px, 10 px on average): sideways the title
+// follows the direction of the arm from the right shoulder (0.18, 0.38, 2.5)
+// to the hand at z 2.25, up and down the hand's height alone.
+namespace {
+constexpr float cursor_shoulder_x = 0.18f, cursor_shoulder_y = 0.38f, cursor_depth = -0.25f;
+constexpr float cursor_centre_x = 638.6f, cursor_span_x = 865.4f;
+constexpr float cursor_top_y = 692.7f, cursor_span_y = 1384.3f;
+}
+
+std::array<float, 2> NuiSkeletonEmulation::cursor_for_hand(float x, float y) {
+    const float dx = x - cursor_shoulder_x, dy = y - cursor_shoulder_y;
+    const float direction = dx / std::sqrt(dx * dx + dy * dy + cursor_depth * cursor_depth);
+    return {cursor_centre_x + cursor_span_x * direction, cursor_top_y - cursor_span_y * y};
+}
+
+std::array<float, 2> NuiSkeletonEmulation::hand_for_cursor(float x, float y) {
+    // The title keeps its cursor between 0 and 708 down the screen; a hand
+    // much below that would be a lowered arm.
+    const float hand_y = (cursor_top_y - std::clamp(y, 0.0f, 706.0f)) / cursor_span_y;
+    const float direction = std::clamp((x - cursor_centre_x) / cursor_span_x, -0.95f, 0.95f);
+    const float dy = hand_y - cursor_shoulder_y;
+    const float across = std::sqrt(dy * dy + cursor_depth * cursor_depth);
+    return {cursor_shoulder_x + direction * across / std::sqrt(1.0f - direction * direction), hand_y};
+}
+
+void NuiSkeletonEmulation::point_right(float x, float y, bool raise) {
+    const auto [hand_x, hand_y] = hand_for_cursor(x, y);
+    pointed_hand_ = {std::clamp(hand_x, right_reach_min, right_reach_max), hand_y};
+    if (raise && engage_ > 30) lower_first_ = 6;
+    if (engage_ == 0 || (raise && engage_ > 30)) engage_ = 1;  // raised first, then there
+    pointed_now_ = true;
+    if (engage_ <= 30) {
+        pointed_ = true;
+        park_ = false;
+        return;
+    }
+    right_ = {pointed_hand_[0], pointed_hand_[1], 2.25f};
+}
+
+void NuiSkeletonEmulation::park_pointed() {
+    if (!pointed_now_) return;
+    pointed_now_ = false;
+    if (engage_ > 30) right_ = parked_hand;
+    else { pointed_ = false; park_ = true; }  // the raise under way ends parked
 }
 
 bool NuiSkeletonEmulation::centre_cursor() {
@@ -76,6 +130,8 @@ void NuiSkeletonEmulation::update(const GamepadState& pad, bool racing, bool two
     const float rx = axis(pad.thumb_rx), ry = axis(pad.thumb_ry);
     if (racing) {
         engage_ = 0;
+        lower_first_ = 0;
+        pointed_now_ = false;
         left_ = rest_position(false);
         right_ = rest_position(true);
         if (ry > 0.5f) {
@@ -92,16 +148,26 @@ void NuiSkeletonEmulation::update(const GamepadState& pad, bool racing, bool two
     if (two_player_menu) left_ = rest_position(false);
     const bool rest = (pad.buttons & gamepad_button::back) != 0;
     if (rest) engage_ = 0;
+    if (rest || rx != 0.0f || ry != 0.0f) pointed_now_ = false;
     // The first right-stick input raises the hand (one second) and then
     // centres it, so the cursor appears at the centre of the screen.
-    if (!rest && engage_ == 0 && (rx != 0.0f || ry != 0.0f)) { engage_ = 1; park_ = false; }
+    if (!rest && engage_ == 0 && (rx != 0.0f || ry != 0.0f)) { engage_ = 1; park_ = false; pointed_ = false; }
+    if (engage_ >= 1 && engage_ <= 30 && lower_first_ > 0) {
+        // A raise again from the hand already up starts with the arm down.
+        --lower_first_;
+        right_ = rest_position(true);
+        return;
+    }
     if (engage_ >= 1 && engage_ <= 30) {
         right_ = raised_hand;
         // A Gear transition can suspend cursor consumption for seconds.
         // Keep presenting the initial raise until the guest acknowledges it;
         // elapsed sensor frames alone cannot prove the cursor was activated.
         if (engage_ < 30 || !two_player_menu || !cursor_pending)
-            if (++engage_ > 30) right_ = park_ ? parked_hand : centred_hand;
+            if (++engage_ > 30) {
+                right_ = pointed_ ? Vector{pointed_hand_[0], pointed_hand_[1], 2.25f} : park_ ? parked_hand : centred_hand;
+                pointed_ = false;
+            }
         if (two_player_menu) right_[2] = 2.1f;
         return;
     }
