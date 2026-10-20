@@ -45,7 +45,16 @@ struct GuestEntryState {
     // Hooks this thread is inside (HookScope): the outermost one's return
     // gives back what its entry took.
     uint32_t hook_depth = 0;
+    // The graphics lock kept from one graphics hook to the next
+    // (SFR_GRAPHICS_LOCK_DEFER, diagnostic_main.cpp's graphics_lock_defer):
+    // held outside every hook until the thread reaches anything that may
+    // wait or take another lock. graphics_keep: this thread may keep it.
+    // In the padding after hook_depth, so the fields the generated code
+    // reads keep their offsets.
+    bool graphics_kept = false;
+    bool graphics_keep = false;
 };
+static_assert(sizeof(GuestEntryState) == 48, "GuestEntryState grew: check the generated code's offsets");
 
 // A function entry and its scalar stores repeatedly consult both records.
 // One TLS object lets ARM64 keep a single resolved address across those
