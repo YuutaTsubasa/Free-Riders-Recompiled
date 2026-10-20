@@ -949,7 +949,17 @@ SFR_INPUT_HOOK(sub_827707B0) {
         if(pointer.serial!=applied_serial) {
             applied_serial=pointer.serial;
             if(!racing && !use_camera && !hand_seek.button) {
-                pointed.point_right(pointer.x*1280.0f,pointer.y*720.0f);
+                // A page whose cursor is hidden (state 2) shows it only after a
+                // hand is raised above the shoulder: a hand already low would
+                // go to the spot without ever raising it.
+                uint32_t cursor_state=~0u;
+                auto& memory=*sfr::active_memory;
+                if(menu_manager && input_frames-menu_manager_frame<=2) {
+                    const uint32_t owner=memory.load<uint32_t>(menu_manager+96);
+                    const uint32_t hands=owner && memory.readable(uint64_t(owner)+112,4) ? memory.load<uint32_t>(uint64_t(owner)+112) : 0;
+                    if(hands && memory.readable(uint64_t(hands)+116+100,4)) cursor_state=memory.load<uint32_t>(uint64_t(hands)+116+100);
+                }
+                pointed.point_right(pointer.x*1280.0f,pointer.y*720.0f,cursor_state==2);
                 static uint32_t told=0;
                 if(told++<200)
                     std::cerr << "NUI_POINTER x=" << pointer.x*1280.0f << " y=" << pointer.y*720.0f

@@ -86,8 +86,9 @@ public:
     // Moves the menu cursor to (x, y), pixels of the title's 1280x720 screen:
     // a finger or the mouse pointing (Issue #217). A hand at rest is raised
     // first (the title shows a cursor only after a raise) and goes there as
-    // the raise ends.
-    void point_right(float x, float y);
+    // the raise ends. raise: raise it again although it is up (a page that
+    // shows no cursor yet wants one, as the stick's first push does).
+    void point_right(float x, float y, bool raise = false);
     // Whether the hand is where a pointer last put it (not moved by the stick
     // since), and moving such a hand to the corner where the cursor waits
     // clear of buttons: a cursor left on a chosen button would choose the
@@ -125,6 +126,7 @@ private:
     bool park_ = false;    // the raise ends parked instead of centred
     bool pointed_ = false; // the raise ends at pointed_hand_ (point_right)
     bool pointed_now_ = false;
+    uint32_t lower_first_ = 0;  // frames the arm goes down before a raise again
     std::array<float, 2> pointed_hand_{};
     std::array<float, 3> left_{-0.25f, -0.15f, 2.45f};
     uint32_t enrollment_ = unidentified;

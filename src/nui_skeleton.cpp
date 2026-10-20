@@ -64,6 +64,7 @@ bool NuiSkeletonEmulation::hand_starts_centred() {
 
 void NuiSkeletonEmulation::rearm_menu() {
     engage_ = 0;
+    lower_first_ = 0;
     park_ = false;
     pointed_ = false;
     pointed_now_ = false;
@@ -98,10 +99,11 @@ std::array<float, 2> NuiSkeletonEmulation::hand_for_cursor(float x, float y) {
     return {cursor_shoulder_x + direction * across / std::sqrt(1.0f - direction * direction), hand_y};
 }
 
-void NuiSkeletonEmulation::point_right(float x, float y) {
+void NuiSkeletonEmulation::point_right(float x, float y, bool raise) {
     const auto [hand_x, hand_y] = hand_for_cursor(x, y);
     pointed_hand_ = {std::clamp(hand_x, right_reach_min, right_reach_max), hand_y};
-    if (engage_ == 0) engage_ = 1;  // raised first, then there
+    if (raise && engage_ > 30) lower_first_ = 6;
+    if (engage_ == 0 || (raise && engage_ > 30)) engage_ = 1;  // raised first, then there
     pointed_now_ = true;
     if (engage_ <= 30) {
         pointed_ = true;
@@ -128,6 +130,7 @@ void NuiSkeletonEmulation::update(const GamepadState& pad, bool racing, bool two
     const float rx = axis(pad.thumb_rx), ry = axis(pad.thumb_ry);
     if (racing) {
         engage_ = 0;
+        lower_first_ = 0;
         pointed_now_ = false;
         left_ = rest_position(false);
         right_ = rest_position(true);
@@ -149,6 +152,12 @@ void NuiSkeletonEmulation::update(const GamepadState& pad, bool racing, bool two
     // The first right-stick input raises the hand (one second) and then
     // centres it, so the cursor appears at the centre of the screen.
     if (!rest && engage_ == 0 && (rx != 0.0f || ry != 0.0f)) { engage_ = 1; park_ = false; pointed_ = false; }
+    if (engage_ >= 1 && engage_ <= 30 && lower_first_ > 0) {
+        // A raise again from the hand already up starts with the arm down.
+        --lower_first_;
+        right_ = rest_position(true);
+        return;
+    }
     if (engage_ >= 1 && engage_ <= 30) {
         right_ = raised_hand;
         // A Gear transition can suspend cursor consumption for seconds.

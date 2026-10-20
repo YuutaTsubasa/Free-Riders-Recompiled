@@ -452,6 +452,11 @@ struct NativePresentation::Impl {
     TouchControls touch_controls;
     SDL_Sensor* tilt_sensor = nullptr;
     bool tilt_sensor_checked = false;
+    // Fingers that went down since the last read (window fractions), kept as
+    // touches for a few reads when they are already up again: a quick tap
+    // can come and go between two reads of the fingers (Issue #217).
+    struct BriefTouch { int64_t id; float x, y; int reads; };
+    std::vector<BriefTouch> brief_touches;
     void read_touch_controls();
 #endif
     std::unique_ptr<plume::RenderDescriptorSet> blit_texture, blit_sampler;
@@ -2217,6 +2222,8 @@ void NativePresentation::pump_events() {
         if (event.type == SDL_QUIT ||
             (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE))
             impl_->close_requested = true;
+        if (event.type == SDL_FINGERDOWN && impl_->brief_touches.size() < 16)
+            impl_->brief_touches.push_back({int64_t(event.tfinger.fingerId), event.tfinger.x, event.tfinger.y, 6});
 #if !defined(__ANDROID__) && !defined(SFR_IOS)
         // The mouse moved over the game is the Kinect hand cursor (Issue #217);
         // touches are read on their own.
@@ -2276,7 +2283,17 @@ void NativePresentation::Impl::read_touch_controls() {
                                    (finger->y * out_height - view_y) / view_height});
             }
         }
+        // A tap already over counts as a touch of about 100 ms where it landed.
+        for (BriefTouch& brief : brief_touches) {
+            const bool held = std::any_of(touches.begin(), touches.end(),
+                                          [&](const TouchPoint& touch) { return touch.id == brief.id; });
+            if (held) { brief.reads = 0; continue; }
+            touches.push_back({brief.id, (brief.x * out_width - view_x) / view_width,
+                               (brief.y * out_height - view_y) / view_height});
+            --brief.reads;
+        }
     }
+    std::erase_if(brief_touches, [](const BriefTouch& brief) { return brief.reads <= 0; });
     float tilt = 0.0f;
     if (!tilt_sensor_checked) {
         tilt_sensor_checked = true;

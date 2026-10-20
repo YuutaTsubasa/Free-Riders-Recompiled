@@ -169,6 +169,15 @@ int main() {
         raising.park_pointed();
         for (int i = 0; i < 31; ++i) raising.update({});
         require(raising.hand(true) == waiting, "a raise for a pointer parked meanwhile ends in the corner");
+        // A page with its cursor hidden wants a new raise from the arm down.
+        raising.point_right(852.0f, 460.0f, true);
+        raising.update({});
+        require(raising.hand(true)[1] < 0.0f, "a raise again starts with the arm down");
+        for (int i = 0; i < 6; ++i) raising.update({});
+        require(raising.hand(true)[1] > 0.4f, "then the arm goes up");
+        for (int i = 0; i < 30; ++i) raising.update({});
+        const auto item = sfr::NuiSkeletonEmulation::hand_for_cursor(852.0f, 460.0f);
+        require(raising.hand(true)[0] == item[0] && raising.hand(true)[1] == item[1], "and then to the item");
 
         memory.map(0x20000, 0x1000);
         sfr::write_nui_device_status(memory, 0x20000, sfr::emulated_nui_device_status);
