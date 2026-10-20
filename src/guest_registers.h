@@ -36,15 +36,18 @@ template<unsigned First> bool eligible_stack(uint32_t sp) {
 // address without any check (SFR_DIRECT_MEMORY), and so does the original
 // body these replace: the save and restore then do the same, without asking
 // the checked path about a stack page every call (2-4% of a race's main
-// thread on Windows and the AYN Thor).
+// thread on Windows and the AYN Thor). The hooks pass the base the generated
+// code was given (memory.base()): reading it from the GuestMemory through
+// active_memory was three dependent loads before the first register could
+// move, the hottest instruction of these helpers on the Thor.
 template<unsigned First, typename Context>
-bool try_save_gprs(GuestMemory& memory, const Context& ctx) {
+bool try_save_gprs(GuestMemory& memory, const Context& ctx, uint8_t* base) {
     const uint32_t sp = ctx.r1.u32;
     constexpr uint32_t distance = 8 * (33 - First);
 #if SFR_DIRECT_MEMORY
     if (GuestMemory::direct_guest_access) [[likely]] {
         if (sp & 7 || sp < distance) return false;
-        detail::save_gprs<First>(memory.base() + (sp - distance), ctx, std::make_index_sequence<32 - First>{});
+        detail::save_gprs<First>(base + (sp - distance), ctx, std::make_index_sequence<32 - First>{});
         return true;
     }
 #endif
@@ -55,13 +58,13 @@ bool try_save_gprs(GuestMemory& memory, const Context& ctx) {
     return true;
 }
 template<unsigned First, typename Context>
-bool try_restore_gprs(GuestMemory& memory, Context& ctx) {
+bool try_restore_gprs(GuestMemory& memory, Context& ctx, const uint8_t* base) {
     const uint32_t sp = ctx.r1.u32;
     constexpr uint32_t distance = 8 * (33 - First);
 #if SFR_DIRECT_MEMORY
     if (GuestMemory::direct_guest_access) [[likely]] {
         if (sp & 7 || sp < distance) return false;
-        detail::restore_gprs<First>(memory.base() + (sp - distance), ctx, std::make_index_sequence<32 - First>{});
+        detail::restore_gprs<First>(base + (sp - distance), ctx, std::make_index_sequence<32 - First>{});
         return true;
     }
 #endif
@@ -70,5 +73,13 @@ bool try_restore_gprs(GuestMemory& memory, Context& ctx) {
     if (!bytes) return false;
     detail::restore_gprs<First>(bytes, ctx, std::make_index_sequence<32 - First>{});
     return true;
+}
+template<unsigned First, typename Context>
+bool try_save_gprs(GuestMemory& memory, const Context& ctx) {
+    return try_save_gprs<First>(memory, ctx, memory.base());
+}
+template<unsigned First, typename Context>
+bool try_restore_gprs(GuestMemory& memory, Context& ctx) {
+    return try_restore_gprs<First>(memory, ctx, memory.base());
 }
 }

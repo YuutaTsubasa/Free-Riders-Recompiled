@@ -47,6 +47,13 @@ option(SFR_DIRECT_MEMORY "Generated code accesses guest memory directly" ON)
 if(SFR_DIRECT_MEMORY)
     add_compile_definitions(SFR_DIRECT_MEMORY=1)
 endif()
+# The generated code's label checkpoints call the permit from inline assembly
+# where it is written, AArch64 Linux and Android (src/diagnostic_hooks.h,
+# docs/performance.md). OFF builds the plain call there too, for comparison.
+option(SFR_HIDDEN_CHECKPOINT "Label checkpoints hide their permit call from the compiler (AArch64 Linux/Android)" ON)
+if(NOT SFR_HIDDEN_CHECKPOINT)
+    add_compile_definitions(SFR_HIDDEN_CHECKPOINT=0)
+endif()
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/XenonRecomp/CMakeLists.txt")
     message(FATAL_ERROR "Run scripts/bootstrap.py to obtain the pinned XenonRecomp tools.")
 endif()

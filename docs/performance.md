@@ -2472,3 +2472,178 @@ against not, so pictures are compared by eye rather than bit for bit.
 
 **Not done:** the observed entry of each graphics hook
 (`enter_function_observed` ~1%, its TLS and bit tests) is still per hook.
+
+## 2026-10-20: Generated code on the main thread
+
+After the runtime work above, generated guest code is the largest single part of
+a race frame's main thread on the AYN Thor. This pass looked at what that code
+compiles to and what is cheaper without regenerating it (releases build the
+shipped generated code, which a newer generator would not reproduce).
+
+**Profile.** simpleperf on the Thor (release 0.10.13 `libmain.so` repackaged as
+profileable, Dolphin Resort moving race `CLAUDE_INPUT=kicks`, frames ~12,000 to
+14,000, 30 s at 2 kHz, frame metrics off), main thread 50,164 samples (84%
+busy):
+
+| Part of the main thread | Share |
+| --- | --- |
+| Generated guest code (`__imp__sub_*`) | 32.4% |
+| GPR/FPR save-restore helpers (`__savegprlr_*`, `__restgprlr_*`, `try_*_gprs`) | 6.2% |
+| Hand-written hooks (`sub_824F56E8` gather 4.8%) | 5.7% |
+| Entry/permit/indirect (`enter_function_observed` 1.7%, `call_indirect` 1.1%) | 3.6% |
+| Other runtime (graphics HLE, memcpy, libc, kernel, driver) | the rest |
+
+The generated code is flat: 810 functions were sampled; the ten hottest hold
+10% of the thread, the hundred hottest 25%. Nothing is worth hand-optimising
+one function at a time; what matters is how all of them are compiled.
+
+Each sample's address was mapped to the generated statement through the debug
+line tables (the outermost inlined frame in a `ppc_recomp.*.cpp`), and the
+statement to the PowerPC instruction in the comment above it:
+
+| Statement | Share of generated code |
+| --- | --- |
+| guest loads (`PPC_LOAD_*`) | 19.7% |
+| integer moves and arithmetic (mostly `mr` and `addi` reloading the context after a call) | 18.4% |
+| CR compares (`ctx.crN.compare`) | 15.5% |
+| label checkpoints (`sfr::guest_checkpoint(ctx)`) | 14.2% |
+| `sfr::enter_function` | 10.1% |
+| guest stores | 7.1% |
+| function prologue/epilogue | 5.3% |
+| `ctx.lr` writes, branches, vector, scalar FP, calls | 1-2% each |
+| FPSCR flush-mode switches (`msr fpcr`) | 0.8% |
+| XER, indirect calls | 0.5%, 0.3% |
+
+Samples land on the instruction after a stall, so the compares mostly carry
+the latency of the guest load that feeds them: 30% of these samples follow a
+load from guest memory, 17% a reload from the context or the thread state.
+Statically there are 30,726 functions, 172,524 labels with a checkpoint (of
+which 29,100, 17%, are loop heads), and 35,403 backward branches, half of them
+with a call inside the loop; 35% of the generated-code samples lie inside a
+loop.
+
+**What the patterns cost, and what was done.**
+
+- *Label checkpoints* (14% of generated code, plus what they do to the code
+  around them). The permit call on the checkpoint's rare path is an ordinary
+  call as far as the compiler knows, and the context is passed to every
+  callee, so every guest register held in a host register had to be stored
+  before each label and loaded again after it, and a loop without calls kept
+  its counter and pointers in memory: each iteration a store and a reload,
+  plus the count's own load-decrement-store. All the checkpoints of a thread
+  also form one chain through that count. An upper bound (label checkpoints
+  removed altogether, not shippable) is in the table below. Two changes:
+  `SFR_HIDDEN_CHECKPOINT` (CMake option, on by default; AArch64 Linux and
+  Android only) makes the rare call from a non-volatile `asm` statement that
+  names no memory, through `sfr_checkpoint_trampoline`; the count the permit
+  sets comes back in x0 and is written where the compiler sees it, and the
+  permit's exceptions are caught on the far side and rethrown. With
+  `__builtin_assume_separate_storage` on the thread state against the context
+  and the guest base (the generated `sfr::guest_checkpoint(ctx)` now passes the
+  function's `base` through a macro), a loop without calls keeps its guest
+  registers and its count in host registers. Second, only loop heads keep a
+  checkpoint (`scripts/loop_head_checkpoints.py` for existing output, and the
+  generator for new output): a forward-only label is passed at most once
+  between two function entries, which checkpoint themselves, and two thirds of
+  the checkpoint samples were at such labels. Guest-visible behaviour is the
+  same; the permit's count of 256 now spans more guest work.
+- *GPR save/restore helpers* (6.2%). Their hottest instruction waited for
+  `active_memory->base()`: a GOT load, the pointer, then the field, before the
+  first register could move. They now use the `base` the generated code passes
+  them (the same pointer).
+- *Byte swaps.* `rev` is one cycle on the Cortex-X3 and the compiler already
+  folds a load-swap-swap-store copy into a plain copy (seen in the copy loops);
+  nothing to gain.
+- *Volatile guest accesses* must stay (guest-concurrency rules: threads run in
+  parallel); on AArch64 they are plain loads and stores, and they did not stop
+  the compiler from keeping context fields in registers once the checkpoint
+  call was hidden.
+- *CR/XER bookkeeping.* A compare stores four CR bytes and reads XER.SO only
+  where the CR field must be in memory: before a call, a return, or (until
+  now) a label. Hiding the checkpoint call removes the label case; the rest
+  needs the generator's `cr_as_local`, i.e. regeneration.
+- *FPSCR.* 29,633 flush-mode switches in the source, 0.8% of the generated
+  time (0.26% of the thread). `-ffp-model=strict` stays: it is what keeps the
+  compiler from moving floating-point work across the `msr fpcr` statements.
+- *Indirect calls.* `call_indirect` is 1.1% of the thread: a call, an 18 MB
+  table indexed by address/4 (cache and TLB misses) and an audit flag. An
+  inline lookup with a smaller table, or per-site caches, could save perhaps
+  0.1 ms; not done.
+- *Vector code* is 1.4% of generated code; SIMDe's NEON paths are fine.
+- *Context spills around calls* are inherent to the context-in-memory model;
+  XenonRecomp's `non_volatile_as_local`, `cr_as_local` and the like (Unleashed
+  Recompiled uses them) would remove most of them, but need regeneration.
+
+**Compiler and linker flags.**
+
+- `-Wl,-Bsymbolic` (data as well as functions): lld does not turn the
+  non-adjacent `adrp`/`ldr` GOT pairs into direct accesses, so no instruction
+  changes; not pursued. `-fvisibility=hidden` would make globals direct
+  (`adrp`+`add`) across the runtime, but needs `SDL_main` and the JNI entry
+  points exported explicitly; untested.
+- `-ffp-model=strict` stays (see FPSCR).
+- A hot-first symbol order (`--symbol-ordering-file` from the profile) relinks
+  in a second and moves the 2,000 sampled functions to the start of the 50 MB
+  text; built but not measured (proposal 5 below).
+- ThinLTO could inline the save/restore helpers (6%) into their callers but
+  means a link over 30,000 functions; PGO for the generated code would bring
+  layout and branch weights but needs a profile collected on the device. Both
+  are larger projects.
+
+The hidden checkpoint makes the text 5% larger (49.6 to 52.3 MB: values live
+in callee-saved registers, and the rare path spills); with loop-head-only
+checkpoints it is 43.6 MB.
+
+**Thor A/B** (same harness as above: Dolphin Resort, `CLAUDE_INPUT=kicks`,
+frame metrics off, HOST_THREADS over frames 13,000-21,000, 67 windows of 120
+frames; every build is this branch's source on the shipped generated code,
+versionCode 61, runs interleaved with other agents' runs). `cpu_ms` counts
+the pacing spin too, so it flattens near the budget; the forced-skip runs
+(`SFR_TEST_RACE_DRAW_MS=10`: drawn frames take 10 ms longer, so 55-60% of
+frames go undrawn) give `undrawn_ms` over ~4,700 frames each, the frame's work
+without drawing:
+
+| Build | drawn_ms | undrawn_ms | cpu_ms | frames skipped of 8040 |
+| --- | --- | --- | --- | --- |
+| baseline (0.10.13 source) | 16.13 / 15.97 | 9.78 / 9.86 | 14.47 / 14.33 | 320 / 211 |
+| hidden checkpoint + helpers' base | 15.75 / 16.03 | 8.90 / 9.40 | 13.93 / 14.18 | 80 / 160 |
+| + loop-head checkpoints only | 15.96 | 8.31 | 13.81 | 39 |
+| no label checkpoints at all (bound, not shippable) | 16.01 | 7.28 | 13.52 | 12 |
+
+| Build, `SFR_TEST_RACE_DRAW_MS=10` | undrawn_ms | cpu_ms | frames skipped |
+| --- | --- | --- | --- |
+| baseline | 9.53 / 8.99 | 11.38 / 10.88 | 4993 / 4728 |
+| hidden checkpoint + helpers' base | 9.00 | 11.13 | 4876 |
+| + loop-head checkpoints only | 8.41 / 8.60 | 10.64 / 10.86 | 4628 / 4703 |
+
+So the two together take about 0.75 ms (8%) off an undrawn frame's work and
+0.6 ms of main-thread CPU off a drawn one, and the skipped frames of a normal
+race fall from 200-300 to ~40. Races ran at speed 0.999 and drew correctly
+(screenshots at presents 14,400 and 19,200). On Windows (clang-cl, where only
+the loop-head part and the helpers' base apply) the Vulkan race with the
+validation layer loaded reported nothing, and the D3D12 race ran to its
+present limit, on both the shipped and the loop-head-only code; unit tests
+pass on Windows (165) and Linux (158), Python 356 (11 skipped for want of the
+game files).
+
+**Shipping the loop-head part** needs the release's generated directory
+copied through `python scripts/loop_head_checkpoints.py <diagnostic> <copy>`
+(`--check` verifies the copy) and the build pointed at the copy with
+`-DSFR_DIAGNOSTIC_DIR`. The generator now emits only loop-head checkpoints
+itself, so new output needs nothing.
+
+**Proposals not done, by expected gain and risk:**
+
+1. Regenerate with XenonRecomp's local-register options (`non_volatile_as_local`,
+   `cr_as_local`, `ctr_as_local`, `xer_as_local`): removes most context
+   traffic around calls and CR stores (the "integer/other" and compare shares
+   above). Largest gain, but a regeneration that has to be validated against
+   the shipped code and the runtime's hooks, which read the context.
+2. ThinLTO (or inline wrappers) for the GPR save/restore helpers, 6% of the
+   thread: each costs a call, `enter_function` and the save itself.
+3. `call_indirect`: an inline lookup or per-site caches instead of the 18 MB
+   table (~1% of the thread).
+4. `-fvisibility=hidden` for the game library (globals by `adrp`+`add`
+   instead of through the GOT), after exporting `SDL_main` and the JNI entries.
+5. A hot-first symbol order or PGO layout for the 50 MB text (untested here:
+   the Thor time went to the checkpoint A/B).

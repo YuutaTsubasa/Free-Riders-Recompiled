@@ -170,8 +170,70 @@ private:
 // The checkpoint at every loop label of the generated code, with the state
 // its context holds: through TLS, each label not dominated by another paid
 // the resolver again.
+//
+// SFR_HIDDEN_CHECKPOINT (docs/performance.md, 2026-10-20 generated code): the
+// permit call on the rare path is made from inline assembly, so the compiler
+// sees no call at a label. A call there, however rarely taken, may read and
+// write the whole context as far as the compiler knows (the context is passed
+// to every callee), so every guest register had to be stored before each
+// label and loaded again after it, and a loop without calls kept its
+// registers in memory: each iteration's counter, pointers and checkpoint
+// count went through a store and a reload. The permit reads and writes no
+// context (it hands the core over, notices cancellation and sets the count
+// again) and the generated code keeps nothing else across a label that the
+// permit changes. Its exceptions are caught on the far side and thrown again
+// here. Only where the assembly is written: AArch64 Linux and Android, which
+// keep no red zone below the stack pointer for the call to overwrite.
+#if !defined(SFR_HIDDEN_CHECKPOINT)
+#if defined(__aarch64__) && defined(__linux__)
+#define SFR_HIDDEN_CHECKPOINT 1
+#else
+#define SFR_HIDDEN_CHECKPOINT 0
+#endif
+#endif
+#if SFR_HIDDEN_CHECKPOINT
+[[noreturn]] void rethrow_checkpoint_failure();
+#endif
 template <class Context>
-inline void guest_checkpoint(Context& ctx) {
+inline void guest_checkpoint_at(Context& ctx, [[maybe_unused]] const uint8_t* base) {
+#if SFR_HIDDEN_CHECKPOINT
+    if constexpr (requires { ctx.reserved.u64; }) {
+        // Bound by the enter_function every generated function starts with.
+        auto* entry = reinterpret_cast<GuestEntryState*>(ctx.reserved.u64);
+        // Thread-local state, never inside a context or guest memory: a loop
+        // without calls then keeps its count in a register too. (Stated
+        // before the test: inside it, the compiler stopped using it.)
+        __builtin_assume_separate_storage(entry, &ctx);
+        __builtin_assume_separate_storage(entry, base);
+        if (entry) [[likely]] {
+            if (entry->checkpoint_countdown) [[likely]] {
+                --entry->checkpoint_countdown;
+                return;
+            }
+        }
+        // sfr_checkpoint_trampoline (diagnostic_main.cpp) takes the state in
+        // x0 (zero for a context not bound yet, whose count is the thread's)
+        // and returns in x0 the count, with bit 63 set if the permit threw.
+        // The statement is not volatile and names no memory: a volatile one,
+        // or a memory operand, counts as reading and writing all memory, the
+        // context included. The count the permit set is therefore written
+        // back here, where the compiler sees it, and the permit is called
+        // without reading the count from memory (a loop may hold it in a
+        // register). The clobbers are every register a call may change but
+        // x18, the platform register, which a callee leaves alone.
+        register uint64_t result asm("x0") = reinterpret_cast<uint64_t>(entry);
+        asm("bl sfr_checkpoint_trampoline"
+            : "+r"(result)
+            :
+            : "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14",
+              "x15", "x16", "x17", "x30", "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9",
+              "v10", "v11", "v12", "v13", "v14", "v15", "v16", "v17", "v18", "v19", "v20", "v21",
+              "v22", "v23", "v24", "v25", "v26", "v27", "v28", "v29", "v30", "v31", "cc");
+        if (result >> 63) [[unlikely]] rethrow_checkpoint_failure();
+        if (entry) entry->checkpoint_countdown = uint32_t(result);
+        return;
+    }
+#endif
     GuestEntryState& entry = entry_thread_state(ctx).entry;
     if (entry.checkpoint_countdown) [[likely]] {
         --entry.checkpoint_countdown;
@@ -179,6 +241,11 @@ inline void guest_checkpoint(Context& ctx) {
     }
     guest_checkpoint_permit();
 }
+// The generated code's sfr::guest_checkpoint(ctx) also hands over the
+// function's own base parameter; sfr::guest_checkpoint() stays the plain one.
+#define SFR_GUEST_CHECKPOINT_FORM(first, form, ...) form
+#define guest_checkpoint(...) \
+    SFR_GUEST_CHECKPOINT_FORM(__VA_ARGS__ __VA_OPT__(,) guest_checkpoint_at(__VA_ARGS__, base), guest_checkpoint())
 // Every guest function entry; inline, as it runs millions of times a second.
 // A template so that the body sees the generated PPCContext, which is
 // defined after this header.

@@ -1,7 +1,10 @@
 # Guest checkpoint interval
 
 Generated guest code visits a checkpoint at function entries and loop labels.
-Calling the execution permit less often reduces host CPU overhead. Every
+Output of the current generator (or of `scripts/loop_head_checkpoints.py`)
+checkpoints only labels a loop returns to, so the same interval spans more
+guest work than with checkpoints at every label (performance.md, 2026-10-20:
+generated code). Calling the execution permit less often reduces host CPU overhead. Every
 platform defaults to 256 entries between permit calls: Windows since Issue #33
 (knuckleslee's checkpoint-interval contribution), Android, Linux and macOS since
 the AYN Thor measurement below (they kept 32 until then).

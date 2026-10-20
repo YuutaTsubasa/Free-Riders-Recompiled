@@ -1010,6 +1010,49 @@ void guest_checkpoint_permit() {
     // (an attached thread holds both for a short import or hook).
     if (core_permit) core_permit->checkpoint(handoff && execution_permit->detached());
 }
+#if SFR_HIDDEN_CHECKPOINT
+// The label checkpoints' permit call (diagnostic_hooks.h): the trampoline
+// below is reached by a bl from inline assembly and keeps the frame chain;
+// the exception, if any, waits here until the checkpoint throws it again.
+static thread_local std::exception_ptr checkpoint_failure;
+extern "C" __attribute__((visibility("hidden"), used)) uint64_t sfr_checkpoint_permit_caught(uint64_t bound) noexcept {
+    try {
+        GuestEntryState& entry = guest_thread_state.entry;
+        // A context not bound yet counts down the thread's state here, as
+        // guest_checkpoint() does; a bound one came because its count ran out.
+        if (!bound && entry.checkpoint_countdown) --entry.checkpoint_countdown;
+        else guest_checkpoint_permit();
+        return entry.checkpoint_countdown;
+    } catch (...) {
+        checkpoint_failure = std::current_exception();
+        return uint64_t(1) << 63;
+    }
+}
+void rethrow_checkpoint_failure() {
+    std::exception_ptr failure = std::move(checkpoint_failure);
+    checkpoint_failure = nullptr;
+    std::rethrow_exception(failure);
+}
+__asm__(
+    ".text\n"
+    ".p2align 4\n"
+    ".globl sfr_checkpoint_trampoline\n"
+    ".hidden sfr_checkpoint_trampoline\n"
+    ".type sfr_checkpoint_trampoline, %function\n"
+    "sfr_checkpoint_trampoline:\n"
+    ".cfi_startproc\n"
+    "stp x29, x30, [sp, #-16]!\n"
+    ".cfi_def_cfa_offset 16\n"
+    ".cfi_offset x29, -16\n"
+    ".cfi_offset x30, -8\n"
+    "mov x29, sp\n"
+    "bl sfr_checkpoint_permit_caught\n"
+    "ldp x29, x30, [sp], #16\n"
+    ".cfi_def_cfa_offset 0\n"
+    "ret\n"
+    ".cfi_endproc\n"
+    ".size sfr_checkpoint_trampoline, . - sfr_checkpoint_trampoline\n");
+#endif
 
 [[noreturn]] void unsupported_function(PPCContext&, const char* name, uint32_t address, const char* reason) {
     guest_checkpoint();
