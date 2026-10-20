@@ -212,6 +212,31 @@ void set_fullscreen(SDL_Window* window, bool fullscreen) {
 }
 #endif
 
+// A VkResult as game.log shows it: its name when it is one a swap chain
+// returns, and its number.
+std::string vk_result_text(VkResult result) {
+    const char* name = "VkResult";
+    switch (result) {
+    case VK_SUCCESS: name = "VK_SUCCESS"; break;
+    case VK_NOT_READY: name = "VK_NOT_READY"; break;
+    case VK_TIMEOUT: name = "VK_TIMEOUT"; break;
+    case VK_SUBOPTIMAL_KHR: name = "VK_SUBOPTIMAL_KHR"; break;
+    case VK_ERROR_OUT_OF_DATE_KHR: name = "VK_ERROR_OUT_OF_DATE_KHR"; break;
+    case VK_ERROR_SURFACE_LOST_KHR: name = "VK_ERROR_SURFACE_LOST_KHR"; break;
+    case VK_ERROR_DEVICE_LOST: name = "VK_ERROR_DEVICE_LOST"; break;
+    case VK_ERROR_OUT_OF_HOST_MEMORY: name = "VK_ERROR_OUT_OF_HOST_MEMORY"; break;
+    case VK_ERROR_OUT_OF_DEVICE_MEMORY: name = "VK_ERROR_OUT_OF_DEVICE_MEMORY"; break;
+    case VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT: name = "VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT"; break;
+    case VK_ERROR_UNKNOWN: name = "VK_ERROR_UNKNOWN"; break;
+    default: break;
+    }
+    return std::string(name) + '(' + std::to_string(int(result)) + ')';
+}
+
+std::string with_result(const char* message, const std::string& result) {
+    return result.empty() ? std::string(message) : std::string(message) + ": " + result;
+}
+
 [[noreturn]] void unavailable(const char* object) {
     throw std::runtime_error(std::string("failed to create native presentation ") + object);
 }
@@ -429,7 +454,14 @@ struct NativePresentation::Impl {
     // VK_SUBOPTIMAL_KHR: the layer is no longer the swap chain's size): the
     // swap chain is made again next frame, a few times in a row before giving up.
     uint32_t present_failures = 0;
+    // MoltenVK still shows an image it calls suboptimal (scaled into the
+    // layer). When a swap chain made again does not help, the game goes on
+    // with it instead of closing (Issue #191); a normal present ends this.
+    bool suboptimal_kept = false;
     bool present_refused();
+    // What the swap chain's last present or acquire returned, for game.log
+    // (Vulkan; empty on D3D12).
+    std::string swap_chain_result(bool present) const;
 #if defined(__ANDROID__) || defined(SFR_IOS)
     // Android destroys the window's surface in the background; the swap chain
     // is made again on the new one when the app returns (or a present fails).
@@ -1776,9 +1808,26 @@ std::vector<uint8_t> NativePresentation::readback_color() {
 #endif
 }
 
+std::string NativePresentation::Impl::swap_chain_result(bool present) const {
+    if (graphics->backend() != GraphicsBackend::vulkan || !swap_chain) return {};
+    const auto* vulkan = static_cast<const plume::VulkanSwapChain*>(swap_chain.get());
+    return vk_result_text(present ? vulkan->lastPresentResult : vulkan->lastAcquireResult);
+}
+
 bool NativePresentation::Impl::present_refused() {
-    if (graphics->backend() != GraphicsBackend::vulkan || ++present_failures > 8) return false;
+    if (graphics->backend() != GraphicsBackend::vulkan) return false;
+    const bool suboptimal =
+        static_cast<const plume::VulkanSwapChain*>(swap_chain.get())->lastPresentResult == VK_SUBOPTIMAL_KHR;
+    if (suboptimal && suboptimal_kept) return true;
+    if (++present_failures > 8) {
+        if (!suboptimal) return false;
+        suboptimal_kept = true;
+        std::cerr << "NATIVE_PRESENTATION suboptimal_kept size=" << swap_chain->getWidth() << 'x'
+                  << swap_chain->getHeight() << '\n';
+        return true;
+    }
     std::cerr << "NATIVE_PRESENTATION present_refused attempt=" << present_failures
+              << " result=" << swap_chain_result(true)
               << " size=" << swap_chain->getWidth() << 'x' << swap_chain->getHeight() << '\n';
 #ifdef SFR_IOS
     if (present_failures > 4) {
@@ -1948,11 +1997,14 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
     }
     if (!impl_->swap_chain->acquireTexture(acquired, &texture_index)) {
 #ifdef __ANDROID__
+        std::cerr << "NATIVE_PRESENTATION acquire_refused result=" << impl_->swap_chain_result(false)
+                  << " rebuild=1\n";
         impl_->rebuild_swap_chain = true;  // the surface went away
         return;
 #endif
         if (++impl_->acquire_failures <= 8) {
-            std::cerr << "NATIVE_PRESENTATION acquire_refused attempt=" << impl_->acquire_failures << '\n';
+            std::cerr << "NATIVE_PRESENTATION acquire_refused attempt=" << impl_->acquire_failures
+                      << " result=" << impl_->swap_chain_result(false) << '\n';
 #ifdef SFR_IOS
             if (impl_->acquire_failures > 4) {
                 impl_->rebuild_swap_chain = true;  // a new size did not help: a new surface
@@ -1962,7 +2014,7 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
             impl_->resize_swap_chain = true;
             return;
         }
-        throw std::runtime_error("failed to acquire native presentation texture");
+        throw std::runtime_error(with_result("failed to acquire native presentation texture", impl_->swap_chain_result(false)));
     }
     impl_->acquire_failures = 0;
     if (texture_index >= impl_->swap_chain->getTextureCount() ||
@@ -2097,14 +2149,18 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
     }
     if (!impl_->swap_chain->present(texture_index, rendered ? &rendered : nullptr, rendered ? 1 : 0)) {
 #ifdef __ANDROID__
+        std::cerr << "NATIVE_PRESENTATION present_refused result=" << impl_->swap_chain_result(true)
+                  << " rebuild=1\n";
         impl_->rebuild_swap_chain = true;
         return;
 #endif
         // Made again next frame (the window is still shown below: a hidden
         // one may be what refuses).
-        if (!impl_->present_refused()) throw std::runtime_error("failed to present native swap-chain texture");
+        if (!impl_->present_refused())
+            throw std::runtime_error(with_result("failed to present native swap-chain texture", impl_->swap_chain_result(true)));
     } else {
         impl_->present_failures = 0;
+        impl_->suboptimal_kept = false;
     }
     if (!impl_->shown) {
 #ifdef _WIN32
