@@ -1558,6 +1558,23 @@ def inspect_body(body, address, symbols, events, jump_tables=None):
     return end, reasons, details
 
 
+def checkpoint_loop_heads(body):
+    """sfr::guest_checkpoint(ctx) after each label of one function that a goto at
+    or after it returns to (a loop head, a switch case included). A label only
+    reached forwards is passed at most once between two entries, which
+    checkpoint themselves (docs/performance.md, 2026-10-20: generated code;
+    scripts/loop_head_checkpoints.py does the same to existing output)."""
+    seen, heads = set(), set()
+    for line in body.split('\n'):
+        label = re.match(r'(loc_[0-9A-Fa-f]+):\r?$', line)
+        if label:
+            seen.add(label[1])
+        heads.update(target for target in re.findall(r'goto (loc_[0-9A-Fa-f]+);', line) if target in seen)
+    return re.sub(r'^(loc_[0-9A-Fa-f]+):(\r?\n)',
+                  lambda match: match[0] + ('\tsfr::guest_checkpoint(ctx);' + match[2] if match[1] in heads else ''),
+                  body, flags=re.MULTILINE)
+
+
 def generate(input_dir, log_path, output_dir, jump_table_path=None):
     input_dir, log_path, output_dir = map(lambda p: Path(p).resolve(),
                                          (input_dir, log_path, output_dir))
@@ -1596,7 +1613,7 @@ def generate(input_dir, log_path, output_dir, jump_table_path=None):
         'limitations': ['Requires checked scalar memory and indirect-call hooks.',
                        'mftb requires the runtime monotonic time-base hook; raw host RDTSC is not guest time.',
                        'Reservation hooks require exclusive guest execution with no intervening ordinary stores or imports.',
-                       'Every retained branch label calls the runtime execution safe point, including arithmetic-only loops.',
+                       'Every function entry and loop head (a label a later goto returns to) calls the runtime execution safe point, including arithmetic-only loops.',
                        'Full vector memory hooks require 16-byte checked access and reversed register bytes.',
                        'Vector word stores use checked four-byte access and the same reversed register representation.',
                        'Remaining instruction translations are not proven correct.',
@@ -1688,9 +1705,7 @@ def generate(input_dir, log_path, output_dir, jump_table_path=None):
                     rewritten_body = rewrite_cache_zero(rewritten_body, addresses[name])[0]
                     rewritten_body = rewrite_native_resource_coherency(rewritten_body, addresses[name], body)
                     rewritten_body = rewrite_country_ctr(rewritten_body, addresses[name], body)
-                    rewritten_body = re.sub(r'^(loc_[0-9A-Fa-f]+:)(\r?\n)',
-                        lambda match: match[1] + match[2] + '\tsfr::guest_checkpoint(ctx);' + match[2],
-                        rewritten_body, flags=re.MULTILINE)
+                    rewritten_body = checkpoint_loop_heads(rewritten_body)
                     chunks.append((rewritten_body + '}').replace(
                         'PPC_FUNC_PROLOGUE();', 'PPC_FUNC_PROLOGUE();\n\tSFR_FAST_PATH();\n\tsfr::enter_function(ctx, '
                         + json.dumps(name) + f', 0x{addresses[name]:08X});', 1))
