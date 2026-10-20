@@ -170,6 +170,21 @@ M1（Metal System Trace，比賽中 8 秒）：頂點 144.6 → 6.4 ms/幀，GPU
 `NATIVE_DISPATCH_LOOP removed=0|1`；`SFR_TEST_DISPATCH_LOOP=0` 在 Apple 上保留迴圈，`=1` 在任何
 Vulkan 裝置上拿掉（驗證層用）。
 
+Samsung Xclipse（vendor 0x144d，Exynos 手機上以 AMD RDNA 為基礎的 GPU）也一律拿掉（Issue #224）。
+Galaxy A55（Xclipse 530，驅動 24.0.539/545）編第一條管線（頂點著色器 `eaf61b182ad92401`）時，
+驅動的編譯器（logcat `GSC`）花了 209 秒、常駐記憶體漲到 550 MB 以上，最後在組譯器
+`SCGenerateLongBranch` 斷言失敗；玩家看到「PREPARING PIPELINES 0 OF 455」直到 Android 因記憶體
+不足把程式收掉。拿掉迴圈後 455 條 14 秒編完（最慢的一條 253 ms）。描述符索引、device address、
+clip distance 的測試開關都沒用。Firebase Test Lab 的 a55xzh（Galaxy A55）可以重現。
+
+準備管線時，一條配方（recipe）超過 5 秒就記 `PIPELINE_PREWARM slow recipe=<n> of=<total>
+step=shaders|pipeline vs=<hash> ps=<hash> seconds=<s> resident_mb=<MB>`（之後 10、20、40 秒…再記），
+每 10 秒記一次 `PIPELINE_PREWARM progress=`，完成時記最慢的一條；Android 上也寫進 logcat。
+`SFR_PIPELINE_PREWARM_TRACE=1` 記每條的時間，`SFR_PIPELINE_PREWARM_TIMEOUT=<s>` 讓一條超過 s 秒時
+結束程式（自我測試用，好讓下一個情境能跑）。自我測試的情境 9–14 只準備管線並開著這兩個：
+9 照裝置、10 拿掉分派迴圈、11 小型材質組、12 不用 device address、13 不用 clip distance、14 保留
+分派迴圈。
+
 ### macOS：Retina 與縮放顯示器上的 present
 
 v0.10.14 以前，macOS 的遊戲視窗不是高 DPI：SDL 的 Metal layer 的 contents scale 是 1，1280x720

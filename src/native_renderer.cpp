@@ -27,6 +27,8 @@
 #include <atomic>
 #include <bitset>
 #include <chrono>
+#include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
@@ -45,9 +47,46 @@
 #include <wrl/client.h>
 #include <dxcapi.h>
 #endif
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
+#if defined(__linux__) || defined(__ANDROID__)
+#include <unistd.h>
+#endif
 
 namespace sfr {
 namespace {
+// A pipeline preparation line for game.log, and on Android for logcat too
+// (the graphics self test on Firebase Test Lab runs several scenarios, and
+// each start rewrites game.log).
+void prewarm_log(const std::string& text) {
+    std::cerr << text << '\n';
+#ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_INFO, "FreeRiders", "%s", text.c_str());
+#endif
+}
+
+// The process's resident memory in MiB, or -1 where it is not read: a driver
+// compiling a shader without end may also take memory without end (Issue #224
+// ended with Android's low-memory reason).
+long resident_mib() {
+#if defined(__linux__) || defined(__ANDROID__)
+    long pages = -1, resident = -1;
+    if (FILE* file = std::fopen("/proc/self/statm", "r")) {
+        if (std::fscanf(file, "%ld %ld", &pages, &resident) != 2) resident = -1;
+        std::fclose(file);
+    }
+    return resident < 0 ? -1 : long((int64_t(resident) * sysconf(_SC_PAGESIZE)) >> 20);
+#else
+    return -1;
+#endif
+}
+
+std::string hex64(uint64_t value) {
+    char text[17];
+    std::snprintf(text, sizeof(text), "%016llx", static_cast<unsigned long long>(value));
+    return text;
+}
 // Same binding model as Marathon Recompiled's D3D12 backend for XenosRecomp
 // shaders: one bindless texture set bound as spaces 0..2 (2D, 2D array, cube),
 // samplers in space 3, the survey UAV in space 4 (D3D12 only), and b0..b2 in space 4.
@@ -884,10 +923,37 @@ void NativeRenderer::prepare_pipelines() {
     // the preparation screen's own blit resources.
     if (!impl_->presentation.preparation_progress(0, total))
         throw RuntimeStop("window-closed", 0, "pipeline preparation cancelled");
+    // Which recipe the worker is on and since when, so that a driver that
+    // takes long over one names it in game.log (Issue #224: an Xclipse 530
+    // stayed at 0 of 455 with nothing logged). The screen's loop polls these.
+    // SFR_PIPELINE_PREWARM_TRACE=1 logs every recipe's time;
+    // SFR_PIPELINE_PREWARM_TIMEOUT=<s> ends the process when one recipe takes
+    // longer (for the self test, so that its next scenario still runs).
+    std::atomic<size_t> current{0};
+    std::atomic<int64_t> current_since{0};  // steady-clock ns, 0 between recipes
+    std::atomic<uint64_t> current_vs{0}, current_ps{0};
+    std::atomic<int> current_step{0};       // 1 shaders, 2 pipeline
+    const auto clock_ns = [] {
+        return int64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    };
+    const char* trace_setting = std::getenv("SFR_PIPELINE_PREWARM_TRACE");
+    const bool trace = trace_setting && *trace_setting == '1';
+    const char* timeout_setting = std::getenv("SFR_PIPELINE_PREWARM_TIMEOUT");
+    const double timeout_seconds = timeout_setting ? std::atof(timeout_setting) : 0.0;
+    double slowest_ms = 0;
+    size_t slowest_index = 0;
     std::jthread worker([&] {
         try {
+            size_t index = 0;
             for (const auto& [key, recipe] : impl_->recipes) {
                 if (cancel.load(std::memory_order_relaxed)) break;
+                current_vs.store(recipe.vertex.hash, std::memory_order_relaxed);
+                current_ps.store(recipe.pixel.hash, std::memory_order_relaxed);
+                current_step.store(1, std::memory_order_relaxed);
+                current.store(index, std::memory_order_relaxed);
+                const int64_t recipe_started = clock_ns();
+                current_since.store(recipe_started, std::memory_order_release);
                 // Only known packaged stages: never launch a translator from
                 // untrusted manifest contents. Pack corruption remains fatal.
                 const auto* vs = packed_pipeline_shader(ShaderStage::vertex, recipe.vertex.hash, recipe.vertex.size);
@@ -925,6 +991,7 @@ void NativeRenderer::prepare_pipelines() {
                     const plume::RenderShader* depth_flip = nullptr;
                     if (flip && !(depth_flip = impl_->presentation.depth_flip_shader(state.topology)))
                         throw std::runtime_error("no depth flip geometry shader for the topology");
+                    current_step.store(2, std::memory_order_relaxed);
                     auto pipeline = create_draw_pipeline(impl_->graphics.device(), impl_->layout.get(), state,
                                                          impl_->graphics.backend(), impl_->graphics.depth_format(),
                                                          depth_flip);
@@ -936,17 +1003,65 @@ void NativeRenderer::prepare_pipelines() {
                         std::cerr << "PIPELINE_PREWARM failed=1 recipe=" << completed.load() << '\n';
                     }
                 }
+                current_since.store(0, std::memory_order_release);
+                const double ms = double(clock_ns() - recipe_started) / 1e6;
+                if (ms > slowest_ms) {
+                    slowest_ms = ms;
+                    slowest_index = index;
+                }
+                if (trace)
+                    prewarm_log("PIPELINE_PREWARM recipe=" + std::to_string(index) + " vs=" + hex64(recipe.vertex.hash) +
+                                " ps=" + hex64(recipe.pixel.hash) + " ms=" + std::to_string(ms));
+                ++index;
                 completed.fetch_add(1, std::memory_order_release);
             }
         } catch (...) { failure = std::current_exception(); }
+        current_since.store(0, std::memory_order_release);
         done.store(true, std::memory_order_release);
     });
     try {
+        // A recipe that has taken 5 s is logged, and again at 10, 20, 40 s...;
+        // the count every 10 s.
+        size_t reported_index = SIZE_MAX;
+        double next_report = 5.0;
+        auto next_progress = started + std::chrono::seconds(10);
         while (!done.load(std::memory_order_acquire)) {
             if (!impl_->presentation.preparation_progress(completed.load(std::memory_order_acquire), total,
                                                           cancel.load(std::memory_order_relaxed)))
                 cancel.store(true, std::memory_order_relaxed);
             std::this_thread::sleep_for(std::chrono::milliseconds(33));
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= next_progress) {
+                next_progress = now + std::chrono::seconds(10);
+                prewarm_log("PIPELINE_PREWARM progress=" + std::to_string(completed.load(std::memory_order_acquire)) +
+                            " total=" + std::to_string(total) + " seconds=" +
+                            std::to_string(int(std::chrono::duration<double>(now - started).count())) +
+                            " resident_mb=" + std::to_string(resident_mib()));
+            }
+            const int64_t since = current_since.load(std::memory_order_acquire);
+            if (!since) continue;
+            const size_t index = current.load(std::memory_order_relaxed);
+            if (index != reported_index) {
+                reported_index = index;
+                next_report = 5.0;
+            }
+            const double seconds = double(clock_ns() - since) / 1e9;
+            const bool timed_out = timeout_seconds > 0 && seconds > timeout_seconds;
+            if (seconds < next_report && !timed_out) continue;
+            while (next_report <= seconds) next_report *= 2;
+            prewarm_log(std::string("PIPELINE_PREWARM slow recipe=") + std::to_string(index) + " of=" +
+                        std::to_string(total) + " step=" +
+                        (current_step.load(std::memory_order_relaxed) == 2 ? "pipeline" : "shaders") +
+                        " vs=" + hex64(current_vs.load(std::memory_order_relaxed)) +
+                        " ps=" + hex64(current_ps.load(std::memory_order_relaxed)) +
+                        " seconds=" + std::to_string(int(seconds)) + " resident_mb=" + std::to_string(resident_mib()));
+            if (timed_out) {
+                prewarm_log("PIPELINE_PREWARM timeout=" + std::to_string(int(timeout_seconds)) + " recipe=" +
+                            std::to_string(index));
+                std::cerr.flush();
+                std::fflush(stderr);
+                std::_Exit(4);
+            }
         }
     } catch (...) {
         cancel.store(true, std::memory_order_relaxed);
@@ -961,8 +1076,11 @@ void NativeRenderer::prepare_pipelines() {
         throw RuntimeStop("window-closed", 0, "pipeline preparation cancelled");
     impl_->presentation.finish_preparation();
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
-    std::cerr << "PIPELINE_PREWARM complete=1 total=" << total << " compiled=" << compiled
-              << " skipped=" << skipped << " depth_flip=" << flip << " milliseconds=" << ms << '\n';
+    prewarm_log("PIPELINE_PREWARM complete=1 total=" + std::to_string(total) + " compiled=" +
+                std::to_string(compiled) + " skipped=" + std::to_string(skipped) + " depth_flip=" +
+                std::to_string(flip) + " milliseconds=" + std::to_string(ms) + " slowest_ms=" +
+                std::to_string(slowest_ms) + " slowest_recipe=" + std::to_string(slowest_index) +
+                " resident_mb=" + std::to_string(resident_mib()));
 }
 
 std::vector<NativeDraw> NativeRenderer::prepared_draws() {
