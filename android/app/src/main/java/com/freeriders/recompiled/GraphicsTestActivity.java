@@ -23,6 +23,8 @@ public class GraphicsTestActivity extends Activity {
     static final String EXTRA = "com.freeriders.recompiled.GRAPHICS_SELFTEST";
     static final String CLIP_DISTANCE = "com.freeriders.recompiled.GRAPHICS_SELFTEST_CLIP_DISTANCE";
     static final String SETTINGS = "com.freeriders.recompiled.GRAPHICS_SELFTEST_SETTINGS";
+    // Scenarios 9 and on prepare the pipelines only (DRAW_SCENARIOS).
+    static final String PREPARE = "SFR_SELFTEST_DRAWS=0;SFR_PIPELINE_PREWARM_TRACE=1;SFR_PIPELINE_PREWARM_TIMEOUT=60";
     // Scenarios 3 and on: how the self test draws (graphics_selftest.cpp).
     // An old Mali's GPU hung at the first draw with the game's vertex shaders
     // and twenty vertex attributes (Issue #169); the last scenario declares
@@ -34,6 +36,17 @@ public class GraphicsTestActivity extends Activity {
         "SFR_SELFTEST_VS=trivial;SFR_SELFTEST_ORDER=class",
         "SFR_SELFTEST_ORDER=class;SFR_RENDER_SCALE=225;SFR_SELFTEST_BATCH=64",
         "SFR_SELFTEST_ORDER=class;SFR_TEST_VERTEX_ATTRIBUTES=32;SFR_SELFTEST_LIMIT=5",
+        // Scenarios 9 and on: only the pipeline preparation, each recipe's
+        // time logged (to logcat too), and a recipe that takes over a minute
+        // ends the scenario, so the next one runs. An Xclipse 530 never
+        // finished its first pipeline (Issue #224); these tell which of the
+        // shader rewrites lets it, one at a time.
+        PREPARE,
+        PREPARE + ";SFR_TEST_DISPATCH_LOOP=1",
+        PREPARE + ";SFR_TEST_NO_DESCRIPTOR_INDEXING=1",
+        PREPARE + ";SFR_TEST_NO_DEVICE_ADDRESS=1",
+        PREPARE + ";SFR_TEST_NO_CLIP_DISTANCE=1",
+        PREPARE + ";SFR_TEST_DISPATCH_LOOP=0",
     };
     private boolean started;
 

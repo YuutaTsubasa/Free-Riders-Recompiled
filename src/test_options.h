@@ -80,10 +80,12 @@ inline constexpr TestOption table[] = {
     // ---- graphics
     {"SFR_TEST_DISPATCH_LOOP", TestGroup::graphics, test_platform::all,
      {"Rewrite shader dispatch loops", "改寫著色器分派迴圈"},
-     {"For testing (Vulkan): runs the shaders' dispatch loops as plain steps, as Macs and iPhones always do. "
-      "Try On if races are very slow on an older GPU.",
-      "測試用（Vulkan）：把著色器的分派迴圈改為依序執行，如同 Mac 與 iPhone 的做法。若較舊的 GPU 在比賽中非常慢，可試著開啟。"},
-     on_off, "#134"},
+     {"For testing (Vulkan): runs the shaders' dispatch loops as plain steps, as Macs, iPhones and Samsung "
+      "Xclipse GPUs always do. Try On if races are very slow on an older GPU, or if preparing pipelines does not "
+      "advance.",
+      "測試用（Vulkan）：把著色器的分派迴圈改為依序執行，如同 Mac、iPhone 與 Samsung Xclipse GPU 的做法。"
+      "若較舊的 GPU 在比賽中非常慢，或準備管線一直沒有進度，可試著開啟。"},
+     on_off, "#134, #224"},
     {"SFR_TEST_NO_DESCRIPTOR_INDEXING", TestGroup::graphics, test_platform::all,
      {"Small texture sets", "小型材質組"},
      {"For testing (Vulkan): each draw binds a small set of textures of its own instead of one large array, "

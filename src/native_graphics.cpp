@@ -495,13 +495,20 @@ void NativeGraphics::initialize() {
     // Apple's Metal compiler (MoltenVK, on macOS and iOS) spills kilobytes a
     // thread on XenosRecomp's dispatch loops, most on the skinned vertex
     // shaders: there the cases run in order behind tests of their own
-    // instead (spirv_dispatch_loop.h). SFR_TEST_DISPATCH_LOOP=0 keeps the
-    // loops on Apple, =1 takes them out on any Vulkan device.
+    // instead (spirv_dispatch_loop.h). Samsung's Xclipse driver (vendor
+    // 0x144d, AMD RDNA based, Exynos phones) spends minutes and hundreds of
+    // MB on the first pipeline with such a loop, then asserts in its
+    // assembler (SCGenerateLongBranch); the game sat at "0 of 455" until
+    // Android killed it for memory (Issue #224, Galaxy A55, driver 24.0.5xx).
+    // Without the loops it prepared all 455 in 14 s. SFR_TEST_DISPATCH_LOOP=0
+    // keeps the loops on these, =1 takes them out on any Vulkan device.
     bool without_dispatch_loop = false;
     if (backend == GraphicsBackend::vulkan) {
 #if defined(__APPLE__)
         without_dispatch_loop = true;
 #endif
+        constexpr uint32_t samsung_vendor = 0x144d;
+        if (uint32_t(render_device->getDescription().vendor) == samsung_vendor) without_dispatch_loop = true;
         const char* forced = std::getenv("SFR_TEST_DISPATCH_LOOP");
         if (forced && (std::strcmp(forced, "1") == 0 || std::strcmp(forced, "0") == 0))
             without_dispatch_loop = forced[0] == '1';
