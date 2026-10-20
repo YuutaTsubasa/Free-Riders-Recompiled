@@ -214,6 +214,8 @@ with [docs/progress.md](docs/progress.md).
   Shader constants, the graphics lock and the translated game code each cost less in a race frame, so slower and hotter phones keep up longer (#176).
 - [v0.10.15 — Macs with Retina or scaled displays](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.15)
   The game no longer closes right after Start on a Mac whose display is Retina or set to a scaled resolution (#191).
+- [v0.10.16 — Samsung Exynos phones (Xclipse)](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.16)
+  Phones with Samsung's Xclipse GPU, such as the Galaxy A55, no longer stay on "Preparing pipelines 0 of 455" (#224).
 
 ## System Requirements
 
