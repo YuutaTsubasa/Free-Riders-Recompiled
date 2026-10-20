@@ -210,6 +210,8 @@ with [docs/progress.md](docs/progress.md).
   The game's main thread does about 13% less work in a race frame on an Android handheld, so slower or hotter phones fall behind less often (#176).
 - [v0.10.13 — Touch the menus](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.13)
   On a touchscreen the menu's hand cursor follows your finger, a tap on the title screen starts, and a new launcher setting skips the logo screens (#217).
+- [v0.10.14 — Even less work per frame](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.14)
+  Shader constants, the graphics lock and the translated game code each cost less in a race frame, so slower and hotter phones keep up longer (#176).
 
 ## System Requirements
 
