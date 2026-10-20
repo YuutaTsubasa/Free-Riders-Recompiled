@@ -83,6 +83,7 @@
 #include <mutex>
 #include <set>
 #include <sstream>
+#include <iomanip>
 #include <string_view>
 #include <vector>
 #include <thread>
@@ -551,6 +552,7 @@ void prepare_worker_self_suspend() {
 }
 
 static void parallel_slow_access(uint64_t address) {
+    give_back_kept_graphics_lock(guest_thread_state.entry);
     if (!execution_permit || !execution_permit->detached()) return;
     static const bool trace = [] { const char* t = std::getenv("SFR_PARALLEL_TRACE"); return t && *t != '0'; }();
     if (trace) {
@@ -591,19 +593,176 @@ static void lock_with_report(std::mutex& lock, const char* name, std::atomic<uin
                   << " waiter_function=0x" << guest_thread_state.entry.current_address << std::dec
                   << " frame=" << present_count.load() << std::endl;
 }
+// SFR_GRAPHICS_LOCK_STATS=1: who takes the graphics lock and how often, every
+// 120 frames (GRAPHICS_LOCK, per frame): taken, how many of those found it
+// held and how long they waited, nested graphics hooks inside a held lock,
+// guest entries made while holding it, and how many acquisitions follow
+// their thread's previous release with nothing in between that would have
+// had to release it: no import and no other hook ("loose"), and no permit
+// checkpoint either ("strict"). Observation only; it adds thread_locals to
+// every hook.
+static const bool graphics_lock_stats = [] { const char* t = std::getenv("SFR_GRAPHICS_LOCK_STATS"); return t && *t == '1'; }();
+struct GraphicsLockCounters {
+    std::atomic<uint64_t> taken{0}, contended{0}, wait_ns{0}, nested{0}, inner{0}, strict{0}, loose{0};
+    std::atomic<uint64_t> scope{0}, scope_contended{0}, scope_wait_ns{0};
+    std::atomic<uint64_t> kept{0}, resumed{0};  // SFR_GRAPHICS_LOCK_DEFER
+    // Strict acquisitions by the checkpoint countdown spent since the
+    // release: function entries and loop labels in between (0, 1, 2-3, 4-15,
+    // 16-63, 64+).
+    std::atomic<uint64_t> gap[6]{};
+};
+static GraphicsLockCounters graphics_lock_counters[65];  // by guest id; 64 = any other
+static thread_local uint64_t graphics_hard_epoch = 0, graphics_soft_epoch = 0;
+static thread_local uint64_t graphics_released_hard = ~uint64_t(0), graphics_released_soft = ~uint64_t(0);
+static thread_local uint32_t graphics_released_countdown = 0;
+static GraphicsLockCounters& graphics_counters() { return graphics_lock_counters[current_id < 64 ? current_id : 64]; }
+static uint64_t stats_now_ns() {
+    return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+// What a released graphics lock could not be kept across: imports and other
+// hooks (hard), the permit's checkpoints (soft).
+static void graphics_lock_interrupted(bool hard) {
+    if (!graphics_lock_stats) return;
+    if (hard) ++graphics_hard_epoch;
+    else ++graphics_soft_epoch;
+}
+static void graphics_lock_released() {
+    if (!graphics_lock_stats) return;
+    graphics_released_hard = graphics_hard_epoch;
+    graphics_released_soft = graphics_soft_epoch;
+    graphics_released_countdown = guest_thread_state.entry.checkpoint_countdown;
+}
+// The uncontended cost of a lock and unlock on this machine, once: the
+// graphics lock's std::mutex, and a bare atomic exchange pair.
+static std::string graphics_lock_benchmark() {
+    constexpr int pairs = 200000;
+    std::mutex mutex;
+    auto started = std::chrono::steady_clock::now();
+    for (int i = 0; i < pairs; ++i) {
+        if (mutex.try_lock()) mutex.unlock();
+        std::atomic_signal_fence(std::memory_order_seq_cst);
+    }
+    const double mutex_ns = std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - started).count() / pairs;
+    std::atomic<uint32_t> word{0};
+    started = std::chrono::steady_clock::now();
+    for (int i = 0; i < pairs; ++i) {
+        uint32_t expected = 0;
+        if (word.compare_exchange_strong(expected, 1, std::memory_order_acquire, std::memory_order_relaxed))
+            word.store(0, std::memory_order_release);
+        std::atomic_signal_fence(std::memory_order_seq_cst);
+    }
+    const double atomic_ns = std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - started).count() / pairs;
+    char text[96];
+    std::snprintf(text, sizeof text, " bench_mutex_ns=%.1f bench_atomic_ns=%.1f", mutex_ns, atomic_ns);
+    return text;
+}
+// The line for the last `frames` frames, or "" with the stats off.
+std::string graphics_lock_report(uint64_t present, unsigned frames) {
+    if (!graphics_lock_stats || !frames) return {};
+    static const std::string bench = graphics_lock_benchmark();
+    const double n = frames;
+    std::ostringstream line;
+    line << std::fixed << std::setprecision(1) << "GRAPHICS_LOCK frame=" << present;
+    std::ostringstream others;
+    others << std::fixed << std::setprecision(1);
+    for (int id = 0; id < 65; ++id) {
+        auto& c = graphics_lock_counters[id];
+        const uint64_t taken = c.taken.exchange(0), contended = c.contended.exchange(0), wait = c.wait_ns.exchange(0);
+        const uint64_t nested = c.nested.exchange(0), inner = c.inner.exchange(0), strict = c.strict.exchange(0), loose = c.loose.exchange(0);
+        const uint64_t scope = c.scope.exchange(0), scope_contended = c.scope_contended.exchange(0), scope_wait = c.scope_wait_ns.exchange(0);
+        const uint64_t kept = c.kept.exchange(0), resumed = c.resumed.exchange(0);
+        uint64_t gap[6];
+        for (int b = 0; b < 6; ++b) gap[b] = c.gap[b].exchange(0);
+        if (id == 1) {
+            line << " main_kept=" << kept / n << " main_resumed=" << resumed / n << " main_gap=" << gap[0] / n << ',' << gap[1] / n << ',' << gap[2] / n << ',' << gap[3] / n << ','
+                 << gap[4] / n << ',' << gap[5] / n;
+            line << " main_taken=" << taken / n << " main_contended=" << contended / n << " main_wait_us=" << wait / n / 1e3
+                 << " main_nested=" << nested / n << " main_inner=" << inner / n << " main_strict=" << strict / n
+                 << " main_loose=" << loose / n << " main_scope=" << scope / n << " main_scope_contended=" << scope_contended / n;
+        } else if (taken || scope) {
+            others << ' ' << id << ':' << taken << '/' << contended << '/' << wait / 1e3 << "us/" << scope << '/' << scope_contended
+                   << '/' << scope_wait / 1e3 << "us";
+        }
+    }
+    line << " others(total id:taken/contended/wait/scope/contended/wait)=" << others.str() << bench << '\n';
+    return line.str();
+}
+// SFR_GRAPHICS_LOCK_DEFER (on unless 0): the main thread keeps the graphics
+// lock from one graphics hook to the next instead of taking and giving it back
+// around each of the ~15,000 a race frame enters (an AYN Thor spent ~2% of the
+// main thread in that mutex's atomics). It is held outside any hook then only
+// while the thread runs generated code, which touches guest memory alone, and
+// is given back before everything else: an import (dispatch_import), any
+// other hook (HookScope, SFR_CONCURRENT_HOOK, the observed entry of a hook),
+// the permit's checkpoint (guest_checkpoint_permit, at least every 256 entries
+// and loop labels, so a thread waiting for the lock waits that long at most),
+// a slow memory access (parallel_slow_access). So the thread never waits, nor
+// takes another lock, while it keeps the graphics lock outside a hook, and
+// the lock order (menu, input, graphics; graphics before the permits) holds.
+// While another thread waits for the lock, it is given back at every hook's
+// return as before.
+static const bool graphics_lock_defer = [] { const char* t = std::getenv("SFR_GRAPHICS_LOCK_DEFER"); return !t || *t != '0'; }();
+// Read at every graphics hook's return: a cache line of its own, so that no
+// other thread's writes to a neighbour make that read miss.
+struct alignas(64) GraphicsWaiters { std::atomic<uint32_t> count{0}; };
+static GraphicsWaiters graphics_waiters_line;
+static std::atomic<uint32_t>& graphics_waiters = graphics_waiters_line.count;
+void give_back_kept_graphics(GuestEntryState& entry) noexcept {
+    entry.graphics_kept = false;
+    graphics_lock.unlock();
+    graphics_lock_released();
+}
 static void graphics_lock_entry(const PPCContext& ctx, uint32_t address, GuestEntryState& entry) {
     const bool graphics = test_hook_bit(graphics_hook_bits, address);
+    if (entry.graphics_kept) {
+        // Kept since the last graphics hook (parallel_function_entry gave it
+        // back already for any other hook).
+        if (!graphics) return;
+        entry.graphics_kept = false;
+        if (graphics_lock_stats) graphics_counters().resumed.fetch_add(1, std::memory_order_relaxed);
+        graphics_holder_function.store(address, std::memory_order_relaxed);
+        entry.graphics_stack_pointer = ctx.r1.u32;
+        return;
+    }
     if (entry.graphics_stack_pointer) {
-        if (graphics) entry.graphics_stack_pointer = (std::max)(entry.graphics_stack_pointer, ctx.r1.u32);
-        else if (ctx.r1.u32 > entry.graphics_stack_pointer) {
+        if (graphics) {
+            entry.graphics_stack_pointer = (std::max)(entry.graphics_stack_pointer, ctx.r1.u32);
+            if (graphics_lock_stats) graphics_counters().nested.fetch_add(1, std::memory_order_relaxed);
+        } else if (ctx.r1.u32 > entry.graphics_stack_pointer) {
             entry.graphics_stack_pointer = 0;
             graphics_lock.unlock();
+            graphics_lock_released();
+        } else if (graphics_lock_stats) {
+            graphics_counters().inner.fetch_add(1, std::memory_order_relaxed);
         }
         return;
     }
     if (!graphics) return;
-    if (!graphics_lock.try_lock())
+    if (graphics_lock_stats) {
+        auto& counters = graphics_counters();
+        counters.taken.fetch_add(1, std::memory_order_relaxed);
+        if (graphics_released_hard == graphics_hard_epoch) {
+            counters.loose.fetch_add(1, std::memory_order_relaxed);
+            if (graphics_released_soft == graphics_soft_epoch) {
+                counters.strict.fetch_add(1, std::memory_order_relaxed);
+                const uint32_t spent = graphics_released_countdown - entry.checkpoint_countdown;
+                const int bucket = spent == 0 ? 0 : spent == 1 ? 1 : spent < 4 ? 2 : spent < 16 ? 3 : spent < 64 ? 4 : 5;
+                counters.gap[bucket].fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+        if (!graphics_lock.try_lock()) {
+            const uint64_t started = stats_now_ns();
+            graphics_waiters.fetch_add(1, std::memory_order_relaxed);
+            lock_with_report(graphics_lock, "graphics", graphics_holder, graphics_holder_function);
+            graphics_waiters.fetch_sub(1, std::memory_order_relaxed);
+            counters.contended.fetch_add(1, std::memory_order_relaxed);
+            counters.wait_ns.fetch_add(stats_now_ns() - started, std::memory_order_relaxed);
+        }
+    } else if (!graphics_lock.try_lock()) {
+        graphics_waiters.fetch_add(1, std::memory_order_relaxed);
         lock_with_report(graphics_lock, "graphics", graphics_holder, graphics_holder_function);
+        graphics_waiters.fetch_sub(1, std::memory_order_relaxed);
+    }
     graphics_holder.store(current_id, std::memory_order_relaxed);
     graphics_holder_function.store(address, std::memory_order_relaxed);
     entry.graphics_stack_pointer = ctx.r1.u32;
@@ -611,7 +770,15 @@ static void graphics_lock_entry(const PPCContext& ctx, uint32_t address, GuestEn
 void hook_scope_exit(GuestEntryState& entry) noexcept {
     if (entry.graphics_stack_pointer) {
         entry.graphics_stack_pointer = 0;
-        graphics_lock.unlock();
+        // Kept for the next graphics hook (graphics_lock_defer), unless a
+        // thread waits for it.
+        if (entry.graphics_keep && !graphics_waiters.load(std::memory_order_relaxed)) {
+            entry.graphics_kept = true;
+            if (graphics_lock_stats) graphics_counters().kept.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            graphics_lock.unlock();
+            graphics_lock_released();
+        }
     }
     if (entry.input_stack_pointer) {
         entry.input_stack_pointer = 0;
@@ -632,12 +799,27 @@ void hook_scope_exit(GuestEntryState& entry) noexcept {
 // the native device (an import dropping the renderer's copies of freed memory).
 using HostGraphicsLock = HostGraphicsScope;
 HostGraphicsScope::HostGraphicsScope() {
-    if (!parallel_main || guest_thread_state.entry.graphics_stack_pointer) return;
+    if (!parallel_main || guest_thread_state.entry.graphics_stack_pointer) return;  // inside a graphics hook
+    // Kept since a graphics hook (graphics_lock_defer): the scope takes it
+    // over and gives it back at its end, so nothing inside gives it back early.
+    if (guest_thread_state.entry.graphics_kept) {
+        guest_thread_state.entry.graphics_kept = false;
+        owned_ = true;
+        return;
+    }
+    if (graphics_lock_stats) graphics_counters().scope.fetch_add(1, std::memory_order_relaxed);
     if (!graphics_lock.try_lock()) {
+        const uint64_t started = graphics_lock_stats ? stats_now_ns() : 0;
         const auto wait = [](std::stop_token) { graphics_lock.lock(); };
+        graphics_waiters.fetch_add(1, std::memory_order_relaxed);
         if (!execution_permit) graphics_lock.lock();
         else if (execution_permit->detached()) execution_permit->run_wait(wait);
         else execution_permit->run_blocking(wait);
+        graphics_waiters.fetch_sub(1, std::memory_order_relaxed);
+        if (graphics_lock_stats) {
+            graphics_counters().scope_contended.fetch_add(1, std::memory_order_relaxed);
+            graphics_counters().scope_wait_ns.fetch_add(stats_now_ns() - started, std::memory_order_relaxed);
+        }
     }
     owned_ = true;
 }
@@ -670,14 +852,25 @@ static void menu_lock_entry(const PPCContext& ctx, uint32_t address, GuestEntryS
     hook_lock_entry(ctx, address, menu_hook_bits, menu_lock, entry.menu_stack_pointer,
                     "menu", menu_holder, menu_holder_function);
 }
+static const bool parallel_hook_stats = [] { const char* t = std::getenv("SFR_PARALLEL_HOOK_STATS"); return t && *t == '1'; }();
 static void parallel_function_entry(const PPCContext& ctx, uint32_t address, GuestEntryState& entry) {
-    static const bool hook_stats = [] { const char* t = std::getenv("SFR_PARALLEL_HOOK_STATS"); return t && *t == '1'; }();
+    const bool hook_stats = parallel_hook_stats;
+    if (graphics_lock_stats && is_hook(address) && !test_hook_bit(graphics_hook_bits, address)) graphics_lock_interrupted(true);
+    // A kept graphics lock goes back before any other hook (and before its
+    // menu or input lock: those come first in the lock order).
+    if (entry.graphics_kept && is_hook(address) && !test_hook_bit(graphics_hook_bits, address))
+        give_back_kept_graphics(entry);
     if (parallel_main) {
         // Menu, then input, then graphics: a menu hook's original reads the
         // skeletons and draws, never the other way round.
         menu_lock_entry(ctx, address, entry);
         input_lock_entry(ctx, address, entry);
         graphics_lock_entry(ctx, address, entry);
+        // With the subsystem locks a hook takes no permit, so a thread that
+        // follows no attached hook and no slow access has nothing more to do
+        // here, attached or not (the branches below agree): this skips the
+        // permit's thread_local, which every graphics hook paid for.
+        if (import_locks && !entry.hook_stack_pointer && !entry.detach_at_entry) return;
     }
     if (execution_permit->detached()) {
         if (!is_hook(address)) return;
@@ -805,6 +998,9 @@ void guest_checkpoint_permit() {
         return value;
     }();
     guest_thread_state.entry.checkpoint_countdown = interval - 1;
+    graphics_lock_interrupted(false);
+    // Before the permit can hand this core to another thread.
+    give_back_kept_graphics_lock(guest_thread_state.entry);
     if (!execution_permit) throw std::logic_error("guest instruction without execution permit");
     // Validates ownership and cancellation before shared memory access, and
     // hands off only outside a reservation.
@@ -1250,6 +1446,8 @@ void wait_without_permit(void (*wait)(void*), void* argument) {
     traced_host_wait(wait, argument, "host", -1);
 }
 void traced_host_wait(void (*wait)(void*), void* argument, const char* kind, int64_t timeout_ns) {
+    // Host code waits only without a kept graphics lock (graphics_lock_defer).
+    give_back_kept_graphics_lock(guest_thread_state.entry);
     if (!execution_permit) { wait(argument); return; }
     block_guest([&](std::stop_token) { wait(argument); },
         {kind, current_context ? uint32_t(current_context->lr) : 0, {guest_thread_state.entry.current_address}, timeout_ns});
@@ -1393,6 +1591,8 @@ struct ImportLockScope {
 };
 
 void dispatch_import(PPCContext& ctx, const char* name, uint32_t address) {
+    graphics_lock_interrupted(true);
+    give_back_kept_graphics_lock(entry_thread_state(ctx).entry);
     // SFR_MAIN_IMPORT_TIME=1: every five seconds, the main thread's time in
     // each import (waits included) since the last report.
     static const bool main_import_time = [] {
@@ -5198,6 +5398,9 @@ int main(int argc, char** argv) {
                 sfr::GuestMemory::slow_access_hook = sfr::parallel_slow_access;
                 permit->detach();
             }
+            // The main thread keeps the graphics lock between graphics hooks.
+            sfr::guest_thread_state.entry.graphics_keep = sfr::parallel_main && sfr::graphics_lock_defer;
+            std::cerr << "GRAPHICS_LOCK_DEFER " << (sfr::guest_thread_state.entry.graphics_keep ? 1 : 0) << '\n';
             sfr::refresh_entry_observation();
             std::cerr << "GUEST_HOST_THREAD guest_id=1 tid=" << sfr::host_thread_id() << " worker=0x824d22f0\n";
 #ifdef _WIN32
@@ -5214,6 +5417,8 @@ int main(int argc, char** argv) {
             } catch (...) {
                 execution.fail(std::current_exception());
             }
+            // A stop thrown out of a graphics hook leaves the lock kept.
+            sfr::give_back_kept_graphics_lock(sfr::guest_thread_state.entry);
             sfr::flush_main_wait_trace(sfr::present_count.load(), true);
             // How often a guest beside the permit came back to it, by reason.
             std::cerr << "PARALLEL_ATTACHES imports=" << sfr::parallel_attaches[0] << " hooks=" << sfr::parallel_attaches[1]

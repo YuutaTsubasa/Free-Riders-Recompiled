@@ -2330,6 +2330,149 @@ Measured but left alone: the graphics lock per hook (an uncontended mutex pair,
 ~2%), the constants swap (8 KB a draw), the pacing spin on Android (a 2 ms
 margin, as sleeps overshoot by ~0.8 ms there).
 
+## 2026-10-20: Only the shader constants a draw reads
+
+Every draw byte-swapped both stages' whole constant files (256 float4 each,
+8 KB) from the device into the upload ring: `swap_words_into` was 3% of an
+AYN Thor race's main thread in the measurement above. The translated shaders
+read far less. XenosRecomp reads a float4 constant only through the name the
+shader's constant table gives it (registers outside the table are the
+shader's own literal definitions, declared as locals), so each native shader
+now records the registers its table declares (`shader_constant_use.cpp`) and
+a draw swaps only those runs. The rest of each 4 KB block keeps whatever an
+earlier draw left there, which the shader never reads. A shader whose ALU
+instructions address constants relatively (a0/aL) may reach any register
+past its array, so it still gets all 256: 33 of the game's 287 vertex
+shaders, none of its 189 pixel shaders. Over the shipped pack a vertex
+shader's table holds 41 registers on average (55 with the relative ones
+counted whole) and a pixel shader's 8. The skinning palette is now swapped
+from guest memory straight into the ring instead of being copied, swapped
+and copied again.
+
+How it was checked (all 476 shaders of the 0.10.13 pack):
+
+- Statically: every constant-buffer read in each shader's SPIR-V
+  (`OpAccessChain` into the stage's uniform block) and DXIL
+  (`cbufferLoadLegacy` on its cbuffer) uses a constant row inside the
+  registers it uploads; the only dynamic rows are in exactly the 33 relative
+  shaders. The game logs the same split (`SFR_CONSTANT_TIMING=1` prints a
+  `SHADER_CONSTANT_RUNS` line per shader it creates).
+- At run time: `SFR_TEST_CONSTANT_POISON=1` fills every register a draw does
+  not write with NaNs. Races on Vulkan and D3D12 with it look as before; a
+  missed read would spread NaNs over the screen.
+- Screenshots cannot be compared pixel for pixel between two runs of this
+  harness: the menus animate in real time and the fixed-step race diverges
+  (two runs of the same build differ in ~520,000 pixels at present 5000).
+  Vulkan with the validation layer: 0 errors, the 455 shipped pipelines.
+
+`SFR_CONSTANT_RUNS=0` (also on the Test options page) restores the full
+upload and the old palette copy; `SFR_CONSTANT_TIMING=1` prints the constant
+writes' time and bytes per draw every 16384 draws (two clock reads included,
+~0.13 us on the Thor).
+
+**Thor A/B** (one APK, `SFR_CONSTANT_RUNS=0` for the baseline, HOST_THREADS
+over frames 13000-21000 of a moving Dolphin Resort race, frame metrics off,
+runs interleaved; drawn_ms is held near 16 ms by the 60 fps pacing):
+
+| Constants | draw_ms | record_ms | cpu_ms | undrawn_ms | frames skipped of 8040 |
+| --- | --- | --- | --- | --- | --- |
+| all (baseline) | 3.75 / 3.73 / 3.73 | 1.04 / 1.01 / 1.01 | 14.36 / 14.27 / 14.25 | 9.82 / 9.81 / 9.57 | 214 / 127 / 124 |
+| read ones | 3.45 / 3.39 / 3.38 | 0.75 / 0.73 / 0.72 | 13.77 / 13.84 / 13.63 | 9.21 / 9.62 / 8.42 | 35 / 34 / 15 |
+
+The constant writes themselves (`SFR_CONSTANT_TIMING=1`, one run each): 561
+ns and 8192 bytes a draw before, 237 ns and 623 bytes after, at about 820
+draws a drawn frame. Windows (i9, Vulkan / D3D12, a machine with other load):
+776 / 778 ns a draw before, 199 / 140 ns after.
+
+## 2026-10-20: The graphics lock on the main thread
+
+The pass above left the graphics lock alone as "an uncontended mutex pair,
+~2%". This pass measured what it protects, who takes it, and what it costs.
+
+**What it protects.** One thread at a time in the native device: every
+Direct3D replacement in `guest_graphics_hooks.cpp` (`SFR_GRAPHICS_HOOK`,
+`SFR_GRAPHICS_HOST_HOOK`) takes it at its observed entry and gives it back as
+its `HookScope` ends; `HostGraphicsScope` takes it for host code outside those
+hooks that changes the device (`synchronize_resource_memory`, the renderer's
+`invalidate` after `MmFreePhysicalMemory`, the Avatar model's draw). Order:
+menu, input, graphics; graphics before the permits.
+
+**Who takes it.** `SFR_GRAPHICS_LOCK_STATS=1` prints `GRAPHICS_LOCK` every 120
+frames (per frame, per guest thread: acquisitions, waits and wait time, nested
+hooks, `HostGraphicsScope` acquisitions, and how far apart the acquisitions
+are). Full Dolphin Resort races on Windows (Vulkan) and the AYN Thor:
+
+| | menus | race |
+| --- | --- | --- |
+| main-thread acquisitions per frame | ~700 | 14,000-20,000 (Thor 16,000-20,600) |
+| acquisitions that found it held | 0 | 0 |
+| other threads' acquisitions | none | none |
+| `HostGraphicsScope` | <1 | 0 |
+| no import, other hook or permit checkpoint since the last release | 85% | 91% |
+
+So in a race it is only ever the main thread's, and it is never contended:
+the cost is the uncontended pair itself. A loop of try_lock/unlock costs 33 ns
+a pair on the Thor (18 ns on the desktop) against 14.5 ns (6 ns) for a bare
+atomic pair: bionic's `pthread_mutex_trylock`/`unlock` are calls through the
+PLT that check the mutex type and then run the outline atomics
+(`__aarch64_cas2_acq`, `__aarch64_swp2_rel`), which simpleperf showed as the
+hot part. Hooks are 4-15 guest entries apart for most of them.
+
+**Change: `SFR_GRAPHICS_LOCK_DEFER`** (on unless 0). The main thread keeps the
+lock when a graphics hook returns (`hook_scope_exit`), and the next graphics
+hook takes it over without an atomic. Outside a hook it is then held only
+while generated code runs, and it is given back before anything that may
+wait or take another lock: an import (`dispatch_import`), any other hook
+(`HookScope`, `SFR_CONCURRENT_HOOK`, the observed entry of a hook, before its
+menu or input lock), the permit's checkpoint (`guest_checkpoint_permit`, at
+least every 256 entries and loop labels, before the permit can hand off the
+core), a slow memory access (`parallel_slow_access`) and `traced_host_wait`.
+`HostGraphicsScope` takes a kept lock over, so nothing inside it gives the
+lock back early. While another thread waits for the lock (`graphics_waiters`,
+its own cache line), it is given back at every hook's return as before, and
+a waiter waits at most until the main thread's next checkpoint. Everything
+the generated code calls besides those is a memory, vector or reservation
+helper (leaf locks only), `read_time_base`, the job mid-asm hooks (their
+waits go through `traced_host_wait`) or `synchronize_resource_memory`
+(`HostGraphicsScope`). The register save/restore helpers, which never wait,
+are `SFR_REGISTER_HOOK` without the check. `parallel_function_entry` also
+returns before the permit's thread_local when the subsystem locks leave it
+nothing to do. `GRAPHICS_LOCK_DEFER 1` in the log says it is on. With it, a
+race frame takes the lock ~1,100-1,500 times instead of ~16,000.
+
+**Thor A/B** (simpleperf, 40 s of the moving race from ~frame 13800, same APK
+with `SFR_GRAPHICS_LOCK_DEFER=0` and on, main thread):
+
+| | lock off (defer 0) | kept (default) |
+| --- | --- | --- |
+| `__aarch64_cas2_acq` + `__aarch64_swp2_rel` | 2.44% (0.35 ms/frame) | 0.87% (0.12 ms/frame) |
+| `pthread_mutex_*` + `std::mutex` | 1.17% (0.17 ms/frame) | 0.44% (0.06 ms/frame) |
+| mutex total | 0.52 ms/frame | 0.18 ms/frame |
+| main-thread CPU in the 40 s | 34.2 s | 32.6 s |
+
+The 0.18 ms left is other locks (critical sections, the layout's
+shared_mutex, events). Frame times (HOST_THREADS, frames 13000-21000,
+`!SFR_FRAME_METRICS=0`) did not resolve the 0.34 ms against their noise: the
+main thread moves between the X3 and the A715s from run to run, and drawn
+frames sit at the 16.7 ms budget, so `skipped` swings 34-176 between runs of
+the same APK. Runs (drawn_ms / undrawn_ms / cpu_ms / skipped of 9600):
+
+| Build | runs |
+| --- | --- |
+| release-equivalent (0.10.13 code; one with the stats on) | 16.03/8.60/13.85/34, 15.99/9.66/14.33/176 |
+| kept off (`SFR_GRAPHICS_LOCK_DEFER=0`, profiled) | 15.89/9.53/14.24/157 |
+| kept | 16.23/9.88/14.04/168, 15.62/9.42/14.26/117, 16.18/8.97/13.70/52 (profiled), 15.87/9.33/13.91/87 |
+
+**Checked:** full races with the lock kept on Windows (Vulkan with the
+Khronos validation layer, 0 messages, 455/455 pipelines; D3D12, 465/465) and
+four on the Thor (and one with it off), each to the present limit with no
+hang, stop or `LOCK_LONG_WAIT`; screenshots render normally. Two fixed-step (`SFR_REALTIME_RACE=0`) Windows races of the same
+build already differ at the same presents (AI positions), as much as kept
+against not, so pictures are compared by eye rather than bit for bit.
+
+**Not done:** the observed entry of each graphics hook
+(`enter_function_observed` ~1%, its TLS and bit tests) is still per hook.
+
 ## 2026-10-20: Generated code on the main thread
 
 After the runtime work above, generated guest code is the largest single part of

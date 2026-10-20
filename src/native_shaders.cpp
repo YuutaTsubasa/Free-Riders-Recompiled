@@ -6,6 +6,8 @@
 #include "spirv_vertex_inputs.h"
 #include <plume_render_interface.h>
 #include <algorithm>
+#include <cstdlib>
+#include <iostream>
 #include <span>
 #include <unordered_map>
 #include <vector>
@@ -71,6 +73,20 @@ uint32_t NativeShaders::create(ShaderStage stage, uint32_t container) {
     if(!memory.available(handle,handle_stride)) unsupported(handle,"native shader handle address is occupied");
     auto next=std::make_unique<NativeShader>();
     next->entry=found;
+    next->constant_runs=shader_constant_runs(source);
+    // SFR_CONSTANT_TIMING=1 also names what each shader uploads.
+    static const bool report=[]{ const char* s=std::getenv("SFR_CONSTANT_TIMING"); return s && *s=='1'; }();
+    if(report) {
+        uint32_t registers=256;
+        if(next->constant_runs) {
+            registers=0;
+            for(const auto run:*next->constant_runs) registers+=run.count;
+        }
+        std::cerr << "SHADER_CONSTANT_RUNS stage=" << (stage==ShaderStage::vertex?"vertex":"pixel")
+                  << " container=0x" << std::hex << container << std::dec << " runs="
+                  << (next->constant_runs?std::to_string(next->constant_runs->size()):std::string("all"))
+                  << " registers=" << registers << '\n';
+    }
     // D3D12 specialization libraries remain attached to their source entry:
     // linking requires observed guest render state, which creation does not
     // invent. SPIR-V keeps the constant and takes its value per pipeline.

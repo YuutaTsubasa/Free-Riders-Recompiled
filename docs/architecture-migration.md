@@ -115,6 +115,7 @@
     - hook：其餘 30 個 `SFR_HOOK` 都改掉了。NUI 裝置（初始化、骨架追蹤、影像串流、身分辨識）拿輸入鎖；選單的 hook（按鈕、語音、轉盤、對話框、選單管理）拿新的選單鎖（`SFR_MENU_HOOK`），順序固定「選單→輸入→圖形」；只碰 guest 記憶體、參數與 atomic 的（相機影像槽、純虛函式工作、Avatar 零件、深度檢視、淡出、`LockRect` 唯讀旗標）不拿鎖；影片進度表、Avatar 動作片段各有自己的鎖，Avatar 模型的繪製拿圖形鎖。建立／重設裝置與 present 只拿圖形鎖：它們碰到的其他主機狀態（視窗、計時）屬於擁有視窗的那個執行緒。
     - GPU 資源同步（`synchronize_resource_memory`：等 GPU 閒置、丟掉 renderer 的副本）拿圖形鎖，不再拿全域許可（原本等閒置時對 queue 送出也沒有和 render thread 互斥）。
     - 結果：`all` 模式的整場比賽裡，沒有任何執行緒回到全域許可（`SFR_PARALLEL_HOOK_STATS=1` 的 import／hook 統計一次都沒有印出）。全域許可只剩給非 `all` 模式的排程用。
+  - 圖形鎖留著（2026-10-20，`SFR_GRAPHICS_LOCK_DEFER`，預設開）：比賽中只有主執行緒拿圖形鎖、從不競爭（`SFR_GRAPHICS_LOCK_STATS=1`），但每幀拿放約 16,000 次。圖形 hook 返回時主執行緒保留這把鎖，下一個圖形 hook 直接接手；在 hook 之外只在跑生成程式碼時拿著，遇到 import、其他 hook（含 `SFR_CONCURRENT_HOOK`）、許可檢查點、慢速記憶體存取、`traced_host_wait` 之前先放掉，有人在等時每次 hook 返回都放。鎖的順序不變。Thor 上 mutex 的時間每幀 0.52 → 0.18 ms（`docs/performance.md`）。
 
 ### 第 5 階段：重編譯期的 mid-asm hook 與幀率
 

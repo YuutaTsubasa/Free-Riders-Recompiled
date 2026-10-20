@@ -54,6 +54,7 @@ PPC_FUNC_IMPL(__imp__sub_824ED588);
 PPC_FUNC_IMPL(__imp__sub_82500B38);
 
 namespace sfr {
+std::string graphics_lock_report(uint64_t present, unsigned frames);  // diagnostic_main.cpp
 bool graphics_trace() {
     static const bool on=[]{ const char* t=std::getenv("SFR_TRACE_GRAPHICS"); return !t || *t!='0'; }();
     return on;
@@ -629,6 +630,14 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
         if(!line.empty()) std::cerr << line;
     }
 #endif
+    {   // SFR_GRAPHICS_LOCK_STATS (diagnostic_main.cpp)
+        static unsigned lock_frames=0;
+        if(++lock_frames==120) {
+            const std::string line=sfr::graphics_lock_report(sfr::present_count.load(),lock_frames);
+            if(!line.empty()) std::cerr << line;
+            lock_frames=0;
+        }
+    }
     // Consume counters even in quiet mode so observation never changes their
     // frame boundaries. Only detailed mode formats the large diagnostic line.
     const auto pipeline_work=graphics().renderer().take_pipeline_work();
@@ -916,6 +925,8 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     static thread_local sfr::NativeDraw draw;
     draw.elements.clear();
     draw.palette={};
+    draw.palette_source={};
+    draw.palette_size=0;
     draw.shared={};
     draw.cull=plume::RenderCullMode::NONE;
     switch(primitive) {
@@ -1175,6 +1186,8 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     draw.pixel_spec_constants=vulkan?(alpha_test?2u:0u)&ps.entry->specialization_mask:0u;
     draw.vertex_entry=vs.entry;
     draw.pixel_entry=ps.entry;
+    draw.vertex_constant_runs=vs.constant_runs?&*vs.constant_runs:nullptr;
+    draw.pixel_constant_runs=ps.constant_runs?&*ps.constant_runs:nullptr;
     draw.pixel_link_constants=vulkan?0u:(alpha_test?2u:0u)&ps.entry->specialization_mask;
 
     // Skinning palette: a vertex shader that fetches bone matrices reads them
@@ -1187,16 +1200,22 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
         const uint32_t fetch1=memory.load<uint32_t>(uint64_t(device)+0x774);
         uint32_t bytes=(fetch0&3)==3 && (fetch1&3)==2 ? (std::min)(fetch1&0x03FFFFFCu,16384u) : 0;
         bytes-=bytes%entry;
-        const std::span<uint8_t> palette=byte_scratch((std::max)(bytes,entry),2);
-        if(bytes) {
-            const uint32_t data=sfr::NativeRenderer::guest_address(memory,fetch0&0x1FFFFFFCu,bytes);
-            memory.check(data,bytes);
-            std::memcpy(palette.data(),memory.base()+data,bytes);
+        const uint32_t data=bytes?sfr::NativeRenderer::guest_address(memory,fetch0&0x1FFFFFFCu,bytes):0;
+        if(bytes) memory.check(data,bytes);
+        if(sfr::constant_runs_enabled()) {
+            // The renderer swaps the rows straight into its upload ring and
+            // zeroes the rest (the entry past them is the zero one the shader
+            // may read), instead of a copy here, a swap and a copy there.
+            if(bytes) draw.palette_source={memory.base()+data,bytes};
+            draw.palette_size=(std::max)(bytes,entry);
+        } else {
+            const std::span<uint8_t> palette=byte_scratch((std::max)(bytes,entry),2);
+            if(bytes) std::memcpy(palette.data(),memory.base()+data,bytes);
+            // The entry past the copied rows is the zero one the shader may read.
+            std::fill(palette.begin()+bytes,palette.end(),uint8_t{0});
+            sfr::swap_words(palette);
+            draw.palette=palette;
         }
-        // The entry past the copied rows is the zero one the shader may read.
-        std::fill(palette.begin()+bytes,palette.end(),uint8_t{0});
-        sfr::swap_words(palette);
-        draw.palette=palette;
         // Keyed on whether a stream was bound as well: a shader's first draw
         // may be a pass that binds none while a later one does.
         static std::set<uint64_t> palettes;

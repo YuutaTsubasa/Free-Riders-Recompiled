@@ -2,6 +2,7 @@
 #include "native_blend_control.h"
 #include "native_render_state.h"
 #include "shader_cache.h"
+#include "shader_constant_use.h"
 #include "texture_fetch.h"
 #include "plume_render_interface_types.h"
 #include <cstddef>
@@ -81,6 +82,12 @@ struct NativeDraw {
     // little-endian float4 rows; bound as the b3 constant buffer. Scratch of
     // the caller's, like vertices and indices.
     std::span<const uint8_t> palette;
+    // Or, with palette empty, the palette's rows as the guest holds them
+    // (big-endian, checked), which the renderer swaps straight into the
+    // ring, followed by zeros up to palette_size bytes. Nothing when
+    // palette_size is zero.
+    std::span<const uint8_t> palette_source;
+    uint32_t palette_size = 0;
     const plume::RenderShader* vertex_shader = nullptr;
     const plume::RenderShader* pixel_shader = nullptr;
     // Source identity for portable pipeline recipes; null for non-game draws.
@@ -98,6 +105,10 @@ struct NativeDraw {
     // and a copy into the ring read and wrote each draw's 8 KiB three times,
     // which a 6 MB L3 felt (Issue #65). Empty: the arrays hold them.
     std::span<const uint8_t> vertex_constants_source, pixel_constants_source;
+    // The registers of those the stage's shader reads (NativeShader::
+    // constant_runs); only these are swapped into the ring. Null: all 256.
+    const std::vector<ConstantRun>* vertex_constant_runs = nullptr;
+    const std::vector<ConstantRun>* pixel_constant_runs = nullptr;
     // Vertex loop constants i0..i15, unpacked to int4 (see loop_constants.h).
     std::array<int32_t, 64> loop_constants{};
     SharedConstants shared{};
