@@ -54,6 +54,7 @@ PPC_FUNC_IMPL(__imp__sub_824ED588);
 PPC_FUNC_IMPL(__imp__sub_82500B38);
 
 namespace sfr {
+std::string graphics_lock_report(uint64_t present, unsigned frames);  // diagnostic_main.cpp
 bool graphics_trace() {
     static const bool on=[]{ const char* t=std::getenv("SFR_TRACE_GRAPHICS"); return !t || *t!='0'; }();
     return on;
@@ -629,6 +630,14 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
         if(!line.empty()) std::cerr << line;
     }
 #endif
+    {   // SFR_GRAPHICS_LOCK_STATS (diagnostic_main.cpp)
+        static unsigned lock_frames=0;
+        if(++lock_frames==120) {
+            const std::string line=sfr::graphics_lock_report(sfr::present_count.load(),lock_frames);
+            if(!line.empty()) std::cerr << line;
+            lock_frames=0;
+        }
+    }
     // Consume counters even in quiet mode so observation never changes their
     // frame boundaries. Only detailed mode formats the large diagnostic line.
     const auto pipeline_work=graphics().renderer().take_pipeline_work();

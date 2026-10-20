@@ -121,6 +121,15 @@ inline void guest_checkpoint() {
 void enter_function_observed(PPCContext&, const char*, uint32_t);
 // Gives back the permit and graphics lock the outermost hook's entry took.
 void hook_scope_exit(GuestEntryState& entry) noexcept;
+// The main thread keeps the graphics lock from one graphics hook to the next
+// (SFR_GRAPHICS_LOCK_DEFER): a race frame enters some 15,000 of them, nearly
+// all a few guest calls apart. Kept, it is given back before anything that
+// may wait or take another lock: an import, any other hook, the permit's
+// checkpoint, a slow memory access (diagnostic_main.cpp).
+void give_back_kept_graphics(GuestEntryState& entry) noexcept;
+inline void give_back_kept_graphics_lock(GuestEntryState& entry) noexcept {
+    if (entry.graphics_kept) [[unlikely]] give_back_kept_graphics(entry);
+}
 // The calling thread's state, kept in the context's reservation register,
 // which the generated code never uses (sfr::load_reserved_word keeps the
 // reservation in GuestThreadState). On Android libmain is loaded after start,
@@ -139,10 +148,16 @@ inline GuestThreadState& entry_thread_state(Context& ctx) {
     }
 }
 // Around every hook, with the state its context holds (thousands of graphics
-// hooks a frame paid the TLS resolver twice each on Android).
+// hooks a frame paid the TLS resolver twice each on Android). A hook other
+// than a graphics one gives back a kept graphics lock first: its host code may
+// wait or take a lock of its own (and not every hook names itself with
+// enter_function, which would give it back too).
 struct HookScope {
     template <class Context>
-    explicit HookScope(Context& ctx) : entry_(entry_thread_state(ctx).entry) { ++entry_.hook_depth; }
+    HookScope(Context& ctx, bool graphics) : entry_(entry_thread_state(ctx).entry) {
+        if (!graphics) give_back_kept_graphics_lock(entry_);
+        ++entry_.hook_depth;
+    }
     ~HookScope() {
         if (!--entry_.hook_depth && (entry_.hook_stack_pointer || entry_.graphics_stack_pointer || entry_.input_stack_pointer))
             hook_scope_exit(entry_);
@@ -396,18 +411,26 @@ inline constexpr sfr::NoFastPath sfr_fast{};
 // thread that calls the hook from a loop in the same frame: the Kinect
 // skeleton thread then held the global permit for good after its first
 // NuiSkeletonGetNextFrame, stalling the whole game for its time slices.)
-#define SFR_SCOPED_HOOK(x, registration) [[maybe_unused]] static const bool x##_hook = registration; \
+#define SFR_SCOPED_HOOK(x, registration, graphics) [[maybe_unused]] static const bool x##_hook = registration; \
     static void x##_hooked(PPCContext& __restrict ctx, uint8_t* base); \
-    PPC_FUNC(x) { ::sfr::HookScope scope(ctx); x##_hooked(ctx, base); } \
+    PPC_FUNC(x) { ::sfr::HookScope scope(ctx, graphics); x##_hooked(ctx, base); } \
     static void x##_hooked(PPCContext& __restrict ctx, uint8_t* base)
-#define SFR_HOOK(x) SFR_SCOPED_HOOK(x, ::sfr::register_hook(#x))
+#define SFR_HOOK(x) SFR_SCOPED_HOOK(x, ::sfr::register_hook(#x), false)
 // A Direct3D replacement that touches only the native device and guest memory
 // (see graphics_hook_bits), and one that also reaches other host state.
-#define SFR_GRAPHICS_HOOK(x) SFR_SCOPED_HOOK(x, ::sfr::register_graphics_hook(#x, false))
-#define SFR_GRAPHICS_HOST_HOOK(x) SFR_SCOPED_HOOK(x, ::sfr::register_graphics_hook(#x, true))
-#define SFR_INPUT_HOOK(x) SFR_SCOPED_HOOK(x, ::sfr::register_input_hook(#x))
-#define SFR_MENU_HOOK(x) SFR_SCOPED_HOOK(x, ::sfr::register_menu_hook(#x))
+#define SFR_GRAPHICS_HOOK(x) SFR_SCOPED_HOOK(x, ::sfr::register_graphics_hook(#x, false), true)
+#define SFR_GRAPHICS_HOST_HOOK(x) SFR_SCOPED_HOOK(x, ::sfr::register_graphics_hook(#x, true), true)
+#define SFR_INPUT_HOOK(x) SFR_SCOPED_HOOK(x, ::sfr::register_input_hook(#x), false)
+#define SFR_MENU_HOOK(x) SFR_SCOPED_HOOK(x, ::sfr::register_menu_hook(#x), false)
 // A replacement that touches only guest memory, its arguments, atomics and
 // host objects that keep their own lock, so a detached guest runs it without
 // taking any lock of the runtime's (docs/architecture-migration.md, phase 4).
-#define SFR_CONCURRENT_HOOK(x) PPC_FUNC(x)
+// Such host code may still wait (the job system's patches) or take a lock of
+// its own, so it gives back a kept graphics lock first.
+#define SFR_CONCURRENT_HOOK(x) static void x##_concurrent(PPCContext& __restrict ctx, uint8_t* base); \
+    PPC_FUNC(x) { ::sfr::give_back_kept_graphics_lock(::sfr::entry_thread_state(ctx).entry); x##_concurrent(ctx, base); } \
+    static void x##_concurrent(PPCContext& __restrict ctx, uint8_t* base)
+// A replacement that touches only this thread's context and guest memory,
+// never waits and takes no lock (the register save and restore helpers,
+// called at most function entries).
+#define SFR_REGISTER_HOOK(x) PPC_FUNC(x)
