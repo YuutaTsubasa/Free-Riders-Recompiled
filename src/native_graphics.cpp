@@ -282,7 +282,11 @@ void NativeGraphics::initialize() {
                                           // MoltenVK refused every present as suboptimal (Issue #185).
                                           SDL_WINDOW_METAL | SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
 #elif defined(__APPLE__)
-                                          SDL_WINDOW_METAL | SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE);
+                                          // High DPI here too: on a Retina or scaled display the
+                                          // layer was 1280x720 at scale 1 while the swap chain took
+                                          // the window's backing scale (2560x1440), and MoltenVK
+                                          // refused every present as suboptimal (Issue #191).
+                                          SDL_WINDOW_METAL | SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
 #else
                                           SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE);
 #endif

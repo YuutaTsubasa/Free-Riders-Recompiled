@@ -170,6 +170,27 @@ M1（Metal System Trace，比賽中 8 秒）：頂點 144.6 → 6.4 ms/幀，GPU
 `NATIVE_DISPATCH_LOOP removed=0|1`；`SFR_TEST_DISPATCH_LOOP=0` 在 Apple 上保留迴圈，`=1` 在任何
 Vulkan 裝置上拿掉（驗證層用）。
 
+### macOS：Retina 與縮放顯示器上的 present
+
+v0.10.14 以前，macOS 的遊戲視窗不是高 DPI：SDL 的 Metal layer 的 contents scale 是 1，1280x720
+的視窗 layer 就是 1280x720 像素；Plume 的 `CocoaWindow` 卻用視窗的 backing scale（Retina 或縮放
+顯示器上是 2）算 swap chain，做成 2560x1440。MoltenVK 只認 layer 的自然大小（bounds 乘
+contents scale），大小不同的 swap chain 每次 present 都回 `VK_SUBOPTIMAL_KHR`，Plume 在 Apple 上把它
+當失敗，重建八次後遊戲停在 `failed to present native swap-chain texture`（Issue #191，M1 MacBook
+Pro 的內建螢幕和縮放成 2560x1440 的外接螢幕都會，1x 的 1920x1080 螢幕不會）。
+
+- macOS 的遊戲視窗改成高 DPI（`native_graphics.cpp`，和 iOS 一樣），layer 的 scale 就是螢幕的。
+- `patches/plume-present-result-layer-size.patch`：macOS 的 swap chain 大小改取視窗裡 Metal layer
+  的 bounds 乘 contents scale（截斷，和 MoltenVK 一樣），兩者不會再不同；swap chain 也記下最後一次
+  present 與 acquire 的 `VkResult`。
+- `game.log` 的 `NATIVE_PRESENTATION present_refused` 與 `acquire_refused` 都記
+  `result=<名稱>(<數字>)`（所有平台）；重建八次仍是 `VK_SUBOPTIMAL_KHR` 時記一次
+  `NATIVE_PRESENTATION suboptimal_kept`，繼續執行（MoltenVK 仍會把這張圖縮放顯示），不再結束遊戲。
+
+在只有 1x 螢幕的 Mac 上，可以用私有的 `CGVirtualDisplay` 建一個虛擬螢幕，設成 1280x720 HiDPI
+（2560x1440 像素）模式來重現。注意：macOS 27 上建立它的程序結束後，虛擬螢幕不會消失（WindowServer
+記錄 `CGXVirtualDisplayDestroy ... not found`），要登出或重開機才會移除。
+
 ### 圖形自我測試的繪製
 
 `graphics_selftest.cpp`（Android 由 `GraphicsTestActivity` 啟動，桌面設 `SFR_GRAPHICS_SELFTEST=1`

@@ -1,0 +1,147 @@
+diff --git a/plume_apple.mm b/plume_apple.mm
+index 64e4dc9..fd78064 100644
+--- a/plume_apple.mm
++++ b/plume_apple.mm
+@@ -10,6 +10,7 @@
+ #import <AppKit/AppKit.h>
+ #import <Foundation/Foundation.h>
+ #import <IOKit/IOKitLib.h>
++#import <QuartzCore/CAMetalLayer.h>
+ 
+ static uint32_t plumeGetEntryProperty(io_registry_entry_t entry, CFStringRef propertyName) {
+     uint32_t value = 0;
+@@ -48,19 +49,57 @@ namespace plume {
+ 
+     // MARK: - CocoaWindow
+ 
++    // The CAMetalLayer drawn into (a Metal view's, such as SDL's) in the window's views.
++    static CAMetalLayer *findMetalLayer(NSView *view, int depth) {
++        if ([view.layer isKindOfClass:CAMetalLayer.class]) {
++            return (CAMetalLayer *)view.layer;
++        }
++
++        if (depth <= 0) {
++            return nil;
++        }
++
++        for (NSView *child in view.subviews) {
++            if (CAMetalLayer *layer = findMetalLayer(child, depth - 1)) {
++                return layer;
++            }
++        }
++
++        return nil;
++    }
++
++    // The window's size in pixels. With a Metal layer in it, the layer's own size in pixels
++    // (bounds times contents scale, truncated): the size MoltenVK holds the swap chain to.
++    // The window's backing scale differs from the layer's when the view is not high
++    // resolution (a Retina or scaled display), and a swap chain of the window's size then
++    // made every present suboptimal.
++    static CocoaWindowAttributes readWindowAttributes(NSWindow *nsWindow) {
++        NSRect contentFrame = [[nsWindow contentView] frame];
++        CocoaWindowAttributes attributes;
++        attributes.x = (int)round(contentFrame.origin.x);
++        attributes.y = (int)round(contentFrame.origin.y);
++
++        CAMetalLayer *layer = findMetalLayer([nsWindow contentView], 4);
++        if ((layer != nil) && (layer.bounds.size.width >= 1.0) && (layer.bounds.size.height >= 1.0)) {
++            const CGFloat layerScale = layer.contentsScale;
++            attributes.width = (int)trunc(layer.bounds.size.width * layerScale);
++            attributes.height = (int)trunc(layer.bounds.size.height * layerScale);
++            return attributes;
++        }
++
++        CGFloat scaleFactor = [nsWindow backingScaleFactor];
++        attributes.width = (int)round(contentFrame.size.width * scaleFactor);
++        attributes.height = (int)round(contentFrame.size.height * scaleFactor);
++        return attributes;
++    }
++
+     CocoaWindow::CocoaWindow(void* window)
+         : windowHandle(window), cachedRefreshRate(0) {
+         cachedAttributes = {0, 0, 0, 0};
+ 
+         if ([NSThread isMainThread]) {
+             NSWindow *nsWindow = (__bridge NSWindow *)windowHandle;
+-            NSRect contentFrame = [[nsWindow contentView] frame];
+-            CGFloat scaleFactor = [nsWindow backingScaleFactor];
+-
+-            cachedAttributes.x = (int)round(contentFrame.origin.x);
+-            cachedAttributes.y = (int)round(contentFrame.origin.y);
+-            cachedAttributes.width = (int)round(contentFrame.size.width * scaleFactor);
+-            cachedAttributes.height = (int)round(contentFrame.size.height * scaleFactor);
++            cachedAttributes = readWindowAttributes(nsWindow);
+ 
+             NSScreen *screen = [nsWindow screen];
+             if (@available(macOS 12.0, *)) {
+@@ -77,14 +116,10 @@ namespace plume {
+     void CocoaWindow::updateWindowAttributesInternal(bool forceSync) {
+         auto updateBlock = ^{
+             NSWindow *nsWindow = (__bridge NSWindow *)windowHandle;
+-            NSRect contentFrame = [[nsWindow contentView] frame];
+-            CGFloat scaleFactor = [nsWindow backingScaleFactor];
++            const CocoaWindowAttributes attributes = readWindowAttributes(nsWindow);
+ 
+             std::lock_guard<std::mutex> lock(attributesMutex);
+-            cachedAttributes.x = (int)round(contentFrame.origin.x);
+-            cachedAttributes.y = (int)round(contentFrame.origin.y);
+-            cachedAttributes.width = (int)round(contentFrame.size.width * scaleFactor);
+-            cachedAttributes.height = (int)round(contentFrame.size.height * scaleFactor);
++            cachedAttributes = attributes;
+         };
+ 
+         if (forceSync) {
+@@ -113,15 +148,11 @@ namespace plume {
+     void CocoaWindow::getWindowAttributes(CocoaWindowAttributes* attributes) const {
+         if ([NSThread isMainThread]) {
+             NSWindow *nsWindow = (__bridge NSWindow *)windowHandle;
+-            NSRect contentFrame = [[nsWindow contentView] frame];
+-            CGFloat scaleFactor = [nsWindow backingScaleFactor];
++            const CocoaWindowAttributes current = readWindowAttributes(nsWindow);
+ 
+             {
+                 std::lock_guard<std::mutex> lock(attributesMutex);
+-                const_cast<CocoaWindow*>(this)->cachedAttributes.x = (int)round(contentFrame.origin.x);
+-                const_cast<CocoaWindow*>(this)->cachedAttributes.y = (int)round(contentFrame.origin.y);
+-                const_cast<CocoaWindow*>(this)->cachedAttributes.width = (int)round(contentFrame.size.width * scaleFactor);
+-                const_cast<CocoaWindow*>(this)->cachedAttributes.height = (int)round(contentFrame.size.height * scaleFactor);
++                const_cast<CocoaWindow*>(this)->cachedAttributes = current;
+ 
+                 *attributes = cachedAttributes;
+             }
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index a2e3b1b..cb03fea 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -2319,6 +2319,7 @@ namespace plume {
+             const std::scoped_lock queueLock(*commandQueue->queue->mutex);
+             res = vkQueuePresentKHR(commandQueue->queue->vk, &presentInfo);
+         }
++        lastPresentResult = res;
+ 
+ #if defined(__APPLE__)
+         // Under MoltenVK, VK_SUBOPTIMAL_KHR does not result in a valid state for rendering. We intentionally
+@@ -2523,6 +2524,7 @@ namespace plume {
+ 
+         VulkanCommandSemaphore *interfaceSemaphore = static_cast<VulkanCommandSemaphore *>(signalSemaphore);
+         VkResult res = vkAcquireNextImageKHR(commandQueue->device->vk, vk, UINT64_MAX, interfaceSemaphore->vk, VK_NULL_HANDLE, textureIndex);
++        lastAcquireResult = res;
+         if ((res != VK_SUCCESS) && (res != VK_SUBOPTIMAL_KHR)) {
+             return false;
+         }
+diff --git a/plume_vulkan.h b/plume_vulkan.h
+index 1ff774c..da1968c 100644
+--- a/plume_vulkan.h
++++ b/plume_vulkan.h
+@@ -245,6 +245,10 @@ namespace plume {
+         uint64_t currentPresentId = 0;
+         bool immediatePresentModeSupported = false;
+         uint32_t maxFrameLatency = 0;
++        // What the last vkQueuePresentKHR and vkAcquireNextImageKHR returned,
++        // for the application to report or act on when they are refused.
++        VkResult lastPresentResult = VK_SUCCESS;
++        VkResult lastAcquireResult = VK_SUCCESS;
+ 
+         VulkanSwapChain(VulkanCommandQueue *commandQueue, RenderWindow renderWindow, uint32_t textureCount, RenderFormat format, uint32_t maxFrameLatency);
+         ~VulkanSwapChain() override;
