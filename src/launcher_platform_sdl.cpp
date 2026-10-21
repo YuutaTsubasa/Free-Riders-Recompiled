@@ -7,6 +7,7 @@
 #include "xdg_portal.h"
 #include "imgui.h"
 #include <SDL.h>
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <cstdio>
@@ -646,6 +647,32 @@ FontFiles font_files() {
         const bool usable = file.size() > 4 && (file.ends_with(".ttf") || file.ends_with(".otf") || file.ends_with(".ttc"));
         return usable ? std::vector<fs::path>{fs::path(file)} : std::vector<fs::path>{};
     };
+    // The other fonts with Traditional Chinese, best match first: fontconfig's
+    // choice may be one ImGui cannot read (Fedora's NotoSansCJK-VF.ttc has
+    // CFF2 outlines, issue #232), and the launcher takes the first it can.
+    const auto chinese = [](const char* pattern) -> std::vector<fs::path> {
+        std::vector<fs::path> paths;
+        if (!have("fc-match")) return paths;
+        if (FILE* pipe = popen((std::string("fc-match -s -f '%{file}|%{lang}\\n' '") + pattern + "' 2>/dev/null").c_str(), "r")) {
+            std::string line;
+            char buffer[4096];
+            while (std::fgets(buffer, sizeof buffer, pipe)) {
+                line += buffer;
+                if (line.empty() || line.back() != '\n') continue;  // a long language list: read on
+                line.pop_back();
+                const size_t bar = line.find('|');
+                const std::string file = line.substr(0, bar);
+                const std::string langs = bar == std::string::npos ? "" : "|" + line.substr(bar + 1) + "|";
+                const bool font_file = file.ends_with(".ttf") || file.ends_with(".otf") || file.ends_with(".ttc");
+                if (font_file && langs.find("|zh-tw|") != std::string::npos &&
+                    std::find(paths.begin(), paths.end(), fs::path(file)) == paths.end() && paths.size() < 16)
+                    paths.emplace_back(file);
+                line.clear();
+            }
+            pclose(pipe);
+        }
+        return paths;
+    };
     const auto with = [](std::vector<fs::path> first, std::initializer_list<fs::path> rest) {
         first.insert(first.end(), rest);
         return first;
@@ -656,9 +683,9 @@ FontFiles font_files() {
             with(match("sans:semibold"), {noto / "NotoSans-SemiBold.ttf", dejavu / "DejaVuSans-Bold.ttf"}),
             with(match("sans:black:italic"), {noto / "NotoSans-BlackItalic.ttf", dejavu / "DejaVuSans-BoldOblique.ttf",
                                                dejavu / "DejaVuSans-Bold.ttf"}),
-            with(match("sans:lang=zh-tw"), {cjk / "NotoSansCJK-Regular.ttc", wqy / "wqy-microhei.ttc"}),
-            with(match("sans:bold:lang=zh-tw"), {cjk / "NotoSansCJK-Bold.ttc", cjk / "NotoSansCJK-Regular.ttc",
-                                                  wqy / "wqy-microhei.ttc"})};
+            with(chinese("sans:lang=zh-tw"), {cjk / "NotoSansCJK-Regular.ttc", wqy / "wqy-microhei.ttc"}),
+            with(chinese("sans:bold:lang=zh-tw"), {cjk / "NotoSansCJK-Bold.ttc", cjk / "NotoSansCJK-Regular.ttc",
+                                                    wqy / "wqy-microhei.ttc"})};
 #endif
 }
 

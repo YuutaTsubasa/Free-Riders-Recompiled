@@ -39,6 +39,7 @@
 #include "touch_scroll.h"
 #include "voice_commands.h"
 #include "launcher_settings.h"
+#include "launcher_fonts.h"
 #include "launcher_screen_fit.h"
 #include "test_options.h"
 #ifdef SFR_IOS
@@ -66,6 +67,7 @@
 #include <fstream>
 #include <initializer_list>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -732,75 +734,127 @@ std::vector<std::string> log_tail(const fs::path& log, size_t count) {
 }
 
 // ---------------------------------------------------------------- look
-struct Fonts { ImFont* body = nullptr; ImFont* title = nullptr; ImFont* heading = nullptr; ImFont* tiny = nullptr; };
+struct Fonts {
+    ImFont* body = nullptr; ImFont* title = nullptr; ImFont* heading = nullptr; ImFont* tiny = nullptr;
+    sfr::launcher::FontSet set = sfr::launcher::FontSet::system;
+};
 
-Fonts load_fonts(float scale) {
+// Logged where the platform has a log (SDL_Log; the Windows launcher has none).
+template <typename... Args>
+void log_line(const char* format, Args... args) {
+#ifdef _WIN32
+    (void)format;
+    ((void)args, ...);
+#else
+    SDL_Log(format, args...);
+#endif
+}
+
+// The launcher's fonts, from the best set (FontSet) that builds and whose
+// atlas fits a max_width x max_height texture (0: no limit). Issue #232: a
+// font file ImGui could not read left a 0 x 0 atlas, and ImGui crashed.
+Fonts load_fonts(float scale, int max_width = 0, int max_height = 0,
+                 sfr::launcher::FontSet from = sfr::launcher::FontSet::system) {
+    using sfr::launcher::FontSet;
     ImGuiIO& io = ImGui::GetIO();
     // Only the glyphs the launcher shows (and ASCII for paths), so the
     // Chinese font does not fill a huge atlas.
     static ImVector<ImWchar> ranges;
-    ImFontGlyphRangesBuilder builder;
-    builder.AddRanges(io.Fonts->GetGlyphRangesDefault());
-    for_each_text([&](const char* text) { builder.AddText(text); });
-    builder.AddText("%0123456789x\xE2\x97\x8F\xE2\x97\x8B");  // and the status dots
-    builder.BuildRanges(&ranges);
+    if (ranges.empty()) {
+        ImFontGlyphRangesBuilder builder;
+        builder.AddRanges(io.Fonts->GetGlyphRangesDefault());
+        for_each_text([&](const char* text) { builder.AddText(text); });
+        builder.AddText("%0123456789x\xE2\x97\x8F\xE2\x97\x8B");  // and the status dots
+        builder.BuildRanges(&ranges);
+    }
 
     const sfr::launcher::FontFiles files = sfr::launcher::font_files();
-    const auto first = [](const std::vector<fs::path>& candidates) -> fs::path {
+    // The first file ImGui can read: a face it cannot (CFF2 outlines, as in
+    // Fedora's NotoSansCJK-VF.ttc) stops the whole atlas, so it is passed over.
+    std::map<fs::path, bool> readable;
+    const auto first = [&readable](const std::vector<fs::path>& candidates) -> fs::path {
         std::error_code error;
-        for (const auto& path : candidates)
-            if (fs::is_regular_file(path, error)) return path;
+        for (const auto& path : candidates) {
+            if (!fs::is_regular_file(path, error)) continue;
+            auto known = readable.find(path);
+            if (known == readable.end()) {
+                known = readable.emplace(path, sfr::launcher::font_file_loadable(path)).first;
+                if (!known->second) log_line("launcher font %s: ImGui cannot read it, skipped", utf8(path).c_str());
+            }
+            if (known->second) return path;
+        }
         return {};
     };
-    const auto load = [&](const std::vector<fs::path>& latin, const std::vector<fs::path>& chinese, float size) -> ImFont* {
-        ImFont* font = nullptr;
-        if (const fs::path path = first(latin); !path.empty()) {
-            font = io.Fonts->AddFontFromFileTTF(utf8(path).c_str(), size * scale, nullptr, ranges.Data);
+    const auto build = [&](FontSet set, int desired_width) -> Fonts {
+        io.Fonts->Clear();
+        io.Fonts->TexDesiredWidth = desired_width;
+        const auto load = [&](const std::vector<fs::path>& latin, const std::vector<fs::path>& chinese, float size) -> ImFont* {
+            ImFont* font = nullptr;
+            if (set != FontSet::builtin) {
+                if (const fs::path path = first(latin); !path.empty()) {
+                    font = io.Fonts->AddFontFromFileTTF(utf8(path).c_str(), size * scale, nullptr, ranges.Data);
 #ifdef SFR_IOS
-            SDL_Log("launcher font %s: %s", utf8(path).c_str(), font ? "loaded" : "not loaded");
+                    SDL_Log("launcher font %s: %s", utf8(path).c_str(), font ? "loaded" : "not loaded");
 #endif
-        }
-        if (!font) {
-            ImFontConfig config;
-            config.SizePixels = size * scale;
-            font = io.Fonts->AddFontDefault(&config);
-        }
-        if (const fs::path path = first(chinese); !path.empty()) {
-            ImFontConfig merge;
-            merge.MergeMode = true;
-            io.Fonts->AddFontFromFileTTF(utf8(path).c_str(), size * scale, &merge, ranges.Data);
-#ifdef SFR_IOS
-            SDL_Log("launcher Chinese font %s", utf8(path).c_str());
+                }
+            }
+            if (!font) {
+                ImFontConfig config;
+                config.SizePixels = size * scale;
+                font = io.Fonts->AddFontDefault(&config);
+            }
+            if (set != FontSet::system) return font;
+            if (const fs::path path = first(chinese); !path.empty()) {
+                ImFontConfig merge;
+                merge.MergeMode = true;
+                io.Fonts->AddFontFromFileTTF(utf8(path).c_str(), size * scale, &merge, ranges.Data);
+                if (size == 19.0f) log_line("launcher Chinese font %s", utf8(path).c_str());
+            }
+            return font;
+        };
+        Fonts fonts;
+        fonts.set = set;
+        fonts.body = load(files.body, files.chinese, 19.0f);
+        fonts.heading = load(files.heading, files.chinese_bold, 23.0f);
+        fonts.title = load(files.title, {}, 36.0f);
+        fonts.tiny = load(files.heading, files.chinese_bold, 15.0f);
+#if defined(__ANDROID__) || defined(SFR_IOS)
+        // The characters beyond Latin (Chinese, the status dots) come from
+        // the system's own text renderer (launcher_platform.h).
+        std::vector<unsigned int> wide;
+        if (set == FontSet::system)
+            for_each_text([&](const char* at) {
+                while (*at) {
+                    unsigned int codepoint = 0;
+                    at += ImTextCharFromUtf8(&codepoint, at, nullptr);
+                    if (codepoint >= 0x2000 && std::find(wide.begin(), wide.end(), codepoint) == wide.end()) wide.push_back(codepoint);
+                }
+            });
+        for (unsigned int codepoint : {0x25CFu, 0x25CBu})
+            if (std::find(wide.begin(), wide.end(), codepoint) == wide.end()) wide.push_back(codepoint);
+        sfr::launcher::add_system_glyphs(fonts.body, 19.0f * scale, false, wide);
+        sfr::launcher::add_system_glyphs(fonts.heading, 23.0f * scale, true, wide);
+        sfr::launcher::add_system_glyphs(fonts.tiny, 15.0f * scale, true, wide);
+        sfr::launcher::draw_system_glyphs();
 #endif
-        }
-        return font;
+        // Built now so the Chinese glyphs can be checked for.
+        if (!io.Fonts->IsBuilt()) io.Fonts->Build();
+        return fonts;
+    };
+    const auto fits = [&] {
+        return io.Fonts->IsBuilt() && sfr::launcher::atlas_fits(io.Fonts->TexWidth, io.Fonts->TexHeight, max_width, max_height);
     };
     Fonts fonts;
-    fonts.body = load(files.body, files.chinese, 19.0f);
-    fonts.heading = load(files.heading, files.chinese_bold, 23.0f);
-    fonts.title = load(files.title, {}, 36.0f);
-    fonts.tiny = load(files.heading, files.chinese_bold, 15.0f);
-#if defined(__ANDROID__) || defined(SFR_IOS)
-    // The characters beyond Latin (Chinese, the status dots) come from
-    // the system's own text renderer (launcher_platform.h).
-    std::vector<unsigned int> wide;
-    for_each_text([&](const char* at) {
-        while (*at) {
-            unsigned int codepoint = 0;
-            at += ImTextCharFromUtf8(&codepoint, at, nullptr);
-            if (codepoint >= 0x2000 && std::find(wide.begin(), wide.end(), codepoint) == wide.end()) wide.push_back(codepoint);
-        }
-    });
-    for (unsigned int codepoint : {0x25CFu, 0x25CBu})
-        if (std::find(wide.begin(), wide.end(), codepoint) == wide.end()) wide.push_back(codepoint);
-    sfr::launcher::add_system_glyphs(fonts.body, 19.0f * scale, false, wide);
-    sfr::launcher::add_system_glyphs(fonts.heading, 23.0f * scale, true, wide);
-    sfr::launcher::add_system_glyphs(fonts.tiny, 15.0f * scale, true, wide);
-    sfr::launcher::draw_system_glyphs();
-#endif
-    // Built now so the Chinese glyphs can be checked for.
-    if (!io.Fonts->IsBuilt()) io.Fonts->Build();
-    chinese_available = fonts.body && fonts.body->FindGlyphNoFallback(0x4E2D) != nullptr;  // 中
+    for (int set = int(from); set < sfr::launcher::font_set_count; ++set) {
+        fonts = build(FontSet(set), 0);
+        // Too tall for the renderer: as wide as it allows, so less tall.
+        if (io.Fonts->IsBuilt() && !fits() && max_width > io.Fonts->TexWidth) fonts = build(FontSet(set), max_width);
+        if (fits()) break;
+        log_line("launcher fonts %s: atlas %dx%d %s, renderer limit %dx%d", sfr::launcher::font_set_name(FontSet(set)),
+                 io.Fonts->TexWidth, io.Fonts->TexHeight, io.Fonts->IsBuilt() ? "too large" : "did not build", max_width,
+                 max_height);
+    }
+    chinese_available = fonts.body && io.Fonts->IsBuilt() && fonts.body->FindGlyphNoFallback(0x4E2D) != nullptr;  // 中
     return fonts;
 }
 
@@ -3829,7 +3883,7 @@ int main(int argc, char** argv) {
     // The window measures points, three pixels each on an iPhone: the
     // launcher draws in pixels instead, as on Android, inside the safe area
     // (the Dynamic Island and the home indicator stay clear). Issue #185.
-    const auto fit_screen = [window, renderer] {
+    const auto fit_screen = [window, &renderer] {
         int pixel_width = 0, pixel_height = 0, point_width = 0, point_height = 0;
         SDL_GetRendererOutputSize(renderer, &pixel_width, &pixel_height);
         SDL_GetWindowSize(window, &point_width, &point_height);
@@ -3857,19 +3911,48 @@ int main(int argc, char** argv) {
     io.IniFilename = nullptr;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
     apply_style(launcher.scale);
-    launcher.fonts = load_fonts(launcher.scale);
-    apply_language(launcher.settings.language);  // Chinese needs a font for it
-    ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
-    ImGui_ImplSDLRenderer2_Init(renderer);
-    {
+    // The fonts and their texture, never drawn without one (issue #232: a
+    // font atlas that did not build left none, and ImGui crashed). When the
+    // texture cannot be made: the next font sets, then SDL's software renderer.
+    const auto make_font_texture = [&]() -> bool {
         SDL_RendererInfo info{};
         SDL_GetRendererInfo(renderer, &info);
-        unsigned char* pixels = nullptr;
-        int atlas_width = 0, atlas_height = 0;
-        io.Fonts->GetTexDataAsRGBA32(&pixels, &atlas_width, &atlas_height);
-        SDL_Log("launcher renderer=%s max_texture=%dx%d font_atlas=%dx%d scale=%.2f", info.name, info.max_texture_width,
-                info.max_texture_height, atlas_width, atlas_height, launcher.scale);
+        ImGui_ImplSDLRenderer2_Init(renderer);
+        for (auto from = sfr::launcher::FontSet::system;;) {
+            launcher.fonts = load_fonts(launcher.scale, info.max_texture_width, info.max_texture_height, from);
+            apply_language(launcher.settings.language);  // Chinese needs a font for it
+            const bool made = io.Fonts->IsBuilt() && ImGui_ImplSDLRenderer2_CreateFontsTexture();
+            SDL_Log("launcher renderer=%s max_texture=%dx%d font_atlas=%dx%d fonts=%s scale=%.2f%s%s", info.name,
+                    info.max_texture_width, info.max_texture_height, io.Fonts->TexWidth, io.Fonts->TexHeight,
+                    sfr::launcher::font_set_name(launcher.fonts.set), launcher.scale, made ? "" : " no font texture: ",
+                    made ? "" : SDL_GetError());
+            if (made) return true;
+            if (launcher.fonts.set == sfr::launcher::FontSet::builtin) break;
+            from = sfr::launcher::FontSet(int(launcher.fonts.set) + 1);
+        }
+        ImGui_ImplSDLRenderer2_Shutdown();
+        return false;
+    };
+    bool font_texture = make_font_texture();
+#if !defined(__ANDROID__) && !defined(SFR_IOS)
+    if (!font_texture) {
+        SDL_RendererInfo info{};
+        SDL_GetRendererInfo(renderer, &info);
+        if (!(info.flags & SDL_RENDERER_SOFTWARE)) {
+            SDL_Log("launcher: trying SDL's software renderer");
+            SDL_DestroyRenderer(renderer);
+            renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
+            font_texture = renderer && make_font_texture();
+        }
     }
+#endif
+    if (!font_texture) {
+        std::fprintf(stderr, "The launcher cannot draw its text: %s\n", SDL_GetError());
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Free Riders Recompiled",
+                                 "The launcher cannot draw its text on this system's renderer.", window);
+        return 1;
+    }
+    ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
 
     bool running = true;
     while (running) {
