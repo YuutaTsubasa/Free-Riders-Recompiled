@@ -220,6 +220,8 @@ with [docs/progress.md](docs/progress.md).
   The Linux launcher no longer crashes at start on systems whose Chinese font it can't read, such as Fedora 45 (#232). On Windows the game window comes to the front when it opens.
 - [v0.10.18 — Labelled touch buttons, FPS counter](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.18)
   The on-screen buttons show their Xbox names, an optional FPS counter can be shown in the game, touch controls are on by default on iOS, and Android uses the same app icon as the other versions (#236).
+- [v0.10.19 — Intel GPUs](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.19)
+  Races on Intel integrated GPUs (Vulkan) run several times faster: the shaders' dispatch loops that made them crawl at a few frames a second are rewritten, as on Macs (#239, #134).
 
 ## System Requirements
 
