@@ -2166,6 +2166,9 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
 #ifdef _WIN32
         ShowWindow(impl_->window, SW_SHOWNORMAL);
         UpdateWindow(impl_->window);
+        // Come to the front: the launcher allowed this process to take the
+        // foreground, and a game that opens behind other windows is easy to miss.
+        SetForegroundWindow(impl_->window);
 #else
         SDL_ShowWindow(impl_->window);
 #endif
