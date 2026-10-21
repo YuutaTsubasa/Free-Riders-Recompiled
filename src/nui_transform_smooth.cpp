@@ -1,5 +1,6 @@
 #include "nui_transform_smooth.h"
 
+#include <cstddef>
 #include <cmath>
 
 namespace sfr {

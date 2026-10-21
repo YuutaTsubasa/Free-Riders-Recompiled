@@ -1,5 +1,6 @@
 #include "kinect_depth_features.h"
 
+#include <cstddef>
 #include <algorithm>
 #include <cmath>
 #include <limits>

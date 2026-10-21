@@ -1,6 +1,7 @@
 #pragma once
 #include "kinect_sensor.h"
 
+#include <cstddef>
 #include <array>
 #include <cstdint>
 

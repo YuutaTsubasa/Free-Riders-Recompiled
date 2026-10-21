@@ -1,5 +1,6 @@
 #include "kinect_v2_image.h"
 
+#include <cstddef>
 #include <algorithm>
 #include <cmath>
 
