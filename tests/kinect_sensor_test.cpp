@@ -6,8 +6,11 @@
 #include <bit>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <iostream>
+#include <random>
 #include <stdexcept>
+#include <vector>
 #include <string>
 #include <unordered_map>
 
@@ -94,6 +97,81 @@ int main() {
             tracked.retain(many);
             require(many.bodies.size() == 1 && many.bodies[0].tracking_id == 200 && many.bodies[0].sensor_index == 5,
                     "empty tracking releases selection and a later body keeps its sensor slot");
+        }
+
+        {
+            // The title keeps the TRACKED skeletons' slots in a two-entry
+            // array (82438EB0 writes every TRACKED slot to manager +7740 + 4n):
+            // a third overwrites +7748, a fourth the skeleton thread's stop
+            // flag (+7752). Whatever a Kinect v2 sees -- three to six bodies,
+            // coming, going and changing places, in any order, even ids it
+            // repeats -- at most two skeletons may reach the title, each once,
+            // in a slot of its own; the players stay put while tracked.
+            sfr::KinectPlayerSlots slots_under_test;
+            std::mt19937 random(2024);
+            std::vector<uint32_t> present;  // tracking ids in front of the sensor
+            uint32_t next_id = 1000, frames_checked = 0, most = 0;
+            std::array<uint32_t, 2> before{};
+            const auto tracked_in_guest_frame = [](const sfr::KinectFrame& frame) {
+                // As the skeleton hook writes them (write_kinect_body): each
+                // body in its own sensor slot of a cleared frame.
+                sfr::GuestMemory guest;
+                guest.map(0x30000, 0x1000);
+                sfr::NuiSkeletonEmulation::write_header(guest, 0x30000, 1, 0);
+                sfr::NuiSkeletonEmulation writer;
+                for (const sfr::KinectBody& b : frame.bodies)
+                    writer.write_joints(guest, 0x30000, b.sensor_index % 6, b.tracking_id, b.joints, b.joint_states, b.position);
+                uint32_t tracked = 0;
+                for (uint32_t slot = 0; slot < 6; ++slot)
+                    tracked += guest.load<uint32_t>(0x30000 + sfr::nui_skeleton_data_offset + slot * sfr::nui_skeleton_data_size) ==
+                               sfr::nui_tracked;
+                return tracked;
+            };
+            for (uint32_t step = 0; step < 3000; ++step) {
+                // Someone leaves, someone steps in, keeping three to six around
+                // most of the time (and now and then nobody at all).
+                if (step % 500 == 499) present.clear();
+                if (!present.empty() && random() % 4 == 0) present.erase(present.begin() + random() % present.size());
+                while (present.size() < 3 + random() % 4 && present.size() < 6) present.push_back(next_id++);
+                std::vector<sfr::KinectBody> bodies;
+                std::vector<uint32_t> free_slots = {0, 1, 2, 3, 4, 5};
+                std::shuffle(free_slots.begin(), free_slots.end(), random);
+                for (size_t i = 0; i < present.size(); ++i) {
+                    auto b = body(present[i], float(i));
+                    b.sensor_index = free_slots[i];
+                    bodies.push_back(b);
+                }
+                // The sensor's order changes from frame to frame; once in a
+                // while a v2 hands the same (shortened) id over twice.
+                std::shuffle(bodies.begin(), bodies.end(), random);
+                if (step % 97 == 0 && bodies.size() >= 2) {
+                    bodies.push_back(bodies.front());
+                    bodies.back().sensor_index = (bodies.front().sensor_index + 1) % 6;
+                }
+                sfr::KinectFrame frame;
+                frame.bodies = bodies;
+                slots_under_test.retain(frame);
+                ++frames_checked;
+                most = (std::max)(most, uint32_t(frame.bodies.size()));
+                require(frame.bodies.size() <= 2, "never more than two bodies reach the title");
+                require(tracked_in_guest_frame(frame) <= 2, "never more than two TRACKED skeletons in the title's frame");
+                if (frame.bodies.size() == 2) {
+                    require(frame.bodies[0].tracking_id != frame.bodies[1].tracking_id, "each player once");
+                    require(frame.bodies[0].sensor_index != frame.bodies[1].sensor_index, "each in a slot of its own");
+                }
+                for (const sfr::KinectBody& kept : frame.bodies)
+                    require(std::find(present.begin(), present.end(), kept.tracking_id) != present.end(),
+                            "only someone who is there");
+                // A player who is still there is still a player.
+                for (uint32_t id : before)
+                    if (id && std::find(present.begin(), present.end(), id) != present.end())
+                        require(std::any_of(frame.bodies.begin(), frame.bodies.end(),
+                                            [&](const sfr::KinectBody& kept) { return kept.tracking_id == id; }),
+                                "a tracked player keeps playing while newcomers come and go");
+                before = {};
+                for (size_t i = 0; i < frame.bodies.size() && i < 2; ++i) before[i] = frame.bodies[i].tracking_id;
+            }
+            require(frames_checked == 3000 && most == 2, "two players were seen, never more");
         }
 
         // The frame the title reads: the sensor's floor, its joint states,
@@ -220,40 +298,6 @@ int main() {
                 "a v1 that will not start says more than a missing v2");
 
         {
-            // A sensor pitched up by 15 degrees sees an upright player leaning
-            // back: its up is (0, cos, sin) in its own space. Levelled, the
-            // body is upright again and gravity is straight down.
-            const float t = 15.0f * 3.14159265f / 180.0f, c = std::cos(t), s = std::sin(t);
-            const auto seen = [&](float y, float z) { return std::array<float, 3>{0.0f, y * c - z * s, y * s + z * c}; };
-            sfr::KinectFrame tilted;
-            tilted.gravity = {0.0f, c, s};
-            tilted.floor_plane = {0.0f, c, s, 0.54f};
-            sfr::KinectBody rider;
-            rider.tracking_id = 5;
-            for (auto& joint : rider.joints) joint = seen(0.0f, 2.2f);
-            rider.joints[sfr::nui_joint::hip_center] = seen(0.0f, 2.2f);
-            rider.joints[sfr::nui_joint::head] = seen(0.7f, 2.2f);
-            rider.position = seen(0.0f, 2.2f);
-            tilted.bodies = {rider};
-            require(near(sfr::kinect_level(tilted), 15.0f), "the tilt taken out is the sensor's pitch");
-            const auto& hip = tilted.bodies[0].joints[sfr::nui_joint::hip_center];
-            const auto& head = tilted.bodies[0].joints[sfr::nui_joint::head];
-            require(near(head[2], hip[2]) && near(head[1] - hip[1], 0.7f), "a levelled body stands upright");
-            require(near(tilted.gravity[1], 1.0f) && near(tilted.floor_plane[1], 1.0f) &&
-                    near(tilted.floor_plane[2], 0.0f) && near(tilted.floor_plane[3], 0.54f),
-                    "gravity and the floor are straight up after levelling");
-
-            sfr::KinectFrame upside;
-            upside.gravity = {0.0f, -1.0f, 0.0f};
-            upside.bodies = {rider};
-            require(sfr::kinect_level(upside) == 0.0f && upside.bodies[0].joints[3] == rider.joints[3],
-                    "gravity the other way up is not a tilt to take out");
-            sfr::KinectFrame none;
-            none.bodies = {rider};
-            require(sfr::kinect_level(none) == 0.0f, "a frame without gravity is left alone");
-        }
-
-        {
             using sfr::KinectStep;
             using sfr::KinectStepState;
             const auto state = [](const sfr::KinectReadiness& r, KinectStep step) { return r.steps[size_t(step)]; };
@@ -317,9 +361,60 @@ int main() {
             require(body.joints[joint::hand_right][1] < body.joints[joint::elbow_right][1], "the hand below the elbow");
         }
 
+        // The launcher's Kinect choice (SFR_KINECT_MODEL): 2 is the Kinect
+        // v2; unset, 1 or anything else is the Xbox 360 Kinect.
+        {
+#ifdef _WIN32
+            const auto set_model = [](const char* value) { _putenv_s("SFR_KINECT_MODEL", value); };
+#else
+            const auto set_model = [](const char* value) {
+                if (*value) setenv("SFR_KINECT_MODEL", value, 1);
+                else unsetenv("SFR_KINECT_MODEL");
+            };
+#endif
+            set_model("");
+            require(sfr::kinect_selected_model() == 1, "no model chosen is the Xbox 360 Kinect");
+            set_model("1");
+            require(sfr::kinect_selected_model() == 1, "model 1 is the Xbox 360 Kinect");
+            set_model("2");
+            require(sfr::kinect_selected_model() == 2, "model 2 is the Kinect v2");
+            set_model("3");
+            require(sfr::kinect_selected_model() == 1, "an unknown model is the Xbox 360 Kinect");
+            set_model("");
+        }
+
+        {
+            // Which edges cut a body: names, and what the player should do.
+            using namespace sfr;
+            require(kinect_edges_text(0) == "none", "no edge is none");
+            require(kinect_edges_text(kinect_edge::top) == "top", "top");
+            require(kinect_edges_text(kinect_edge::left | kinect_edge::top) == "top+left", "edges in a fixed order");
+            require(kinect_edges_text(kinect_edge::all) == "top+bottom+left+right", "all four");
+            require(kinect_edge::right == 0x1 && kinect_edge::left == 0x2 && kinect_edge::top == 0x4 && kinect_edge::bottom == 0x8,
+                    "the SDK's FrameEdges values");
+            require(kinect_edges_move(0) == 0, "nothing cut, nothing to do");
+            require(kinect_edges_move(kinect_edge::top) == (kinect_edge_move::step_back | kinect_edge_move::tilt_up), "top: back or tilt up");
+            require(kinect_edges_move(kinect_edge::bottom) == (kinect_edge_move::step_back | kinect_edge_move::tilt_down),
+                    "bottom: back or tilt down");
+            // The picture's left is the player's right (facing the sensor): step to the player's own left.
+            require(kinect_edges_move(kinect_edge::left) == kinect_edge_move::player_left, "picture left: the player's left");
+            require(kinect_edges_move(kinect_edge::right) == kinect_edge_move::player_right, "picture right: the player's right");
+            require(kinect_edges_move(kinect_edge::left | kinect_edge::right) == kinect_edge_move::step_back, "both sides: step back");
+            require(kinect_edges_move(kinect_edge::top | kinect_edge::bottom) == kinect_edge_move::step_back, "both ends: step back");
+            require(kinect_edges_move(kinect_edge::top | kinect_edge::left) ==
+                        (kinect_edge_move::step_back | kinect_edge_move::tilt_up | kinect_edge_move::player_left), "a corner needs both");
+            KinectBody body;
+            require(body.clipped_edges == 0, "a body (a v1's) is not cut by default");
+        }
+
         std::string why;
-        if (!sfr::KinectSensor::supported())
+        if (!sfr::KinectSensor::supported()) {
             require(!sfr::KinectSensor::open(&why) && !why.empty(), "a platform without a runtime says why");
+            why.clear();
+            require(!sfr::KinectSensor::open_selected(1, &why) && !why.empty(), "the Xbox 360 choice says why it found nothing");
+            why.clear();
+            require(!sfr::KinectSensor::open_selected(2, &why) && !why.empty(), "the Kinect v2 choice says why it found nothing");
+        }
     } catch (const std::exception& error) {
         std::cerr << "kinect_sensor_test: " << error.what() << '\n';
         return 1;

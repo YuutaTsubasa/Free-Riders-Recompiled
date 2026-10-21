@@ -9,4 +9,9 @@ std::unique_ptr<KinectSensor> KinectSensor::open(std::string* why) {
     return nullptr;
 }
 
+std::unique_ptr<KinectSensor> KinectSensor::open_model(int, std::string* why) {
+    if (why) *why = "unsupported-platform";
+    return nullptr;
+}
+
 }

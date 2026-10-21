@@ -1,4 +1,6 @@
 #pragma once
+#include "kinect_ideal_diagram.h"
+
 #include <cstdint>
 #include <filesystem>
 #include <map>
@@ -60,8 +62,10 @@ struct LauncherSettings {
     // gamepad drives; "camera" tracks a real body with a webcam, which cannot
     // share the pad's sticks, so the two are one choice. "picture" keeps the
     // pad in charge and only gives the title a camera image.
-    // "kinect" is a real Kinect tracking the players, as on the console.
-    std::string camera = "off";      // "off", "picture", "motion" or "kinect"
+    // "kinect" is a real Xbox 360 Kinect tracking the players, as on the
+    // console (a Kinect v2 stands in when no v1 opens); "kinect_v2" is a
+    // Kinect v2 for Xbox One only.
+    std::string camera = "off";      // "off", "picture", "motion", "kinect" or "kinect_v2"
     // Which of the host's cameras, by the name it lists (SFR_CAMERA_DEVICE).
     // A name and not a number, because the list changes: a phone camera or a
     // capture card comes and goes, and the number then means another camera.
@@ -71,18 +75,28 @@ struct LauncherSettings {
     // it is a setting: with it wrong, left and right are the wrong way
     // round and the cursor runs off the side of the screen.
     bool camera_mirror = false;   // SFR_CAMERA_MIRROR
-    // A real Kinect's tuning (Issue #97). Smoothing steadies a v2's joints
-    // (v1's SDK smooths its own when asked); the lean is the steering a body
-    // lean gives, as a percent of the most; the crouch is how far the hips
-    // drop for a crouch, in centimetres. The defaults are the game's own.
-    bool kinect_smooth = true;      // SFR_KINECT_SMOOTH=0 when off
-    uint32_t kinect_lean = 100;     // SFR_KINECT_LEAN_SCALE = 3.5 x percent
-    uint32_t kinect_crouch_cm = 15; // SFR_KINECT_CROUCH_DEPTH in metres
+    // A real Kinect has no tuning here any more: the game smooths its
+    // skeletons once as the title asks (an old kinect_smooth key is ignored),
+    // and its own depth detectors decide lean and crouch.
     // The menu cursor's steadying (pose_stability.h), webcam and Kinect: the
     // circle a hand held still may wander in without moving the cursor, in
     // millimetres; 0 turns it off. SFR_MENU_STEADY_RADIUS and
     // SFR_MENU_HAND_STEADY.
-    uint32_t menu_steady_radius = 8;
+    uint32_t menu_steady_radius = 0;
+    // How a Kinect v2's depth becomes the v1's (SFR_KINECT_V2_DEPTH_VIEW):
+    // "ideal" (Recompiled, the launcher's default: a virtual level v1 that
+    // follows the players), "fit" (Simulated, the v2's whole view fitted into
+    // the v1's) or "sensor" (Original, the v2's own view). The game itself,
+    // without the variable, still makes fit (KinectDepthSettings); only the
+    // launcher's default is Recompiled. Recompiled's own tuning, in centimetres
+    // (follow in tenths of a second): how far in front of the players the
+    // virtual camera stands, how high above the floor, how slowly it follows,
+    // the dead band it ignores.
+    std::string kinect_v2_view = "ideal";
+    uint32_t kinect_v2_distance = 250;         // 100..400
+    uint32_t kinect_v2_height = 100;           // 20..200
+    uint32_t kinect_v2_follow = 20;            // 2..200
+    uint32_t kinect_v2_deadband = 15;          // 0..100
     // Voice commands through the host's speech recognizer and the default
     // microphone (a Kinect's array, made the default, is heard), in English
     // or Traditional Chinese; the pad's buttons still say them too.
@@ -153,6 +167,11 @@ std::filesystem::path resolved_save_directory(const LauncherSettings& settings,
                                               const std::filesystem::path& launcher_directory);
 // Whether a saves' folder holds a game save (<player>/00000001/SfrAllData.sav/).
 bool has_game_save(const std::filesystem::path& save_directory);
+
+// A Kinect v2's depth view and Recompiled's tuning in metres and seconds,
+// for the launcher's preview (kinect_ideal_diagram.h): the same values
+// game_environment hands the game for Recompiled.
+KinectDepthChoice launcher_kinect_depth_choice(const LauncherSettings& settings);
 
 // The game's environment for these settings: the play defaults (no
 // diagnostic limits or traces, 60 fps cap) plus the player's choices. An

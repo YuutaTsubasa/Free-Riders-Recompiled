@@ -167,12 +167,18 @@ Kinect 為選用功能；使用手把或鍵盤遊玩，不需要感測器，也�
 | Xbox 360 版 Kinect／Kinect for Windows 第一代 | SDK 1.8 與供電 USB 連接；Xbox 360 版需完整 SDK，Kinect for Windows 第一代可用 Runtime 1.8 | 已在 Windows 10 上用 Xbox 360 版 Kinect 實際跑完比賽 |
 | Kinect v2／Xbox One 版 Kinect | SDK 2.0、USB 3.0 與相容的 PC 電源轉接器 | 實驗性支援；已實作骨架追蹤，仍待實機遊玩驗證 |
 
-安裝對應 SDK 並連接感測器後，在啟動器的 **體感與攝影機 → 攝影機** 設定選擇 **Kinect**，
-再按 **開啟預覽** 確認追蹤狀態。兩代共用同一個選項：程式先嘗試 v1，再嘗試 v2。
+安裝對應 SDK 並連接感測器後，在啟動器的 **體感與攝影機 → 攝影機** 設定選擇 **Kinect（Xbox 360）** 或
+**Kinect v2（Xbox One）**，再按 **開啟預覽** 確認追蹤狀態。兩個選項各自只開對應的那一代，
+兩種感測器都接上時可指定要用 v2。舊的 `settings.ini`（`camera=kinect`）若只接了 v2 仍可使用：
+找不到 Xbox 360 版時會改用 v2，`game.log` 會註明。「平滑」選項已移除：遊戲會照原版要求 Kinect 函式庫的濾波器與參數，
+把實體 Kinect（v1 與 v2）的骨架平滑一次。
+Kinect v2 一律把自己的深度換成 Kinect v1 格式的深度影像交給遊戲。跟主機一樣，Kinect 的比賽輸入
+永遠來自遊戲自己的判斷器：傾身、蹲下、跳躍讀深度影像（蹲下與跳躍也讀骨架的髖部），其他動作與選單讀骨架，
+電腦端沒有任何替代判定；深度打不開時遊戲就沒有深度，
+`game.log` 與 launcher 的 Kinect 預覽會說明原因。
 請讓全身進入感測器範圍，並預留足夠的活動空間。
 
-Kinect v1 可提供骨架、深度與彩色影像；目前的 v2 支援只提供骨架，並以骨架補足
-轉向與蹲跳判定。實體 Kinect 輸入僅支援 Windows，Linux 與 Android 發行包尚未提供。
+Kinect v1 可提供骨架、深度與彩色影像；v2 交給遊戲的有骨架與由自身深度換算的深度影像；v2 的彩色與深度影像會顯示在 launcher 的預覽視窗（尚未實機驗證）。實體 Kinect 輸入僅支援 Windows，Linux 與 Android 發行包尚未提供。
 
 SDK 下載、轉接器需求與疑難排解見 [Kinect 感測器使用說明](docs/kinect-sensor.md)。
 若要使用一般攝影機進行體感操作，請看下一節。

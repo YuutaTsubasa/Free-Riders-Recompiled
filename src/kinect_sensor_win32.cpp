@@ -1,4 +1,5 @@
 #include "kinect_sensor.h"
+#include "kinect_record.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -131,6 +132,7 @@ public:
     }
 
     const char* model() const override { return "Kinect v1"; }
+    std::string depth_failure() const override { return depth_failure_; }
     bool has_depth_stream() const override { return streams_[0].handle != nullptr; }
     bool has_colour_stream() const override { return streams_[1].handle != nullptr; }
 
@@ -165,12 +167,11 @@ public:
         if (const char* text = std::getenv("SFR_KINECT_V1_FLAGS"); text && *text)
             flags = DWORD(std::strtoul(text, nullptr, 0)) | nui_initialize_flag_uses_skeleton;
         // The depth (with the player index) and colour cameras as well, for
-        // the title's own depth view and camera image; SFR_KINECT_DEPTH=0
-        // opens the skeleton alone.
-        const char* images = std::getenv("SFR_KINECT_DEPTH");
-        const bool with_images = !(images && *images == '0') && get(image_open_, "NuiImageStreamOpen") &&
-                                 get(image_next_, "NuiImageStreamGetNextFrame") &&
+        // the title's own depth view and camera image, always: the race reads
+        // the title's depth detectors, as on the console.
+        const bool with_images = get(image_open_, "NuiImageStreamOpen") && get(image_next_, "NuiImageStreamGetNextFrame") &&
                                  get(image_release_, "NuiImageStreamReleaseFrame");
+        if (!with_images) depth_failure_ = "no-image-api";
         if (with_images) flags |= nui_initialize_flag_uses_depth_and_player_index | nui_initialize_flag_uses_color;
         const char* read = std::getenv("SFR_KINECT_V1_READ");
         wait_in_sdk_ = !(read && std::string_view(read) == "event");
@@ -192,7 +193,10 @@ public:
         if (with_images)
             for (ImageStream& stream : streams_) {
                 const HRESULT result = image_open_(stream.type, stream.resolution, 0, 2, nullptr, &stream.handle);
-                if (FAILED(result)) stream.handle = nullptr;
+                if (FAILED(result)) {
+                    stream.handle = nullptr;
+                    if (stream.type == 0) depth_failure_ = "stream-" + hresult(result);
+                }
                 std::cerr << "NATIVE_KINECT_IMAGE_OPEN type=" << stream.type << " width=" << stream.width
                           << " height=" << stream.height << " result=" << hresult(result) << std::endl;
             }
@@ -241,6 +245,8 @@ private:
         uint64_t frames = 0, tracked = 0, waits = 0, failures = 0;
         HRESULT last_failure = S_OK;
         auto reported = std::chrono::steady_clock::now();
+        // SFR_KINECT_RECORD (kinect_record.h): every frame, before smoothing.
+        const bool recording = kinect_record_skeletons() != nullptr;
         // Every five seconds, frames or not: a sensor that opens but sends
         // nothing (in use by another program, short of power, on a USB
         // controller it does not get on with) says so instead of staying
@@ -253,6 +259,7 @@ private:
             if (failures) std::cerr << " last_error=" << hresult(last_failure);
             if (streams_[0].handle || streams_[1].handle)
                 std::cerr << " depth_frames=" << image_frames_[0].exchange(0) << " colour_frames=" << image_frames_[1].exchange(0);
+            std::cerr << kinect_record_queue_status();  // recordings dropped for a slow disk, queued
             if (!frames && !failures) std::cerr << " (no skeleton frames: close any other program using the Kinect)";
             std::cerr << std::endl;
             reported = now;
@@ -274,6 +281,7 @@ private:
                 continue;
             }
             frame.captured_at = std::chrono::steady_clock::now();
+            if (recording) record(raw);
             if (smooth_ && smooth_frames_) smooth_(&raw, &smoothing);
             frame.floor_plane = {raw.floor_clip_plane.x, raw.floor_clip_plane.y, raw.floor_clip_plane.z,
                                  raw.floor_clip_plane.w};
@@ -302,6 +310,45 @@ private:
         }
     }
 
+    // One skeleton frame as the SDK gave it, into the recording: its own
+    // frame number and timestamp (liTimeStamp, milliseconds), the floor and
+    // gravity, every fully tracked skeleton, and the newest depth image's
+    // share of pixels without a depth.
+    void record(const NuiSkeletonFrame& raw) {
+        KinectRecordFrame out;
+        out.steady_us = kinect_record_now_us();
+        out.sensor = "v1";
+        out.frame = raw.frame_number;
+        out.sdk_time = raw.timestamp.QuadPart;
+        out.floor = {raw.floor_clip_plane.x, raw.floor_clip_plane.y, raw.floor_clip_plane.z, raw.floor_clip_plane.w};
+        out.gravity = {raw.normal_to_gravity.x, raw.normal_to_gravity.y, raw.normal_to_gravity.z};
+        {
+            std::lock_guard guard(lock_);
+            if (depth_quality_frame_ && out.steady_us - depth_quality_us_ <= 1000000) {
+                out.depth_invalid = depth_invalid_;
+                out.depth_frame = depth_quality_frame_;
+                out.depth_steady_us = depth_quality_us_;
+            }
+        }
+        for (uint32_t index = 0; index < uint32_t(nui_skeleton_count); ++index) {
+            const auto& skeleton = raw.skeletons[index];
+            if (skeleton.tracking_state != nui_skeleton_tracked || !skeleton.tracking_id) continue;
+            KinectRecordBody& body = out.bodies.emplace_back();
+            body.sensor_index = index;
+            body.tracking_id = skeleton.tracking_id;
+            body.has_position = true;
+            body.position = {skeleton.position.x, skeleton.position.y, skeleton.position.z};
+            std::array<std::array<float, 3>, 20> joints{};
+            std::array<int, 20> states{};
+            for (int j = 0; j < nui_position_count; ++j) {
+                joints[j] = {skeleton.positions[j].x, skeleton.positions[j].y, skeleton.positions[j].z};
+                states[j] = skeleton.position_states[j];
+            }
+            kinect_record_from_v1(joints, states, body);
+        }
+        kinect_record_skeleton_frame(out);
+    }
+
     // The newest frame of each open camera, if one has come since the last
     // look: the SDK keeps two, so reading at the skeleton's pace keeps up.
     void read_images() {
@@ -317,12 +364,27 @@ private:
                     scratch_.resize(size_t(row) * stream.height);
                     for (uint32_t y = 0; y < stream.height; ++y)
                         std::memcpy(scratch_.data() + size_t(y) * row, locked.bits + size_t(y) * locked.pitch, row);
+                    // The depth image's share of pixels without a depth, for
+                    // a recording (another sensor's light shows there first).
+                    float invalid = -1;
+                    if (i == 0 && stream.bytes_per_pixel == 2)
+                        invalid = kinect_depth_invalid_ratio(reinterpret_cast<const uint16_t*>(scratch_.data()),
+                                                             size_t(stream.width) * stream.height, 3);
                     std::lock_guard guard(lock_);
+                    if (invalid >= 0) {
+                        depth_invalid_ = invalid;
+                        ++depth_quality_frame_;
+                        depth_quality_us_ = kinect_record_now_us();
+                    }
                     KinectImage& latest = images_[i];
                     latest.width = stream.width;
                     latest.height = stream.height;
                     latest.bytes_per_pixel = stream.bytes_per_pixel;
                     latest.pixels.swap(scratch_);
+                    // Its clocks, for a depth recording (kinect_record_depth.h).
+                    latest.steady_us = kinect_record_now_us();
+                    latest.sdk_time = frame->timestamp.QuadPart;
+                    latest.sdk_frame = frame->frame_number;
                     ++latest.number;
                     ++image_frames_[i];
                 }
@@ -340,14 +402,13 @@ private:
     NuiSkeletonGetNextFrame next_frame_ = nullptr;
     NuiTransformSmooth smooth_ = nullptr;
     // The console's runtime hands the title its frames as tracked, and the
-    // title smooths them itself if it wants to (NuiTransformSmooth is part of
-    // the NUI library it links); smoothing here as well would add a frame of
-    // latency on top. SFR_KINECT_SMOOTH=1 smooths anyway, for sfr_kinect_probe
-    // or a jittery sensor.
-    bool smooth_frames_ = [] {
-        const char* value = std::getenv("SFR_KINECT_SMOOTH");
-        return value && *value == '1';
-    }();
+    // title smooths them itself (NuiTransformSmooth, part of the NUI library
+    // it links, done natively in nui_smooth_hooks.cpp); smoothing here as
+    // well would add a frame of latency on top. SFR_KINECT_SMOOTH=1
+    // (kinect_host_smoothing) smooths here instead, for sfr_kinect_probe
+    // --smooth; the game then leaves its own out.
+    bool smooth_frames_ = kinect_host_smoothing();
+    std::string depth_failure_;  // set while starting, before the worker runs
     NuiCameraElevationGetAngle elevation_get_ = nullptr;
     NuiCameraElevationSetAngle elevation_set_ = nullptr;
     NuiImageStreamOpen image_open_ = nullptr;
@@ -357,6 +418,10 @@ private:
     std::array<KinectImage, 2> images_{};
     std::array<std::atomic<uint32_t>, 2> image_frames_{};
     std::vector<uint8_t> scratch_;
+    // The newest depth image's quality, under lock_ (record()).
+    float depth_invalid_ = -1;
+    uint64_t depth_quality_frame_ = 0;
+    int64_t depth_quality_us_ = 0;
     std::mutex lock_;
     KinectFrame latest_;
     uint64_t taken_ = 0;
@@ -376,6 +441,16 @@ std::unique_ptr<KinectSensor> KinectSensor::open(std::string* why) {
     if (auto sensor = std::make_unique<WindowsKinect>(); sensor->start(&v1_why)) return sensor;
     if (auto sensor = open_kinect_v2(&v2_why)) return sensor;
     if (why) *why = kinect_open_failure(v1_why, v2_why);
+    return nullptr;
+}
+
+std::unique_ptr<KinectSensor> KinectSensor::open_model(int model, std::string* why) {
+    if (model == 1) {
+        if (auto sensor = std::make_unique<WindowsKinect>(); sensor->start(why)) return sensor;
+        return nullptr;
+    }
+    if (model == 2) return open_kinect_v2(why);
+    if (why) *why = "unknown-model";
     return nullptr;
 }
 

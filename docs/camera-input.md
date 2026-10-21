@@ -7,16 +7,19 @@
 
 ## 三種設定
 
-launcher「體感與攝影機」分頁的「攝影機」（`SFR_CAMERA`）有三種 webcam 設定，Windows 另有實體 Kinect：
+launcher「體感與攝影機」分頁的「攝影機」（`SFR_CAMERA`）有三種 webcam 設定，Windows 另有兩種實體 Kinect：
 
 | 設定 | `SFR_CAMERA` | 畫面 | 誰在操作 |
 | --- | --- | --- | --- |
 | 關閉 | 空白 | 不開攝影機 | 手把 |
 | 畫面 | `picture` | 開攝影機，交給遊戲顯示 | 手把 |
-| 體感 | `motion` | 開攝影機 | 攝影機姿勢，手把操作時優先接手 |
-| Kinect | `kinect` | 實體 Kinect（Windows） | Kinect 追蹤到的身體，見 [實體 Kinect](kinect-sensor.md) |
+| Webcam | `motion` | 開攝影機 | 攝影機姿勢，手把操作時優先接手 |
+| Kinect（Xbox 360） | `kinect` + `SFR_KINECT_MODEL=1` | 實體 Xbox 360 版 Kinect（Windows）；找不到時改用接上的 v2 | Kinect 追蹤到的身體，見 [實體 Kinect](kinect-sensor.md) |
+| Kinect v2（Xbox One） | `kinect` + `SFR_KINECT_MODEL=2` | 實體 Kinect v2（Windows），只開 v2 | 同上 |
 
-「體感」保留原本的手把與鍵盤操作。每次提交完整骨架時只選一個來源，
+launcher 設定檔裡這兩項分別存成 `camera=kinect` 與 `camera=kinect_v2`；遊戲端一律以 `SFR_CAMERA=kinect` 判斷是否選了實體 Kinect。實體 Kinect 的比賽輸入（傾身、蹲下、跳躍、側移）永遠來自遊戲自己的深度判斷器，沒有骨架備援；這裡的 `CameraRaceMotion` 只用在 webcam。
+
+「Webcam」保留原本的手把與鍵盤操作。每次提交完整骨架時只選一個來源，
 避免攝影機與手把同時拉動同一位玩家；接手規則見下方「兩位玩家」。
 
 ## 從畫面到骨架
@@ -75,7 +78,7 @@ launcher「體感與攝影機」分頁的「攝影機」（`SFR_CAMERA`）有三
 
 ## 骨架 Debug 視窗（Windows）
 
-launcher 選擇「攝影機 → 體感」後，可開啟「骨架 Debug 視窗」
+launcher 選擇「攝影機 → Webcam」後，可開啟「骨架 Debug 視窗」
 （英文介面為 **Skeleton debug window**）。預設關閉，設定存為
 `settings.ini` 的 `camera_debug=0/1`，會在下次啟動遊戲時套用；遊戲已經
 執行中時，必須重新啟動才會套用變更。
@@ -266,7 +269,8 @@ Camera 持續動作以主機單調時鐘計時；遊戲計時欄位實際可為 
 
 - 攝影機的畫面還沒接到遊戲自己的 NUI 影像串流（`82768C40`），所以「畫面」
   目前只是把相機打開。
-- 真正的 Kinect 感測器見 [實體 Kinect](kinect-sensor.md)（Windows，`SFR_CAMERA=kinect`）。
+- 真正的 Kinect 感測器見 [實體 Kinect](kinect-sensor.md)（Windows，`SFR_CAMERA=kinect`）。Kinect v2 的預覽視窗會提示身體被畫面哪一邊切到
+  （只顯示與寫 log／錄製，不影響遊戲輸入），見該文件「預覽視窗」。
 - Android 的遊戲還沒把姿勢模型打包進 APK（手機鏡頭的擷取已經有了，見下方）。
 
 ## Android：手機自己的鏡頭

@@ -24,6 +24,12 @@ std::string value_of(const sfr::LauncherSettings& settings, const std::string& n
     throw std::runtime_error("variable missing from the game environment");
 }
 
+bool exports(const sfr::LauncherSettings& settings, const std::string& name) {
+    for (const auto& entry : sfr::game_environment(settings, {}))
+        if (entry.first == name) return true;
+    return false;
+}
+
 void settings_round_trip() {
     sfr::LauncherSettings settings;
     settings.window_width = 1920;
@@ -116,20 +122,21 @@ void graphics_backend_settings() {
 }
 
 void kinect_tuning_settings() {
-    const sfr::LauncherSettings defaults;
-    require(defaults.kinect_smooth && defaults.kinect_lean == 100 && defaults.kinect_crouch_cm == 15,
-            "Kinect tuning defaults to the game's own behaviour");
-    for (const char* name : {"SFR_KINECT_SMOOTH", "SFR_KINECT_LEAN_SCALE", "SFR_KINECT_CROUCH_DEPTH"})
-        require(value_of(defaults, name).empty(), "at the defaults the game decides for itself");
-    const auto tuned = sfr::parse_launcher_settings(sfr::format_launcher_settings(sfr::parse_launcher_settings(
-        "kinect_smooth=0\nkinect_lean=50\nkinect_crouch_cm=20\n")));
-    require(!tuned.kinect_smooth && tuned.kinect_lean == 50 && tuned.kinect_crouch_cm == 20,
-            "Kinect tuning survives a save and a load");
-    require(value_of(tuned, "SFR_KINECT_SMOOTH") == "0", "smoothing off reaches the game");
-    require(value_of(tuned, "SFR_KINECT_LEAN_SCALE") == "1.75", "half the lean is half of 3.5");
-    require(value_of(tuned, "SFR_KINECT_CROUCH_DEPTH") == "0.2", "twenty centimetres are 0.2 metres");
-    const auto odd = sfr::parse_launcher_settings("kinect_lean=5\nkinect_crouch_cm=40\n");
-    require(odd.kinect_lean == 100 && odd.kinect_crouch_cm == 15, "values outside the sliders are ignored");
+    // The v2 smoothing switch, lean sensitivity, crouch depth and the v2
+    // depth switch are gone (the game smooths a real Kinect's skeletons once,
+    // as the title asks): an old settings.ini with them still loads, the old
+    // keys are ignored, not saved again, and nothing is exported for them.
+    require(!exports(sfr::LauncherSettings{}, "SFR_KINECT_SMOOTH"), "the launcher never sets the backends' smoothing");
+    for (const char* text : {"kinect_smooth=0\ncamera=kinect_v2\n", "kinect_smooth=1\ncamera=kinect_v2\n",
+                             "kinect_v2_depth=1\nkinect_lean=60\nkinect_crouch_cm=20\ncamera=kinect_v2\nkinect_smooth=0\n"}) {
+        const auto old = sfr::parse_launcher_settings(text);
+        require(old.camera == "kinect_v2", "old Kinect keys leave the rest alone");
+        const std::string saved = sfr::format_launcher_settings(old);
+        for (const char* key : {"kinect_smooth", "kinect_v2_depth", "kinect_lean", "kinect_crouch_cm"})
+            require(saved.find(key) == std::string::npos, "an old Kinect key is not saved again");
+        for (const char* name : {"SFR_KINECT_SMOOTH", "SFR_KINECT_V2_DEPTH", "SFR_KINECT_LEAN_SCALE", "SFR_KINECT_CROUCH_DEPTH"})
+            require(!exports(old, name), "no removed Kinect switch reaches the game");
+    }
 }
 
 void runtime_render_scale() {
@@ -545,10 +552,10 @@ void save_directory_settings() {
 
 void menu_steady_settings() {
     const sfr::LauncherSettings defaults;
-    require(sfr::format_launcher_settings(defaults).find("menu_steady_radius=8\n") != std::string::npos,
-            "the menu cursor steadying defaults to an 8 mm circle");
-    require(value_of(defaults, "SFR_MENU_HAND_STEADY") == "1" && value_of(defaults, "SFR_MENU_STEADY_RADIUS") == "8",
-            "the default circle reaches the game");
+    require(sfr::format_launcher_settings(defaults).find("menu_steady_radius=0\n") != std::string::npos,
+            "the menu cursor steadying defaults to off");
+    require(value_of(defaults, "SFR_MENU_HAND_STEADY") == "0" && value_of(defaults, "SFR_MENU_STEADY_RADIUS").empty(),
+            "the default (off) reaches the game");
     const auto wide = sfr::parse_launcher_settings("menu_steady_radius=15\n");
     require(wide.menu_steady_radius == 15 && value_of(wide, "SFR_MENU_STEADY_RADIUS") == "15" &&
                 sfr::format_launcher_settings(wide).find("menu_steady_radius=15\n") != std::string::npos,
@@ -557,8 +564,60 @@ void menu_steady_settings() {
     require(value_of(off, "SFR_MENU_HAND_STEADY") == "0" && value_of(off, "SFR_MENU_STEADY_RADIUS").empty(),
             "0 starts the steadying off");
     for (const char* bad : {"31", "-1", "big"})
-        require(sfr::parse_launcher_settings(std::string("menu_steady_radius=") + bad + "\n").menu_steady_radius == 8,
+        require(sfr::parse_launcher_settings(std::string("menu_steady_radius=") + bad + "\n").menu_steady_radius == 0,
                 "an out-of-range circle keeps the default");
+}
+
+void kinect_v2_view_settings() {
+    const sfr::LauncherSettings defaults;
+    require(defaults.kinect_v2_view == "ideal" && value_of(defaults, "SFR_KINECT_V2_DEPTH_VIEW").empty(),
+            "the view only reaches the game with a Kinect v2 chosen");
+    auto chosen = sfr::parse_launcher_settings("camera=kinect_v2\n");
+    require(value_of(chosen, "SFR_KINECT_V2_DEPTH_VIEW") == "ideal" &&
+                value_of(chosen, "SFR_KINECT_V2_DEPTH_DISTANCE") == "2.50" &&
+                value_of(chosen, "SFR_KINECT_V2_DEPTH_HEIGHT") == "1.00" &&
+                value_of(chosen, "SFR_KINECT_V2_DEPTH_FOLLOW") == "2.00" &&
+                value_of(chosen, "SFR_KINECT_V2_DEPTH_DEADBAND") == "0.15" &&
+                value_of(chosen, "SFR_KINECT_V2_SKELETON_DISTANCE").empty(),
+            "Recompiled is the default and sends its default tuning");
+    chosen = sfr::parse_launcher_settings("camera=kinect_v2\nkinect_v2_view=fit\n");
+    require(value_of(chosen, "SFR_KINECT_V2_DEPTH_VIEW") == "fit" && value_of(chosen, "SFR_KINECT_V2_DEPTH_DISTANCE").empty(),
+            "Simulated sends no Recompiled tuning");
+    require(sfr::parse_launcher_settings("camera=kinect_v2\nkinect_v2_view=fit\n").kinect_v2_view == "fit" &&
+                sfr::format_launcher_settings(chosen).find("kinect_v2_view=fit\n") != std::string::npos,
+            "a saved Simulated stays Simulated under the new default");
+    chosen = sfr::parse_launcher_settings(
+        "camera=kinect_v2\nkinect_v2_view=ideal\nkinect_v2_distance=300\nkinect_v2_height=95\n"
+        "kinect_v2_follow=35\nkinect_v2_deadband=0\n");
+    require(value_of(chosen, "SFR_KINECT_V2_DEPTH_VIEW") == "ideal" &&
+                value_of(chosen, "SFR_KINECT_V2_DEPTH_DISTANCE") == "3.00" &&
+                value_of(chosen, "SFR_KINECT_V2_DEPTH_HEIGHT") == "0.95" &&
+                value_of(chosen, "SFR_KINECT_V2_DEPTH_FOLLOW") == "3.50" &&
+                value_of(chosen, "SFR_KINECT_V2_DEPTH_DEADBAND") == "0.00" &&
+                value_of(chosen, "SFR_KINECT_V2_SKELETON_DISTANCE").empty(),
+            "Recompiled's tuning reaches the game in metres and seconds");
+    const std::string saved = sfr::format_launcher_settings(chosen);
+    require(saved.find("kinect_v2_view=ideal\n") != std::string::npos &&
+                saved.find("kinect_v2_skeleton_distance") == std::string::npos,
+            "the view and its tuning survive a save");
+    require(value_of(sfr::parse_launcher_settings("camera=kinect\nkinect_v2_view=ideal\n"), "SFR_KINECT_V2_DEPTH_VIEW").empty(),
+            "the Xbox 360 choice sends no v2 view");
+    require(sfr::parse_launcher_settings("kinect_v2_view=player\n").kinect_v2_view == "ideal",
+            "an unknown view keeps the default");
+    require(sfr::parse_launcher_settings("kinect_v2_distance=9000\n").kinect_v2_distance == 250,
+            "an out-of-range distance keeps the default");
+    // The preview's choice: the same numbers the game is handed.
+    const auto choice = sfr::launcher_kinect_depth_choice(chosen);
+    require(choice.view == sfr::KinectDepthChoiceView::ideal && choice.distance == 3.0f && choice.height == 0.95f &&
+                choice.follow == 3.5f && choice.deadband == 0.0f && choice.skeleton_distance == 0.0f,
+            "the preview gets Recompiled's tuning in metres and seconds");
+    require(sfr::launcher_kinect_depth_choice(sfr::LauncherSettings{}) == sfr::KinectDepthChoice{},
+            "the launcher's defaults are the preview's");
+    require(sfr::launcher_kinect_depth_choice(sfr::parse_launcher_settings("kinect_v2_view=fit\n")).view ==
+                    sfr::KinectDepthChoiceView::fit &&
+                sfr::launcher_kinect_depth_choice(sfr::parse_launcher_settings("kinect_v2_view=sensor\n")).view ==
+                    sfr::KinectDepthChoiceView::sensor,
+            "Simulated and Original");
 }
 
 void motion_trace_settings() {
@@ -671,6 +730,27 @@ void malformed_values_keep_defaults() {
     const sfr::LauncherSettings defaults;
     require(read.camera == defaults.camera, "an unknown camera choice keeps the default");
     require(sfr::parse_launcher_settings("camera=kinect\n").camera == "kinect", "a real Kinect is a camera choice");
+    require(sfr::parse_launcher_settings("camera=kinect_v2\n").camera == "kinect_v2", "a Kinect v2 is a camera choice of its own");
+    require(sfr::parse_launcher_settings("camera=Kinect_v3\n").camera == defaults.camera, "another Kinect name keeps the default");
+    for (const char* choice : {"kinect", "kinect_v2"}) {
+        sfr::LauncherSettings chosen;
+        chosen.camera = choice;
+        require(sfr::parse_launcher_settings(sfr::format_launcher_settings(chosen)).camera == choice,
+                "a Kinect choice survives saving and reading");
+    }
+    {
+        sfr::LauncherSettings v1, v2, none;
+        v1.camera = "kinect";
+        v2.camera = "kinect_v2";
+        require(value_of(v1, "SFR_CAMERA") == "kinect" && value_of(v1, "SFR_KINECT_MODEL") == "1",
+                "the Xbox 360 Kinect reaches the game as the Kinect with model 1");
+        require(value_of(v2, "SFR_CAMERA") == "kinect" && value_of(v2, "SFR_KINECT_MODEL") == "2",
+                "the Kinect v2 reaches the game as the Kinect with model 2");
+        require(value_of(none, "SFR_KINECT_MODEL").empty(), "no Kinect chosen leaves the model alone");
+        none.camera = "motion";
+        require(value_of(none, "SFR_CAMERA") == "motion" && value_of(none, "SFR_KINECT_MODEL").empty(),
+                "the webcam choices do not name a Kinect model");
+    }
     require(sfr::parse_launcher_settings("camera_device=" + std::string(200, 'x') + "\n").camera_device == defaults.camera_device,
             "a name longer than any camera has keeps the default");
     require(read.window_width == defaults.window_width && read.window_height == defaults.window_height,
@@ -864,6 +944,7 @@ int main() {
         camera_debug_settings();
         motion_trace_settings();
         menu_steady_settings();
+        kinect_v2_view_settings();
         save_directory_settings();
         title_stats_settings();
         race_frameskip_settings();
