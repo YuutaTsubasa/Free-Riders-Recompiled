@@ -177,6 +177,10 @@ Galaxy A55（Xclipse 530，驅動 24.0.539/545）編第一條管線（頂點著�
 不足把程式收掉。拿掉迴圈後 455 條 14 秒編完（最慢的一條 253 ms）。描述符索引、device address、
 clip distance 的測試開關都沒用。Firebase Test Lab 的 a55xzh（Galaxy A55）可以重現。
 
+Intel GPU（vendor 0x8086）也一律拿掉。有迴圈時一格比賽的 GPU 時間是 115–185 ms，而且跟解析度無關
+（Issue #134，HD 5500）；拿掉後在 UHD 620（Linux、Mesa 26.2）上是 20–36 ms，比賽從約 7 fps 變成全速
+（略過繪製補上）（Issue #239）。Intel 只走 Vulkan 時才有影響（Windows 預設的 D3D12 不受影響）。
+
 準備管線時，一條配方（recipe）超過 5 秒就記 `PIPELINE_PREWARM slow recipe=<n> of=<total>
 step=shaders|pipeline vs=<hash> ps=<hash> seconds=<s> resident_mb=<MB>`（之後 10、20、40 秒…再記），
 每 10 秒記一次 `PIPELINE_PREWARM progress=`，完成時記最慢的一條；Android 上也寫進 logcat。

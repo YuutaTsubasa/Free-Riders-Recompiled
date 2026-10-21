@@ -500,15 +500,21 @@ void NativeGraphics::initialize() {
     // MB on the first pipeline with such a loop, then asserts in its
     // assembler (SCGenerateLongBranch); the game sat at "0 of 455" until
     // Android killed it for memory (Issue #224, Galaxy A55, driver 24.0.5xx).
-    // Without the loops it prepared all 455 in 14 s. SFR_TEST_DISPATCH_LOOP=0
-    // keeps the loops on these, =1 takes them out on any Vulkan device.
+    // Without the loops it prepared all 455 in 14 s. Intel's GPUs (vendor
+    // 0x8086) spent 115-185 ms of GPU time on a race frame with the loops,
+    // whatever the resolution (Issue #134, HD 5500), and 20-36 ms without them
+    // (Issue #239, UHD 620, Mesa 26.2: a race at full speed instead of ~7 fps).
+    // SFR_TEST_DISPATCH_LOOP=0 keeps the loops on these, =1 takes them out on
+    // any Vulkan device.
     bool without_dispatch_loop = false;
     if (backend == GraphicsBackend::vulkan) {
 #if defined(__APPLE__)
         without_dispatch_loop = true;
 #endif
         constexpr uint32_t samsung_vendor = 0x144d;
-        if (uint32_t(render_device->getDescription().vendor) == samsung_vendor) without_dispatch_loop = true;
+        constexpr uint32_t intel_vendor = 0x8086;
+        const uint32_t vendor = uint32_t(render_device->getDescription().vendor);
+        if (vendor == samsung_vendor || vendor == intel_vendor) without_dispatch_loop = true;
         const char* forced = std::getenv("SFR_TEST_DISPATCH_LOOP");
         if (forced && (std::strcmp(forced, "1") == 0 || std::strcmp(forced, "0") == 0))
             without_dispatch_loop = forced[0] == '1';
