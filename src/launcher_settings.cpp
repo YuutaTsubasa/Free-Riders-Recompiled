@@ -131,6 +131,7 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         else if (key == "race_frameskip" && (value == "auto" || value == "always" || value == "off"))
             settings.race_frameskip = value;
         else if (key == "title_stats") read_flag(value, settings.title_stats);
+        else if (key == "fps_overlay") read_flag(value, settings.fps_overlay);
         else if (key == "ui_sounds") read_flag(value, settings.ui_sounds);
         else if (key == "vulkan") read_flag(value, settings.vulkan);
         else if (key == "touch_controls") read_flag(value, settings.touch_controls);
@@ -214,6 +215,7 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "race_render_every=" << s.race_render_every << '\n'
         << "race_frameskip=" << race_frameskip_value(s) << '\n'
         << "title_stats=" << s.title_stats << '\n'
+        << "fps_overlay=" << s.fps_overlay << '\n'
         << "ui_sounds=" << s.ui_sounds << '\n'
         << "vulkan=" << s.vulkan << '\n'
         << "touch_controls=" << s.touch_controls << '\n'
@@ -333,6 +335,7 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         {"SFR_VERTEX_CACHE", s.vertex_cache ? "1" : "0"},
         {"SFR_GPU_PIPELINE", s.gpu_pipeline ? "1" : "0"},
         {"SFR_TITLE_STATS", s.title_stats ? "1" : "0"},
+        {"SFR_FPS_OVERLAY", s.fps_overlay ? "1" : "0"},
         {"SFR_AUDIO", s.audio ? "1" : "0"},
         // The player is signed in, so the game keeps records (docs/saves.md).
         {"SFR_PROFILE", "1"},
@@ -398,7 +401,7 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         // The room password: the one friends need when hosting, the server's
         // when joining. Never written to game.log, nor to a diagnostic ZIP.
         {"SFR_LIVE_PASSWORD", s.online ? s.online_password : ""},
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(SFR_IOS)
         {"SFR_TOUCH_CONTROLS", s.touch_controls ? "1" : "0"},
         {"SFR_TILT", s.tilt ? "1" : "0"},
 #endif

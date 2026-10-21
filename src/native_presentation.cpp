@@ -11,6 +11,8 @@
 #include "native_depth_flip.h"
 #include "gltf_model.h"
 #include "touch_controls.h"
+#include "fps_readout.h"
+#include <chrono>
 #include "title_stats.h"
 #ifdef _WIN32
 #include "plume_d3d12.h"
@@ -480,6 +482,7 @@ struct NativePresentation::Impl {
     // app is back in front.
     void wait_in_background();
 #endif
+    FpsCounter fps;  // the in-game frame-rate readout's (fps_readout.h)
 #ifndef _WIN32
     TouchControls touch_controls;
     SDL_Sensor* tilt_sensor = nullptr;
@@ -2043,11 +2046,15 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
     // too, so they take the blit.
     const float pause = pause_gauge();
     const bool touch_shown = touch_controls_active();
+    // The frame-rate readout (Issue #236), counted at each present.
+    const bool fps_shown = fps_overlay_enabled();
+    if (fps_shown)
+        impl_->fps.presented(std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count());
     // While the Avatar's model loads, the frame is drawn (not copied) so a
     // line can be written over it.
     const uint32_t model_loading = impl_->model_overlay.load(std::memory_order_relaxed);
     const bool stretch = !can_copy || part || out_width != impl_->render_width || out_height != impl_->render_height ||
-                         pause > 0.0f || touch_shown || model_loading != ~0u;
+                         pause > 0.0f || touch_shown || fps_shown || model_loading != ~0u;
     // The copy to the swap-chain texture follows the frame's draws in their
     // own list; pipelined, the frame is submitted without waiting for it.
     const bool pipelined = Impl::pipelined();
@@ -2098,6 +2105,7 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
                                float(shown.bottom) / float(impl_->render_height)};
         std::memcpy(constants.data(), area, sizeof area);
         TouchOverlay overlay = touch_shown ? touch_overlay() : TouchOverlay{};
+        overlay.readout = fps_readout_word(fps_shown, impl_->fps.value());
         // START's circle becomes the gauge: state 3 plus how far.
         if (pause > 0.0f) overlay.circle[TouchControls::start] = {0.075f, 0.86f, 0.05f, 3.0f + (std::min)(pause, 1.0f)};
         const auto touch_words = pack_touch_overlay(overlay);

@@ -366,6 +366,14 @@ void title_stats_settings() {
     require(!off.title_stats && value_of(off, "SFR_TITLE_STATS") == "0" &&
                 sfr::format_launcher_settings(off).find("title_stats=0\n") != std::string::npos,
             "turned off, the title is left alone and it stays off");
+    // The in-game frame-rate counter (Issue #236): off unless chosen.
+    require(!defaults.fps_overlay && value_of(defaults, "SFR_FPS_OVERLAY") == "0" &&
+                sfr::format_launcher_settings(defaults).find("fps_overlay=0\n") != std::string::npos,
+            "the in-game FPS counter is off by default");
+    const auto fps = sfr::parse_launcher_settings("fps_overlay=1\n");
+    require(fps.fps_overlay && value_of(fps, "SFR_FPS_OVERLAY") == "1" &&
+                sfr::format_launcher_settings(fps).find("fps_overlay=1\n") != std::string::npos,
+            "turned on, the counter is exported and stays on");
 }
 
 void race_frameskip_settings() {

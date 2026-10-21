@@ -6,7 +6,7 @@
 #include <span>
 
 namespace sfr {
-// On-screen controls for touch screens (Android): a floating stick on the
+// On-screen controls for touch screens (Android, iOS): a floating stick on the
 // left, A/B/X/Y, RT, a small right stick and the shoulder buttons around
 // the game's HUD, drawn over the game by the presentation blit. Coordinates
 // are relative to the game image (0..1 across its 16:9 area, y down); radii
@@ -55,14 +55,17 @@ struct TouchOverlay {
     static constexpr size_t circles = 11;
     std::array<std::array<float, 4>, circles> circle{};
     std::array<float, 2> knob{}, right_knob{};
+    uint32_t readout = 0;  // the frame-rate readout's word (fps_readout.h), 0 hidden
 };
 
 // The blit's push constants are 32 words, the 128 bytes every Vulkan device
 // offers: the sampled area (2 floats), then the overlay packed as pairs of
 // half floats (src/shaders/blit.hlsl): the two knobs, then two words per
-// circle, (x, y) and (radius, state).
+// circle, (x, y) and (radius, state). The last word is the frame-rate
+// readout's (fps_readout.h).
 constexpr size_t touch_constant_words = 30;
-static_assert(2 + TouchOverlay::circles * 2 <= touch_constant_words);
+constexpr size_t touch_readout_word = touch_constant_words - 1;
+static_assert(2 + TouchOverlay::circles * 2 <= touch_readout_word);
 std::array<uint32_t, touch_constant_words> pack_touch_overlay(const TouchOverlay& overlay);
 uint16_t float_to_half(float value);
 float half_to_float(uint16_t half);
@@ -136,7 +139,7 @@ bool touch_racing();
 // it as a ring in the lower left, in the START button's slot.
 void publish_pause_gauge(float progress);
 float pause_gauge();
-// SFR_TOUCH_CONTROLS: 1 on Android by default, 0 elsewhere.
+// SFR_TOUCH_CONTROLS: 1 on Android and iOS by default, 0 elsewhere.
 bool touch_controls_enabled();
 // A controller answered for player 1 (native_input). The on-screen buttons
 // are drawn and read when none is connected, and also with one whenever the

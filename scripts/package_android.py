@@ -19,6 +19,7 @@ from shader_pack_format import checked_shader_pack
 
 ROOT = Path(__file__).resolve().parent.parent
 PROJECT = ROOT / 'android' / 'app' / 'src' / 'main'
+ICON = ROOT / 'packaging' / 'icon' / 'app.png'
 SDL_JAVA = ROOT / 'tools' / 'SDL' / 'android-project' / 'app' / 'src' / 'main' / 'java'
 MIN_SDK, TARGET_SDK = 28, 35
 VERSION_CODE, VERSION_NAME = 65, '0.10.17'
@@ -96,10 +97,16 @@ def main():
 
     aapt2 = tool(build_tools, 'aapt2')
     run(aapt2, 'compile', '--dir', PROJECT / 'res', '-o', work / 'resources.zip')
+    # The icon's picture is the other platforms' (packaging/icon/app.png,
+    # Issue #236): res/drawable/ic_launcher_foreground.xml shows it.
+    icon = work / 'icon-res' / 'mipmap-nodpi'
+    icon.mkdir(parents=True)
+    shutil.copyfile(ICON, icon / 'ic_launcher_art.png')
+    run(aapt2, 'compile', '--dir', work / 'icon-res', '-o', work / 'icon.zip')
     run(aapt2, 'link', '-o', work / 'base.apk', '-I', android_jar, '--manifest', PROJECT / 'AndroidManifest.xml',
         '--java', work / 'gen', '--min-sdk-version', args.min_sdk, '--target-sdk-version', TARGET_SDK,
         '--version-code', VERSION_CODE, '--version-name', VERSION_NAME,
-        '--auto-add-overlay', work / 'resources.zip')
+        '--auto-add-overlay', work / 'resources.zip', work / 'icon.zip')
 
     sources = [str(p) for p in SDL_JAVA.rglob('*.java')] + [str(p) for p in (PROJECT / 'java').rglob('*.java')] \
         + [str(p) for p in (work / 'gen').rglob('*.java')]
