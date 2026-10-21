@@ -140,6 +140,7 @@ enum Text {
     FrameskipLabel, FrameskipHint, FrameskipAuto, FrameskipAlways, FrameskipOff,
     TabTest, TestIntro, TestDefault, TestReset, TestActive, TestActiveNone,
     OnlinePasswordLabel, OnlinePasswordHint, OnlinePasswordHostHint, OnlineReachPasswordRequired, OnlineReachWrongPassword,
+    FpsOverlay, FpsOverlayHint,
     TextCount
 };
 
@@ -513,6 +514,9 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
      "%s 的伺服器需要密碼。請在「密碼」欄位輸入。"},
     {"The server at %s answered, but the password is wrong. Ask the host for the right one.",
      "%s 的伺服器有回應，但密碼錯誤。請向主持者確認正確的密碼。"},
+    {"Show FPS", "顯示 FPS"},
+    {"A frame-rate counter in the game's upper left corner, updated twice a second. Applies on the next game launch.",
+     "在遊戲畫面左上角顯示每秒影格數，每半秒更新一次。設定於下次啟動遊戲時套用。"},
 }};
 
 int language = 0;
@@ -2446,7 +2450,7 @@ struct Launcher {
     }
 
     void controls_settings() {
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(SFR_IOS)
         settings_section(SectionTouch);
         const float switch_width = ImGui::GetFrameHeight() * 1.9f;
         setting_row(tr(TouchLabel), tr(TouchHint), switch_width, scale, [&] { toggle("##touch", &settings.touch_controls); });
@@ -2919,6 +2923,8 @@ struct Launcher {
         // Only the Windows game writes its title (window_title.cpp).
         setting_row(tr(TitleStats), tr(TitleStatsHint), switch_width, scale, [&] { toggle("##title_stats", &settings.title_stats); });
 #endif
+        // Drawn in the game itself, so every platform has it (Issue #236).
+        setting_row(tr(FpsOverlay), tr(FpsOverlayHint), switch_width, scale, [&] { toggle("##fps_overlay", &settings.fps_overlay); });
         const float slider_width = 220 * scale;
         // Frame skipping (race_frame_clock.h, SFR_RACE_FRAMESKIP).
         setting_row(tr(FrameskipLabel), tr(FrameskipHint), slider_width, scale, [&] {

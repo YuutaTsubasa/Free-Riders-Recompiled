@@ -8,6 +8,9 @@
 // ring that fills clockwise from the top, on a dark disc, around a figure in
 // the pose.
 //
+// Each button carries its name (Issue #236, touch_labels.hlsli): letters in
+// a light shade of its colour with a dark edge, readable over any picture.
+//
 // The constants are 32 words, the 128 bytes of push constants every Vulkan
 // device has: the sampled area as two floats, then pairs of half floats
 // (touch_controls.h, pack_touch_overlay): the two knobs, then two words per
@@ -42,6 +45,8 @@ Vertex vertexMain(uint index : SV_VertexID) {
     vertex.image = corner;
     return vertex;
 }
+#include "touch_labels.hlsli"
+
 Texture2D<float4> g_Source : register(t0, space0);
 SamplerState g_Sampler : register(s0, space1);
 
@@ -121,6 +126,36 @@ float arrow(float2 p, float side, float edge) {
     return 1.0 - smoothstep(-edge, edge, d);
 }
 
+// The frame-rate readout (fps_readout.h) in the image's upper left corner:
+// the number and "FPS" on a dark rounded box. Its word is the constants'
+// last (touch_controls.h, touch_readout_word): bit 16 shows it, the low bits
+// are the value.
+float3 readout(float3 color, float2 image, uint word, float2 pixel) {
+    const float cap = 0.026;  // letter height, in image heights
+    const float aspect = pixel.y / pixel.x;
+    const float2 p = (float2(image.x * aspect, image.y) - float2(0.022, 0.02)) / cap;
+    const uint value = min(word & 0xFFFF, g_ReadoutMax);
+    const uint digits = value >= 100 ? 3 : (value >= 10 ? 2 : 1);
+    const float width = digits * g_ReadoutAdvance + g_ReadoutSpace + g_ReadoutSuffixWidth;
+    // The box: rounded, a third of a letter around the text.
+    const float2 half_size = float2(width * 0.5 + 0.35, 0.85);
+    const float2 q = abs(p - float2(width * 0.5, 0.5)) - half_size + 0.3;
+    const float box = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - 0.3;
+    const float edge = pixel.y / cap;
+    if (box > edge) return color;
+    color = lerp(color, float3(0.02, 0.03, 0.06), (1.0 - smoothstep(-edge, edge, box)) * 0.6);
+    float d = 1.0e4;
+    uint rest = value;
+    [unroll] for (int k = 2; k >= 0; --k) {  // the digits from the right
+        if (k < int(digits)) {
+            d = min(d, readout_digit(rest % 10, p - float2(k * g_ReadoutAdvance, 0.0)));
+            rest /= 10;
+        }
+    }
+    d = min(d, readout_suffix(p - float2(digits * g_ReadoutAdvance + g_ReadoutSpace, 0.0)));
+    return lerp(color, float3(0.92, 0.97, 1.0), 1.0 - smoothstep(-edge, edge, d));
+}
+
 float4 pixelMain(Vertex vertex) : SV_Target {
     float4 color = g_Source.Sample(g_Sampler, vertex.texCoord);
     const float2 pixel = fwidth(vertex.image);
@@ -141,11 +176,22 @@ float4 pixelMain(Vertex vertex) : SV_Target {
             const float shown = disc(vertex.image, knob, c.z * 0.45, pixel);
             color.rgb = lerp(color.rgb, float3(1.0, 1.0, 1.0), shown * (pressed ? 0.6 : 0.3));
         }
-        if (i == 7 || i == 8) {  // LB, RB: which side the punch goes
-            const float2 p = (vertex.image - c.xy) * float2(16.0 / 9.0, 1.0) / c.z;
+        // The name, on the knob for a stick; p in the circle's radii.
+        const float2 centre = label_on_knob(i) ? unpack_halves(i == 0 ? g_Knobs.x : g_Knobs.y) : c.xy;
+        const float2 p = (vertex.image - centre) * float2(16.0 / 9.0, 1.0) / c.z;
+        if (dot(p, p) > 1.0) continue;  // nothing more to draw out here
+        const float edge = pixel.y / c.z;
+        if (i == 7 || i == 8) {  // LB, RB: which side the punch goes, under the name
             color.rgb = lerp(color.rgb, float3(1.0, 1.0, 1.0),
-                             arrow(p, i == 7 ? -1.0 : 1.0, pixel.y / c.z) * (pressed ? 0.85 : 0.55));
+                             arrow((p - float2(0.0, 0.36)) / 0.6, i == 7 ? -1.0 : 1.0, edge / 0.6) * (pressed ? 0.85 : 0.55));
         }
+        const float d = label_distance(i, p);
+        const float letter = 1.0 - smoothstep(-edge, edge, d);
+        const float outline = 1.0 - smoothstep(-edge, edge, d - max(edge * 1.5, 0.035));
+        color.rgb = lerp(color.rgb, float3(0.0, 0.0, 0.0), outline * (pressed ? 0.5 : 0.4));
+        color.rgb = lerp(color.rgb, lerp(g_Colors[i], float3(1.0, 1.0, 1.0), 0.45), letter * (pressed ? 1.0 : 0.85));
     }
+    const uint readout_word = g_Circles[6].w;
+    if ((readout_word & 0x10000) != 0) color.rgb = readout(color.rgb, vertex.image, readout_word, pixel);
     return color;
 }

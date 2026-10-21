@@ -349,6 +349,9 @@ add_test(NAME memory_update_forms COMMAND sfr_memory_update_forms_test)
 add_executable(sfr_touch_controls_test tests/touch_controls_test.cpp src/touch_controls.cpp)
 target_include_directories(sfr_touch_controls_test PRIVATE src)
 add_test(NAME touch_controls COMMAND sfr_touch_controls_test)
+add_executable(sfr_touch_labels_test tests/touch_labels_test.cpp src/touch_labels.cpp src/touch_controls.cpp src/fps_readout.cpp)
+target_include_directories(sfr_touch_labels_test PRIVATE src)
+add_test(NAME touch_labels COMMAND sfr_touch_labels_test "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/touch_labels.hlsli")
 # The webcam standing in for the Kinect sensor: Media Foundation on Windows,
 # V4L2 on Linux, the NDK's Camera2 on Android (the phone's own cameras),
 # nothing elsewhere (the setting then has no effect).
@@ -939,11 +942,13 @@ if(WIN32 OR UNIX)
     set(SFR_EMBEDDED_SHADERS "${CMAKE_CURRENT_BINARY_DIR}/embedded_shaders")
     file(MAKE_DIRECTORY "${SFR_EMBEDDED_SHADERS}")
     set(SFR_EMBEDDED_SHADER_HEADERS)
+    # Files the shaders #include: a change rebuilds them all.
+    set(SFR_SHADER_INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/touch_labels.hlsli")
     function(sfr_embed_shader source entry profile name)
         set(header "${SFR_EMBEDDED_SHADERS}/${name}_dxil.h")
         add_custom_command(OUTPUT "${header}"
             COMMAND ${SFR_DXC} -T ${profile} -E ${entry} -HV 2021 -Qstrip_debug -Qstrip_reflect -Fh "${header}" -Vn ${name}_dxil "${CMAKE_CURRENT_SOURCE_DIR}/${source}"
-            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${source}" VERBATIM)
+            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${source}" ${SFR_SHADER_INCLUDES} VERBATIM)
         set(spirv_header "${SFR_EMBEDDED_SHADERS}/${name}_spirv.h")
         set(invert)
         if(profile MATCHES "^vs_")
@@ -951,7 +956,7 @@ if(WIN32 OR UNIX)
         endif()
         add_custom_command(OUTPUT "${spirv_header}"
             COMMAND ${SFR_DXC} -T ${profile} -E ${entry} -HV 2021 -spirv -fvk-use-dx-layout ${invert} -Qstrip_debug -Fh "${spirv_header}" -Vn ${name}_spirv "${CMAKE_CURRENT_SOURCE_DIR}/${source}"
-            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${source}" VERBATIM)
+            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${source}" ${SFR_SHADER_INCLUDES} VERBATIM)
         set(SFR_EMBEDDED_SHADER_HEADERS ${SFR_EMBEDDED_SHADER_HEADERS} "${header}" "${spirv_header}" PARENT_SCOPE)
     endfunction()
     sfr_embed_shader(src/shaders/blit.hlsl vertexMain vs_6_0 blit_vs)
@@ -961,7 +966,7 @@ if(WIN32 OR UNIX)
     sfr_embed_shader(src/shaders/depth_flip.hlsl pointMain gs_6_0 depth_flip_point_gs)
     sfr_embed_shader(src/shaders/depth_flip.hlsl lineMain gs_6_0 depth_flip_line_gs)
     sfr_embed_shader(src/shaders/depth_flip.hlsl triangleMain gs_6_0 depth_flip_triangle_gs)
-    add_library(sfr_native_presentation STATIC src/native_presentation.cpp src/title_stats.cpp src/touch_controls.cpp src/gltf_model.cpp src/image_decode.cpp ${SFR_EMBEDDED_SHADER_HEADERS})
+    add_library(sfr_native_presentation STATIC src/native_presentation.cpp src/title_stats.cpp src/touch_controls.cpp src/fps_readout.cpp src/gltf_model.cpp src/image_decode.cpp ${SFR_EMBEDDED_SHADER_HEADERS})
     target_include_directories(sfr_native_presentation PRIVATE "${SFR_EMBEDDED_SHADERS}")
     add_executable(sfr_native_presentation_test tests/native_presentation_test.cpp)
     if(WIN32)

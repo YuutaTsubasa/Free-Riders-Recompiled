@@ -87,7 +87,21 @@ adb shell chmod -R a+rwX /sdcard/Android/data/com.freeriders.recompiled/files
 ## 觸控操作
 
 沒有手把時，畫面上有半透明的觸控按鈕（`src/touch_controls.*`，由最後的 blit 著色器畫在遊戲
-畫面上；`SFR_TOUCH_CONTROLS=0` 關閉）：
+畫面上；`SFR_TOUCH_CONTROLS=0` 或啟動器的「觸控按鈕」關閉）。iOS 版也預設開啟（Issue #236）。
+
+每個按鈕上寫著 Xbox 手把的名稱（Issue #236）：A、B、X、Y、RT、LT、LB、RB、START，兩個搖桿的
+搖桿頭上是 LS、RS。字用按鈕顏色的淺色加暗邊，不用字型：每個字母是幾筆圓頭直線
+（`src/touch_labels.cpp`），產生成 `src/shaders/touch_labels.hlsli` 的常數，在 blit 裡算到筆畫的
+距離。改字形後執行 `sfr_touch_labels_test --write src/shaders/touch_labels.hlsli`；測試會檢查
+檔案沒有過時、字在按鈕內、字母互不相連、720p 時字高至少 12 像素。
+
+啟動器「畫面與效能」的「顯示 FPS」（`SFR_FPS_OVERLAY=1`，預設關，所有平台）在遊戲畫面左上角
+顯示每半秒更新的呈現幀率（`src/fps_readout.*`），用同一套筆畫字形由 blit 畫出，數值放在
+push constant 的最後一個字。手機沒有視窗標題，所以這是看幀率的方法；桌面的視窗標題統計照舊。
+
+App 圖示（Issue #236）：和 iOS／macOS／Windows 同一張 `packaging/icon/app.png`，
+`scripts/package_android.py` 打包時放進 APK 當 `@mipmap/ic_launcher_art`，adaptive icon 的前景
+內縮到 74 dp，各種遮罩只會切到四角。minSdk 28，所以不需要舊式 mipmap。
 
 | 位置 | 按鈕 | 用途 |
 | --- | --- | --- |

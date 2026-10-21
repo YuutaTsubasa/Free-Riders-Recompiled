@@ -206,6 +206,7 @@ std::array<uint32_t, touch_constant_words> pack_touch_overlay(const TouchOverlay
         words[2 + i * 2] = pair(c[0], c[1]);
         words[3 + i * 2] = pair(c[2], c[3]);
     }
+    words[touch_readout_word] = overlay.readout;
     return words;
 }
 
@@ -294,7 +295,7 @@ bool touch_controls_active() {
 bool touch_controls_enabled() {
     static const bool enabled = [] {
         const char* text = std::getenv("SFR_TOUCH_CONTROLS");
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(SFR_IOS)
         return !text || *text != '0';
 #else
         return text && *text == '1';
