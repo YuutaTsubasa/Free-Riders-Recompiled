@@ -218,6 +218,8 @@ with [docs/progress.md](docs/progress.md).
   Phones with Samsung's Xclipse GPU, such as the Galaxy A55, no longer stay on "Preparing pipelines 0 of 455" (#224).
 - [v0.10.17 — Linux launcher on Fedora](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.17)
   The Linux launcher no longer crashes at start on systems whose Chinese font it can't read, such as Fedora 45 (#232). On Windows the game window comes to the front when it opens.
+- [v0.10.18 — Labelled touch buttons, FPS counter](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.18)
+  The on-screen buttons show their Xbox names, an optional FPS counter can be shown in the game, touch controls are on by default on iOS, and Android uses the same app icon as the other versions (#236).
 
 ## System Requirements
 
