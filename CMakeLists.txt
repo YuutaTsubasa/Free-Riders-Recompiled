@@ -606,6 +606,11 @@ else()
     target_link_libraries(sfr_native_audio_test PRIVATE SDL2::SDL2)
 endif()
 add_test(NAME native_audio COMMAND sfr_native_audio_test)
+if(IOS)
+    # On iOS the output logs the audio session (Issue #249).
+    target_sources(sfr_native_audio_test PRIVATE src/ios_audio_session.mm)
+    target_link_libraries(sfr_native_audio_test PRIVATE "-framework Foundation" "-framework AVFoundation" objc)
+endif()
 add_executable(sfr_mod_loader_test tests/mod_loader_test.cpp src/mod_loader.cpp)
 target_include_directories(sfr_mod_loader_test PRIVATE src)
 add_test(NAME mod_loader COMMAND sfr_mod_loader_test)
@@ -736,10 +741,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui/imgui.cpp")
         elseif(IOS)
             # The app's program: UIKit starts it through SDL2main, and Play
             # loads the game's library into the same process.
-            add_executable(sfr_launcher ${SFR_LAUNCHER_SOURCES} src/ios_document_picker.mm src/ios_screen.mm)
+            add_executable(sfr_launcher ${SFR_LAUNCHER_SOURCES} src/ios_document_picker.mm src/ios_screen.mm src/ios_audio_session.mm)
             set_target_properties(sfr_launcher PROPERTIES OUTPUT_NAME FreeRidersRecompiled)
             target_link_libraries(sfr_launcher PRIVATE SDL2::SDL2main "-framework UIKit" "-framework Foundation"
-                "-framework UniformTypeIdentifiers" "-framework CoreText" "-framework CoreGraphics")
+                "-framework UniformTypeIdentifiers" "-framework CoreText" "-framework CoreGraphics" "-framework AVFoundation")
             target_link_options(sfr_launcher PRIVATE "-Wl,-rpath,@executable_path/Frameworks")
             # iOS 27 stops an app linked against its SDK at launch unless the app
             # adopts the UIScene life cycle, which SDL 2 does not. The SDK the
@@ -1197,6 +1202,9 @@ if(SFR_BUILD_DIAGNOSTIC)
         # SDL is shared from the app's Frameworks; the launcher's SDL2main owns main.
         target_link_options(sfr_cpu_diagnostic PRIVATE "-Wl,-rpath,@loader_path/..")
         target_compile_definitions(sfr_cpu_diagnostic PRIVATE SDL_MAIN_HANDLED)
+        # The audio session in game.log (src/native_audio.cpp, Issue #249).
+        target_sources(sfr_cpu_diagnostic PRIVATE src/ios_audio_session.mm)
+        target_link_libraries(sfr_cpu_diagnostic PRIVATE "-framework Foundation" "-framework AVFoundation" objc)
     else()
         # SFR_GRAPHICS_SELFTEST=1 runs the graphics self test instead of the game.
         add_executable(sfr_cpu_diagnostic src/graphics_selftest.cpp)
