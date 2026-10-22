@@ -222,6 +222,8 @@ with [docs/progress.md](docs/progress.md).
   The on-screen buttons show their Xbox names, an optional FPS counter can be shown in the game, touch controls are on by default on iOS, and Android uses the same app icon as the other versions (#236).
 - [v0.10.19 — Intel GPUs](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.19)
   Races on Intel integrated GPUs (Vulkan) run several times faster: the shaders' dispatch loops that made them crawl at a few frames a second are rewritten, as on Macs (#239, #134).
+- [v0.10.20 — Occasional crash at start](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.20)
+  Fixes a crash that sometimes happened right after starting the game (seen on Macs, about one start in forty): the game's file reader could miss its first read.
 
 ## System Requirements
 
