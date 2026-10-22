@@ -90,12 +90,16 @@ enum Text {
     Sound, SoundHint, Volume,
     SkipMovies, SkipMoviesHint, SkipLogos, SkipLogosHint,
     VertexCache, VertexCacheHint, GpuPipeline, GpuPipelineHint, RaceEvery, RaceEveryHint, TitleStats, TitleStatsHint,
-    CameraLabel, CameraHint, CameraHintOff, CameraHintPicture, CameraHintKinect, CameraOff, CameraPicture, CameraMotion, CameraDevice, CameraDeviceHint, CameraNone,
+    CameraLabel, CameraHint, CameraHintOff, CameraHintKinect, CameraHintKinectV2, CameraOff, CameraMotion, CameraDevice, CameraDeviceHint, CameraNone,
     CameraTest, CameraTesting, CameraWorks, CameraSilent, CameraClosed, CameraMirror, CameraMirrorHint,
-    CameraKinect, KinectRow, KinectRowHint, KinectMissing,
+    CameraKinect, CameraKinectV2,
+    V2View, V2ViewSensor, V2ViewFit, V2ViewIdeal, V2ViewHintSensor, V2ViewHintFit, V2ViewHintIdeal,
+    V2Distance, V2DistanceHint, V2Height, V2HeightHint, V2Follow, V2FollowHint, V2Deadband, V2DeadbandHint,
+    V2Advanced,
+    KinectMissing,
     KinectNoRuntime, KinectNoSensor, KinectFailed, KinectDownload, KinectDownloadV2, KinectInstallHint,
     VoiceLabel, VoiceHint,
-    KinectPreviewOpen, KinectPreviewClose, CameraPreviewOpen, CameraPreviewClose, KinectCalibrated,
+    KinectPreviewOpen, KinectPreviewClose, CameraPreviewOpen, CameraPreviewClose,
     CameraDebug, CameraDebugHint, MenuSteady, MenuSteadyHint, MenuSteadyOff,
     ImageDirectory, ImageDirectoryHint, AssetDirectory, AssetDirectoryHint, Browse, Found, Missing, FilesHint,
     SaveDirectory, SaveDirectoryHint, SaveFound, SaveNone, SaveDefault, SaveOpen,
@@ -131,7 +135,6 @@ enum Text {
     OnlineReachNotFound, OnlineReachRefused, OnlineReachNoAnswer, OnlineReachUnexpected,
     OnlineFriendsEnter, OnlineNoAddress, OnlineFirewall, OnlineChecking, OnlineFailedTitle, OnlineFailedRetry,
     OnlineStartAnyway,
-    KinectSmoothLabel, KinectSmoothHint, KinectLeanLabel, KinectLeanHint, KinectCrouchLabel, KinectCrouchHint,
     CustomWindowSize, CustomWindowSizeRow, CustomWindowSizeHint,
     AspectModeLabel, AspectModeHint, AspectAuto, AspectOriginal,
     UiAlignLabel, UiAlignHint, UiAlignEdge, UiAlignCenter,
@@ -187,17 +190,16 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"The game window's title shows, every half second, the frame rate, the average and longest frame, the graphics, and how often the Kinect or webcam body arrives. Applies on the next game launch.",
      "遊戲視窗的標題每半秒顯示 FPS、平均與最長畫格時間、繪圖後端與倍率，以及 Kinect 或 webcam 骨架每秒幾格。下次啟動遊戲時套用。"},
     {"Camera", "攝影機"},
-    {"Motion tracks your body for Player 1. Controller input takes priority; after 1.5 seconds idle, fresh camera tracking resumes. Lost tracking falls back to the controller. Player 2 keeps its assigned controller.",
-     "「體感」追蹤你的身體來控制 1P。操作手把時優先接手，停止操作 1.5 秒後恢復攝影機追蹤；失去追蹤時退回手把。2P 保留原本指定的手把。"},
+    {"Webcam tracks your body for Player 1. Controller input takes priority; after 1.5 seconds idle, fresh camera tracking resumes. Lost tracking falls back to the controller. Player 2 keeps its assigned controller.",
+     "「Webcam」追蹤你的身體來控制 1P。操作手把時優先接手，停止操作 1.5 秒後恢復攝影機追蹤；失去追蹤時退回手把。2P 保留原本指定的手把。"},
     {"No camera: the game is played with controllers and the keyboard.",
      "不使用攝影機：用手把或鍵盤遊玩。"},
-    {"Opens a webcam only for the pictures the game shows of you; you still play with controllers and the keyboard.",
-     "開啟 webcam，只把影像交給遊戲顯示；操作仍然用手把或鍵盤。"},
-    {"A real Kinect tracks the players' bodies, as on the console: its skeletons and its depth and colour cameras go to the game, which reads your moves itself. Controllers still work in the menus.",
-     "由實體 Kinect 追蹤玩家的身體，跟主機上一樣：骨架、深度與彩色影像直接交給遊戲，由遊戲自己判斷動作。選單中仍可使用手把。"},
+    {"An Xbox 360 Kinect tracks the players' bodies, as on the console. Controllers still work in the menus.",
+     "由 Xbox 360 版 Kinect追蹤玩家的身體，跟主機上一樣，選單中仍可使用手把。"},
+    {"An Xbox One Kinect v2 tracks the players' bodies. Controllers still work in the menus.",
+     "由 Xbox One 版 Kinect v2 追蹤玩家的身體，選單中仍可使用手把。"},
     {"Off", "關閉"},
-    {"Picture", "畫面"},
-    {"Motion", "體感"},
+    {"Webcam", "Webcam"},
     {"Which camera", "使用哪一台"},
     {"The camera to read, when the host has more than one.", "當電腦上有多台攝影機時，要讀取哪一台。"},
     {"No camera found", "找不到攝影機"},
@@ -210,9 +212,29 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Turn this on when the camera shows you as a mirror does. With it wrong, raising one hand moves the other, and the cursor runs off the side of the screen.",
      "若攝影機畫面像照鏡子一樣左右相反，請開啟此項。設定相反時，舉起一隻手會動到另一隻，游標也會跑到畫面邊緣。"},
     {"Kinect", "Kinect"},
-    {"Kinect sensor", "Kinect 感測器"},
-    {"A real Kinect tracks you as the console did: an Xbox 360 Kinect (Kinect for Windows SDK 1.8) or a Kinect v2 for Xbox One (SDK 2.0); the first one found is used. The preview shows whether it works, what it sees and the skeletons it tracks, and tilts it. It closes when the game starts.",
-     "由實體 Kinect 像主機一樣追蹤你的身體：Xbox 360 版（需 Kinect for Windows SDK 1.8）或 Xbox One 版 Kinect v2（需 SDK 2.0），會使用第一台找到的。預覽會顯示它是否正常、拍到的畫面與追蹤到的骨架，也能調整角度；開始遊戲時會自動關閉。"},
+    {"Kinect v2", "Kinect v2"},
+    {"Depth view", "深度視角"},
+    {"Original", "原始"},
+    {"Simulated", "模擬"},
+    {"Recompiled", "Recompiled"},
+    {"Hands the game the Kinect v2's view as it is.",
+     "把 Kinect v2 的視角直接交給遊戲。"},
+    {"Fits the Kinect v2's whole view into the game's own picture size.",
+     "把 Kinect v2 的整個視野縮放成遊戲原本的畫面大小。"},
+    {"A virtual Kinect standing level, at a set distance and height, that follows the players slowly.",
+     "虛擬一台水平、固定距離與高度的 Kinect，並緩慢跟著玩家。"},
+    {"Distance", "距離"},
+    {"How far in front of the players the virtual camera stands. About 2.5 m suits the game best.",
+     "虛擬攝影機在玩家前方多遠。約 2.5 公尺最適合遊戲。"},
+    {"Height", "高度"},
+    {"How high above the floor the virtual camera is.", "虛擬攝影機離地多高。"},
+    {"Follow", "跟隨速度"},
+    {"How many seconds the virtual camera takes to follow the players when they move. Larger is slower and steadier.",
+     "玩家移動後，虛擬攝影機花幾秒跟上。數字越大越慢、越穩。"},
+    {"Dead band", "死區"},
+    {"The virtual camera ignores a player's movement inside this distance. 0 follows every movement.",
+     "玩家在這個距離內移動時，虛擬攝影機不跟隨。設為 0 則每次移動都跟。"},
+    {"Advanced settings", "進階設定"},
     {"No Kinect found", "找不到 Kinect"},
     {"No Kinect SDK is installed", "尚未安裝 Kinect SDK"},
     {"No Kinect connected", "沒有連接 Kinect"},
@@ -226,15 +248,14 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
      "恢復 Kinect 的語音指令：start、OK、back、next、pause……英文或中文都可以（開始、確定、返回、下一步、暫停…）。使用 Windows 語音辨識與預設麥克風：要用 Kinect 的麥克風陣列，請把它設為預設錄音裝置。"},
     {"Open preview", "開啟預覽"},
     {"Close preview", "關閉預覽"},
-    {"Show picture", "顯示畫面"},
-    {"Close picture", "關閉畫面"},
-    {"Kinect calibrated: crouch depth saved", "Kinect 校正完成：已儲存蹲下深度"},
+    {"Open preview", "開啟預覽"},
+    {"Close preview", "關閉預覽"},
     {"Skeleton debug window", "骨架 Debug 視窗"},
     {"Shows only the skeleton received by the game, in front and side views, with no camera image. Closing this window does not stop the game. Changes apply on the next game launch.",
      "僅顯示遊戲收到的骨架，提供正面與側面視圖，不顯示攝影機影像。關閉此視窗不會停止遊戲。設定會在下次啟動遊戲時套用。"},
     {"Menu cursor steadying", "選單游標穩定"},
-    {"A hand held still on a button still wanders a few millimetres, and the cursor with it. Movement inside this circle is ignored in the menus (never while racing); a larger circle is steadier but a little stickier. 0 turns it off.",
-     "手停在按鈕上時仍會晃動幾公釐，游標也跟著抖。在選單中（比賽時不作用），手在這個圓圈內的移動會被忽略；圈越大越穩，但會稍微黏手。設為 0 關閉。"},
+    {"A hand held still on a button still wanders a few millimetres, and the cursor with it. In the menus, movement inside this circle is ignored, and it has no effect while racing; a larger number is steadier but a little stickier. 0 turns it off.",
+     "手停在按鈕上時仍會晃動幾公釐，游標也跟著抖。在選單時，手在這個圓圈內的移動會被忽略，比賽中無效；數字越大越穩定，但會稍微黏手，設為0關閉。"},
     {"Off", "關閉"},
     {"Game code image", "遊戲程式映像"},
     {"The game's decoded code and data (complete.txt, image.bin).", "解碼後的遊戲程式與資料（complete.txt、image.bin）。"},
@@ -456,15 +477,6 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"If you start anyway, the game keeps trying every few seconds, and Xbox LIVE opens once the server answers.",
      "若仍要啟動，遊戲會每隔幾秒再試著連線，連上伺服器後就能進入 Xbox LIVE。"},
     {"Start anyway", "仍要啟動"},
-    {"Smooth Kinect v2 tracking", "平滑 Kinect v2 追蹤"},
-    {"Steadies a Kinect v2's joints with the same filter Kinect v1's SDK uses, for about a frame of delay. Turn it off to feel the sensor as measured.",
-     "用與 Kinect v1 SDK 相同的濾波器讓 Kinect v2 的關節更穩定，約多一格延遲。關閉則使用感應器原始量測。"},
-    {"Lean sensitivity", "傾身靈敏度"},
-    {"How much steering a lean gives in races. Lower it if small movements turn too much.",
-     "比賽中身體傾斜帶來的轉向幅度。若小動作就轉太多，請調低。"},
-    {"Crouch depth", "蹲下深度"},
-    {"How far your hips must drop to count as a crouch. Raise it if you crouch by accident; lower it if crouches are missed.",
-     "臀部要下降多少才算蹲下。若常誤判為蹲下就調高；若蹲下沒反應就調低。"},
     {"Custom", "自訂"},
     {"Custom window size", "自訂視窗大小"},
     {"Width and height in pixels (160 to 16384). Press Enter or leave the box to apply.",
@@ -1490,6 +1502,8 @@ struct Launcher {
     // power adapter not in), or starting it.
     std::string kinect_failure;
     // The camera choice under the pointer while its list is open, or -1.
+    int v2_view_hovered = -1;
+    bool advanced_open = false, voice_open = false;
     int camera_hovered = -1;
     // The preview window, when open, holds the Kinect (one session a
     // process); it has the tilt buttons.
@@ -2047,6 +2061,35 @@ struct Launcher {
         ImGui::PushStyleColor(ImGuiCol_Text, cyan);
         ImGui::SeparatorText(tr(label));
         ImGui::PopStyleColor();
+        ImGui::Dummy(ImVec2(0, 4 * scale));
+    }
+
+    // A section heading that folds: the look of settings_section, with a
+    // triangle instead of the dash (right when folded, down when open).
+    void collapsible_section(Text label, bool& open) {
+        ImGui::Dummy(ImVec2(0, 4 * scale));
+        const char* text = tr(label);
+        const float line_height = ImGui::GetTextLineHeight(), height = line_height + 6 * scale;
+        const ImVec2 start = ImGui::GetCursorScreenPos();
+        const float width = ImGui::GetContentRegionAvail().x;
+        ImGui::PushID(text);
+        if (ImGui::InvisibleButton("##section", ImVec2(width, height))) open = !open;
+        const bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
+        ImGui::PopID();
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        const ImU32 colour = color(cyan, hot ? 1.0f : 0.85f);
+        const float half = line_height * 0.28f;
+        const ImVec2 centre(start.x + half + 2 * scale, start.y + height * 0.5f);
+        if (open)
+            draw->AddTriangleFilled(ImVec2(centre.x - half, centre.y - half * 0.6f), ImVec2(centre.x + half, centre.y - half * 0.6f),
+                                    ImVec2(centre.x, centre.y + half * 0.8f), colour);
+        else
+            draw->AddTriangleFilled(ImVec2(centre.x - half * 0.6f, centre.y - half), ImVec2(centre.x - half * 0.6f, centre.y + half),
+                                    ImVec2(centre.x + half * 0.8f, centre.y), colour);
+        const float text_x = start.x + 2 * half + 10 * scale;
+        draw->AddText(ImVec2(text_x, start.y + 3 * scale), colour, text);
+        const float line_x = text_x + ImGui::CalcTextSize(text).x + 8 * scale;
+        draw->AddLine(ImVec2(line_x, centre.y), ImVec2(start.x + width, centre.y), ImGui::GetColorU32(ImGuiCol_Separator), 1.0f);
         ImGui::Dummy(ImVec2(0, 4 * scale));
     }
 
@@ -2741,22 +2784,104 @@ struct Launcher {
         ImGui::PopID();
     }
 
+    // A Kinect v2's depth view, and Recompiled's tuning when that is chosen.
+    void kinect_v2_view_rows(float width, float scale) {
+        // Recompiled first (the default), then Simulated, then Original.
+        static constexpr const char* values[] = {"ideal", "fit", "sensor"};
+        static constexpr Text labels[] = {V2ViewIdeal, V2ViewFit, V2ViewSensor};
+        static constexpr Text hints[] = {V2ViewHintIdeal, V2ViewHintFit, V2ViewHintSensor};
+        int chosen = 0;
+        for (int i = 0; i < 3; ++i) if (settings.kinect_v2_view == values[i]) chosen = i;
+        const int described = v2_view_hovered >= 0 ? v2_view_hovered : chosen;
+        setting_row(tr(V2View), tr(hints[described]), width, scale, [&] {
+            v2_view_hovered = -1;
+            ImGui::SetNextItemWidth(width);
+            if (ImGui::BeginCombo("##v2_view", tr(labels[chosen]))) {
+                for (int i = 0; i < 3; ++i) {
+                    if (ImGui::Selectable(tr(labels[i]), chosen == i)) settings.kinect_v2_view = values[i];
+                    if (ImGui::IsItemHovered() || ImGui::IsItemFocused()) v2_view_hovered = i;
+                }
+                ImGui::EndCombo();
+            }
+        });
+    }
+
+    // Recompiled's fine tuning, one slider a row (in the Advanced settings).
+    void kinect_v2_tuning_rows(float width, float scale) {
+        // One slider a row, in whole units, as wide as the camera row.
+        const auto slider = [&](Text label, Text hint, const char* id, uint32_t& value, int low, int high, int step,
+                                const std::function<void(char*, size_t, int)>& show) {
+            setting_row(tr(label), tr(hint), width, scale, [&] {
+                int shown_value = int(value);
+                char shown[48];
+                show(shown, sizeof shown, shown_value);
+                ImGui::SetNextItemWidth(width);
+                bool moved = ImGui::SliderInt(id, &shown_value, low, high, shown);
+                moved |= slider_steps(&shown_value, low, high, step);
+                if (moved) value = uint32_t(std::clamp(shown_value, low, high));
+            });
+        };
+        const auto centimetres = [](char* out, size_t size, int value) { std::snprintf(out, size, "%.2f m", value / 100.0); };
+        slider(V2Distance, V2DistanceHint, "##v2_distance", settings.kinect_v2_distance, 100, 400, 5, centimetres);
+        slider(V2Height, V2HeightHint, "##v2_height", settings.kinect_v2_height, 20, 200, 5, centimetres);
+        slider(V2Follow, V2FollowHint, "##v2_follow", settings.kinect_v2_follow, 2, 200, 1,
+               [](char* out, size_t size, int value) { std::snprintf(out, size, "%.1f s", value / 10.0); });
+        slider(V2Deadband, V2DeadbandHint, "##v2_deadband", settings.kinect_v2_deadband, 0, 100, 1, centimetres);
+    }
+
     void motion_settings() {
         const float switch_width = ImGui::GetFrameHeight() * 1.9f;
         const float camera_width = 150 * scale;
         // The hint says what the chosen setting does, or while the list is
         // open the one under the pointer (from the frame before).
-        static constexpr const char* camera_values[] = {"off", "picture", "motion", "kinect"};
-        static constexpr Text camera_hints[] = {CameraHintOff, CameraHintPicture, CameraHint, CameraHintKinect};
+        static constexpr const char* camera_values[] = {"off", "motion", "kinect", "kinect_v2"};
+        static constexpr Text camera_hints[] = {CameraHintOff, CameraHint, CameraHintKinect, CameraHintKinectV2};
+        // The picture-only choice is gone: an old setting means off.
+        if (settings.camera == "picture") settings.camera = "off";
         int camera_chosen = 0;
         for (int i = 0; i < 4; ++i) if (settings.camera == camera_values[i]) camera_chosen = i;
         const int camera_described = camera_hovered >= 0 ? camera_hovered : camera_chosen;
-        setting_row(tr(CameraLabel), tr(camera_hints[camera_described]), camera_width, scale, [&] {
-            const Text labels[] = {CameraOff, CameraPicture, CameraMotion, CameraKinect};
+        const bool kinect_v2_chosen = settings.camera == "kinect_v2";
+        const bool kinect_chosen = settings.camera == "kinect" || kinect_v2_chosen;
+        // What the sensor sees, in a window of its own: whether it works,
+        // its cameras and skeletons, and its tilt. Its button sits in the
+        // camera's row.
+        if (kinect_chosen && kinect_preview) {
+            if (const std::string why = kinect_preview->failure(); !why.empty()) kinect_failure = why;
+            if (kinect_preview->closed()) kinect_preview.reset();
+            // The view and Recompiled's tuning as they are now, so the open
+            // preview follows the sliders; the preview never writes back.
+            else kinect_preview->set_depth_choice(sfr::launcher_kinect_depth_choice(settings));
+        }
+        const float preview_button = (std::max)(ImGui::CalcTextSize(tr(KinectPreviewOpen)).x,
+                                                ImGui::CalcTextSize(tr(KinectPreviewClose)).x) + ImGui::GetStyle().FramePadding.x * 4;
+        // A webcam's picture window sits in the same place (Windows only).
+        bool webcam_preview = false;
+#ifdef _WIN32
+        webcam_preview = settings.camera == "motion";
+#endif
+        // Which camera: the host's list, read once and again whenever the
+        // camera is turned on, since one may have been plugged in since.
+        // A Kinect is the host's only one: no list, only whether it answers.
+        if (settings.camera == "motion" && cameras_listed_for != settings.camera) {
+            cameras = sfr::CameraCapture::devices();
+            cameras_listed_for = settings.camera;
+        }
+        if (camera_preview && camera_preview->closed()) camera_preview.reset();
+        // The camera is remembered by name, so the row shows the saved
+        // name even when that camera is not here today.
+        const char* current = settings.camera_device.empty()
+                                  ? (cameras.empty() ? tr(CameraNone) : cameras.front().c_str())
+                                  : settings.camera_device.c_str();
+        const float row_width = kinect_chosen || webcam_preview ? camera_width + ImGui::GetStyle().ItemSpacing.x + preview_button
+                                                                : camera_width;
+        setting_row(tr(CameraLabel), tr(camera_hints[camera_described]), row_width, scale, [&] {
+            const Text labels[] = {CameraOff, CameraMotion, CameraKinect, CameraKinectV2};
             // A real sensor only where there is a runtime to reach it.
-            const int choices = sfr::KinectSensor::supported() ? 4 : 3;
+            const int choices = sfr::KinectSensor::supported() ? 4 : 2;
             const int chosen = (std::min)(camera_chosen, choices - 1);
             camera_hovered = -1;
+            const float control_x = ImGui::GetCursorPosX();
             ImGui::SetNextItemWidth(camera_width);
             if (ImGui::BeginCombo("##camera", tr(labels[chosen]))) {
                 for (int i = 0; i < choices; ++i) {
@@ -2765,97 +2890,32 @@ struct Launcher {
                 }
                 ImGui::EndCombo();
             }
-        });
-        // Which camera: the hosts's list, read once and again whenever the
-        // camera is turned on, since one may have been plugged in since.
-        // A Kinect is the host's only one: no list, only whether it answers.
-        if (settings.camera == "kinect") {
-            // What the sensor sees, in a window of its own: whether it works,
-            // its cameras and skeletons, and its tilt.
-            if (kinect_preview) {
-                if (const std::string why = kinect_preview->failure(); !why.empty()) kinect_failure = why;
-                // A finished calibration (the preview's Calibrate) sets the
-                // crouch depth from the player's own crouch.
-                if (const auto calibrated = kinect_preview->take_calibration()) {
-                    settings.kinect_crouch_cm = calibrated->crouch_cm;
-                    sfr::save_launcher_settings(settings_file, settings);
-                    status = tr(KinectCalibrated);
-                    status_error = false;
-                }
-                if (kinect_preview->closed()) kinect_preview.reset();
-            }
-            const Text label = kinect_preview ? KinectPreviewClose : KinectPreviewOpen;
-            const float button = (std::max)(ImGui::CalcTextSize(tr(KinectPreviewOpen)).x,
-                                            ImGui::CalcTextSize(tr(KinectPreviewClose)).x) + ImGui::GetStyle().FramePadding.x * 4;
-            setting_row(tr(KinectRow), tr(KinectRowHint), button, scale, [&] {
-                if (ImGui::Button(tr(label), ImVec2(button, 0))) {
+            if (kinect_chosen) {
+                ImGui::SameLine();
+                if (ImGui::Button(tr(kinect_preview ? KinectPreviewClose : KinectPreviewOpen), ImVec2(preview_button, 0))) {
                     if (kinect_preview) kinect_preview.reset();
                     else {
                         kinect_failure.clear();
-                        kinect_preview = sfr::KinectPreviewWindow::open(language == 1);
+                        kinect_preview = sfr::KinectPreviewWindow::open(language == 1, kinect_v2_chosen ? 2 : 1,
+                                                                        sfr::launcher_kinect_depth_choice(settings));
                     }
                 }
-            });
-            // Anything short of a working sensor: what to install and check.
-            if (!kinect_failure.empty()) {
-                const Text why = kinect_failure == "no-runtime" || kinect_failure == "incomplete-runtime" ? KinectNoRuntime
-                                 : kinect_failure == "no-sensor"                                           ? KinectNoSensor
-                                                                                                           : KinectFailed;
-                const float padding = ImGui::GetStyle().FramePadding.x * 4;
-                const float v1_width = ImGui::CalcTextSize(tr(KinectDownload)).x + padding;
-                const float v2_width = ImGui::CalcTextSize(tr(KinectDownloadV2)).x + padding;
-                setting_row(tr(why), tr(KinectInstallHint),
-                            v1_width + v2_width + ImGui::GetStyle().ItemSpacing.x, scale, [&] {
-                    if (ImGui::Button(tr(KinectDownload), ImVec2(v1_width, 0)))
-                        sfr::launcher::open_url("https://www.microsoft.com/download/details.aspx?id=40278");
-                    ImGui::SameLine();
-                    if (ImGui::Button(tr(KinectDownloadV2), ImVec2(v2_width, 0)))
-                        sfr::launcher::open_url("https://www.microsoft.com/download/details.aspx?id=44561");
-                });
+            } else if (webcam_preview) {
+                ImGui::SameLine();
+                ImGui::BeginDisabled(cameras.empty());
+                if (ImGui::Button(tr(camera_preview ? KinectPreviewClose : KinectPreviewOpen), ImVec2(preview_button, 0))) {
+                    if (camera_preview) camera_preview.reset();
+                    else camera_preview = sfr::CameraPreviewWindow::open(current, language == 1);
+                }
+                ImGui::EndDisabled();
             }
-            // Tuning (Issue #97); applied the next time the game starts.
-            const float kinect_switch = ImGui::GetFrameHeight() * 1.9f;
-            const float kinect_slider = 260 * scale;
-            setting_row(tr(KinectSmoothLabel), tr(KinectSmoothHint), kinect_switch, scale,
-                        [&] { toggle("##kinect_smooth", &settings.kinect_smooth); });
-            setting_row(tr(KinectLeanLabel), tr(KinectLeanHint), kinect_slider, scale, [&] {
-                int lean = int(settings.kinect_lean);
-                ImGui::SetNextItemWidth(kinect_slider);
-                bool moved = ImGui::SliderInt("##kinect_lean", &lean, 10, 100, "%d%%");
-                moved |= slider_steps(&lean, 10, 100, 5);
-                if (moved) settings.kinect_lean = uint32_t(lean);
-            });
-            setting_row(tr(KinectCrouchLabel), tr(KinectCrouchHint), kinect_slider, scale, [&] {
-                int crouch = int(settings.kinect_crouch_cm);
-                ImGui::SetNextItemWidth(kinect_slider);
-                bool moved = ImGui::SliderInt("##kinect_crouch", &crouch, 5, 35, "%d cm");
-                moved |= slider_steps(&crouch, 5, 35, 1);
-                if (moved) settings.kinect_crouch_cm = uint32_t(crouch);
-            });
-        } else if (settings.camera != "off") {
-            if (cameras_listed_for != settings.camera) {
-                cameras = sfr::CameraCapture::devices();
-                cameras_listed_for = settings.camera;
-            }
-            const float test_width = ImGui::CalcTextSize(tr(CameraTesting)).x + ImGui::GetStyle().FramePadding.x * 4;
-            if (camera_preview && camera_preview->closed()) camera_preview.reset();
-#ifdef _WIN32
-            const float preview_width = (std::max)(ImGui::CalcTextSize(tr(CameraPreviewOpen)).x,
-                                                   ImGui::CalcTextSize(tr(CameraPreviewClose)).x) +
-                                        ImGui::GetStyle().FramePadding.x * 4;
-            const float buttons_width = test_width + ImGui::GetStyle().ItemSpacing.x + preview_width;
-#else
-            const float buttons_width = test_width;
-#endif
-            const float device_width = 230 * scale + buttons_width;
-            // The camera is remembered by name, so the row shows the saved
-            // name even when that camera is not here today.
-            const char* current = settings.camera_device.empty()
-                                      ? (cameras.empty() ? tr(CameraNone) : cameras.front().c_str())
-                                      : settings.camera_device.c_str();
-            const Text trial[] = {CameraTest, CameraTesting, CameraWorks, CameraSilent, CameraClosed};
-            setting_row(tr(CameraDevice), tr(CameraDeviceHint), device_width, scale, [&] {
-                ImGui::SetNextItemWidth(device_width - buttons_width - ImGui::GetStyle().ItemSpacing.x);
+            // A webcam's list sits under the row's controls, beside the hint,
+            // as wide as the row; the hint is drawn after this from the same
+            // line, on the left.
+            if (settings.camera == "motion") {
+                const float line_x = ImGui::GetCursorPosX(), line_y = ImGui::GetCursorPosY();
+                ImGui::SetCursorPos(ImVec2(control_x, line_y));
+                ImGui::SetNextItemWidth(row_width);
                 if (ImGui::BeginCombo("##camera_device", current)) {
                     for (const auto& camera : cameras)
                         if (ImGui::Selectable(camera.c_str(), camera == settings.camera_device)) {
@@ -2864,32 +2924,35 @@ struct Launcher {
                         }
                     ImGui::EndCombo();
                 }
-                ImGui::SameLine();
-                const auto state = camera_trial.load();
-                // One of them holds the camera at a time.
-                ImGui::BeginDisabled(cameras.empty() || state == CameraTrial::looking || camera_preview);
-                if (ImGui::Button(tr(trial[int(state)]), ImVec2(test_width, 0))) {
-                    camera_trial.store(CameraTrial::looking);
-                    camera_trial_worker = std::jthread([this, wanted = std::string(current)] {
-                        auto camera = sfr::CameraCapture::open(640, 480, wanted);
-                        if (!camera) { camera_trial.store(CameraTrial::closed); return; }
-                        sfr::CameraFrame frame;
-                        for (int attempt = 0; attempt < 300 && !frame.number; ++attempt)
-                            if (!camera->next(frame)) std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                        camera_trial.store(frame.number ? CameraTrial::pictures : CameraTrial::silent);
-                    });
-                }
-                ImGui::EndDisabled();
-#ifdef _WIN32
-                ImGui::SameLine();
-                ImGui::BeginDisabled(cameras.empty() || state == CameraTrial::looking);
-                if (ImGui::Button(tr(camera_preview ? CameraPreviewClose : CameraPreviewOpen), ImVec2(preview_width, 0))) {
-                    if (camera_preview) camera_preview.reset();
-                    else camera_preview = sfr::CameraPreviewWindow::open(current, language == 1);
-                }
-                ImGui::EndDisabled();
-#endif
-            });
+                ImGui::SetCursorPos(ImVec2(line_x, line_y));
+            }
+        });
+        if (kinect_chosen) {
+            // Anything short of a working sensor: what to install and check.
+            if (!kinect_failure.empty()) {
+                const Text why = kinect_failure == "no-runtime" || kinect_failure == "incomplete-runtime" ? KinectNoRuntime
+                                 : kinect_failure == "no-sensor"                                           ? KinectNoSensor
+                                                                                                           : KinectFailed;
+                const float padding = ImGui::GetStyle().FramePadding.x * 4;
+                // The Xbox 360 choice falls back to a v2, so it offers both;
+                // the v2 choice never opens a v1.
+                const float v1_width = kinect_v2_chosen ? 0.0f : ImGui::CalcTextSize(tr(KinectDownload)).x + padding;
+                const float v2_width = ImGui::CalcTextSize(tr(KinectDownloadV2)).x + padding;
+                setting_row(tr(why), tr(KinectInstallHint),
+                            v1_width + v2_width + (kinect_v2_chosen ? 0.0f : ImGui::GetStyle().ItemSpacing.x), scale, [&] {
+                    if (!kinect_v2_chosen) {
+                        if (ImGui::Button(tr(KinectDownload), ImVec2(v1_width, 0)))
+                            sfr::launcher::open_url("https://www.microsoft.com/download/details.aspx?id=40278");
+                        ImGui::SameLine();
+                    }
+                    if (ImGui::Button(tr(KinectDownloadV2), ImVec2(v2_width, 0)))
+                        sfr::launcher::open_url("https://www.microsoft.com/download/details.aspx?id=44561");
+                });
+            }
+            // No smoothing setting: the game smooths a real Kinect's
+            // skeletons itself, once, as the title asks (nui_smooth_hooks.cpp).
+            if (kinect_v2_chosen) kinect_v2_view_rows(row_width, scale);
+        } else if (settings.camera != "off") {
             if (settings.camera == "motion") {
                 setting_row(tr(CameraMirror), tr(CameraMirrorHint), switch_width, scale,
                             [&] { toggle("##camera_mirror", &settings.camera_mirror); });
@@ -2899,25 +2962,33 @@ struct Launcher {
 #endif
             }
         }
-        if (settings.camera == "motion" || settings.camera == "kinect") {
-            const float slider_width = 220 * scale;
-            setting_row(tr(MenuSteady), tr(MenuSteadyHint), slider_width, scale, [&] {
-                int radius = int((std::min)(settings.menu_steady_radius, 30u));
-                char shown[32];
-                if (radius) std::snprintf(shown, sizeof shown, "%d mm", radius);
-                else std::snprintf(shown, sizeof shown, "%s", tr(MenuSteadyOff));
-                ImGui::SetNextItemWidth(slider_width);
-                bool moved = ImGui::SliderInt("##menu_steady", &radius, 0, 30, shown);
-                moved |= slider_steps(&radius, 0, 30, 1);
-                if (moved) settings.menu_steady_radius = uint32_t(std::clamp(radius, 0, 30));
-            });
-            // For a bug report: numbers in game.log (motion_trace.h).
-            setting_row(tr(MotionTrace), tr(MotionTraceHint), ImGui::GetFrameHeight() * 1.9f, scale,
-                        [&] { toggle("##motion_trace", &settings.motion_trace); });
+        if (settings.camera == "motion" || settings.camera == "kinect" || kinect_v2_chosen) {
+            // Fine tuning, folded away until asked for: Recompiled's and the
+            // menu cursor's. With a Kinect the sliders are as wide as the
+            // camera row above them.
+            collapsible_section(V2Advanced, advanced_open);
+            if (advanced_open) {
+                if (kinect_v2_chosen && settings.kinect_v2_view == "ideal") kinect_v2_tuning_rows(row_width, scale);
+                const float slider_width = kinect_chosen ? row_width : 220 * scale;
+                setting_row(tr(MenuSteady), tr(MenuSteadyHint), slider_width, scale, [&] {
+                    int radius = int((std::min)(settings.menu_steady_radius, 30u));
+                    char shown[32];
+                    if (radius) std::snprintf(shown, sizeof shown, "%d mm", radius);
+                    else std::snprintf(shown, sizeof shown, "%s", tr(MenuSteadyOff));
+                    ImGui::SetNextItemWidth(slider_width);
+                    bool moved = ImGui::SliderInt("##menu_steady", &radius, 0, 30, shown);
+                    moved |= slider_steps(&radius, 0, 30, 1);
+                    if (moved) settings.menu_steady_radius = uint32_t(std::clamp(radius, 0, 30));
+                });
+                // For a bug report: numbers in game.log (motion_trace.h).
+                setting_row(tr(MotionTrace), tr(MotionTraceHint), ImGui::GetFrameHeight() * 1.9f, scale,
+                            [&] { toggle("##motion_trace", &settings.motion_trace); });
+            }
         }
         if (sfr::VoiceRecognizer::supported()) {
-            settings_section(SectionVoice);
-            setting_row(tr(VoiceLabel), tr(VoiceHint), switch_width, scale, [&] { toggle("##voice", &settings.voice); });
+            collapsible_section(SectionVoice, voice_open);
+            if (voice_open)
+                setting_row(tr(VoiceLabel), tr(VoiceHint), switch_width, scale, [&] { toggle("##voice", &settings.voice); });
         }
     }
 

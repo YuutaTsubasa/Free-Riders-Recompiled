@@ -30,6 +30,7 @@ $diagnosticPath = [IO.Path]::GetFullPath((Join-Path $repoRoot $DiagnosticDirecto
 if ($LASTEXITCODE -ne 0) { throw 'Xenon tools configure failed.' }
 $targets = @('XenonAnalyse', 'XenonRecomp', 'sfr_image_dump', 'sfr_memory_test', 'sfr_xex_module_test', 'sfr_virtual_memory_test', 'sfr_critical_section_test', 'sfr_hardware_info_test', 'sfr_thread_local_storage_test', 'sfr_system_time_test', 'sfr_guest_clock_test', 'sfr_timestamp_bundle_test')
 $targets += 'sfr_vector_memory_test'
+$targets += 'sfr_consecutive_failures_test'
 $targets += 'sfr_guest_entry_state_test'
 $targets += 'sfr_guest_registers_test'
 $targets += 'sfr_guest_function_table_test'
@@ -149,7 +150,22 @@ $targets += 'sfr_host_core_plan_test'
 $targets += 'sfr_host_thread_stats_test'
 $targets += 'sfr_vector_unpack_test'
 $targets += 'sfr_kinect_smoothing_test'
-$targets += 'sfr_kinect_calibration_test'
+# The title's NuiTransformSmooth done natively; and against the SDK 1.8's own (skipped without it).
+$targets += 'sfr_nui_transform_smooth_test'
+$targets += 'sfr_nui_transform_smooth_sdk_test'
+$targets += 'sfr_kinect_v2_image_test'
+$targets += 'sfr_kinect_preview_layout_test'
+$targets += 'sfr_kinect_v2_depth_test'
+$targets += 'sfr_kinect_ideal_diagram_test'
+$targets += 'sfr_kinect_record_test'
+# Reading a Kinect recording back without the game (docs/kinect-sensor.md).
+$targets += 'sfr_kinect_record_summary'
+# Depth recordings: their format, the title's depth view features again, v1 against v2.
+$targets += 'sfr_kinect_depth_test'
+$targets += 'sfr_kinect_depth_features'
+$targets += 'sfr_kinect_depth_compare'
+# A Kinect v2's raw recording made into the game's depth again, through any view.
+$targets += 'sfr_kinect_depth_resynth'
 $targets += 'sfr_native_timer_resolution_test'
 $targets += 'sfr_native_constant_upload_test'
 $targets += 'sfr_pipeline_manifest_test'
@@ -183,6 +199,6 @@ $targets += 'sfr_guest_texture_binding_test'
 $targets += 'sfr_native_notification_event_test'
 $targets += 'sfr_native_notifications_test'
 $targets += 'sfr_notification_placement_test'
-if ($Diagnostic) { $targets += 'sfr_cpu_diagnostic'; $targets += 'sfr_native_winsock_test' }
+if ($Diagnostic) { $targets += 'sfr_cpu_diagnostic'; $targets += 'sfr_native_winsock_test'; $targets += 'sfr_kinect_depth_view_guest_test' }
 & cmake --build $build --target $targets --parallel $Jobs
 if ($LASTEXITCODE -ne 0) { throw 'Xenon tools build failed.' }

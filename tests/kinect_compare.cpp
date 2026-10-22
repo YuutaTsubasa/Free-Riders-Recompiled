@@ -119,7 +119,11 @@ struct Compare {
         const float sx = float(area.right - area.left) / (colour_view ? 640.0f : 320.0f);
         const float sy = float(area.bottom - area.top) / (colour_view ? 480.0f : 240.0f);
         const auto place = [&](const std::array<float, 3>& p) {
-            const sfr::KinectImagePoint point = colour_view ? sfr::kinect_colour_point(p) : sfr::kinect_depth_point(p);
+            // A sensor that places points in its own images (a v2) first.
+            sfr::KinectImagePoint point;
+            const auto kind = colour_view ? sfr::KinectImageKind::colour : sfr::KinectImageKind::depth_and_player;
+            if (!sensor || !sensor->image_point(kind, p, point))
+                point = colour_view ? sfr::kinect_colour_point(p) : sfr::kinect_depth_point(p);
             return POINT{area.left + LONG(point.x * sx), area.top + LONG(point.y * sy)};
         };
         HRGN clip = CreateRectRgn(area.left, area.top, area.right, area.bottom);

@@ -2,44 +2,43 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <iostream>
+#include <string_view>
 
 namespace sfr {
 
 KinectSensor::~KinectSensor() = default;
 
-float kinect_level(KinectFrame& frame) {
-    const auto& g = frame.gravity;
-    const float length = std::sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
-    if (!(length > 0.5f)) return 0.0f;
-    const std::array<float, 3> up = {g[0] / length, g[1] / length, g[2] / length};
-    // cos 30 degrees: a sensor tilted further, or gravity the other way up,
-    // is not a tilt to take out.
-    if (up[1] < 0.8660254f) return 0.0f;
-    // The turn that takes up onto +y: about k = up x (0, 1, 0), by the angle
-    // between them (Rodrigues).
-    const std::array<float, 3> axis = {-up[2], 0.0f, up[0]};
-    const float sine = std::sqrt(axis[0] * axis[0] + axis[2] * axis[2]), cosine = up[1];
-    frame.gravity = {0.0f, 1.0f, 0.0f};
-    if (sine < 1e-6f) return 0.0f;
-    const std::array<float, 3> k = {axis[0] / sine, 0.0f, axis[2] / sine};
-    const auto turn = [&](const std::array<float, 3>& v) -> std::array<float, 3> {
-        const float dot = k[0] * v[0] + k[2] * v[2];
-        const std::array<float, 3> cross = {k[1] * v[2] - k[2] * v[1], k[2] * v[0] - k[0] * v[2],
-                                            k[0] * v[1] - k[1] * v[0]};
-        std::array<float, 3> out{};
-        for (int i = 0; i < 3; ++i) out[i] = v[i] * cosine + cross[i] * sine + k[i] * dot * (1.0f - cosine);
-        return out;
+std::string kinect_edges_text(uint8_t edges) {
+    std::string text;
+    const auto add = [&](uint8_t bit, const char* name) {
+        if (!(edges & bit)) return;
+        if (!text.empty()) text += '+';
+        text += name;
     };
-    for (KinectBody& body : frame.bodies) {
-        for (auto& joint : body.joints) joint = turn(joint);
-        body.position = turn(body.position);
+    add(kinect_edge::top, "top");
+    add(kinect_edge::bottom, "bottom");
+    add(kinect_edge::left, "left");
+    add(kinect_edge::right, "right");
+    return text.empty() ? "none" : text;
+}
+
+uint8_t kinect_edges_move(uint8_t edges) {
+    uint8_t move = 0;
+    const bool top = edges & kinect_edge::top, bottom = edges & kinect_edge::bottom;
+    const bool left = edges & kinect_edge::left, right = edges & kinect_edge::right;
+    // Cut at both ends of an axis: the picture is too small for the player.
+    if ((top && bottom) || (left && right)) move |= kinect_edge_move::step_back;
+    else {
+        if (top) move |= kinect_edge_move::tilt_up | kinect_edge_move::step_back;
+        if (bottom) move |= kinect_edge_move::tilt_down | kinect_edge_move::step_back;
+        // The picture's left is the player's right (the player faces the
+        // sensor, the picture is not mirrored): move to the player's own left.
+        if (left) move |= kinect_edge_move::player_left;
+        if (right) move |= kinect_edge_move::player_right;
     }
-    // A plane through turned points keeps its distance; only its normal turns.
-    if (frame.floor_plane[0] != 0.0f || frame.floor_plane[1] != 0.0f || frame.floor_plane[2] != 0.0f) {
-        const auto normal = turn({frame.floor_plane[0], frame.floor_plane[1], frame.floor_plane[2]});
-        frame.floor_plane = {normal[0], normal[1], normal[2], frame.floor_plane[3]};
-    }
-    return std::atan2(sine, cosine) * 180.0f / 3.14159265358979f;
+    return move;
 }
 
 std::string kinect_open_failure(const std::string& v1, const std::string& v2) {
@@ -48,6 +47,28 @@ std::string kinect_open_failure(const std::string& v1, const std::string& v2) {
     if (installed(v1)) return v1;
     if (installed(v2)) return v2;
     return "no-runtime";
+}
+
+int kinect_selected_model() {
+    const char* const value = std::getenv("SFR_KINECT_MODEL");
+    return value && std::string_view(value) == "2" ? 2 : 1;
+}
+
+bool kinect_host_smoothing() {
+    const char* const value = std::getenv("SFR_KINECT_SMOOTH");
+    return value && *value == '1';
+}
+
+std::unique_ptr<KinectSensor> KinectSensor::open_selected(int model, std::string* why) {
+    if (model == 2) return open_model(2, why);
+    std::string v1_why, v2_why;
+    if (auto sensor = open_model(1, &v1_why)) return sensor;
+    if (auto sensor = open_model(2, &v2_why)) {
+        std::cerr << "NATIVE_KINECT no Kinect (Xbox 360) opened, using the Kinect v2 found instead\n";
+        return sensor;
+    }
+    if (why) *why = kinect_open_failure(v1_why, v2_why);
+    return nullptr;
 }
 
 void kinect_v2_body(const std::array<KinectV2Joint, kinect_v2_joint_count>& joints, uint32_t tracking_id,
@@ -116,8 +137,18 @@ std::array<const KinectBody*, KinectPlayerSlots::players> KinectPlayerSlots::ass
 
 void KinectPlayerSlots::retain(KinectFrame& frame) {
     assign(frame);
+    // Each player's body once: a sensor that repeats an id (a v2's 64-bit
+    // ids are shortened to the 32 the title keeps) must not make a third
+    // TRACKED skeleton, which the title's two-entry list cannot hold.
+    std::array<bool, players> kept{};
     std::erase_if(frame.bodies, [&](const KinectBody& body) {
-        return !body.tracking_id || std::find(tracking_.begin(), tracking_.end(), body.tracking_id) == tracking_.end();
+        if (!body.tracking_id) return true;
+        const auto slot = std::find(tracking_.begin(), tracking_.end(), body.tracking_id);
+        if (slot == tracking_.end()) return true;
+        bool& taken = kept[size_t(slot - tracking_.begin())];
+        if (taken) return true;
+        taken = true;
+        return false;
     });
 }
 

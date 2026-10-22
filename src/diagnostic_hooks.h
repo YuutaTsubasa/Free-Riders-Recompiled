@@ -405,8 +405,6 @@ std::optional<GamepadState> nui_second_gamepad(uint32_t user, bool racing);
 // instead of the pad or the camera's motion standing in for them
 // (nui_race_hooks.cpp).
 bool nui_body_from_sensor();
-// True only if the selected backend successfully opened its depth stream.
-bool nui_sensor_has_depth();
 // Advances with each new frame or expired tracking update (0 without one): the race
 // steers from its bodies only when a frame is new (nui_race_hooks.cpp).
 uint64_t kinect_frame_generation();

@@ -1,6 +1,7 @@
 #include "avatar_transform.h"
 #include "native_presentation.h"
 #include "render_scale.h"
+#include "consecutive_failures.h"
 #include <functional>
 
 #include "native_graphics.h"
@@ -456,6 +457,8 @@ struct NativePresentation::Impl {
     // VK_SUBOPTIMAL_KHR: the layer is no longer the swap chain's size): the
     // swap chain is made again next frame, a few times in a row before giving up.
     uint32_t present_failures = 0;
+    // A resize refused while the window is dragged: tried again next frame.
+    uint32_t resize_failures = 0;
     // MoltenVK still shows an image it calls suboptimal (scaled into the
     // layer). When a swap chain made again does not help, the game goes on
     // with it instead of closing (Issue #191); a normal present ends this.
@@ -1980,12 +1983,21 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
                 std::this_thread::sleep_for(std::chrono::milliseconds(16));  // no frame to pace by
                 return;
             }
+            // Dragging the window edge can leave a size the surface refuses
+            // for a moment (it changes again before the swap chain is made):
+            // try again next frame, and give up only if it keeps failing.
+            if (sfr::failure_within_limit(impl_->resize_failures)) {
+                std::cerr << "NATIVE_PRESENTATION resize_refused attempt=" << impl_->resize_failures << '\n';
+                impl_->resize_swap_chain = true;
+                return;
+            }
 #ifdef SFR_IOS
             impl_->rebuild_swap_chain = true;  // a new surface on the same layer, next frame
             return;
 #endif
             throw std::runtime_error("failed to resize the native swap chain");
         }
+        impl_->resize_failures = 0;
         impl_->rebuild_swap_chain_sync();
         if (impl_->blit_pipeline) impl_->build_blit_targets();
         std::cerr << "NATIVE_PRESENTATION resized images=" << impl_->swap_chain->getTextureCount()

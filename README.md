@@ -380,15 +380,25 @@ require a sensor or its SDK.
 | Kinect for Xbox 360 / Kinect for Windows v1 | SDK 1.8 and a powered USB connection; the Xbox 360 sensor requires the full SDK, while Kinect for Windows v1 can use Runtime 1.8 | Xbox 360 Kinect tested through races on Windows 10 |
 | Kinect v2 / Kinect for Xbox One | SDK 2.0, USB 3.0 and a compatible powered PC adapter | Experimental; skeleton tracking is implemented, but hardware gameplay validation is still pending |
 
-Install the matching SDK, connect the sensor, then select **Kinect** in the
-launcher's **Motion input > Camera** setting and choose **Open preview** to check tracking.
-Both generations use the same option: the runtime tries v1 first, then v2.
+Install the matching SDK, connect the sensor, then select **Kinect (Xbox 360)** or
+**Kinect v2 (Xbox One)** in the launcher's **Motion input > Camera** setting and choose
+**Open preview** to check tracking. Each choice opens its own generation, so with both sensors
+plugged in you can pick the v2. An older `settings.ini` with `camera=kinect` and only a v2
+connected still works: when no Xbox 360 Kinect opens, the v2 is used and `game.log` says so.
+There is no smoothing option any more: the game smooths a real Kinect's skeletons (v1 and v2) once,
+with the filter and settings the original game asks its Kinect library for.
+A Kinect v2 always hands the game a Kinect v1-style depth image made from its own depth.
+As on the console, a Kinect's race input always comes from the game's own detectors: the lean,
+crouch and jump read the depth image (crouch and jump the skeleton's hips as well), and the
+other gestures and the menus read the skeleton; nothing on the PC stands in for them. If the
+depth cannot be opened the game gets none, and `game.log` and the launcher's Kinect preview say why.
 Keep your whole body visible
 and allow enough space to move.
 
-Kinect v1 can supply skeleton, depth and color data. The current v2 backend
-supplies skeletons only, with additional skeleton-based steering and crouch/jump
-handling. Physical Kinect input is Windows-only; Linux and Android releases
+Kinect v1 can supply skeleton, depth and color data. A Kinect v2 gives the game skeletons and a depth image made
+from its own depth;
+its color and depth images also appear in the launcher's preview (not yet
+verified on hardware). Physical Kinect input is Windows-only; Linux and Android releases
 do not provide it.
 
 SDK links, adapter requirements and troubleshooting:

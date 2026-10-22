@@ -138,13 +138,19 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         else if (key == "touch_controls") read_flag(value, settings.touch_controls);
         else if (key == "touch_labels") read_flag(value, settings.touch_labels);
         else if (key == "tilt") read_flag(value, settings.tilt);
-        else if (key == "camera" && (value == "off" || value == "picture" || value == "motion" || value == "kinect")) settings.camera = value;
+        else if (key == "camera" && (value == "off" || value == "picture" || value == "motion" || value == "kinect" || value == "kinect_v2")) settings.camera = value;
         else if (key == "camera_device" && value.size() <= 128) settings.camera_device = value;
         else if (key == "camera_mirror") read_flag(value, settings.camera_mirror);
-        else if (key == "kinect_smooth") read_flag(value, settings.kinect_smooth);
-        else if (key == "kinect_lean") read_number(value, 10, 100, settings.kinect_lean);
-        else if (key == "kinect_crouch_cm") read_number(value, 5, 35, settings.kinect_crouch_cm);
+        // kinect_smooth (the v2's smoothing switch) is gone: the game smooths
+        // a real Kinect's skeletons once, as the title asks. An old file's
+        // key is ignored like any unknown one and not written again.
         else if (key == "menu_steady_radius") read_number(value, 0, 30, settings.menu_steady_radius);
+        else if (key == "kinect_v2_view" && (value == "fit" || value == "sensor" || value == "ideal"))
+            settings.kinect_v2_view = value;
+        else if (key == "kinect_v2_distance") read_number(value, 100, 400, settings.kinect_v2_distance);
+        else if (key == "kinect_v2_height") read_number(value, 20, 200, settings.kinect_v2_height);
+        else if (key == "kinect_v2_follow") read_number(value, 2, 200, settings.kinect_v2_follow);
+        else if (key == "kinect_v2_deadband") read_number(value, 0, 100, settings.kinect_v2_deadband);
         else if (key == "voice") read_flag(value, settings.voice);
         else if (key == "camera_debug") read_flag(value, settings.camera_debug);
         else if (key == "motion_trace") read_flag(value, settings.motion_trace);
@@ -227,10 +233,12 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "camera=" << s.camera << '\n'
         << "camera_device=" << s.camera_device << '\n'
         << "camera_mirror=" << s.camera_mirror << '\n'
-        << "kinect_smooth=" << s.kinect_smooth << '\n'
-        << "kinect_lean=" << s.kinect_lean << '\n'
-        << "kinect_crouch_cm=" << s.kinect_crouch_cm << '\n'
         << "menu_steady_radius=" << (std::min)(s.menu_steady_radius, 30u) << '\n'
+        << "kinect_v2_view=" << s.kinect_v2_view << '\n'
+        << "kinect_v2_distance=" << s.kinect_v2_distance << '\n'
+        << "kinect_v2_height=" << s.kinect_v2_height << '\n'
+        << "kinect_v2_follow=" << s.kinect_v2_follow << '\n'
+        << "kinect_v2_deadband=" << s.kinect_v2_deadband << '\n'
         << "voice=" << s.voice << '\n'
         << "camera_debug=" << s.camera_debug << '\n'
         << "motion_trace=" << s.motion_trace << '\n'
@@ -310,6 +318,29 @@ bool has_game_save(const std::filesystem::path& saves) {
     return false;
 }
 
+namespace {
+bool v2_recompiled(const LauncherSettings& s) { return s.camera == "kinect_v2" && s.kinect_v2_view == "ideal"; }
+// A hundredths value as the decimal text the game reads (250 -> "2.50").
+std::string centi(uint32_t value) {
+    char text[32];
+    std::snprintf(text, sizeof text, "%u.%02u", value / 100, value % 100);
+    return text;
+}
+}  // namespace
+
+KinectDepthChoice launcher_kinect_depth_choice(const LauncherSettings& s) {
+    KinectDepthChoice choice;
+    choice.view = s.kinect_v2_view == "fit"      ? KinectDepthChoiceView::fit
+                  : s.kinect_v2_view == "sensor" ? KinectDepthChoiceView::sensor
+                                                 : KinectDepthChoiceView::ideal;
+    // As game_environment writes them: centimetres, follow in tenths.
+    choice.distance = float(s.kinect_v2_distance) / 100.0f;
+    choice.height = float(s.kinect_v2_height) / 100.0f;
+    choice.follow = float(s.kinect_v2_follow) / 10.0f;
+    choice.deadband = float(s.kinect_v2_deadband) / 100.0f;
+    return choice;
+}
+
 std::vector<std::pair<std::string, std::string>> game_environment(const LauncherSettings& s,
                                                                const std::filesystem::path& directory) {
     const auto [window_width, window_height] = window_size(s);
@@ -368,14 +399,24 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         {"SFR_GRAPHICS", s.vulkan ? "vulkan" : "d3d12"},
         // "off" leaves the camera alone; "picture" opens it for the image the
         // title shows; "motion" also drives the Kinect player's body with it;
-        // "kinect" is a real sensor tracking the players (kinect_sensor.h).
-        {"SFR_CAMERA", s.camera == "off" ? "" : s.camera},
+        // "kinect" is a real sensor tracking the players (kinect_sensor.h):
+        // the Xbox 360 one ("kinect", a v2 stands in when no v1 opens) or the
+        // Kinect v2 ("kinect_v2"). Both reach the game as SFR_CAMERA=kinect,
+        // the model as SFR_KINECT_MODEL (2 opens a v2 only; unset or 1 is
+        // the Xbox 360 Kinect).
+        {"SFR_CAMERA", s.camera == "off" ? "" : s.camera == "kinect_v2" ? "kinect" : s.camera},
+        {"SFR_KINECT_MODEL", s.camera == "kinect_v2" ? "2" : s.camera == "kinect" ? "1" : ""},
+        // A Kinect v2's depth view and Recompiled's tuning (kinect_v2_depth.h);
+        // only for the v2 choice, so an inherited value is cleared otherwise.
+        {"SFR_KINECT_V2_DEPTH_VIEW", s.camera == "kinect_v2" ? s.kinect_v2_view : ""},
+        {"SFR_KINECT_V2_DEPTH_DISTANCE", v2_recompiled(s) ? centi(s.kinect_v2_distance) : ""},
+        {"SFR_KINECT_V2_DEPTH_HEIGHT", v2_recompiled(s) ? centi(s.kinect_v2_height) : ""},
+        {"SFR_KINECT_V2_DEPTH_FOLLOW", v2_recompiled(s) ? centi(s.kinect_v2_follow * 10) : ""},
+        {"SFR_KINECT_V2_DEPTH_DEADBAND", v2_recompiled(s) ? centi(s.kinect_v2_deadband) : ""},
+        // No skeleton distance of its own any more: clear an inherited one.
+        {"SFR_KINECT_V2_SKELETON_DISTANCE", ""},
         {"SFR_CAMERA_DEVICE", s.camera_device},
         {"SFR_CAMERA_MIRROR", s.camera_mirror ? "1" : "0"},
-        // Left unset at the defaults, so the game's own choices stand.
-        {"SFR_KINECT_SMOOTH", s.kinect_smooth ? "" : "0"},
-        {"SFR_KINECT_LEAN_SCALE", s.kinect_lean == 100 ? "" : fixed_decimal(3.5 * s.kinect_lean / 100.0)},
-        {"SFR_KINECT_CROUCH_DEPTH", s.kinect_crouch_cm == 15 ? "" : fixed_decimal(s.kinect_crouch_cm / 100.0)},
         {"SFR_MENU_HAND_STEADY", s.menu_steady_radius ? "1" : "0"},
         {"SFR_MENU_STEADY_RADIUS", s.menu_steady_radius ? std::to_string((std::min)(s.menu_steady_radius, 30u)) : ""},
         {"SFR_VOICE", s.voice ? "1" : ""},

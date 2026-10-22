@@ -4,7 +4,10 @@
 #include "nui_race.h"
 #include "camera_input.h"
 #include "camera_race_motion.h"
+#include "kinect_race_record.h"
+#include "kinect_nui_record.h"
 #include "avatar_state.h"
+#include "nui_analysis_trace.h"
 #include "motion_trace.h"
 #include <bit>
 #include <chrono>
@@ -12,6 +15,7 @@
 #include <cmath>
 #include <iostream>
 #include <algorithm>
+#include <sstream>
 #include <unordered_map>
 #include <vector>
 
@@ -58,9 +62,10 @@ bool pad_racing() { return swapped; }
 bool camera_player(uint32_t player) {
     return sfr::camera_controls_player(player,sfr::camera_motion_active());
 }
-// Real sensors retain the title's native depth detectors when available.
-// Skeleton-only backends keep separate calibration and gesture timers for
-// every live body read by the title, including P2's non-manager record.
+// A real Kinect's players are read by the title's own depth detectors, as on
+// the console: its lean, crouch, jump and side results always stand, and
+// nothing here stands in for them. This only notes, with SFR_KINECT_RECORD,
+// what the detectors answered (sensor_row).
 bool sensor_steering = false;
 uint32_t sensor_record = 0;
 void write_camera_lean(uint32_t record,float scale=1.f,const sfr::CameraRaceMotion& motion=camera_motion) {
@@ -70,55 +75,31 @@ void write_camera_lean(uint32_t record,float scale=1.f,const sfr::CameraRaceMoti
     store_float(record+640,1.f+std::max(lean,0.f));
     store_float(record+644,1.f+std::max(-lean,0.f));
 }
-// A full lean of the sensor's body is this ratio minus one: the title reads
-// up to 3.5 from the depth view, so the default uses its whole range (a
-// full lean at 1 turned the board only a little). SFR_KINECT_LEAN_SCALE
-// changes it, 0.1..3.5.
-// With an opened depth stream, the title's own depth view makes the lean
-// and its own
-// detectors see the crouch, as on the console, so nothing here stands in for
-// them. Without the depth images the skeleton does, as a fallback.
-// SFR_KINECT_BODY_LEAN and SFR_KINECT_BODY_GESTURES (1 or 0) choose either way.
-bool sensor_fallback(const char* setting) {
-    const char* value=std::getenv(setting);
-    if(value && *value) return *value!='0';
-    return !sfr::nui_sensor_has_depth();
-}
-bool sensor_body_lean() {
-    return sensor_fallback("SFR_KINECT_BODY_LEAN");
-}
-// The title's own pair on the last manager update, before the body's lean.
-float depth_lean_right=0,depth_lean_left=0;
-float sensor_lean_scale() {
-    static const float scale=[] {
-        const char* text=std::getenv("SFR_KINECT_LEAN_SCALE");
-        return std::clamp(text && *text?std::strtof(text,nullptr):3.5f,0.1f,3.5f);
-    }();
-    return scale;
-}
-// A real Kinect's crouch: how far the hips drop below the calibrated stance
-// (SFR_KINECT_CROUCH_DEPTH metres, default 0.15), measured above a floor
-// fixed at calibration rather than the guessed ankles. The motion counts a
-// crouch at 80% of the standing height, so the floor sits five drops below
-// the hips while the stance is being learnt.
-float sensor_floor_below_hips() {
-    static const float depth=[] {
-        const char* text=std::getenv("SFR_KINECT_CROUCH_DEPTH");
-        return std::clamp(text && *text?std::strtof(text,nullptr):.15f,.05f,.35f);
-    }();
-    return depth/.2f;
-}
-struct SensorMotion {
-    sfr::CameraRaceMotion motion;
-    uint64_t tick=0, epoch=0;
-    float floor=0;
+struct SensorRow {
+    uint64_t epoch=0;
     uint32_t tracking_id=0;
+    // SFR_KINECT_RECORD (kinect_race_record.h): this update's row, written
+    // once the update's detectors have answered (the next update, or when
+    // the record is dropped).
+    sfr::KinectRaceRecord row;
+    bool pending=false;
 };
-std::unordered_map<uint32_t,SensorMotion> sensor_motions;
+std::unordered_map<uint32_t,SensorRow> sensor_rows;
 uint64_t sensor_epoch=0;
 uint32_t sensor_manager=0;
-bool sensor_depth=false;
-void update_motion(uint32_t record,uint64_t generation,sfr::CameraRaceMotion& motion,uint64_t& last_tick,float* floor=nullptr) {
+void flush_race_row(SensorRow& state) {
+    if(!state.pending)return;
+    state.pending=false;
+    if(sfr::KinectRecordFile* file=sfr::kinect_record_race()) {
+        std::string text;
+        sfr::kinect_race_record_row(state.row,text);
+        file->write(std::move(text));  // queued: never waits for the disk
+    }
+}
+void flush_race_rows() {
+    for(auto& item:sensor_rows)flush_race_row(item.second);
+}
+void update_motion(uint32_t record,uint64_t generation,sfr::CameraRaceMotion& motion,uint64_t& last_tick) {
     const uint64_t now=sfr::camera_motion_clock_ns();
     const float seconds=last_tick && now>last_tick?float(double(now-last_tick)*1e-9):1.f/60.f;
     last_tick=now;
@@ -127,65 +108,48 @@ void update_motion(uint32_t record,uint64_t generation,sfr::CameraRaceMotion& mo
     };
     const bool ready=motion.ready();
     sfr::CameraRacePose pose{point(0),point(32),point(224),point(288),point(64),point(128),point(192),point(256),point(80),point(96),point(144),point(160),point(208),point(272)};
-    if(floor) {
-        if(!ready)*floor=pose.hip[1]-sensor_floor_below_hips();
-        pose.floor_y=*floor;
-    }
-    const bool crouched=motion.crouch();
     motion.observe(pose,seconds,generation);
     if(motion.ready()!=ready)
         std::cerr<<"CAMERA_RACE_CALIBRATION ready="<<motion.ready()<<'\n';
-    // A real sensor's crouches and jumps, in every log (Issue #97: a jump
-    // that does not register can only be told apart from the log): each
-    // crouch and jump, and every three seconds the highest and lowest the
-    // hips went against the standing height. At most 600 lines a run, or
-    // 5000 with the motion trace; each with the sensor frame it came from
-    // and the time, so the gap between two jumps can be told.
-    if(floor && motion.ready()) {
-        static int lines=0;
-        static const int most=sfr::motion_trace_enabled()?5000:600;
-        static const auto started=std::chrono::steady_clock::now();
-        const auto stamp=[&] {
-            return " generation="+std::to_string(generation)+" t_ms="+std::to_string(
-                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-started).count());
-        };
-        static float highest=0,lowest=1e9f;
-        static auto window_start=std::chrono::steady_clock::now();
-        const float ratio=motion.standing_height()>0 ? motion.height()/motion.standing_height() : 0;
-        highest=std::max(highest,ratio); lowest=std::min(lowest,ratio);
-        const auto log=[&](const char* what) {
-            if(lines<most) { ++lines; std::cerr<<"KINECT_MOTION "<<what<<" height="<<motion.height()
-                                              <<" standing="<<motion.standing_height()<<" ratio="<<ratio<<stamp()<<'\n'; }
-        };
-        if(motion.crouch() && !crouched) log("crouch");
-        if(motion.jump()) log("jump");
-        if(std::chrono::steady_clock::now()-window_start>=std::chrono::seconds(3)) {
-            if(lines<most) { ++lines; std::cerr<<"KINECT_MOTION window highest="<<highest<<" lowest="<<lowest
-                                              <<" standing="<<motion.standing_height()<<stamp()<<'\n'; }
-            highest=0; lowest=1e9f; window_start=std::chrono::steady_clock::now();
-        }
-    }
 }
 
 void update_camera_motion(uint32_t record,uint64_t generation) {
     update_motion(record,generation,camera_motion,camera_last_tick);
 }
-sfr::CameraRaceMotion& sensor_motion(uint32_t record) {
-    auto& state=sensor_motions[record];
+// The row of one body record's update, filled once per update (the title
+// asks several detectors about it). Only while recording.
+SensorRow* sensor_row(uint32_t record) {
+    if(!sfr::kinect_record_race())return nullptr;
+    auto& state=sensor_rows[record];
     // Native race records retain a pointer to their NUI_SKELETON_DATA at
     // +768 (82438A98). Its state/id detect a new person reusing the allocation.
     const uint32_t data=memory().readable(uint64_t(record)+768,4)?memory().load<uint32_t>(uint64_t(record)+768):0;
     const bool tracked=data && memory().readable(data,8) && memory().load<uint32_t>(data)==2;
     const uint32_t id=tracked?memory().load<uint32_t>(uint64_t(data)+4):0;
-    if(!id || state.tracking_id!=id) {state={};state.tracking_id=id;}
-    if(!id)return state.motion;
-    // Multiple readers/detectors in one update must not consume a jump pulse
-    // or advance calibration twice. Only dereference the current live record.
+    if(!id || state.tracking_id!=id) {flush_race_row(state);state={};state.tracking_id=id;}
+    if(!id)return nullptr;
     if(state.epoch!=sensor_epoch) {
-        update_motion(record,sfr::kinect_frame_generation(),state.motion,state.tick,&state.floor);
+        flush_race_row(state);
+        state.row=sfr::KinectRaceRecord{};
+        state.row.steady_us=sfr::kinect_record_now_us();
+        state.row.generation=sfr::kinect_frame_generation();
+        state.row.record=record;
+        state.row.tracking_id=id;
+        // The title's own depth view's lean pair, as it computed it.
+        state.row.depth_right=load_float(record+640);
+        state.row.depth_left=load_float(record+644);
+        // Everything the depth view wrote for this record from its newest
+        // image, read on the view's own thread right after it ran (so all of
+        // one image, and the image's number with it: nui_hooks.cpp).
+        if(!sfr::kinect_depth_view_latest(record,state.row.view) && memory().readable(uint64_t(record)+784,4)) {
+            // Published by slot too: a record's +784 is its skeleton slot (82438A98).
+            const uint32_t slot=memory().load<uint32_t>(uint64_t(record)+784);
+            if(slot<6) sfr::kinect_depth_view_latest(slot,state.row.view);
+        }
+        state.pending=true;
         state.epoch=sensor_epoch;
     }
-    return state.motion;
+    return &state;
 }
 
 // The body record the title itself would read for the player a detector is
@@ -471,27 +435,24 @@ SFR_INPUT_HOOK(sub_82438930) {
     sensor_steering=!disabled && sfr::nui_body_from_sensor() && box && m.load<uint32_t>(race_flag)!=0 &&
                     m.load<uint32_t>(box+0x78);
     const uint32_t current_sensor_record=sensor_steering?m.load<uint32_t>(box+0x78):0;
-    const bool depth=sfr::nui_sensor_has_depth();
-    if(!sensor_steering || sensor_manager!=box || sensor_record!=current_sensor_record || sensor_depth!=depth)
-        sensor_motions.clear();
+    if(!sensor_steering || sensor_manager!=box || sensor_record!=current_sensor_record) {
+        flush_race_rows();
+        sensor_rows.clear();
+    }
     sensor_record=current_sensor_record;
     sensor_manager=sensor_steering?box:0;
-    sensor_depth=depth;
     ++sensor_epoch;
     // Retire absent records without ever following their saved guest pointers.
-    std::erase_if(sensor_motions,[](const auto& item){return sensor_epoch-item.second.epoch>30;});
+    std::erase_if(sensor_rows,[](auto& item){
+        const bool old=sensor_epoch-item.second.epoch>30;
+        if(old)flush_race_row(item.second);
+        return old;
+    });
     if(sensor_steering!=was_steering)
-        std::cerr<<"NUI_RACE_SENSOR_LEAN active="<<sensor_steering<<" record=0x"<<std::hex<<sensor_record<<std::dec<<'\n';
+        std::cerr<<"NUI_RACE_SENSOR active="<<sensor_steering<<" record=0x"<<std::hex<<sensor_record<<std::dec<<'\n';
     static const bool motion_trace=sfr::motion_trace_enabled();
     const auto work_began=std::chrono::steady_clock::now();
     if(racing && box && original_body && camera_player(0))update_camera_motion(original_body,sfr::camera_pose_generation());
-    else if(sensor_steering) {
-        camera_motion.reset();camera_last_tick=0;
-        auto& motion=sensor_motion(sensor_record);
-        depth_lean_right=load_float(sensor_record+640);
-        depth_lean_left=load_float(sensor_record+644);
-        if(sensor_body_lean())write_camera_lean(sensor_record,sensor_lean_scale(),motion);
-    }
     else {camera_motion.reset();camera_last_tick=0;}
     if(motion_trace && sensor_steering) {
         // The skeleton fallback's own share of a race frame (KINECT_COST
@@ -504,24 +465,136 @@ SFR_INPUT_HOOK(sub_82438930) {
         }
     }
     static uint32_t motion_frames=0;
-    const auto& traced_motion=sensor_steering?sensor_motion(sensor_record):camera_motion;
-    if(motion_trace && (racing || sensor_steering) && (++motion_frames%30==0 || traced_motion.jump() || traced_motion.overthrow())) {
-        // height/standing: the hips above the floor and the learnt stance
-        // (metres; a Kinect's floor sits 0.75 m under the calibrated hips).
-        std::cerr<<"CAMERA_RACE_MOTION title_step="<<seconds<<" generation="<<(sensor_steering?sfr::kinect_frame_generation():sfr::camera_pose_generation())
-                 <<" camera="<<camera_player(0)<<" ready="<<traced_motion.ready()
-                 <<" lean="<<traced_motion.lean()<<" depth_pair="<<depth_lean_right<<'/'<<depth_lean_left
-                 <<" crouch="<<traced_motion.crouch()
-                 <<" jump="<<traced_motion.jump()<<" acceleration="<<traced_motion.boost()<<" arm_action="<<traced_motion.arm_action()
-                 <<" overthrow="<<traced_motion.overthrow()<<" kick_leg="<<traced_motion.kick_leg_action()
-                 <<" height="<<traced_motion.height()<<" standing="<<traced_motion.standing_height()
-                 <<" written_lean="<<(sensor_steering?load_float(sensor_record+640):0.f)<<'/'
-                 <<(sensor_steering?load_float(sensor_record+644):0.f)<<'\n';
+    if(motion_trace && racing && (++motion_frames%30==0 || camera_motion.jump() || camera_motion.overthrow())) {
+        std::cerr<<"CAMERA_RACE_MOTION title_step="<<seconds<<" generation="<<sfr::camera_pose_generation()
+                 <<" camera="<<camera_player(0)<<" ready="<<camera_motion.ready()
+                 <<" lean="<<camera_motion.lean()
+                 <<" crouch="<<camera_motion.crouch()
+                 <<" jump="<<camera_motion.jump()<<" acceleration="<<camera_motion.boost()<<" arm_action="<<camera_motion.arm_action()
+                 <<" overthrow="<<camera_motion.overthrow()<<" kick_leg="<<camera_motion.kick_leg_action()<<'\n';
     }
+}
+
+// SFR_KINECT_RECORD's <prefix>-nui.csv (kinect_nui_record.h): what every
+// detector the study lists answered for a real Kinect's player, gathered
+// here and written with the player's next input update (nui_hooks.cpp).
+// The player is the one whose body record (box +120/+124, or the input
+// block's +12) the detector was asked about.
+int nui_player_of_record(uint32_t record) {
+    auto& m = memory();
+    const auto word = [&](uint64_t at) { return m.readable(at, 4) ? m.load<uint32_t>(at) : 0u; };
+    if (!record) return -1;
+    if (const uint32_t box = word(nui_box))
+        for (uint32_t p = 0; p < 2; ++p)
+            if (word(uint64_t(box) + 120 + 4 * p) == record) return int(p);
+    if (const uint32_t input = word(0x83E52FB8))
+        for (uint32_t p = 0; p < 2; ++p)
+            if (word(uint64_t(input) + 32 + 2544 * p + 12) == record) return int(p);
+    return -1;
+}
+bool nui_recording() { return sensor_steering && sfr::kinect_record_nui() != nullptr; }
+// The result entry a detector writes (front curve: the second one), and
+// its +4/+20 words before the detector ran, so that its own bits are known.
+struct NuiEntryBits {
+    uint32_t entry = 0, primary = 0, secondary = 0;
+};
+NuiEntryBits nui_entry_before(uint32_t address, uint32_t results) {
+    NuiEntryBits bits;
+    if (!results || !memory().readable(results, 16)) return bits;
+    bits.entry = entry(results, address == 0x822CD3F0 ? 12 : 8);
+    if (!memory().readable(bits.entry, 84)) { bits.entry = 0; return bits; }
+    bits.primary = memory().load<uint32_t>(bits.entry + 4);
+    bits.secondary = memory().load<uint32_t>(bits.entry + 20);
+    return bits;
+}
+void note_nui_detector(int player, uint32_t address, uint32_t detector, const NuiEntryBits& before, uint32_t result) {
+    const int index = sfr::kinect_nui_detector_index(address);
+    if (player < 0 || index < 0 || !before.entry) return;
+    auto& m = memory();
+    const uint32_t e = before.entry;
+    const uint32_t primary = m.load<uint32_t>(e + 4) & ~before.primary;
+    const uint32_t secondary = m.load<uint32_t>(e + 20) & ~before.secondary;
+    namespace v = sfr::kinect_nui_value_kind;
+    bool has_value = true;
+    float value = 0;
+    switch (sfr::kinect_nui_detectors[size_t(index)].value) {
+    case v::entry_byte_80: value = float(m.load<uint8_t>(e + 80)); break;
+    case v::entry_word_72: value = float(m.load<uint32_t>(e + 72)); break;
+    case v::entry_float_56: value = load_float(e + 56); break;
+    case v::entry_signed_82: value = float(int8_t(m.load<uint8_t>(e + 82))); break;
+    case v::entry_signed_83: value = float(int8_t(m.load<uint8_t>(e + 83))); break;
+    case v::second_entry_signed_81: value = float(int8_t(m.load<uint8_t>(e + 81))); break;
+    case v::entry_signed_76: value = float(int8_t(m.load<uint8_t>(e + 76))); break;
+    case v::detector_short_76:
+        has_value = detector && m.readable(uint64_t(detector) + 76, 4);
+        if (has_value) {
+            value = float(int16_t(m.load<uint16_t>(uint64_t(detector) + 76)));
+            sfr::kinect_nui_recorder().wipe_y(uint32_t(player), float(int16_t(m.load<uint16_t>(uint64_t(detector) + 78))));
+        }
+        break;
+    default: has_value = false; break;
+    }
+    sfr::kinect_nui_recorder().detector(uint32_t(player), address, int(result), primary, secondary, has_value, value);
 }
 
 PPC_FUNC_IMPL(__imp__sub_822C6200);
 PPC_FUNC_IMPL(__imp__sub_82918418);
+
+namespace {
+// SFR_NUI_ANALYSIS_TRACE=1 (nui_analysis_trace.h), while racing: how the
+// title turns, five lines a second of each stage.
+// - stage=lean, after 822C6200(source): its two ten-sample filters
+//   (822C63E8: newest sample first, the weighted mean at +40 of each), the
+//   depth view's lean (record +640/+644 as a ratio, at most +-3.5) at
+//   source +4 with its mean at source +44, and the skeleton's tilt (the
+//   angle of head - spine in the XY plane, signed) at source +48 with its
+//   mean at source +88.
+// - stage=steer, after 822C8958(detector, source, results): the lean it read
+//   (source +44), its own filter's mean (detector +72, mean at +112), the
+//   steering it wrote (result entry +76 and +78, signed bytes), the
+//   direction bits (+4 & 3) and its answer.
+uint32_t trace_record_of(uint32_t source) {
+    auto& m = memory();
+    const auto word = [&](uint64_t at) { return m.readable(at, 4) ? m.load<uint32_t>(at) : 0u; };
+    const uint32_t object = source ? word(source) : 0, vtable = object ? word(object) : 0;
+    return vtable && word(uint64_t(vtable) + 4) == 0x82918418 ? word(uint64_t(object) + 4) : 0;
+}
+void trace_turn_samples(std::ostream& line, const char* name, uint32_t filter) {
+    line << ' ' << name << '=';
+    for (uint32_t i = 0; i < 10; ++i) line << (i ? "," : "") << load_float(filter + 4 * i);
+    line << ' ' << name << "_mean=" << load_float(filter + 40);
+}
+void trace_lean(uint32_t source) {
+    if (!sfr::nui_analysis_trace() || !source || !memory().load<uint32_t>(race_flag)) return;
+    static sfr::NuiTraceLimiter limiter("TURN", 5.0, 18000);
+    if (!memory().readable(source, 92) || !limiter.take()) return;
+    const uint32_t record = trace_record_of(source);
+    const uint32_t data = record && memory().readable(uint64_t(record) + 768, 4) ? memory().load<uint32_t>(record + 768) : 0;
+    std::ostringstream line;
+    line << "NUI_TRACE_TURN stage=lean source=0x" << std::hex << source << " record=0x" << record << std::dec
+         << " tracking_id=" << (data && memory().readable(uint64_t(data) + 4, 4) ? memory().load<uint32_t>(data + 4) : 0);
+    if (record && memory().readable(uint64_t(record) + 640, 8))
+        line << " depth_right=" << load_float(record + 640) << " depth_left=" << load_float(record + 644);
+    trace_turn_samples(line, "depth_lean", source + 4);
+    trace_turn_samples(line, "tilt", source + 48);
+    std::cerr << line.str() << '\n';
+}
+void trace_steer(uint32_t detector, uint32_t source, uint32_t results, uint32_t result) {
+    if (!sfr::nui_analysis_trace() || !detector || !source || !results || !memory().load<uint32_t>(race_flag)) return;
+    static sfr::NuiTraceLimiter limiter("TURN", 5.0, 18000);
+    if (!memory().readable(detector, 116) || !memory().readable(source, 48) || !limiter.take()) return;
+    const uint32_t e = entry(results);
+    std::ostringstream line;
+    line << "NUI_TRACE_TURN stage=steer detector=0x" << std::hex << detector << " source=0x" << source << " record=0x"
+         << trace_record_of(source) << std::dec << " lean_in=" << load_float(source + 44)
+         << " filter_mean=" << load_float(detector + 112);
+    if (memory().readable(e, 84))
+        line << " steer=" << int(int8_t(memory().load<uint8_t>(e + 76))) << " steer78="
+             << int(int8_t(memory().load<uint8_t>(e + 78))) << " bits=" << (memory().load<uint32_t>(e + 4) & 3u);
+    line << " result=" << result;
+    std::cerr << line.str() << '\n';
+}
+}
 
 // This original race consumer updates source->object through vtable[2],
 // then reads its body through vtable[1] before calculating lean. Keep that
@@ -529,8 +602,17 @@ PPC_FUNC_IMPL(__imp__sub_82918418);
 // depth-input smoothing below, after the live reader identifies its player.
 SFR_INPUT_HOOK(sub_822C6200) {
     sfr::enter_function(ctx, "sub_822C6200", 0x822C6200);
-    RaceSourceScope scope(pad_racing() || sensor_steering ? ctx.r3.u32 : 0);
-    __imp__sub_822C6200(ctx, base);
+    const uint32_t source = ctx.r3.u32;
+    {
+        RaceSourceScope scope(pad_racing() ? ctx.r3.u32 : 0);
+        __imp__sub_822C6200(ctx, base);
+    }
+    trace_lean(source);
+    // SFR_KINECT_RECORD: the means of its two filters, for the nui.csv row.
+    if (!pad_racing() && nui_recording() && memory().readable(source, 92)) {
+        const int player = nui_player_of_record(body_of_source(ctx, base, source));
+        if (player >= 0) sfr::kinect_nui_recorder().lean(uint32_t(player), load_float(source + 44), load_float(source + 88));
+    }
 }
 
 // 82918418 is a shared accessor, so calls outside the live race source's
@@ -541,13 +623,6 @@ SFR_INPUT_HOOK(sub_82918418) {
     const uint32_t object = ctx.r3.u32;
     __imp__sub_82918418(ctx, base);
     const uint32_t record = ctx.r3.u32;
-    // The depth view's worker can refill the pair between the manager's
-    // update and this read: each sensor player gets its own lean again here.
-    if (sensor_steering && live_race_source && record &&
-        memory().load<uint32_t>(live_race_source) == object) {
-        if(sensor_body_lean())write_camera_lean(record,sensor_lean_scale(),sensor_motion(record));
-        return;
-    }
     if (pad_racing() && live_race_source && record &&
         memory().load<uint32_t>(live_race_source) == object) {
         const uint32_t player=player_of_record(record);
@@ -615,16 +690,13 @@ SFR_INPUT_HOOK(sub_822B60F8) {
     sfr::enter_function(ctx,"sub_822B60F8",0x822B60F8);
     const uint32_t actor=ctx.r3.u32;
     __imp__sub_822B60F8(ctx,base);
-    // A webcam player's race, or a real Kinect's (the skeleton fallback's
-    // motion: did the rider take the crouch and jump it was given?).
+    // A webcam player's race: did the rider take the crouch and jump it was
+    // given? (A real Kinect's players are read by the title's own detectors.)
     static const bool enabled=sfr::motion_trace_enabled();
     if(!enabled)return;
     const bool camera=pad_racing() && sfr::camera_motion_active();
-    if(!camera && !sensor_steering)return;
-    // Read only: the manager's update keeps the sensor's motion current.
-    static const sfr::CameraRaceMotion none;
-    const auto known=camera?sensor_motions.end():sensor_motions.find(sensor_record);
-    const sfr::CameraRaceMotion& motion=camera?camera_motion:known!=sensor_motions.end()?known->second.motion:none;
+    if(!camera)return;
+    const sfr::CameraRaceMotion& motion=camera_motion;
     const uint32_t owner=memory().load<uint32_t>(actor+1680);
     if(!owner)return;
     const uint32_t results=memory().load<uint32_t>(owner+3220);
@@ -660,38 +732,21 @@ void finish_camera_overthrow(uint32_t detector,uint32_t results,uint64_t& result
     camera_motion.consume_overthrow();result=1;
 }
 
-// A skeleton-only Kinect backend cannot supply the native depth features
-// used by crouch and the charge/jump that follow it. When the original
-// does not recognize one, the current player's skeleton decides as the webcam
-// motion does (the hips dropping below the calibrated stance, then rising).
-// Only the skeleton-only fallback does this (sensor_fallback above).
-void finish_sensor_detector(PPCContext& ctx,uint8_t* base,uint32_t address,uint32_t detector,uint32_t source,
-                            uint32_t results) {
+// A real Kinect's detectors answer from the title's own depth view and the
+// answer always stands. With SFR_KINECT_RECORD only, the answer is noted in
+// the update's row (original is what the title said, result what the race
+// used: the same).
+void finish_sensor_detector(PPCContext& ctx,uint8_t* base,uint32_t address,uint32_t source) {
     if(address!=0x822C8778 && address!=0x822CB840 && address!=0x822C9050 && address!=0x822CA6B0)return;
-    const bool bridge=sensor_fallback("SFR_KINECT_BODY_GESTURES");
-    static const bool trace=sfr::motion_trace_enabled();
+    if(!sfr::kinect_record_race())return;
+    const int column=sfr::kinect_race_detector_index(address);
+    if(column<0)return;
     const uint32_t record=body_of_source(ctx,base,source);
     if(!record)return;
-    auto& motion=sensor_motion(record);
-    const uint32_t original=ctx.r3.u32;
-    const bool wanted=address==0x822C9050?motion.jump():address==0x822CA6B0?false:motion.crouch();
-    if(bridge && original!=1 && wanted) {
-        if(const auto bridged=camera_gesture(address,detector,results,motion))ctx.r3.u64=*bridged;
+    if(SensorRow* found=sensor_row(record); found && found->pending) {
+        found->row.original[size_t(column)]=int(ctx.r3.u32);
+        found->row.result[size_t(column)]=int(ctx.r3.u32);
     }
-    if(!trace)return;
-    static std::unordered_map<uint32_t,std::pair<uint32_t,uint32_t>> last;
-    const std::pair now{original,ctx.r3.u32};
-    // A jump is a one-frame pulse: always written, so a lost one shows.
-    if(last.contains(address) && last[address]==now && !(address==0x822C9050 && motion.jump()))return;
-    last[address]=now;
-    static sfr::TraceRate rate(20);
-    if(!rate.allow())return;
-    // primary/secondary: the bits this detector's result entry holds now.
-    std::cerr<<"KINECT_GESTURE address=0x"<<std::hex<<address<<std::dec<<" original="<<original
-             <<" result="<<ctx.r3.u32<<" crouch="<<motion.crouch()<<" jump="<<motion.jump()
-             <<" record=0x"<<std::hex<<record<<" primary=0x"<<memory().load<uint32_t>(entry(results)+4)
-             <<" secondary=0x"<<memory().load<uint32_t>(entry(results)+20)<<std::dec
-             <<" generation="<<sfr::kinect_frame_generation()<<" dropped="<<rate.dropped()<<'\n';
 }
 
 // One detector override: while the pad drives the race the body decides,
@@ -701,10 +756,16 @@ void finish_sensor_detector(PPCContext& ctx,uint8_t* base,uint32_t address,uint3
     SFR_INPUT_HOOK(sub_##address) {                                            \
         sfr::enter_function(ctx, "sub_" #address, 0x##address);               \
         if (!pad_racing()) {                                                   \
-            const uint32_t detector = ctx.r3.u32, source = ctx.r4.u32, results = ctx.r5.u32; \
+            const uint32_t source = ctx.r4.u32;                                 \
+            const uint32_t nui_detector = ctx.r3.u32;                           \
+            const bool nui_wanted = nui_recording();                            \
+            const NuiEntryBits nui_before = nui_wanted ? nui_entry_before(0x##address, ctx.r5.u32) : NuiEntryBits{}; \
             __imp__sub_##address(ctx, base);                                   \
             if (sensor_steering)                                               \
-                finish_sensor_detector(ctx, base, 0x##address, detector, source, results); \
+                finish_sensor_detector(ctx, base, 0x##address, source);        \
+            if (nui_wanted)                                                    \
+                note_nui_detector(nui_player_of_record(body_of_source(ctx, base, source)), 0x##address, \
+                                  nui_detector, nui_before, ctx.r3.u32);       \
             return;                                                            \
         }                                                                      \
         const uint32_t detector = ctx.r3.u32, source = ctx.r4.u32, results = ctx.r5.u32; \
@@ -967,7 +1028,13 @@ PPC_FUNC_IMPL(__imp__sub_822C8D88);
 SFR_INPUT_HOOK(sub_822C8D88) {
     sfr::enter_function(ctx, "sub_822C8D88", 0x822C8D88);
     if (!pad_racing() || !two_players || camera_player(0) || camera_player(1)) {
+        // The team's answer, recorded with the first player (it asks about
+        // two racers, not one source).
+        const uint32_t detector = ctx.r3.u32;
+        const bool nui_wanted = !pad_racing() && nui_recording();
+        const NuiEntryBits nui_before = nui_wanted ? nui_entry_before(0x822C8D88, ctx.r5.u32) : NuiEntryBits{};
         __imp__sub_822C8D88(ctx, base);
+        if (nui_wanted) note_nui_detector(0, 0x822C8D88, detector, nui_before, ctx.r3.u32);
         return;
     }
     const uint32_t detector = ctx.r3.u32, results = ctx.r5.u32;
@@ -1007,14 +1074,30 @@ SFR_INPUT_HOOK(sub_822C8958) {
     // After reading source+44, the title maps lean to steering strength and
     // filters it again at detector+72 before writing result bytes +76/+78.
     // Retain that gear/stance mapping, bypass only its controller smoothing.
-    SteeringFilterScope scope(controller ? ctx.r3.u32 + 72 : 0);
-    __imp__sub_822C8958(ctx, base);
+    const uint32_t detector = ctx.r3.u32, source = ctx.r4.u32, results = ctx.r5.u32;
+    const bool nui_wanted = !pad_racing() && nui_recording();
+    const NuiEntryBits nui_before = nui_wanted ? nui_entry_before(0x822C8958, results) : NuiEntryBits{};
+    {
+        SteeringFilterScope scope(controller ? ctx.r3.u32 + 72 : 0);
+        __imp__sub_822C8958(ctx, base);
+    }
+    trace_steer(detector, source, results, ctx.r3.u32);
+    if (nui_wanted)
+        note_nui_detector(nui_player_of_record(body_of_source(ctx, base, source)), 0x822C8958, detector, nui_before, ctx.r3.u32);
 }
 PPC_FUNC_IMPL(__imp__sub_822CB9B8);
 SFR_INPUT_HOOK(sub_822CB9B8) {
     sfr::enter_function(ctx, "sub_822CB9B8", 0x822CB9B8);
     if (pad_racing() && !camera_player(player_of_source(ctx,base,ctx.r4.u32))) sub_822C8958(ctx, base);
-    else __imp__sub_822CB9B8(ctx, base);
+    else {
+        const uint32_t detector = ctx.r3.u32, source = ctx.r4.u32;
+        const bool nui_wanted = !pad_racing() && nui_recording();
+        const NuiEntryBits nui_before = nui_wanted ? nui_entry_before(0x822CB9B8, ctx.r5.u32) : NuiEntryBits{};
+        __imp__sub_822CB9B8(ctx, base);
+        if (nui_wanted)
+            note_nui_detector(nui_player_of_record(body_of_source(ctx, base, source)), 0x822CB9B8, detector, nui_before,
+                              ctx.r3.u32);
+    }
 }
 
 PPC_FUNC_IMPL(__imp__sub_822B72E0);

@@ -1,6 +1,5 @@
 #pragma once
 #include "kinect_sensor.h"
-#include "kinect_calibration.h"
 
 #include <array>
 #include <cstddef>
@@ -19,7 +18,20 @@ namespace sfr {
 // elsewhere open() returns null.
 class KinectPreviewWindow {
 public:
-    static std::unique_ptr<KinectPreviewWindow> open(bool chinese);
+    // model is the launcher's choice: 1 the Xbox 360 Kinect (a v2 stands in
+    // when only that opens), 2 the Kinect v2 only (KinectSensor::open_selected).
+    // depth is the launcher's Kinect v2 depth view and Recompiled's tuning:
+    // the window's view list starts on it and its sensor makes that depth
+    // (KinectSensor::set_depth_settings); another view picked in the window
+    // stays the window's own and never changes the launcher's settings.
+    static std::unique_ptr<KinectPreviewWindow> open(bool chinese, int model = 1, const KinectDepthChoice& depth = {});
+    // The launcher's choice again (every frame while it is open; any thread):
+    // new tuning is used at once, and a view changed in the launcher is shown.
+    void set_depth_choice(const KinectDepthChoice& depth);
+    // Where the Recompiled view's virtual v1 and the players are now
+    // (KinectSensor::ideal_snapshot); false while there is no Kinect v2
+    // making depth.
+    bool ideal_snapshot(KinectIdealSnapshot& snapshot) const;
     // The same window over the game's own sensor, for the menu's Kinect
     // adjustment (kinect_tuner.h): it neither opens nor closes the sensor and
     // never takes its skeleton frames, which the game reads; the game hands
@@ -39,9 +51,6 @@ public:
     // Why no sensor opened (KinectSensor::open's reason, "no-runtime",
     // "no-sensor", ...), or empty while it opens or once it has.
     std::string failure() const;
-    // The calibration the player finished in the window (its Calibrate
-    // button, launcher only), once: the launcher stores its crouch depth.
-    std::optional<KinectCalibrationResult> take_calibration();
     struct Impl;
 private:
     explicit KinectPreviewWindow(std::unique_ptr<Impl>);
@@ -79,7 +88,8 @@ constexpr double kinect_frame_timeout_seconds = 1.5, kinect_first_frame_seconds 
 // images: the depth camera's 320x240 exactly (the SDK's
 // NuiTransformSkeletonToDepthImage), the colour camera's 640x480 roughly
 // (its nominal focal length; the two cameras sit a few centimetres apart).
-struct KinectImagePoint { float x = 0, y = 0; bool visible = false; };
+// KinectImagePoint is kinect_sensor.h's. A sensor that places points itself
+// (KinectSensor::image_point, a Kinect v2) is asked first.
 KinectImagePoint kinect_depth_point(const std::array<float, 3>& p);
 KinectImagePoint kinect_colour_point(const std::array<float, 3>& p);
 

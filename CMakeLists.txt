@@ -208,12 +208,64 @@ add_executable(sfr_kinect_sensor_test tests/kinect_sensor_test.cpp src/kinect_se
     src/kinect_preview.cpp)
 target_include_directories(sfr_kinect_sensor_test PRIVATE src)
 add_test(NAME kinect_sensor COMMAND sfr_kinect_sensor_test)
-add_executable(sfr_kinect_smoothing_test tests/kinect_smoothing_test.cpp src/kinect_smoothing.cpp)
+add_executable(sfr_kinect_smoothing_test tests/kinect_smoothing_test.cpp src/kinect_smoothing.cpp src/nui_transform_smooth.cpp)
 target_include_directories(sfr_kinect_smoothing_test PRIVATE src)
 add_test(NAME kinect_smoothing COMMAND sfr_kinect_smoothing_test)
-add_executable(sfr_kinect_calibration_test tests/kinect_calibration_test.cpp src/kinect_calibration.cpp)
-target_include_directories(sfr_kinect_calibration_test PRIVATE src)
-add_test(NAME kinect_calibration COMMAND sfr_kinect_calibration_test)
+# The title's NuiTransformSmooth (827701A0) done natively, worked by hand.
+add_executable(sfr_nui_transform_smooth_test tests/nui_transform_smooth_test.cpp src/nui_transform_smooth.cpp
+    src/nui_transform_smooth_guest.cpp src/guest_memory.cpp)
+target_include_directories(sfr_nui_transform_smooth_test PRIVATE src)
+add_test(NAME nui_transform_smooth COMMAND sfr_nui_transform_smooth_test)
+if(WIN32)
+    # The same against the Kinect for Windows SDK 1.8's own NuiTransformSmooth
+    # (Kinect10.dll, loaded when there; no sensor is started). Skipped (77)
+    # without the SDK, or when it will not smooth without a sensor.
+    add_executable(sfr_nui_transform_smooth_sdk_test tests/nui_transform_smooth_sdk_test.cpp src/nui_transform_smooth.cpp)
+    target_include_directories(sfr_nui_transform_smooth_sdk_test PRIVATE src)
+    add_test(NAME nui_transform_smooth_sdk COMMAND sfr_nui_transform_smooth_sdk_test)
+    set_tests_properties(nui_transform_smooth_sdk PROPERTIES SKIP_RETURN_CODE 77)
+endif()
+# A Kinect v2's camera images and skeleton points in the preview's v1 sizes.
+add_executable(sfr_kinect_v2_image_test tests/kinect_v2_image_test.cpp src/kinect_v2_image.cpp)
+target_include_directories(sfr_kinect_v2_image_test PRIVATE src)
+add_test(NAME kinect_v2_image COMMAND sfr_kinect_v2_image_test)
+# Where the Kinect preview window puts its two picture panels.
+add_executable(sfr_kinect_preview_layout_test tests/kinect_preview_layout_test.cpp src/kinect_preview_layout.cpp src/kinect_v2_image.cpp)
+target_include_directories(sfr_kinect_preview_layout_test PRIVATE src)
+add_test(NAME kinect_preview_layout COMMAND sfr_kinect_preview_layout_test)
+# A Kinect v2's depth made into a Kinect v1's for the game.
+# Its raw recording, and the depth made again from it offline through the same
+# view state and synthesis as live (sfr_kinect_depth_resynth).
+set(SFR_KINECT_V2_RESYNTH src/kinect_v2_depth.cpp src/kinect_ideal_diagram.cpp src/kinect_v2_image.cpp src/kinect_v2_resynth.cpp src/kinect_record_raw.cpp
+    src/kinect_record.cpp)
+add_executable(sfr_kinect_v2_depth_test tests/kinect_v2_depth_test.cpp ${SFR_KINECT_V2_RESYNTH})
+target_include_directories(sfr_kinect_v2_depth_test PRIVATE src)
+add_test(NAME kinect_v2_depth COMMAND sfr_kinect_v2_depth_test)
+# The Recompiled view's top-down diagram (the preview window and the launcher).
+add_executable(sfr_kinect_ideal_diagram_test tests/kinect_ideal_diagram_test.cpp src/kinect_ideal_diagram.cpp)
+target_include_directories(sfr_kinect_ideal_diagram_test PRIVATE src)
+add_test(NAME kinect_ideal_diagram COMMAND sfr_kinect_ideal_diagram_test)
+# Recording a real Kinect (v1 or v2) and the race's detector answers to CSV,
+# and the alone-or-both steadiness summary (docs/kinect-sensor.md).
+add_executable(sfr_kinect_record_test tests/kinect_record_test.cpp src/kinect_record.cpp src/kinect_race_record.cpp src/kinect_nui_record.cpp)
+target_include_directories(sfr_kinect_record_test PRIVATE src)
+add_test(NAME kinect_record COMMAND sfr_kinect_record_test)
+add_executable(sfr_kinect_record_summary tests/kinect_record_summary.cpp src/kinect_record.cpp)
+target_include_directories(sfr_kinect_record_summary PRIVATE src)
+# The depth images given to the game, recorded (SFR_KINECT_RECORD_DEPTH), the
+# title's depth view features computed again from them, and a real Kinect
+# v1's compared with a Kinect v2's (docs/kinect-sensor.md).
+set(SFR_KINECT_DEPTH_TOOLS src/kinect_record_depth.cpp src/kinect_depth_features.cpp src/kinect_depth_compare.cpp
+    src/kinect_record.cpp src/kinect_race_record.cpp)
+add_executable(sfr_kinect_depth_test tests/kinect_depth_test.cpp ${SFR_KINECT_DEPTH_TOOLS})
+target_include_directories(sfr_kinect_depth_test PRIVATE src)
+add_test(NAME kinect_depth COMMAND sfr_kinect_depth_test)
+add_executable(sfr_kinect_depth_features tests/kinect_depth_features.cpp ${SFR_KINECT_DEPTH_TOOLS})
+target_include_directories(sfr_kinect_depth_features PRIVATE src)
+add_executable(sfr_kinect_depth_compare tests/kinect_depth_compare.cpp ${SFR_KINECT_DEPTH_TOOLS})
+target_include_directories(sfr_kinect_depth_compare PRIVATE src)
+add_executable(sfr_kinect_depth_resynth tests/kinect_depth_resynth.cpp ${SFR_KINECT_V2_RESYNTH} src/kinect_record_depth.cpp)
+target_include_directories(sfr_kinect_depth_resynth PRIVATE src)
 add_executable(sfr_nui_menu_players_test tests/nui_menu_players_test.cpp src/nui_skeleton.cpp src/guest_memory.cpp)
 target_include_directories(sfr_nui_menu_players_test PRIVATE src)
 add_test(NAME nui_menu_players COMMAND sfr_nui_menu_players_test)
@@ -241,10 +293,12 @@ add_test(NAME nui_race_min_scale COMMAND sfr_nui_race_test 0.1)
 set_tests_properties(nui_race_min_scale PROPERTIES ENVIRONMENT "SFR_RACE_LEAN_SCALE=0")
 add_test(NAME nui_race_max_scale COMMAND sfr_nui_race_test 3.5)
 set_tests_properties(nui_race_max_scale PROPERTIES ENVIRONMENT "SFR_RACE_LEAN_SCALE=99")
-add_executable(sfr_nui_race_players_test tests/nui_race_players_test.cpp src/nui_race.cpp src/guest_memory.cpp)
+add_executable(sfr_nui_race_players_test tests/nui_race_players_test.cpp src/nui_race.cpp src/guest_memory.cpp
+    src/kinect_record.cpp src/kinect_race_record.cpp src/kinect_nui_record.cpp)
 target_include_directories(sfr_nui_race_players_test PRIVATE tests/race_hook_stub src)
 add_test(NAME nui_race_players COMMAND sfr_nui_race_players_test)
-add_executable(sfr_nui_race_hooks_test tests/nui_race_hooks_test.cpp src/nui_race.cpp src/guest_memory.cpp)
+add_executable(sfr_nui_race_hooks_test tests/nui_race_hooks_test.cpp src/nui_race.cpp src/guest_memory.cpp
+    src/kinect_record.cpp src/kinect_race_record.cpp src/kinect_nui_record.cpp)
 target_include_directories(sfr_nui_race_hooks_test PRIVATE tests/race_hook_stub src)
 add_test(NAME nui_race_hooks COMMAND sfr_nui_race_hooks_test)
 add_executable(sfr_shader_inputs_test tests/shader_inputs_test.cpp src/shader_inputs.cpp)
@@ -372,10 +426,13 @@ else()
     set(SFR_CAMERA_CAPTURE src/camera_capture.cpp src/camera_capture_none.cpp)
 endif()
 if(WIN32)
-    set(SFR_KINECT_SENSOR src/kinect_sensor_win32.cpp src/kinect_v2_win32.cpp src/kinect_smoothing.cpp)
+    set(SFR_KINECT_SENSOR src/kinect_sensor_win32.cpp src/kinect_v2_win32.cpp src/kinect_v2_image.cpp src/kinect_v2_depth.cpp src/kinect_ideal_diagram.cpp src/kinect_smoothing.cpp
+        src/nui_transform_smooth.cpp src/kinect_record.cpp src/kinect_race_record.cpp src/kinect_nui_record.cpp src/kinect_record_depth.cpp src/kinect_record_raw.cpp
+        src/kinect_v2_resynth.cpp)
     set(SFR_VOICE src/voice_commands.cpp src/voice_commands_win32.cpp)
 else()
-    set(SFR_KINECT_SENSOR src/kinect_sensor_none.cpp)
+    set(SFR_KINECT_SENSOR src/kinect_sensor_none.cpp src/kinect_ideal_diagram.cpp src/nui_transform_smooth.cpp src/kinect_record.cpp src/kinect_race_record.cpp src/kinect_nui_record.cpp src/kinect_record_depth.cpp
+        src/kinect_record_raw.cpp)
     set(SFR_VOICE src/voice_commands.cpp src/voice_commands_none.cpp)
 endif()
 # The Kinect's voice commands, through the host's speech recognizer.
@@ -574,6 +631,9 @@ add_test(NAME launcher_settings COMMAND sfr_launcher_settings_test)
 add_executable(sfr_aspect_settings_test tests/aspect_settings_test.cpp)
 target_include_directories(sfr_aspect_settings_test PRIVATE src)
 add_test(NAME aspect_settings COMMAND sfr_aspect_settings_test)
+add_executable(sfr_consecutive_failures_test tests/consecutive_failures_test.cpp)
+target_include_directories(sfr_consecutive_failures_test PRIVATE src)
+add_test(NAME consecutive_failures COMMAND sfr_consecutive_failures_test)
 add_executable(sfr_launcher_screen_fit_test tests/launcher_screen_fit_test.cpp)
 target_include_directories(sfr_launcher_screen_fit_test PRIVATE src)
 add_test(NAME launcher_screen_fit COMMAND sfr_launcher_screen_fit_test)
@@ -657,7 +717,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui/imgui.cpp")
     # The launcher lists the host cameras and controllers.
     set(SFR_LAUNCHER_SOURCES src/launcher_main.cpp src/launcher_settings.cpp src/mod_loader.cpp src/input_bindings.cpp src/pad_devices.cpp src/pad_assignment.cpp src/launcher_sound.cpp src/launcher_art.cpp src/sony_gamepad.cpp
         ${SFR_CAMERA_CAPTURE} src/kinect_sensor.cpp ${SFR_KINECT_SENSOR} ${SFR_VOICE}
-        src/kinect_preview.cpp src/kinect_preview_window.cpp src/camera_preview_window.cpp src/kinect_calibration.cpp src/camera_debug.cpp src/text_wrap.cpp src/touch_scroll.cpp
+        src/kinect_preview.cpp src/kinect_preview_window.cpp src/kinect_preview_layout.cpp src/camera_preview_window.cpp src/camera_debug.cpp src/text_wrap.cpp src/touch_scroll.cpp
         src/live_connect.cpp
         ${SFR_IMGUI}/imgui.cpp ${SFR_IMGUI}/imgui_draw.cpp ${SFR_IMGUI}/imgui_tables.cpp ${SFR_IMGUI}/imgui_widgets.cpp)
     if(WIN32)
@@ -1085,6 +1145,31 @@ if(SFR_BUILD_DIAGNOSTIC)
         message(FATAL_ERROR "Run scripts/generate_diagnostic.py first; raw output is not safe to execute.")
     endif()
     file(GLOB SFR_DIAGNOSTIC_SOURCES CONFIGURE_DEPENDS "${SFR_DIAGNOSTIC_DIR}/ppc_recomp.*.cpp")
+    # The title's depth view (82439998, 82439D80) as generated, copied out of
+    # those sources into the build directory and run on test images against
+    # the offline extractor (kinect_depth_features.h): bit for bit.
+    set(SFR_DEPTH_VIEW_GUEST "${CMAKE_CURRENT_BINARY_DIR}/kinect_depth_view_guest.inc")
+    add_custom_command(OUTPUT "${SFR_DEPTH_VIEW_GUEST}"
+        COMMAND ${CMAKE_COMMAND} "-DDIR=${SFR_DIAGNOSTIC_DIR}" "-DOUT=${SFR_DEPTH_VIEW_GUEST}" "-DFUNCTIONS=82439998,82439D80"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/extract_guest_functions.cmake"
+        DEPENDS ${SFR_DIAGNOSTIC_SOURCES} "${CMAKE_CURRENT_SOURCE_DIR}/tests/extract_guest_functions.cmake"
+        VERBATIM)
+    add_executable(sfr_kinect_depth_view_guest_test tests/kinect_depth_view_guest_test.cpp src/kinect_depth_features.cpp
+        "${SFR_DEPTH_VIEW_GUEST}")
+    set_source_files_properties("${SFR_DEPTH_VIEW_GUEST}" PROPERTIES HEADER_FILE_ONLY TRUE)
+    target_include_directories(sfr_kinect_depth_view_guest_test PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}" "${SFR_DIAGNOSTIC_DIR}"
+        tools/XenonRecomp/thirdparty/simde)
+    # The generated code as the diagnostic compiles it; the extractor as the tools do.
+    if(MSVC)
+        set(SFR_DEPTH_VIEW_GUEST_OPTIONS -fno-strict-aliasing -Wno-unused-variable -Wno-unused-value /fp:strict)
+    else()
+        set(SFR_DEPTH_VIEW_GUEST_OPTIONS -fno-strict-aliasing -Wno-unused-variable -Wno-unused-value -ffp-model=strict)
+    endif()
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|amd64|x86_64")
+        list(APPEND SFR_DEPTH_VIEW_GUEST_OPTIONS -march=sandybridge)
+    endif()
+    set_source_files_properties(tests/kinect_depth_view_guest_test.cpp PROPERTIES COMPILE_OPTIONS "${SFR_DEPTH_VIEW_GUEST_OPTIONS}")
+    add_test(NAME kinect_depth_view_guest COMMAND sfr_kinect_depth_view_guest_test)
     if(ANDROID)
         # The game is libmain.so; SDL's activity calls its SDL_main
         # (src/android_main.cpp), which sets up and calls the usual main.
@@ -1140,7 +1225,7 @@ if(SFR_BUILD_DIAGNOSTIC)
                    ${SFR_CAMERA_CAPTURE} ${SFR_POSE_SOURCES})
     # A real Kinect (SFR_CAMERA=kinect), through the Kinect for Windows runtime.
     target_sources(sfr_cpu_diagnostic PRIVATE src/kinect_sensor.cpp ${SFR_KINECT_SENSOR} ${SFR_VOICE}
-        src/kinect_preview.cpp src/kinect_preview_window.cpp src/kinect_calibration.cpp)
+        src/kinect_preview.cpp src/kinect_preview_window.cpp src/kinect_preview_layout.cpp)
     if(SFR_POSE_AVAILABLE)
         target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_onnxruntime)
         sfr_copy_onnx_dlls(sfr_cpu_diagnostic)
@@ -1162,6 +1247,8 @@ if(SFR_BUILD_DIAGNOSTIC)
     target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_wait_trace)
     target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_native_timer_resolution)
     target_sources(sfr_cpu_diagnostic PRIVATE src/guest_graphics_hooks.cpp src/game_patches.cpp src/nui_hooks.cpp src/nui_race_hooks.cpp src/pause_gesture.cpp)
+    # The title's NuiTransformSmooth and the SFR_NUI_ANALYSIS_TRACE observations (docs/kinect-sensor.md).
+    target_sources(sfr_cpu_diagnostic PRIVATE src/nui_smooth_hooks.cpp src/nui_transform_smooth_guest.cpp src/nui_analysis_hooks.cpp)
     # The title's heap on o1heap (SFR_HOST_HEAP=1; docs/architecture-migration.md, phase 2).
     target_sources(sfr_cpu_diagnostic PRIVATE src/heap_hooks.cpp src/guest_heap.cpp)
     target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_o1heap)
