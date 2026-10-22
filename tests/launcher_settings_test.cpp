@@ -564,19 +564,30 @@ void save_directory_settings() {
 
 void menu_steady_settings() {
     const sfr::LauncherSettings defaults;
-    require(sfr::format_launcher_settings(defaults).find("menu_steady_radius=0\n") != std::string::npos,
-            "the menu cursor steadying defaults to off");
-    require(value_of(defaults, "SFR_MENU_HAND_STEADY") == "0" && value_of(defaults, "SFR_MENU_STEADY_RADIUS").empty(),
-            "the default (off) reaches the game");
-    const auto wide = sfr::parse_launcher_settings("menu_steady_radius=15\n");
+    require(sfr::format_launcher_settings(defaults).find("menu_steady_radius=8\n") != std::string::npos &&
+                sfr::format_launcher_settings(defaults).find("menu_steady_radius_v2=0\n") != std::string::npos,
+            "the steadying starts at 8 mm for the webcam and Xbox 360 Kinect, off for a Kinect v2");
+    for (const char* camera : {"motion", "kinect"}) {
+        const auto chosen = sfr::parse_launcher_settings(std::string("camera=") + camera + "\n");
+        require(value_of(chosen, "SFR_MENU_HAND_STEADY") == "1" && value_of(chosen, "SFR_MENU_STEADY_RADIUS") == "8",
+                "8 mm reaches the game with the webcam and the Xbox 360 Kinect");
+    }
+    const auto v2 = sfr::parse_launcher_settings("camera=kinect_v2\nmenu_steady_radius=8\n");
+    require(value_of(v2, "SFR_MENU_HAND_STEADY") == "0" && value_of(v2, "SFR_MENU_STEADY_RADIUS").empty(),
+            "a Kinect v2 starts off, whatever the webcam's circle is");
+    const auto v2_set = sfr::parse_launcher_settings("camera=kinect_v2\nmenu_steady_radius_v2=5\n");
+    require(value_of(v2_set, "SFR_MENU_STEADY_RADIUS") == "5" && sfr::menu_steady_for(v2_set) == 5 &&
+                v2_set.menu_steady_radius == 8,
+            "a Kinect v2's own circle reaches the game and leaves the webcam's alone");
+    const auto wide = sfr::parse_launcher_settings("camera=motion\nmenu_steady_radius=15\n");
     require(wide.menu_steady_radius == 15 && value_of(wide, "SFR_MENU_STEADY_RADIUS") == "15" &&
                 sfr::format_launcher_settings(wide).find("menu_steady_radius=15\n") != std::string::npos,
             "a chosen circle survives a save and reaches the game");
-    const auto off = sfr::parse_launcher_settings("menu_steady_radius=0\n");
+    const auto off = sfr::parse_launcher_settings("camera=motion\nmenu_steady_radius=0\n");
     require(value_of(off, "SFR_MENU_HAND_STEADY") == "0" && value_of(off, "SFR_MENU_STEADY_RADIUS").empty(),
             "0 starts the steadying off");
     for (const char* bad : {"31", "-1", "big"})
-        require(sfr::parse_launcher_settings(std::string("menu_steady_radius=") + bad + "\n").menu_steady_radius == 0,
+        require(sfr::parse_launcher_settings(std::string("menu_steady_radius=") + bad + "\n").menu_steady_radius == 8,
                 "an out-of-range circle keeps the default");
 }
 
@@ -612,8 +623,15 @@ void kinect_v2_view_settings() {
     require(saved.find("kinect_v2_view=ideal\n") != std::string::npos &&
                 saved.find("kinect_v2_skeleton_distance") == std::string::npos,
             "the view and its tuning survive a save");
-    require(value_of(sfr::parse_launcher_settings("camera=kinect\nkinect_v2_view=ideal\n"), "SFR_KINECT_V2_DEPTH_VIEW").empty(),
-            "the Xbox 360 choice sends no v2 view");
+    const auto old_kinect = sfr::parse_launcher_settings("camera=kinect\n");
+    require(value_of(old_kinect, "SFR_KINECT_V2_DEPTH_VIEW") == "ideal" &&
+                value_of(old_kinect, "SFR_KINECT_V2_DEPTH_DISTANCE") == "2.50",
+            "the Xbox 360 choice sends the v2 view too, for a v2 standing in (an old camera=kinect)");
+    require(value_of(sfr::parse_launcher_settings("camera=motion\n"), "SFR_KINECT_V2_DEPTH_VIEW").empty(),
+            "the webcam sends no v2 view");
+    const auto picture = sfr::parse_launcher_settings("camera=picture\n");
+    require(picture.camera == "off" && value_of(picture, "SFR_CAMERA").empty(),
+            "a saved Picture mode, no longer offered, reads as off");
     require(sfr::parse_launcher_settings("kinect_v2_view=player\n").kinect_v2_view == "ideal",
             "an unknown view keeps the default");
     require(sfr::parse_launcher_settings("kinect_v2_distance=9000\n").kinect_v2_distance == 250,

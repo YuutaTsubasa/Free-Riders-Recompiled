@@ -12,6 +12,12 @@ namespace sfr {
 // What the launcher asks of the player before the game starts, kept in
 // settings.ini next to the launcher. The game reads all of it at startup
 // (environment variables and arguments), so it is fixed for a run.
+struct LauncherSettings;
+// The menu cursor steadying the chosen camera uses (menu_steady_radius or
+// menu_steady_radius_v2).
+uint32_t& menu_steady_for(LauncherSettings& settings);
+uint32_t menu_steady_for(const LauncherSettings& settings);
+
 struct LauncherSettings {
     // 0 = not chosen yet: the launcher fills in the desktop size
     // (apply_default_window_size); the game falls back to 1280x720 without it.
@@ -71,11 +77,12 @@ struct LauncherSettings {
     // picture the title shows is a real one. "pad" is the emulated player the
     // gamepad drives; "camera" tracks a real body with a webcam, which cannot
     // share the pad's sticks, so the two are one choice. "picture" keeps the
-    // pad in charge and only gives the title a camera image.
+    // pad in charge and only gives the title a camera image; the launcher no
+    // longer offers it, and a saved "picture" reads as "off".
     // "kinect" is a real Xbox 360 Kinect tracking the players, as on the
     // console (a Kinect v2 stands in when no v1 opens); "kinect_v2" is a
     // Kinect v2 for Xbox One only.
-    std::string camera = "off";      // "off", "picture", "motion", "kinect" or "kinect_v2"
+    std::string camera = "off";      // "off", "motion", "kinect" or "kinect_v2"
     // Which of the host's cameras, by the name it lists (SFR_CAMERA_DEVICE).
     // A name and not a number, because the list changes: a phone camera or a
     // capture card comes and goes, and the number then means another camera.
@@ -91,8 +98,10 @@ struct LauncherSettings {
     // The menu cursor's steadying (pose_stability.h), webcam and Kinect: the
     // circle a hand held still may wander in without moving the cursor, in
     // millimetres; 0 turns it off. SFR_MENU_STEADY_RADIUS and
-    // SFR_MENU_HAND_STEADY.
-    uint32_t menu_steady_radius = 0;
+    // SFR_MENU_HAND_STEADY. Each choice keeps its own: the webcam and the
+    // Xbox 360 Kinect start at 8 mm, a Kinect v2 (steadier) starts off.
+    uint32_t menu_steady_radius = 8;     // webcam, Kinect (Xbox 360)
+    uint32_t menu_steady_radius_v2 = 0;  // Kinect v2
     // How a Kinect v2's depth becomes the v1's (SFR_KINECT_V2_DEPTH_VIEW):
     // "ideal" (Recompiled, the launcher's default: a virtual level v1 that
     // follows the players), "fit" (Simulated, the v2's whole view fitted into

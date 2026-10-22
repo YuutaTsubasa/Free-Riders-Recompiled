@@ -2971,14 +2971,14 @@ struct Launcher {
                 if (kinect_v2_chosen && settings.kinect_v2_view == "ideal") kinect_v2_tuning_rows(row_width, scale);
                 const float slider_width = kinect_chosen ? row_width : 220 * scale;
                 setting_row(tr(MenuSteady), tr(MenuSteadyHint), slider_width, scale, [&] {
-                    int radius = int((std::min)(settings.menu_steady_radius, 30u));
+                    int radius = int((std::min)(menu_steady_for(settings), 30u));
                     char shown[32];
                     if (radius) std::snprintf(shown, sizeof shown, "%d mm", radius);
                     else std::snprintf(shown, sizeof shown, "%s", tr(MenuSteadyOff));
                     ImGui::SetNextItemWidth(slider_width);
                     bool moved = ImGui::SliderInt("##menu_steady", &radius, 0, 30, shown);
                     moved |= slider_steps(&radius, 0, 30, 1);
-                    if (moved) settings.menu_steady_radius = uint32_t(std::clamp(radius, 0, 30));
+                    if (moved) menu_steady_for(settings) = uint32_t(std::clamp(radius, 0, 30));
                 });
                 // For a bug report: numbers in game.log (motion_trace.h).
                 setting_row(tr(MotionTrace), tr(MotionTraceHint), ImGui::GetFrameHeight() * 1.9f, scale,
