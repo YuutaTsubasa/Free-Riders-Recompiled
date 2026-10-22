@@ -138,6 +138,7 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         else if (key == "touch_controls") read_flag(value, settings.touch_controls);
         else if (key == "touch_labels") read_flag(value, settings.touch_labels);
         else if (key == "tilt") read_flag(value, settings.tilt);
+        else if (key == "tilt_lean") read_flag(value, settings.tilt_lean);
         // "picture" is no longer offered: it reads as the default, off.
         else if (key == "camera" && (value == "off" || value == "motion" || value == "kinect" || value == "kinect_v2")) settings.camera = value;
         else if (key == "camera_device" && value.size() <= 128) settings.camera_device = value;
@@ -232,6 +233,7 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "touch_controls=" << s.touch_controls << '\n'
         << "touch_labels=" << s.touch_labels << '\n'
         << "tilt=" << s.tilt << '\n'
+        << "tilt_lean=" << s.tilt_lean << '\n'
         << "camera=" << s.camera << '\n'
         << "camera_device=" << s.camera_device << '\n'
         << "camera_mirror=" << s.camera_mirror << '\n'
@@ -467,6 +469,7 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         {"SFR_TOUCH_CONTROLS", s.touch_controls ? "1" : "0"},
         {"SFR_TOUCH_LABELS", s.touch_labels ? "1" : "0"},
         {"SFR_TILT", s.tilt ? "1" : "0"},
+        {"SFR_TILT_LEAN", s.tilt_lean ? "1" : "0"},
 #endif
     };
     // Test options (test_options.h): only those chosen, and only where they

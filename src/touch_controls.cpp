@@ -60,7 +60,7 @@ std::array<float, 2> stick_offset(const TouchPoint& finger, std::array<float, 2>
 }
 }
 
-void TouchControls::update(std::span<const TouchPoint> touches, float tilt, TouchScene scene) {
+void TouchControls::update(std::span<const TouchPoint> touches, float tilt, TouchScene scene, float lean) {
     namespace button = gamepad_button;
     const bool racing = scene == TouchScene::race;
     state_ = {};
@@ -125,8 +125,9 @@ void TouchControls::update(std::span<const TouchPoint> touches, float tilt, Touc
             else state_.buttons |= dy < 0 ? button::dpad_up : button::dpad_down;
         }
         pressed_[stick] = true;
-    } else if (racing && tilt != 0.0f) {
+    } else if (racing) {
         state_.thumb_lx = axis(tilt);
+        state_.thumb_ly = axis(lean);
     }
     right_knob_ = {right_x, right_y};
     if (right_finger_ >= 0) {
@@ -160,6 +161,38 @@ TouchOverlay TouchControls::overlay() const {
     overlay.knob = stick_active_ ? stick_knob_ : std::array<float, 2>{layout(stick)[0], layout(stick)[1]};
     overlay.right_knob = right_knob_;
     return overlay;
+}
+
+float tilt_pitch_degrees(float x, float y, float z, float side) {
+    // Upright, gravity's reaction lies along the landscape's up (the device's
+    // +x, -x flipped); face up, along z. The steering's roll moves it into y,
+    // so y counts with up, keeping up's sign (past flat it turns negative).
+    const float up = side * x;
+    return std::atan2(z, std::copysign(std::hypot(up, y), up)) * 57.29578f;
+}
+
+float TiltLean::update(float pitch, bool valid, bool racing, bool jumping, float seconds) {
+    if (!racing || !valid) {
+        // A new race (or the phone back in landscape) takes a new neutral.
+        calibrated_ = false;
+        quiet_ = 0.0f;
+        return 0.0f;
+    }
+    if (!calibrated_) {
+        calibrated_ = true;
+        neutral_ = pitch;
+    }
+    seconds = std::clamp(seconds, 0.0f, 0.25f);
+    const float offset = pitch - neutral_;
+    // Within the dead zone the neutral follows in about a second, beyond it
+    // in about half a minute.
+    const float follow = std::abs(offset) < dead_zone ? 1.0f : 30.0f;
+    neutral_ += offset * (1.0f - std::exp(-seconds / follow));
+    if (jumping) quiet_ = after_jump;
+    else quiet_ = std::max(quiet_ - seconds, 0.0f);
+    if (jumping || quiet_ > 0.0f) return 0.0f;
+    const float beyond = std::max(std::abs(offset) - dead_zone, 0.0f) / (full - dead_zone);
+    return std::copysign(std::min(beyond, 1.0f), offset);
 }
 
 uint16_t float_to_half(float value) {
