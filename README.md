@@ -226,6 +226,8 @@ with [docs/progress.md](docs/progress.md).
   Fixes a crash that sometimes happened right after starting the game (seen on Macs, about one start in forty): the game's file reader could miss its first read.
 - [v0.10.21 — Touch button names switch](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.21)
   The touch buttons' names can be turned off, and the FPS counter can be moved in from the corner so rounded phone screens don't cut it off (#236).
+- [v0.10.22 — Kinect v2 depth](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.22)
+  A Kinect v2 now gives the game a depth image like a Kinect (Xbox 360), with three depth views and a preview window, by knuckleslee (#231); the menus' ring and cursor line up on ultrawide screens (#230).
 
 ## System Requirements
 
