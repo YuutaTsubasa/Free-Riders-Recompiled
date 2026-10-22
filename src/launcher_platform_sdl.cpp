@@ -32,6 +32,7 @@
 #ifdef SFR_IOS
 #include "ios_document_picker.h"
 #include "ios_screen.h"
+#include "launcher_sound.h"
 #include <dlfcn.h>
 #endif
 
@@ -540,6 +541,9 @@ std::unique_ptr<GameProcess> start_game(const LauncherSettings& settings, const 
             if (SDL_Renderer* renderer = SDL_GetRenderer(window)) SDL_DestroyRenderer(renderer);
             SDL_DestroyWindow(window);
         }
+    // Its sound device gives way too: SDL opens one output device on iOS, so
+    // the game's did not open while the launcher's was (Issue #249).
+    sfr::release_ui_sound_device();
     const int code = entry(int(argv.size()) - 1, argv.data());
     std::fflush(stdout);
     std::fflush(stderr);

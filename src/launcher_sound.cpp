@@ -105,6 +105,42 @@ std::vector<uint8_t> synthesize_ui_sound(UiSound sound) {
     return wave;
 }
 
+#ifdef SFR_UI_SOUND_SDL
+namespace {
+// The SDL launcher (Linux, Android, iOS) queues the sounds on one device,
+// opened at the first sound.
+SDL_AudioDeviceID ui_device = 0;
+bool ui_device_tried = false, ui_device_released = false;
+
+SDL_AudioDeviceID ui_sound_device() {
+    if (ui_device_tried || ui_device_released) return ui_device;
+    ui_device_tried = true;
+    if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) return 0;
+    SDL_AudioSpec wanted{};
+    wanted.freq = int(rate);
+    wanted.format = AUDIO_S16LSB;
+    wanted.channels = 1;
+    wanted.samples = 1024;
+    ui_device = SDL_OpenAudioDevice(nullptr, 0, &wanted, nullptr, 0);
+    if (ui_device) SDL_PauseAudioDevice(ui_device, 0);
+#ifdef SFR_IOS
+    if (ui_device) SDL_Log("launcher sound: %s", ios_audio_session_summary().c_str());
+    else SDL_Log("launcher sound: no device: %s", SDL_GetError());
+#endif
+    return ui_device;
+}
+}
+#endif
+
+void release_ui_sound_device() {
+#ifdef SFR_UI_SOUND_SDL
+    ui_device_released = true;
+    if (!ui_device) return;
+    SDL_CloseAudioDevice(ui_device);
+    ui_device = 0;
+#endif
+}
+
 UiSounds::UiSounds() {
     for (size_t i = 0; i < waves_.size(); ++i) waves_[i] = synthesize_ui_sound(UiSound(i));
 }
@@ -114,23 +150,8 @@ void UiSounds::play(UiSound sound) const {
     if (!enabled) return;
     PlaySoundW(reinterpret_cast<LPCWSTR>(waves_[size_t(sound)].data()), nullptr, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
 #elif defined(SFR_UI_SOUND_SDL)
-    // The SDL launcher (Linux, Android): the PCM after the wave's data chunk
-    // header, queued on one device opened at the first sound.
-    static const SDL_AudioDeviceID device = [] {
-        if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) return SDL_AudioDeviceID(0);
-        SDL_AudioSpec wanted{};
-        wanted.freq = int(rate);
-        wanted.format = AUDIO_S16LSB;
-        wanted.channels = 1;
-        wanted.samples = 1024;
-        const SDL_AudioDeviceID opened = SDL_OpenAudioDevice(nullptr, 0, &wanted, nullptr, 0);
-        if (opened) SDL_PauseAudioDevice(opened, 0);
-#ifdef SFR_IOS
-        if (opened) SDL_Log("launcher sound: %s", ios_audio_session_summary().c_str());
-        else SDL_Log("launcher sound: no device: %s", SDL_GetError());
-#endif
-        return opened;
-    }();
+    // The PCM after the wave's data chunk header.
+    const SDL_AudioDeviceID device = ui_sound_device();
     if (!enabled || !device) return;
     const auto& wave = waves_[size_t(sound)];
     for (size_t at = 12; at + 8 <= wave.size();) {

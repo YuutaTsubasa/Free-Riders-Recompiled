@@ -22,4 +22,10 @@ public:
 private:
     std::array<std::vector<uint8_t>, size_t(UiSound::count)> waves_;
 };
+
+// Closes the SDL launcher's sound device for good. On iOS the game runs in
+// the launcher's process, where SDL opens only one output device: while the
+// launcher's stayed open, the game's failed to open and the game played
+// without sound (Issue #249).
+void release_ui_sound_device();
 }

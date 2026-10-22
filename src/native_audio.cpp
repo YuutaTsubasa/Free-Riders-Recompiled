@@ -154,8 +154,9 @@ public:
                       << " error=" << SDL_GetError() << '\n';
             return false;
         }
-        // Which driver plays, and on iOS the session SDL set up for it: its
-        // category decides whether silent mode mutes the game (Issue #249).
+        // Which driver plays, and on iOS the session SDL set up for it (SDL
+        // 2.32's own choice, Playback, is not muted by silent mode) and the
+        // route, for a player who hears nothing (Issue #249).
         std::cerr << "NATIVE_AUDIO_DEVICE driver=" << (driver ? driver : "none")
 #ifdef SFR_IOS
                   << ' ' << ios_audio_session_summary()

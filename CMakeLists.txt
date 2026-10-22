@@ -609,7 +609,7 @@ add_test(NAME native_audio COMMAND sfr_native_audio_test)
 if(IOS)
     # On iOS the output logs the audio session (Issue #249).
     target_sources(sfr_native_audio_test PRIVATE src/ios_audio_session.mm)
-    target_link_libraries(sfr_native_audio_test PRIVATE "-framework AVFoundation")
+    target_link_libraries(sfr_native_audio_test PRIVATE "-framework Foundation" "-framework AVFoundation" objc)
 endif()
 add_executable(sfr_mod_loader_test tests/mod_loader_test.cpp src/mod_loader.cpp)
 target_include_directories(sfr_mod_loader_test PRIVATE src)
@@ -1204,7 +1204,7 @@ if(SFR_BUILD_DIAGNOSTIC)
         target_compile_definitions(sfr_cpu_diagnostic PRIVATE SDL_MAIN_HANDLED)
         # The audio session in game.log (src/native_audio.cpp, Issue #249).
         target_sources(sfr_cpu_diagnostic PRIVATE src/ios_audio_session.mm)
-        target_link_libraries(sfr_cpu_diagnostic PRIVATE "-framework AVFoundation")
+        target_link_libraries(sfr_cpu_diagnostic PRIVATE "-framework Foundation" "-framework AVFoundation" objc)
     else()
         # SFR_GRAPHICS_SELFTEST=1 runs the graphics self test instead of the game.
         add_executable(sfr_cpu_diagnostic src/graphics_selftest.cpp)
