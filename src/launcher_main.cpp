@@ -140,7 +140,7 @@ enum Text {
     FrameskipLabel, FrameskipHint, FrameskipAuto, FrameskipAlways, FrameskipOff,
     TabTest, TestIntro, TestDefault, TestReset, TestActive, TestActiveNone,
     OnlinePasswordLabel, OnlinePasswordHint, OnlinePasswordHostHint, OnlineReachPasswordRequired, OnlineReachWrongPassword,
-    FpsOverlay, FpsOverlayHint,
+    FpsOverlay, FpsOverlayHint, FpsInset, FpsInsetHint, TouchNames, TouchNamesHint,
     TextCount
 };
 
@@ -517,6 +517,11 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Show FPS", "顯示 FPS"},
     {"A frame-rate counter in the game's upper left corner, updated twice a second. Applies on the next game launch.",
      "在遊戲畫面左上角顯示每秒影格數，每半秒更新一次。設定於下次啟動遊戲時套用。"},
+    {"FPS counter inset", "FPS 位置內縮"},
+    {"How far the counter sits from the corner, in percent of the screen height. Raise it if rounded screen corners cut it off.",
+     "計數器離角落多遠（螢幕高度的百分比）。若被螢幕圓角切掉就調高。"},
+    {"Button names", "按鈕名稱"},
+    {"Show A, B, X, Y and the other names on the touch buttons.", "在觸控按鈕上顯示 A、B、X、Y 等名稱。"},
 }};
 
 int language = 0;
@@ -2454,6 +2459,7 @@ struct Launcher {
         settings_section(SectionTouch);
         const float switch_width = ImGui::GetFrameHeight() * 1.9f;
         setting_row(tr(TouchLabel), tr(TouchHint), switch_width, scale, [&] { toggle("##touch", &settings.touch_controls); });
+        setting_row(tr(TouchNames), tr(TouchNamesHint), switch_width, scale, [&] { toggle("##touch_names", &settings.touch_labels); });
         setting_row(tr(TiltLabel), tr(TiltHint), switch_width, scale, [&] { toggle("##tilt", &settings.tilt); });
 #endif
         read_bindings();
@@ -2926,6 +2932,15 @@ struct Launcher {
         // Drawn in the game itself, so every platform has it (Issue #236).
         setting_row(tr(FpsOverlay), tr(FpsOverlayHint), switch_width, scale, [&] { toggle("##fps_overlay", &settings.fps_overlay); });
         const float slider_width = 220 * scale;
+        if (settings.fps_overlay) {
+            setting_row(tr(FpsInset), tr(FpsInsetHint), slider_width, scale, [&] {
+                int inset = int(settings.fps_inset);
+                ImGui::SetNextItemWidth(slider_width);
+                bool moved = ImGui::SliderInt("##fps_inset", &inset, 0, 20, "%d%%");
+                moved |= slider_steps(&inset, 0, 20, 1);
+                if (moved) settings.fps_inset = uint32_t(inset);
+            });
+        }
         // Frame skipping (race_frame_clock.h, SFR_RACE_FRAMESKIP).
         setting_row(tr(FrameskipLabel), tr(FrameskipHint), slider_width, scale, [&] {
             static constexpr std::pair<const char*, Text> modes[] = {

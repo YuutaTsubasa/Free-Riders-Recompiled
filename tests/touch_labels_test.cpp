@@ -191,6 +191,10 @@ void check_readout() {
     require(sfr::fps_readout_word(false, 60) == 0 && sfr::fps_readout_word(true, 60) == 0x1003C &&
                 sfr::fps_readout_word(true, 0) == 0x10000 && sfr::fps_readout_word(true, 5000) == 0x103E7,
             "the readout's word: bit 16 shown, then the value up to 999");
+    require(sfr::fps_readout_word(true, 60, 3) == 0x31003C && sfr::fps_readout_word(true, 60, 99) == 0x141003C &&
+                sfr::fps_readout_word(false, 60, 5) == 0 &&
+                (sfr::fps_readout_word(true, 999, sfr::fps_inset_max) & sfr::touch_names_hidden_bit) == 0,
+            "the inset goes in bits 20 to 24, at most fps_inset_max, clear of the names' bit");
     sfr::TouchOverlay overlay;
     overlay.readout = sfr::fps_readout_word(true, 59);
     const auto words = sfr::pack_touch_overlay(overlay);

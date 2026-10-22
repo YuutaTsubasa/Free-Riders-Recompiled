@@ -52,6 +52,8 @@ void settings_round_trip() {
     settings.player2_pad = "a=x,x=a";
     settings.image_directory = std::filesystem::path(u8"C:/遊戲/image");
     settings.asset_directory = "D:/assets";
+    settings.fps_inset = 7;
+    settings.touch_labels = false;
     const auto read = sfr::parse_launcher_settings(sfr::format_launcher_settings(settings));
     require(read.window_width == 1920 && read.window_height == 1080, "window size survives a round trip");
     require(read.fullscreen && read.vsync && !read.audio && read.volume == 35, "display and sound survive a round trip");
@@ -59,6 +61,8 @@ void settings_round_trip() {
             "advanced settings survive a round trip");
     require(read.camera == "motion" && read.camera_device == "e2eSoft iVCam #2" && read.camera_mirror,
             "the camera choice, name, and mirror setting survive a round trip");
+    require(read.fps_inset == 7 && !read.touch_labels && value_of(read, "SFR_FPS_OVERLAY_INSET") == "7",
+            "the FPS counter's inset and the touch buttons' names survive a round trip");
     require(read.player1_device == settings.player1_device && read.player2_device == settings.player2_device &&
             read.player1_gamepad == settings.player1_gamepad && read.player2_gamepad == settings.player2_gamepad &&
             read.player1_keys == settings.player1_keys && read.player2_keys == settings.player2_keys &&

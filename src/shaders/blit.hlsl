@@ -10,6 +10,7 @@
 //
 // Each button carries its name (Issue #236, touch_labels.hlsli): letters in
 // a light shade of its colour with a dark edge, readable over any picture.
+// Bit 17 of the readout's word (below) hides them, and LB's and RB's arrows.
 //
 // The constants are 32 words, the 128 bytes of push constants every Vulkan
 // device has: the sampled area as two floats, then pairs of half floats
@@ -129,11 +130,13 @@ float arrow(float2 p, float side, float edge) {
 // The frame-rate readout (fps_readout.h) in the image's upper left corner:
 // the number and "FPS" on a dark rounded box. Its word is the constants'
 // last (touch_controls.h, touch_readout_word): bit 16 shows it, the low bits
-// are the value.
+// are the value, bits 20 to 24 how far in from the corner it sits, in
+// percent of the image's height (fps_readout.h).
 float3 readout(float3 color, float2 image, uint word, float2 pixel) {
     const float cap = 0.026;  // letter height, in image heights
     const float aspect = pixel.y / pixel.x;
-    const float2 p = (float2(image.x * aspect, image.y) - float2(0.022, 0.02)) / cap;
+    const float inset = float((word >> 20) & 0x1F) * 0.01;
+    const float2 p = (float2(image.x * aspect, image.y) - float2(0.022, 0.02) - inset) / cap;
     const uint value = min(word & 0xFFFF, g_ReadoutMax);
     const uint digits = value >= 100 ? 3 : (value >= 10 ? 2 : 1);
     const float width = digits * g_ReadoutAdvance + g_ReadoutSpace + g_ReadoutSuffixWidth;
@@ -159,6 +162,8 @@ float3 readout(float3 color, float2 image, uint word, float2 pixel) {
 float4 pixelMain(Vertex vertex) : SV_Target {
     float4 color = g_Source.Sample(g_Sampler, vertex.texCoord);
     const float2 pixel = fwidth(vertex.image);
+    const uint readout_word = g_Circles[6].w;
+    const bool names = (readout_word & 0x20000) == 0;
     [unroll] for (int i = 0; i < CIRCLES; ++i) {
         const float4 c = circle_at(i);
         if (c.w <= 0.0) continue;
@@ -176,6 +181,7 @@ float4 pixelMain(Vertex vertex) : SV_Target {
             const float shown = disc(vertex.image, knob, c.z * 0.45, pixel);
             color.rgb = lerp(color.rgb, float3(1.0, 1.0, 1.0), shown * (pressed ? 0.6 : 0.3));
         }
+        if (!names) continue;
         // The name, on the knob for a stick; p in the circle's radii.
         const float2 centre = label_on_knob(i) ? unpack_halves(i == 0 ? g_Knobs.x : g_Knobs.y) : c.xy;
         const float2 p = (vertex.image - centre) * float2(16.0 / 9.0, 1.0) / c.z;
@@ -191,7 +197,6 @@ float4 pixelMain(Vertex vertex) : SV_Target {
         color.rgb = lerp(color.rgb, float3(0.0, 0.0, 0.0), outline * (pressed ? 0.5 : 0.4));
         color.rgb = lerp(color.rgb, lerp(g_Colors[i], float3(1.0, 1.0, 1.0), 0.45), letter * (pressed ? 1.0 : 0.85));
     }
-    const uint readout_word = g_Circles[6].w;
     if ((readout_word & 0x10000) != 0) color.rgb = readout(color.rgb, vertex.image, readout_word, pixel);
     return color;
 }

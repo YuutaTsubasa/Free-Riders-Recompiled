@@ -27,7 +27,15 @@ private:
 // SFR_FPS_OVERLAY=1.
 bool fps_overlay_enabled();
 
+// How far in from the image's corner the readout sits, in percent of the
+// image's height (SFR_FPS_OVERLAY_INSET, at most fps_inset_max): a phone's
+// rounded corners cut a readout drawn right in the corner (Issue #236).
+constexpr uint32_t fps_inset_max = 20;
+uint32_t fps_overlay_inset();
+
 // The blit's word for the readout (blit.hlsl): 0 hides it, otherwise bit 16
-// set and the value (at most 999) in the low bits.
-uint32_t fps_readout_word(bool shown, uint32_t value);
+// set, the value (at most 999) in the low bits and the inset (at most
+// fps_inset_max) in bits 20 to 24. Bit 17 is not the readout's: it hides the
+// touch buttons' names (touch_controls.h, touch_names_hidden_bit).
+uint32_t fps_readout_word(bool shown, uint32_t value, uint32_t inset = 0);
 }
