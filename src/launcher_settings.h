@@ -73,6 +73,7 @@ struct LauncherSettings {
     bool touch_controls = true;      // SFR_TOUCH_CONTROLS (Android, iOS)
     bool touch_labels = true;        // SFR_TOUCH_LABELS: the buttons' names on them (Issue #236)
     bool tilt = true;                // SFR_TILT: tilt to steer (Android, iOS)
+    bool tilt_lean = false;          // SFR_TILT_LEAN: tilt to lean forward/back (Android, iOS; Issue #247)
     // Where the Kinect player's body comes from, and whether the camera
     // picture the title shows is a real one. "pad" is the emulated player the
     // gamepad drives; "camera" tracks a real body with a webcam, which cannot

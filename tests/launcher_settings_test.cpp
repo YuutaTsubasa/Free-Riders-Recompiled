@@ -806,9 +806,12 @@ void environment_follows_settings() {
         sfr::LauncherSettings touch;
         touch.touch_controls = false;
         touch.tilt = false;
+        touch.tilt_lean = true;
         touch.language = "zh-TW";
         const auto parsed = sfr::parse_launcher_settings(sfr::format_launcher_settings(touch));
-        require(!parsed.touch_controls && !parsed.tilt, "the touch settings survive a save");
+        require(!parsed.touch_controls && !parsed.tilt && parsed.tilt_lean, "the touch settings survive a save");
+        require(!sfr::LauncherSettings{}.tilt_lean, "tilt to lean is off by default");
+        require(!sfr::parse_launcher_settings("tilt=1\n").tilt_lean, "an older settings file leaves tilt to lean off");
         require(parsed.language == "zh-TW", "the launcher language survives a save");
         require(sfr::parse_launcher_settings("language=klingon\n").language == "auto", "an unknown language is the system's");
     }

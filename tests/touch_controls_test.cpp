@@ -232,6 +232,75 @@ void controller_handover() {
 }
 }
 
+// "Tilt to lean" (Issue #247): the phone's pitch leans forward / back.
+void tilt_lean() {
+    using sfr::tilt_pitch_degrees;
+    const auto near = [](float value, float expected, float slack = 0.05f) { return std::abs(value - expected) <= slack; };
+    const float rad = 3.14159265f / 180.0f;
+    require(near(tilt_pitch_degrees(9.8f, 0.0f, 0.0f, 1.0f), 0.0f), "upright facing the player is pitch 0");
+    require(near(tilt_pitch_degrees(0.0f, 0.0f, 9.8f, 1.0f), 90.0f), "lying face up is 90");
+    require(near(tilt_pitch_degrees(std::cos(40 * rad), 0.0f, std::sin(40 * rad), 1.0f), 40.0f),
+            "the top edge tipped away 40 degrees is 40");
+    require(near(tilt_pitch_degrees(-std::cos(40 * rad), 0.0f, std::sin(40 * rad), -1.0f), 40.0f),
+            "flipped landscape reads the same pitch");
+    require(near(tilt_pitch_degrees(std::cos(40 * rad) * std::cos(20 * rad), std::cos(40 * rad) * std::sin(20 * rad),
+                                    std::sin(40 * rad), 1.0f), 40.0f),
+            "steering (turning the phone like a wheel) leaves the pitch alone");
+    require(near(tilt_pitch_degrees(-std::sin(10 * rad), 0.0f, std::cos(10 * rad), 1.0f), 100.0f),
+            "past lying flat the pitch goes on rising");
+
+    const float frame = 1.0f / 60.0f;
+    sfr::TiltLean lean;
+    require(lean.update(40.0f, true, false, false, frame) == 0.0f && !lean.calibrated(), "nothing outside a race");
+    require(lean.update(40.0f, true, true, false, frame) == 0.0f && lean.calibrated() && lean.neutral() == 40.0f,
+            "the pitch when a race starts is neutral");
+    require(lean.update(44.0f, true, true, false, frame) == 0.0f, "within 5 degrees of neutral is no lean");
+    lean = {};
+    lean.update(40.0f, true, true, false, frame);
+    require(near(lean.update(55.0f, true, true, false, frame), 0.5f, 0.01f), "the top edge 15 degrees away is half a lean forward");
+    require(lean.update(70.0f, true, true, false, frame) == 1.0f, "25 degrees and more is a full lean");
+    require(near(lean.update(25.0f, true, true, false, frame), -0.5f, 0.02f), "towards the player leans back");
+    // A lean held down a straight hardly fades; a grip shifting within the
+    // dead zone becomes the neutral within a few seconds.
+    lean = {};
+    lean.update(40.0f, true, true, false, frame);
+    float held = 0.0f;
+    for (int i = 0; i < 180; ++i) held = lean.update(55.0f, true, true, false, frame);
+    require(held > 0.4f, "a lean held for three seconds stays");
+    lean = {};
+    lean.update(40.0f, true, true, false, frame);
+    for (int i = 0; i < 300; ++i) lean.update(44.0f, true, true, false, frame);
+    require(near(lean.neutral(), 44.0f, 0.1f), "a small change of grip re-centres");
+    require(near(lean.update(59.0f, true, true, false, frame), 0.5f, 0.02f), "and the lean is from the new neutral");
+    // A, then the takeoff: no lean, so the stick does not turn into a trick.
+    require(lean.update(64.0f, true, true, true, frame) == 0.0f, "no lean while A is held");
+    float after = 1.0f;
+    for (int i = 0; i < 24; ++i) after = lean.update(64.0f, true, true, false, frame);
+    require(after == 0.0f, "nor for the takeoff after A is released");
+    for (int i = 0; i < 12; ++i) after = lean.update(64.0f, true, true, false, frame);
+    require(after > 0.5f, "then the lean is back");
+    // Out of the race (or no landscape reading) the next race calibrates again.
+    lean.update(64.0f, true, false, false, frame);
+    require(!lean.calibrated(), "leaving the race forgets the neutral");
+    lean.update(30.0f, false, true, false, frame);
+    require(!lean.calibrated(), "no reading, no neutral");
+    lean.update(30.0f, true, true, false, frame);
+    require(lean.neutral() == 30.0f, "the next race takes its own neutral");
+
+    // The touch controls: the lean is the left stick's Y in a race only, and
+    // the on-screen stick takes both axes over.
+    TouchControls controls;
+    controls.update({}, 0.0f, sfr::TouchScene::race, 0.5f);
+    require(controls.state().thumb_ly > 16000 && controls.state().thumb_ly < 16500 && controls.state().thumb_lx == 0,
+            "tilt lean is the left stick's Y in a race");
+    controls.update({}, -0.5f, sfr::TouchScene::race, -1.0f);
+    require(controls.state().thumb_ly == -32767 && controls.state().thumb_lx < -16000, "steering and leaning together");
+    controls.update({}, 0.0f, sfr::TouchScene::menu, 1.0f);
+    require(controls.state().thumb_ly == 0, "tilt lean does nothing in the menus");
+    controls.update(std::vector<TouchPoint>{{8, 0.2f, 0.7f}}, -0.5f, sfr::TouchScene::race, 1.0f);
+    require(controls.state().thumb_ly == 0 && controls.state().thumb_lx == 0, "the stick overrides the tilt lean");
+}
+
 int main() {
 #ifdef _WIN32
     _putenv_s("SFR_TOUCH_CONTROLS", "1");
@@ -244,6 +313,7 @@ int main() {
         pointer();
         packing();
         controller_handover();
+        tilt_lean();
         std::cout << "Touch control checks passed\n";
         return 0;
     } catch (const std::exception& error) {

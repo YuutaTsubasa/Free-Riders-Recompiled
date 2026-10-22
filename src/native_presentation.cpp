@@ -490,6 +490,10 @@ struct NativePresentation::Impl {
     TouchControls touch_controls;
     SDL_Sensor* tilt_sensor = nullptr;
     bool tilt_sensor_checked = false;
+    bool tilt_steer = false;    // SFR_TILT (default on): the roll steers
+    bool tilt_lean_on = false;  // SFR_TILT_LEAN=1: the pitch leans (Issue #247)
+    TiltLean tilt_lean;
+    uint32_t tilt_lean_ms = 0;
     // Fingers that went down since the last read (window fractions), kept as
     // touches for a few reads when they are already up again: a quick tap
     // can come and go between two reads of the fingers (Issue #217).
@@ -2375,13 +2379,20 @@ void NativePresentation::Impl::read_touch_controls() {
     }
     std::erase_if(brief_touches, [](const BriefTouch& brief) { return brief.reads <= 0; });
     float tilt = 0.0f;
+    float pitch = 0.0f;
+    bool pitch_valid = false;
     if (!tilt_sensor_checked) {
         tilt_sensor_checked = true;
         const char* text = std::getenv("SFR_TILT");
-        if ((!text || *text != '0') && SDL_InitSubSystem(SDL_INIT_SENSOR) == 0) {
+        tilt_steer = !text || *text != '0';
+        const char* lean = std::getenv("SFR_TILT_LEAN");
+        tilt_lean_on = lean && *lean == '1';
+        if ((tilt_steer || tilt_lean_on) && SDL_InitSubSystem(SDL_INIT_SENSOR) == 0) {
             for (int i = 0; i < SDL_NumSensors() && !tilt_sensor; ++i)
                 if (SDL_SensorGetDeviceType(i) == SDL_SENSOR_ACCEL) tilt_sensor = SDL_SensorOpen(i);
         }
+        std::fprintf(stderr, "TILT sensor=%s steer=%d lean=%d\n", tilt_sensor ? "accelerometer" : "none",
+                     int(tilt_steer), int(tilt_lean_on));
     }
     if (tilt_sensor) {
         SDL_SensorUpdate();
@@ -2390,20 +2401,36 @@ void NativePresentation::Impl::read_touch_controls() {
             // The sensor reads in the device's portrait axes. Held in landscape
             // (its right edge up) and turned clockwise like a wheel, the reading
             // moves towards +y; flipped landscape mirrors that. Full lock at
-            // 25 degrees, nothing below 5.
+            // 25 degrees, nothing below 5. The pitch is tilt_pitch_degrees'.
             const float magnitude = std::sqrt(acceleration[0] * acceleration[0] + acceleration[1] * acceleration[1] +
                                               acceleration[2] * acceleration[2]);
             const SDL_DisplayOrientation orientation = SDL_GetDisplayOrientation(0);
             const float side = orientation == SDL_ORIENTATION_LANDSCAPE_FLIPPED ? -1.0f : 1.0f;
             if (magnitude > 1.0f && (orientation == SDL_ORIENTATION_LANDSCAPE || orientation == SDL_ORIENTATION_LANDSCAPE_FLIPPED)) {
-                const float angle = std::asin(std::clamp(side * acceleration[1] / magnitude, -1.0f, 1.0f)) * 57.29578f;
-                const float beyond = std::max(std::abs(angle) - 5.0f, 0.0f) / 20.0f;
-                tilt = std::copysign(std::min(beyond, 1.0f), angle);
+                if (tilt_steer) {
+                    const float angle = std::asin(std::clamp(side * acceleration[1] / magnitude, -1.0f, 1.0f)) * 57.29578f;
+                    const float beyond = std::max(std::abs(angle) - 5.0f, 0.0f) / 20.0f;
+                    tilt = std::copysign(std::min(beyond, 1.0f), angle);
+                }
+                pitch = tilt_pitch_degrees(acceleration[0], acceleration[1], acceleration[2], side);
+                pitch_valid = true;
             }
         }
     }
+    float lean = 0.0f;
+    if (tilt_lean_on) {
+        const uint32_t now = SDL_GetTicks();
+        const float seconds = tilt_lean_ms ? float(now - tilt_lean_ms) / 1000.0f : 0.0f;
+        tilt_lean_ms = now;
+        const bool was_calibrated = tilt_lean.calibrated();
+        // A held on the screen at the last read: crouching for a jump (TiltLean).
+        const bool jumping = (touch_controls.state().buttons & gamepad_button::a) != 0;
+        lean = tilt_lean.update(pitch, pitch_valid, touch_scene() == TouchScene::race, jumping, seconds);
+        if (tilt_lean.calibrated() && !was_calibrated)
+            std::fprintf(stderr, "TILT lean neutral=%.1f deg\n", tilt_lean.neutral());
+    }
     if (!touches.empty()) note_touch();
-    touch_controls.update(touches, tilt, touch_scene());
+    touch_controls.update(touches, tilt, touch_scene(), lean);
     publish_touch_controls(touch_controls.state(), touch_controls.overlay());
     // The pointer finger moves the Kinect hand cursor (Issue #217).
     static bool pointing = false;

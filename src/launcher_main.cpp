@@ -115,7 +115,7 @@ enum Text {
     QuitTitle, QuitText, CancelInstallTitle, CancelInstallText, Yes, No,
     UiSoundsLabel, UiSoundsHint, GraphicsBackendLabel, GraphicsBackendHint,
     ShaderPack, ShaderPackHint, ChoosePack, InstallIntroFile, InstallFromImage, NoShaderPack,
-    LanguageLabel, LanguageHint, LanguageSystem, LanguageEnglish, LanguageChinese, TouchLabel, TouchHint, TiltLabel, TiltHint,
+    LanguageLabel, LanguageHint, LanguageSystem, LanguageEnglish, LanguageChinese, TouchLabel, TouchHint, TiltLabel, TiltHint, TiltLeanLabel, TiltLeanHint,
     BarSettings, BarInstaller, BarInstalling, BarStopped,
     TabControls, PlayerOneDevice, PlayerOneDeviceHint, PlayerTwoDevice, PlayerTwoDeviceHint,
     DeviceBoth, DeviceGamepad, DeviceKeyboard, DeviceOff,
@@ -354,6 +354,9 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Buttons over the game for playing without a controller.", "在遊戲畫面上顯示按鈕，沒有手把也能遊玩。"},
     {"Tilt to steer", "傾斜轉彎"},
     {"In a race, turn the phone like a steering wheel.", "比賽中把手機當方向盤左右傾斜來轉彎。"},
+    {"Tilt to lean", "傾斜前後傾"},
+    {"In a race, tip the top edge away to lean forward (speed up), towards you to lean back (brake).",
+     "比賽中把手機上緣往外傾是前傾（加速），往自己傾是後傾（煞車）。"},
     {"SETTINGS", "設定"},
     {"INSTALLER", "安裝"},
     {"INSTALLING", "安裝中"},
@@ -2504,6 +2507,7 @@ struct Launcher {
         setting_row(tr(TouchLabel), tr(TouchHint), switch_width, scale, [&] { toggle("##touch", &settings.touch_controls); });
         setting_row(tr(TouchNames), tr(TouchNamesHint), switch_width, scale, [&] { toggle("##touch_names", &settings.touch_labels); });
         setting_row(tr(TiltLabel), tr(TiltHint), switch_width, scale, [&] { toggle("##tilt", &settings.tilt); });
+        setting_row(tr(TiltLeanLabel), tr(TiltLeanHint), switch_width, scale, [&] { toggle("##tilt_lean", &settings.tilt_lean); });
 #endif
         read_bindings();
         const float combo_width = 300 * scale;
