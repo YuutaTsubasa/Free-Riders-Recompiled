@@ -9,12 +9,14 @@
 #include "avatar_transform.h"
 #include "avatar_clip_pose.h"
 #include "job_lifetime.h"
+#include "stream_reader_gate.h"
 #include <mutex>
 #include <algorithm>
 #include <bit>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -590,6 +592,111 @@ SFR_CONCURRENT_HOOK(sub_82750C40) {
             text << offset << ':' << sfr::active_memory->load<uint32_t>(uint64_t(job)+offset) << ' ';
         std::cerr << text.str() << std::dec << '\n';
     } catch(...) {}
+}
+
+// The file stream's reader must be waiting before its dispatcher hands it a
+// read (stream_reader_gate.h): a read handed over earlier is cleared by the
+// reader's first loop, which then dereferences the null request (the Mac's
+// startup GUEST_ACCESS_VIOLATION guest=0x10 in 8249C100). The handoff
+// 8249D368 waits for the reader to reach its wait, without its execution
+// permit, for at most SFR_STREAM_READER_WAIT_MS (default 5000; 0 turns the
+// wait off and leaves only the reports).
+namespace {
+sfr::StreamReaderGate stream_reader_gate;
+uint32_t stream_reader_wait_ms() {
+    static const uint32_t wait_ms=[]{
+        const char* text=std::getenv("SFR_STREAM_READER_WAIT_MS");
+        const long value=text?std::strtol(text,nullptr,10):5000;
+        return uint32_t(value>0?value:0);
+    }();
+    return wait_ms;
+}
+}
+
+PPC_FUNC_IMPL(__imp__sub_8249C100);
+// The reader's thread function. SFR_TEST_STREAM_READER_DELAY_MS (a test
+// switch, off by default) holds it back that long before it runs, as a busy
+// host can: with SFR_STREAM_READER_WAIT_MS=0 the first read is then lost.
+SFR_CONCURRENT_HOOK(sub_8249C100) {
+    sfr::enter_function(ctx,"sub_8249C100",0x8249C100);
+    static const uint32_t delay_ms=[]{
+        const char* text=std::getenv("SFR_TEST_STREAM_READER_DELAY_MS");
+        const long value=text?std::strtol(text,nullptr,10):0;
+        return uint32_t(value>0?value:0);
+    }();
+    if(delay_ms) {
+        std::cerr << "GAME_PATCH stream_reader_test_delay ms=" << delay_ms << '\n';
+        uint32_t ms=delay_ms;
+        sfr::traced_host_wait([](void* argument) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(*static_cast<uint32_t*>(argument)));
+        },&ms,"stream_reader_test_delay",int64_t(delay_ms)*1000000);
+    }
+    __imp__sub_8249C100(ctx,base);
+}
+
+PPC_FUNC_IMPL(__imp__sub_824B2060);
+// A thread object's wait for its own event (with no thread object, a Sleep).
+SFR_CONCURRENT_HOOK(sub_824B2060) {
+    using namespace sfr::stream_reader;
+    const bool reader=ctx.lr==idle_wait_return;
+    // The reader (8249C100): r19 is the manager, r30 its own thread object,
+    // and it has just cleared the request. Said before the entry, which can
+    // hand the execution permit over and keep the dispatcher waiting.
+    const uint32_t manager=ctx.r19.u32, thread=ctx.r30.u32;
+    if(reader) stream_reader_gate.reader_idle(thread);
+    sfr::enter_function(ctx,"sub_824B2060",0x824B2060);
+    __imp__sub_824B2060(ctx,base);
+    if(!reader) return;
+    // Woken with no request and not told to finish: the lost handoff, which
+    // the reader's next load (+16 of the null request) turns into a fault.
+    if(sfr::active_memory->load<uint32_t>(uint64_t(manager)+manager_request)==0 &&
+       sfr::active_memory->load<uint8_t>(uint64_t(thread)+thread_finished)==0) {
+        std::ostringstream text;
+        text << "GAME_PATCH stream_reader_empty_wake manager=0x" << std::hex << manager << " thread=0x" << thread << '\n';
+        // Flushed: the fault that follows would lose the buffered trace.
+        std::cerr << text.str() << std::flush;
+        std::fflush(stderr);
+    }
+}
+
+PPC_FUNC_IMPL(__imp__sub_8249D368);
+// The dispatcher's handoff of one read to the reader (r3 the manager).
+SFR_CONCURRENT_HOOK(sub_8249D368) {
+    sfr::enter_function(ctx,"sub_8249D368",0x8249D368);
+    using namespace sfr::stream_reader;
+    const uint32_t manager=ctx.r3.u32;
+    auto reader=[manager]{
+        return sfr::active_memory->load<uint32_t>(uint64_t(manager)+manager_reader_thread);
+    };
+    if(!stream_reader_gate.ready(reader())) {
+        const auto started=std::chrono::steady_clock::now();
+        bool ready=false;
+        if(const uint32_t limit=stream_reader_wait_ms()) {
+            struct Wait { uint32_t manager, limit; bool ready; } wait{manager,limit,false};
+            sfr::traced_host_wait([](void* argument) {
+                auto& wait=*static_cast<Wait*>(argument);
+                wait.ready=stream_reader_gate.wait_until_ready([&wait]{
+                    return sfr::active_memory->load<uint32_t>(uint64_t(wait.manager)+manager_reader_thread);
+                },std::chrono::milliseconds(wait.limit));
+            },&wait,"stream_reader",int64_t(limit)*1000000);
+            ready=wait.ready;
+        }
+        static std::atomic<uint32_t> reports{0};
+        if(reports++<16) {
+            // One write, so that other threads' lines do not split it.
+            const uint32_t thread=reader();
+            std::ostringstream text;
+            text << "GAME_PATCH stream_reader_wait manager=0x" << std::hex << manager << " thread=0x" << thread
+                 << std::dec << " resumed="
+                 << (thread ? int(sfr::active_memory->load<uint8_t>(uint64_t(thread)+thread_resumed)) : -1)
+                 << " ready=" << ready << " ms="
+                 << std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count()
+                 << " wait_ms=" << stream_reader_wait_ms() << '\n';
+            std::cerr << text.str() << std::flush;
+            std::fflush(stderr);
+        }
+    }
+    __imp__sub_8249D368(ctx,base);
 }
 
 // The avatar's parts. Six functions walk the same structure, which the
