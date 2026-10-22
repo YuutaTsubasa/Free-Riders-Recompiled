@@ -15,6 +15,7 @@
 #include <bit>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
@@ -81,6 +82,95 @@ SFR_CONCURRENT_HOOK(sub_8222AB40) { sfr::enter_function(ctx,"sub_8222AB40",0x822
 SFR_CONCURRENT_HOOK(sub_8222B058) { sfr::enter_function(ctx,"sub_8222B058",0x8222B058); refresh_camera_aspect(); __imp__sub_8222B058(ctx,base); }
 SFR_CONCURRENT_HOOK(sub_82242AB8) { sfr::enter_function(ctx,"sub_82242AB8",0x82242AB8); refresh_camera_aspect(); __imp__sub_82242AB8(ctx,base); }
 SFR_CONCURRENT_HOOK(sub_823F29D8) { sfr::enter_function(ctx,"sub_823F29D8",0x823F29D8); refresh_camera_aspect(); __imp__sub_823F29D8(ctx,base); }
+
+PPC_FUNC_IMPL(__imp__sub_8226CB10);
+PPC_FUNC_IMPL(__imp__sub_823F18D0);
+
+// The menus' ring and its hit test, on a wide frame.
+//
+// The title turns a 3D position into a point of its 1280x720 layout with two
+// functions: 8226CB10 (the camera is the one in the title's services) and
+// 823F18D0 (a camera given by the caller). Each takes the point through the
+// camera's matrix (at +352), divides by w and maps the result onto the layout
+// with 640 and 360 (the globals at 82B34BD8/82B34BDC). The ring menu places the
+// selected item's quad with them and asks them where each item is when it
+// tests whether the hand cursor points at it.
+//
+// With the wide frame's camera (its aspect is the frame's, see
+// refresh_camera_aspect) the same normalized x covers k times more of the
+// layout than 640 of it, which is where the GPU draws the ring: in the layout
+// the item came out k times too close to its middle. The selected item was
+// drawn k times too narrow, and the cursor had to be moved k times closer to
+// the middle than the item looked to select it; the Back button was selected
+// about 300 px left of where it is drawn. A 16:9 run of the same menu puts the
+// selected item at x = 847 and 261 wide, where the wide frame gave 709 and 87.
+//
+// Both functions' x results are stretched about 640 by k, the camera's aspect
+// over 16:9 read from its own matrix (the lengths of its x and y columns'
+// first three entries). A camera that is 16:9 already reads k = 1 and is left
+// alone, as is everything outside the wide mode.
+//
+// Where: the menus' 1280-wide view; in a race (the view is as wide as the frame
+// and its HUD is placed by other means) only the pause menu's ring and widgets:
+// 823F18D0 called from the ring's point-in-item test (8246B338), from the
+// generic widget's textured quad (823F2318) and from its corner test (823F63F8).
+static double projection_stretch(uint32_t camera,bool ring_in_race=false) {
+    if(!wide_logical_width() || !sfr::active_guest_graphics) return 0.0;
+    auto& memory=*sfr::active_memory;
+    const bool racing=memory.load<uint32_t>(0x83E52F8C)!=0;
+    if(racing ? !ring_in_race : sfr::active_guest_graphics->last_view_width()!=sfr::aspect::title_layout_width) return 0.0;
+    if(!camera || !memory.readable(uint64_t(camera)+352,64)) return 0.0;
+    const auto element=[&](uint32_t row,uint32_t column) {
+        return double(std::bit_cast<float>(memory.load<uint32_t>(uint64_t(camera)+352+16*row+4*column)));
+    };
+    double x=0.0, y=0.0;
+    for(uint32_t row=0;row<3;++row) { x+=element(row,0)*element(row,0); y+=element(row,1)*element(row,1); }
+    x=std::sqrt(x); y=std::sqrt(y);
+    if(x<1e-9) return 0.0;
+    const double k=(y/x)/(double(sfr::aspect::title_layout_width)/double(sfr::aspect::title_layout_height));
+    return k>1.25 && k<12.0 ? k : 0.0;
+}
+
+SFR_CONCURRENT_HOOK(sub_8226CB10) {
+    sfr::enter_function(ctx,"sub_8226CB10",0x8226CB10);
+    const uint32_t out=ctx.r3.u32;
+    __imp__sub_8226CB10(ctx,base);
+    if(!wide_logical_width()) return;
+    auto& memory=*sfr::active_memory;
+    const auto word=[&](uint64_t address) { return memory.readable(address,4) ? memory.load<uint32_t>(address) : 0u; };
+    // The camera the function reads: [[[[83E516A0]+116]+8]+4*[[83E516A0]+116]+28]].
+    const uint32_t services=word(0x83E516A0), table=services ? word(uint64_t(services)+116) : 0;
+    const uint32_t cameras=table ? word(uint64_t(table)+8) : 0, index=table ? word(uint64_t(table)+28) : 0;
+    const uint32_t camera=cameras ? word(uint64_t(cameras)+4ull*index) : 0;
+    const double k=projection_stretch(camera);
+    if(k==0.0 || !memory.readable(out,8)) return;
+    const double centre=double(std::bit_cast<float>(word(0x82B34BD8)));
+    if(centre<=0.0) return;
+    const double value=double(std::bit_cast<float>(word(out)));
+    memory.store<uint32_t>(out,std::bit_cast<uint32_t>(float(centre+(value-centre)*k)));
+}
+
+SFR_CONCURRENT_HOOK(sub_823F18D0) {
+    sfr::enter_function(ctx,"sub_823F18D0",0x823F18D0);
+    const uint32_t camera=ctx.r3.u32;
+    // The call sites a race's pause menu uses: 8246B338's four corner tests,
+    // 823F2318's four quad corners, 823F63F8's four corner tests.
+    const uint32_t site=uint32_t(ctx.lr);
+    const bool ring_test=site==0x8246B3A0u || site==0x8246B3E4u || site==0x8246B428u || site==0x8246B46Cu ||
+                         site==0x823F2414u || site==0x823F2510u || site==0x823F2724u || site==0x823F2768u ||
+                         site==0x823F6554u || site==0x823F65DCu || site==0x823F6664u || site==0x823F64CCu;
+    __imp__sub_823F18D0(ctx,base);
+    // The result is the x and y floats in r3's high and low words.
+    if(const double k=projection_stretch(camera,ring_test); k!=0.0) {
+        const uint64_t packed=ctx.r3.u64;
+        const double centre=double(std::bit_cast<float>(sfr::active_memory->load<uint32_t>(0x82B34BD8)));
+        if(centre>0.0) {
+            const double x=double(std::bit_cast<float>(uint32_t(packed>>32)));
+            const uint32_t stretched=std::bit_cast<uint32_t>(float(centre+(x-centre)*k));
+            ctx.r3.u64=(uint64_t(stretched)<<32)|(packed&0xFFFFFFFFull);
+        }
+    }
+}
 
 PPC_FUNC_IMPL(__imp__sub_8249B068);
 
