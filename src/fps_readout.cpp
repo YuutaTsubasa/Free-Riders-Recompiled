@@ -27,7 +27,15 @@ bool fps_overlay_enabled() {
     return enabled;
 }
 
-uint32_t fps_readout_word(bool shown, uint32_t value) {
-    return shown ? (1u << 16) | std::min(value, 999u) : 0u;
+uint32_t fps_overlay_inset() {
+    static const uint32_t inset = [] {
+        const char* text = std::getenv("SFR_FPS_OVERLAY_INSET");
+        return text ? std::min(uint32_t(std::strtoul(text, nullptr, 10)), fps_inset_max) : 0u;
+    }();
+    return inset;
+}
+
+uint32_t fps_readout_word(bool shown, uint32_t value, uint32_t inset) {
+    return shown ? (1u << 16) | std::min(value, 999u) | (std::min(inset, fps_inset_max) << 20) : 0u;
 }
 }

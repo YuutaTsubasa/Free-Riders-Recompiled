@@ -132,9 +132,11 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
             settings.race_frameskip = value;
         else if (key == "title_stats") read_flag(value, settings.title_stats);
         else if (key == "fps_overlay") read_flag(value, settings.fps_overlay);
+        else if (key == "fps_inset") read_number(value, 0, 20, settings.fps_inset);
         else if (key == "ui_sounds") read_flag(value, settings.ui_sounds);
         else if (key == "vulkan") read_flag(value, settings.vulkan);
         else if (key == "touch_controls") read_flag(value, settings.touch_controls);
+        else if (key == "touch_labels") read_flag(value, settings.touch_labels);
         else if (key == "tilt") read_flag(value, settings.tilt);
         else if (key == "camera" && (value == "off" || value == "picture" || value == "motion" || value == "kinect")) settings.camera = value;
         else if (key == "camera_device" && value.size() <= 128) settings.camera_device = value;
@@ -216,9 +218,11 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "race_frameskip=" << race_frameskip_value(s) << '\n'
         << "title_stats=" << s.title_stats << '\n'
         << "fps_overlay=" << s.fps_overlay << '\n'
+        << "fps_inset=" << s.fps_inset << '\n'
         << "ui_sounds=" << s.ui_sounds << '\n'
         << "vulkan=" << s.vulkan << '\n'
         << "touch_controls=" << s.touch_controls << '\n'
+        << "touch_labels=" << s.touch_labels << '\n'
         << "tilt=" << s.tilt << '\n'
         << "camera=" << s.camera << '\n'
         << "camera_device=" << s.camera_device << '\n'
@@ -336,6 +340,7 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         {"SFR_GPU_PIPELINE", s.gpu_pipeline ? "1" : "0"},
         {"SFR_TITLE_STATS", s.title_stats ? "1" : "0"},
         {"SFR_FPS_OVERLAY", s.fps_overlay ? "1" : "0"},
+        {"SFR_FPS_OVERLAY_INSET", std::to_string(s.fps_inset)},
         {"SFR_AUDIO", s.audio ? "1" : "0"},
         // The player is signed in, so the game keeps records (docs/saves.md).
         {"SFR_PROFILE", "1"},
@@ -403,6 +408,7 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         {"SFR_LIVE_PASSWORD", s.online ? s.online_password : ""},
 #if defined(__ANDROID__) || defined(SFR_IOS)
         {"SFR_TOUCH_CONTROLS", s.touch_controls ? "1" : "0"},
+        {"SFR_TOUCH_LABELS", s.touch_labels ? "1" : "0"},
         {"SFR_TILT", s.tilt ? "1" : "0"},
 #endif
     };

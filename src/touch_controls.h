@@ -151,4 +151,10 @@ void note_controller(bool present);
 void note_controller_input();
 void note_touch();
 bool touch_controls_active();
+
+// Whether the buttons carry their names and LB/RB their arrows
+// (touch_labels.h; SFR_TOUCH_LABELS=0 hides them, Issue #236). Hidden, the
+// readout's word (fps_readout.h) has this bit set.
+constexpr uint32_t touch_names_hidden_bit = 1u << 17;
+bool touch_names_shown();
 }

@@ -52,9 +52,18 @@ struct LauncherSettings {
     std::string race_frameskip = "auto";
     bool title_stats = true;         // SFR_TITLE_STATS: frame rate and more in the game window's title
     bool fps_overlay = false;        // SFR_FPS_OVERLAY: a frame-rate counter drawn in the game (fps_readout.h)
+    // SFR_FPS_OVERLAY_INSET: how far in from the corner the counter sits, in
+    // percent of the picture's height; a phone's rounded corners cut it off
+    // in the corner itself (Issue #236).
+#if defined(__ANDROID__) || defined(SFR_IOS)
+    uint32_t fps_inset = 3;
+#else
+    uint32_t fps_inset = 0;
+#endif
     bool ui_sounds = true;           // the launcher's own sounds
     bool vulkan = true;             // legacy settings key; selects Vulkan or D3D12
     bool touch_controls = true;      // SFR_TOUCH_CONTROLS (Android, iOS)
+    bool touch_labels = true;        // SFR_TOUCH_LABELS: the buttons' names on them (Issue #236)
     bool tilt = true;                // SFR_TILT: tilt to steer (Android, iOS)
     // Where the Kinect player's body comes from, and whether the camera
     // picture the title shows is a real one. "pad" is the emulated player the

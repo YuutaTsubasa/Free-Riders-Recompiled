@@ -2105,7 +2105,8 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
                                float(shown.bottom) / float(impl_->render_height)};
         std::memcpy(constants.data(), area, sizeof area);
         TouchOverlay overlay = touch_shown ? touch_overlay() : TouchOverlay{};
-        overlay.readout = fps_readout_word(fps_shown, impl_->fps.value());
+        overlay.readout = fps_readout_word(fps_shown, impl_->fps.value(), fps_overlay_inset()) |
+                          (touch_names_shown() ? 0u : touch_names_hidden_bit);
         // START's circle becomes the gauge: state 3 plus how far.
         if (pause > 0.0f) overlay.circle[TouchControls::start] = {0.075f, 0.86f, 0.05f, 3.0f + (std::min)(pause, 1.0f)};
         const auto touch_words = pack_touch_overlay(overlay);

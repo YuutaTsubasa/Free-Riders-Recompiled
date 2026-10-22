@@ -292,6 +292,14 @@ bool touch_controls_active() {
                                         touched_last.load(std::memory_order_relaxed));
 }
 
+bool touch_names_shown() {
+    static const bool shown = [] {
+        const char* text = std::getenv("SFR_TOUCH_LABELS");
+        return !text || *text != '0';
+    }();
+    return shown;
+}
+
 bool touch_controls_enabled() {
     static const bool enabled = [] {
         const char* text = std::getenv("SFR_TOUCH_CONTROLS");
