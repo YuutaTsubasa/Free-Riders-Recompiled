@@ -15,6 +15,9 @@
 #else
 #include <SDL.h>
 #endif
+#ifdef SFR_IOS
+#include "ios_audio_session.h"
+#endif
 
 namespace sfr {
 namespace {
@@ -135,14 +138,29 @@ public:
     }
     bool open() {
         initialized_ = SDL_InitSubSystem(SDL_INIT_AUDIO) == 0;
-        if (!initialized_) return false;
+        if (!initialized_) {
+            std::cerr << "NATIVE_AUDIO_DEVICE unavailable step=init error=" << SDL_GetError() << '\n';
+            return false;
+        }
         SDL_AudioSpec wanted{};
         wanted.freq = int(audio_sample_rate);
         wanted.format = AUDIO_F32SYS;
         wanted.channels = 2;
         wanted.samples = audio_frame_samples * 2;
         device_ = SDL_OpenAudioDevice(nullptr, 0, &wanted, nullptr, 0);  // SDL converts if it must
-        if (!device_) return false;
+        const char* driver = SDL_GetCurrentAudioDriver();
+        if (!device_) {
+            std::cerr << "NATIVE_AUDIO_DEVICE unavailable step=open driver=" << (driver ? driver : "none")
+                      << " error=" << SDL_GetError() << '\n';
+            return false;
+        }
+        // Which driver plays, and on iOS the session SDL set up for it: its
+        // category decides whether silent mode mutes the game (Issue #249).
+        std::cerr << "NATIVE_AUDIO_DEVICE driver=" << (driver ? driver : "none")
+#ifdef SFR_IOS
+                  << ' ' << ios_audio_session_summary()
+#endif
+                  << '\n';
         // SFR_VOLUME: percent (the launcher's volume slider).
         if (const char* volume = std::getenv("SFR_VOLUME")) volume_ = float(std::clamp(std::atoi(volume), 0, 100)) / 100.0f;
         return true;  // unpaused by the cushion, once it is full

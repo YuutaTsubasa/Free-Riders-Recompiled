@@ -11,6 +11,9 @@
 #elif defined(SFR_UI_SOUND_SDL)
 #include <SDL.h>
 #endif
+#ifdef SFR_IOS
+#include "ios_audio_session.h"
+#endif
 
 namespace sfr {
 namespace {
@@ -122,6 +125,10 @@ void UiSounds::play(UiSound sound) const {
         wanted.samples = 1024;
         const SDL_AudioDeviceID opened = SDL_OpenAudioDevice(nullptr, 0, &wanted, nullptr, 0);
         if (opened) SDL_PauseAudioDevice(opened, 0);
+#ifdef SFR_IOS
+        if (opened) SDL_Log("launcher sound: %s", ios_audio_session_summary().c_str());
+        else SDL_Log("launcher sound: no device: %s", SDL_GetError());
+#endif
         return opened;
     }();
     if (!enabled || !device) return;
