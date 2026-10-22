@@ -230,6 +230,8 @@ with [docs/progress.md](docs/progress.md).
   A Kinect v2 now gives the game a depth image like a Kinect (Xbox 360), with three depth views and a preview window, by knuckleslee (#231); the menus' ring and cursor line up on ultrawide screens (#230).
 - [v0.10.23 — Sound on iPhone and iPad](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.23)
   The game plays sound on iOS again: the launcher no longer keeps the only sound output to itself (#249).
+- [v0.10.24 — Tilt to lean](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.24)
+  On phones, a new Tilt to lean switch leans the board forward and back as you tip the phone, next to Tilt to steer (#247).
 
 ## System Requirements
 
