@@ -111,7 +111,9 @@ private:
 float tilt_pitch_degrees(float x, float y, float z, float side);
 
 // "Tilt to lean" (Issue #247): forward / back lean from the phone's pitch,
-// the left stick's Y on a pad (forward speeds up, back brakes). Tipping the
+// the left stick's Y on a pad. In a race that axis only feeds the trick and
+// gesture detectors (record +40, nui_race.cpp); it neither speeds up nor
+// brakes (X kicks, B brakes), so this mostly matters for spins. Tipping the
 // top edge away from the player (the screen turning up to the sky) leans
 // forward, as pushing a board's nose down does; towards the player leans
 // back. People hold phones at any angle, so there is no fixed zero: the pitch
