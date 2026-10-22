@@ -224,6 +224,8 @@ with [docs/progress.md](docs/progress.md).
   Races on Intel integrated GPUs (Vulkan) run several times faster: the shaders' dispatch loops that made them crawl at a few frames a second are rewritten, as on Macs (#239, #134).
 - [v0.10.20 — Occasional crash at start](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.20)
   Fixes a crash that sometimes happened right after starting the game (seen on Macs, about one start in forty): the game's file reader could miss its first read.
+- [v0.10.21 — Touch button names switch](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.21)
+  The touch buttons' names can be turned off, and the FPS counter can be moved in from the corner so rounded phone screens don't cut it off (#236).
 
 ## System Requirements
 
