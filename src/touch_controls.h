@@ -33,9 +33,8 @@ namespace sfr {
 //   LT      bottom, right of the stick (grey)  hold hands (Tag Race)
 //
 // In a race, tilting the device like a steering wheel also steers (left
-// stick X), and with "Tilt to lean" tipping its top edge away from the
-// player leans forward, towards the player back (left stick Y; TiltLean
-// below), unless the stick is held.
+// stick X), and with "Tilt to kick" a quick tip of its top edge away from
+// the player is a kick dash (X; TiltKick below), stick held or not.
 //
 // Outside races the screen itself is the Kinect hand cursor (Issue #217): a
 // finger that lands away from the controls is the pointer, and the hand
@@ -77,12 +76,12 @@ public:
     // Circle order is the blit's (blit.hlsl's colours): buttons a..lt.
     enum Button : size_t { stick = 0, a, b, x, y, trigger, start, lb, rb, lt, right_stick };
     // One frame of touches; tilt is the steering angle in -1..1 (0 when the
-    // device is level or there is no sensor), lean the forward (+) / back (-)
-    // lean in -1..1 (TiltLean); racing selects the stick's role.
+    // device is level or there is no sensor), kick a tilt kick dash (X, in a
+    // race only; TiltKick); racing selects the stick's role.
     void update(std::span<const TouchPoint> touches, float tilt = 0.0f, bool racing = false) {
         update(touches, tilt, racing ? TouchScene::race : TouchScene::menu);
     }
-    void update(std::span<const TouchPoint> touches, float tilt, TouchScene scene, float lean = 0.0f);
+    void update(std::span<const TouchPoint> touches, float tilt, TouchScene scene, bool kick = false);
     GamepadState state() const { return state_; }
     // The pointer finger in the menus, in game-image coordinates clamped to
     // 0..1; none when no finger is the pointer.
@@ -110,13 +109,11 @@ private:
 // it like a wheel (the steering) leaves the pitch alone.
 float tilt_pitch_degrees(float x, float y, float z, float side);
 
-// "Tilt to lean" (Issue #247): forward / back lean from the phone's pitch,
-// the left stick's Y on a pad. In a race that axis only feeds the trick and
-// gesture detectors (record +40, nui_race.cpp); it neither speeds up nor
-// brakes (X kicks, B brakes), so this mostly matters for spins. Tipping the
-// top edge away from the player (the screen turning up to the sky) leans
-// forward, as pushing a board's nose down does; towards the player leans
-// back. People hold phones at any angle, so there is no fixed zero: the pitch
+// The phone's forward / back lean from its pitch, for "Tilt to kick" (Issue
+// #247, TiltKick below; first shipped as "Tilt to lean" on the left stick's
+// Y, which a race only uses for tricks, record +40 in nui_race.cpp). Tipping
+// the top edge away from the player (the screen turning up to the sky) is
+// forward, towards the player back. People hold phones at any angle, so there is no fixed zero: the pitch
 // when a race starts (when a reading is first valid in a race) is neutral,
 // and it follows the phone slowly: within the dead zone in about a second (a
 // grip shifting), beyond it in about half a minute (so a lean held for a
@@ -144,6 +141,23 @@ private:
     bool calibrated_ = false;
     float neutral_ = 0.0f;
     float quiet_ = 0.0f;  // seconds the lean stays 0 after A
+};
+
+// "Tilt to kick" (Issue #247, the reporter's choice): tipping the phone
+// forward past trigger of a full lean (TiltLean: about 17 degrees from
+// neutral) presses X, the kick dash, for press seconds; the next kick waits
+// until the phone is back within rearm (about 10 degrees), so holding it
+// tipped kicks once. Tipping back does nothing.
+class TiltKick {
+public:
+    static constexpr float trigger = 0.6f, rearm = 0.25f, press = 0.15f;
+    // lean from TiltLean::update, seconds since the last call; true while X
+    // is to be held.
+    bool update(float lean, float seconds);
+
+private:
+    bool armed_ = true;
+    float held_ = 0.0f;  // seconds of the press left
 };
 
 // Where the Kinect hand cursor should go (Issue #217): the pointer finger,

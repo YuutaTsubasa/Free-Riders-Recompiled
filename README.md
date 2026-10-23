@@ -369,11 +369,10 @@ beside itself. Linux and Android builds, and what each step does, are in
 Xbox and PlayStation controllers both work. On Android, translucent touch
 buttons cover the same actions when no controller is connected (punches on
 the screen's left and right edges, a small right stick for reaching), and
-tilting the phone steers in a race. With **Tilt to lean** (launcher Controls,
-off by default) tipping the phone forward and back also moves the left stick
-up and down, from however you held it when the race started. In a race the
-stick's up/down only feeds trick spins: it doesn't speed up or brake (that is
-X and B). Outside races a finger moves the Kinect
+tilting the phone steers in a race. With **Tilt to kick** (launcher Controls,
+off by default) a quick tip of the phone's top edge away from you is a kick
+dash (X), measured from however you held it when the race started; tip it back
+before the next kick. Outside races a finger moves the Kinect
 hand cursor: touch anywhere away from the buttons and the cursor goes there
 (rest on an item to choose it, as with a hand); on the title screen a touch is
 START. On a PC the mouse moves the hand cursor the same way. Details: [docs/race-controls.md](docs/race-controls.md),
