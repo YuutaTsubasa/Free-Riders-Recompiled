@@ -234,6 +234,8 @@ with [docs/progress.md](docs/progress.md).
   On phones, a new Tilt to lean switch, next to Tilt to steer (#247). In 0.10.25 it became Tilt to kick.
 - [v0.10.25 — Tilt to kick, faster races on slow phones](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.25)
   A quick forward tip of the phone is a kick dash (#247). In a race the main thread now runs queued jobs itself instead of waiting for slower cores, and frames that aren't drawn skip the course's object drawing (#176).
+- [v0.10.26 — Leaner game code](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.26)
+  The translated game code drops 143,000 checks that only loops need, so on Android the main thread does about 14% less work in a race frame and the game is 9 MB smaller (#176).
 
 ## System Requirements
 
