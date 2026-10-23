@@ -287,18 +287,30 @@ void tilt_lean() {
     lean.update(30.0f, true, true, false, frame);
     require(lean.neutral() == 30.0f, "the next race takes its own neutral");
 
-    // The touch controls: the lean is the left stick's Y in a race only, and
-    // the on-screen stick takes both axes over.
+    // Tilt to kick: a forward tip presses X once, for a moment.
+    sfr::TiltKick kick;
+    require(!kick.update(0.5f, frame), "below the trigger no kick");
+    require(kick.update(0.7f, frame), "past the trigger: X");
+    int held_frames = 1;
+    while (kick.update(0.9f, frame)) ++held_frames;
+    require(held_frames >= 8 && held_frames <= 10, "X is held for about 0.15 s");
+    for (int i = 0; i < 60; ++i) require(!kick.update(1.0f, frame), "held tipped: only one kick");
+    require(!kick.update(0.2f, frame), "back near neutral re-arms");
+    require(kick.update(0.65f, frame), "and the next tip kicks again");
+    sfr::TiltKick back;
+    for (int i = 0; i < 30; ++i) require(!back.update(-1.0f, frame), "tipping back does nothing");
+
+    // The touch controls: the kick is X in a race only, with or without the
+    // on-screen stick, and the tilt leaves the stick's Y alone.
     TouchControls controls;
-    controls.update({}, 0.0f, sfr::TouchScene::race, 0.5f);
-    require(controls.state().thumb_ly > 16000 && controls.state().thumb_ly < 16500 && controls.state().thumb_lx == 0,
-            "tilt lean is the left stick's Y in a race");
-    controls.update({}, -0.5f, sfr::TouchScene::race, -1.0f);
-    require(controls.state().thumb_ly == -32767 && controls.state().thumb_lx < -16000, "steering and leaning together");
-    controls.update({}, 0.0f, sfr::TouchScene::menu, 1.0f);
-    require(controls.state().thumb_ly == 0, "tilt lean does nothing in the menus");
-    controls.update(std::vector<TouchPoint>{{8, 0.2f, 0.7f}}, -0.5f, sfr::TouchScene::race, 1.0f);
-    require(controls.state().thumb_ly == 0 && controls.state().thumb_lx == 0, "the stick overrides the tilt lean");
+    controls.update({}, -0.5f, sfr::TouchScene::race, true);
+    require((controls.state().buttons & sfr::gamepad_button::x) && controls.state().thumb_ly == 0 &&
+                controls.state().thumb_lx < -16000,
+            "a tilt kick is X in a race, beside steering");
+    controls.update({}, 0.0f, sfr::TouchScene::menu, true);
+    require(!(controls.state().buttons & sfr::gamepad_button::x), "no tilt kick in the menus");
+    controls.update(std::vector<TouchPoint>{{8, 0.2f, 0.7f}}, 0.0f, sfr::TouchScene::race, true);
+    require(controls.state().buttons & sfr::gamepad_button::x, "the kick works with the stick held");
 }
 
 int main() {

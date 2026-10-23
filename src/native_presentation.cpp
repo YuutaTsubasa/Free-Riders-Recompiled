@@ -493,6 +493,7 @@ struct NativePresentation::Impl {
     bool tilt_steer = false;    // SFR_TILT (default on): the roll steers
     bool tilt_lean_on = false;  // SFR_TILT_LEAN=1: the pitch leans (Issue #247)
     TiltLean tilt_lean;
+    TiltKick tilt_kick;
     uint32_t tilt_lean_ms = 0;
     // Fingers that went down since the last read (window fractions), kept as
     // touches for a few reads when they are already up again: a quick tap
@@ -2417,7 +2418,7 @@ void NativePresentation::Impl::read_touch_controls() {
             }
         }
     }
-    float lean = 0.0f;
+    bool kick = false;
     if (tilt_lean_on) {
         const uint32_t now = SDL_GetTicks();
         const float seconds = tilt_lean_ms ? float(now - tilt_lean_ms) / 1000.0f : 0.0f;
@@ -2425,12 +2426,13 @@ void NativePresentation::Impl::read_touch_controls() {
         const bool was_calibrated = tilt_lean.calibrated();
         // A held on the screen at the last read: crouching for a jump (TiltLean).
         const bool jumping = (touch_controls.state().buttons & gamepad_button::a) != 0;
-        lean = tilt_lean.update(pitch, pitch_valid, touch_scene() == TouchScene::race, jumping, seconds);
+        const float lean = tilt_lean.update(pitch, pitch_valid, touch_scene() == TouchScene::race, jumping, seconds);
+        kick = tilt_kick.update(lean, seconds);
         if (tilt_lean.calibrated() && !was_calibrated)
             std::fprintf(stderr, "TILT lean neutral=%.1f deg\n", tilt_lean.neutral());
     }
     if (!touches.empty()) note_touch();
-    touch_controls.update(touches, tilt, touch_scene(), lean);
+    touch_controls.update(touches, tilt, touch_scene(), kick);
     publish_touch_controls(touch_controls.state(), touch_controls.overlay());
     // The pointer finger moves the Kinect hand cursor (Issue #217).
     static bool pointing = false;

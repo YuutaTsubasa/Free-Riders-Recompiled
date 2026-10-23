@@ -60,7 +60,7 @@ std::array<float, 2> stick_offset(const TouchPoint& finger, std::array<float, 2>
 }
 }
 
-void TouchControls::update(std::span<const TouchPoint> touches, float tilt, TouchScene scene, float lean) {
+void TouchControls::update(std::span<const TouchPoint> touches, float tilt, TouchScene scene, bool kick) {
     namespace button = gamepad_button;
     const bool racing = scene == TouchScene::race;
     state_ = {};
@@ -127,8 +127,8 @@ void TouchControls::update(std::span<const TouchPoint> touches, float tilt, Touc
         pressed_[stick] = true;
     } else if (racing) {
         state_.thumb_lx = axis(tilt);
-        state_.thumb_ly = axis(lean);
     }
+    if (racing && kick) pressed_[x] = true;  // a tilt kick dash, drawn as X held
     right_knob_ = {right_x, right_y};
     if (right_finger_ >= 0) {
         // The right stick is analog everywhere: the race's reach and arms up,
@@ -193,6 +193,17 @@ float TiltLean::update(float pitch, bool valid, bool racing, bool jumping, float
     if (jumping || quiet_ > 0.0f) return 0.0f;
     const float beyond = std::max(std::abs(offset) - dead_zone, 0.0f) / (full - dead_zone);
     return std::copysign(std::min(beyond, 1.0f), offset);
+}
+
+bool TiltKick::update(float lean, float seconds) {
+    held_ = std::max(held_ - std::max(seconds, 0.0f), 0.0f);
+    if (armed_ && lean >= trigger) {
+        armed_ = false;
+        held_ = press;
+    } else if (!armed_ && lean <= rearm) {
+        armed_ = true;
+    }
+    return held_ > 0.0f;
 }
 
 uint16_t float_to_half(float value) {
