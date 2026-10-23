@@ -238,6 +238,8 @@ with [docs/progress.md](docs/progress.md).
   The translated game code drops 143,000 checks that only loops need, so on Android the main thread does about 14% less work in a race frame and the game is 9 MB smaller (#176).
 - [v0.10.27 — Shorter collision wait](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.27)
   While a race frame waits for the game's collision batch, the main thread now runs that batch's queued jobs itself, so slow or throttled helper cores hold the race up about half as long (#176).
+- [v0.10.28 — Achievements](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.28)
+  Achievements the game awards are kept with the player's saves, and a new Achievements page in the launcher lists all 50 with their icons, descriptions and gamerscore (#263).
 
 ## System Requirements
 
