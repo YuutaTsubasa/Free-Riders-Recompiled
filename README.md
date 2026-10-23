@@ -288,6 +288,7 @@ The launcher groups settings by what you want to change:
 | Motion input | Kinect/webcam mode, device and preview, mirror, skeleton debug, voice commands |
 | Avatar models | Add custom VRM/GLB models and choose the one to use |
 | Mods | Switch file-replacement mods on and off and set their order ([Mods](docs/mods.md)) |
+| Achievements | The game's 50 achievements: which are unlocked and when, with icons and gamerscore |
 | Game files | Installation, data locations and shader pack |
 
 **Graphics** starts with **Display Mode**: **Borderless** (default) fills the
@@ -299,6 +300,14 @@ are a **resolution scale** of the output size (the display's in Borderless mode)
 from 0.25x to 3.0x in steps of 0.25x: 1.0x renders at exactly the window or
 desktop resolution, lower values reduce GPU load, higher values supersample.
 Changes to game settings apply on the next game launch.
+
+**Achievements** lists every achievement with its icon, name, description and
+gamerscore, and the date each was unlocked, plus the totals (for example
+2 of 50, 25 / 1000 G). The game awards them as on a console, with no Xbox
+network: each one is kept with the player's saves (`achievements.txt` beside
+the player's save folder, see [Saves](docs/saves.md)), so it survives updates.
+Names, texts and icons come from the installed game's own title data, in the
+game language when the disc has it (English otherwise).
 
 The window size defaults to the desktop size until you choose another. The last
 entry of the window size list, **Custom**, shows width and height boxes for any
@@ -520,7 +529,8 @@ lobby and online races. Windows, Linux and Android players can race together.
 Tested on a home network: three devices in one race, the host on a PC or on an
 AYN Thor, and a player leaving mid-race. Playing over the internet needs
 port 47800 forwarded to the host; that has not been tested. Leaderboards,
-Xbox LIVE Party, voice chat and achievements are not supported.
+Xbox LIVE Party and voice chat are not supported; achievements are kept
+locally (see [Settings](#settings)).
 
 **Playing with friends far away:** instead of forwarding ports, run the server
 in the cloud (a VPS or a free cloud VM). Each release publishes it as a Docker

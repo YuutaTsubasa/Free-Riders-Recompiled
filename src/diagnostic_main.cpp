@@ -35,6 +35,7 @@
 #include "unselected_users.h"
 #include "local_profile.h"
 #include "content_files.h"
+#include "achievements.h"
 #include "multibyte_unicode.h"
 #include "render_state_entries.h"
 #include "image_protection.h"
@@ -3483,19 +3484,39 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
             }
         // 0x000B0008 is XUserWriteAchievements, sent once a player is signed
         // in (after a race): {count, achievements*} with (user, id) pairs, as
-        // Xenia's xgi_app.cc reads it. There is no Live to award them to; the
-        // ids are logged where readable, and the request always completes.
+        // Xenia's xgi_app.cc reads it. There is no Live to award them to: the
+        // signed-in profile's are kept beside its saves (achievements.h,
+        // written on a thread of its own), and the request always completes.
+        // The title never reads them back (it imports no achievement
+        // enumerator); the launcher's Achievements page shows them.
         if (app == 0xFB && message == 0x000B0008) {
             const uint32_t buffer = ctx.r6.u32;
             std::cerr << "RESULT XUserWriteAchievements";
+            std::vector<uint32_t> awarded;
             if (active_memory->readable(buffer, 8)) {
                 const uint32_t count = active_memory->load<uint32_t>(buffer);
                 const uint32_t list = active_memory->load<uint32_t>(uint64_t(buffer) + 4);
                 std::cerr << " count=" << count;
-                for (uint32_t i = 0; i < count && i < 16 && active_memory->readable(uint64_t(list) + 8 * i, 8); ++i)
-                    std::cerr << " id=" << active_memory->load<uint32_t>(uint64_t(list) + 8 * i + 4);
+                for (uint32_t i = 0; i < count && i < 64 && active_memory->readable(uint64_t(list) + 8 * i, 8); ++i) {
+                    const uint32_t user = active_memory->load<uint32_t>(uint64_t(list) + 8 * i);
+                    const uint32_t id = active_memory->load<uint32_t>(uint64_t(list) + 8 * i + 4);
+                    std::cerr << " id=" << id;
+                    if (user < 4 && profile_for(user)) awarded.push_back(id);
+                }
             }
-            std::cerr << " backend=no-live\n";
+            if (!awarded.empty()) {
+                static sfr::AchievementStore* const store = [] {
+                    const char* saves = std::getenv("SFR_SAVE_DIRECTORY");
+                    const auto& profile = sfr::local_profile();
+                    // Never destroyed: the game may end on any thread.
+                    return new sfr::AchievementStore(
+                        sfr::achievement_file(saves && *saves ? saves : "save", profile.xuid), profile.name);
+                }();
+                store->award(awarded, sfr::unix_now());
+                const auto file = store->file().u8string();
+                std::cerr << " stored=" << awarded.size() << " file=" << std::string(file.begin(), file.end());
+            }
+            std::cerr << " backend=local\n";
             ctx.r3.u64 = overlapped ? complete_overlapped(overlapped, 0) : 0;
             return;
         }
