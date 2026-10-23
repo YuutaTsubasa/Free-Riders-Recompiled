@@ -445,7 +445,7 @@ void test_option_table() {
     // The switches asked of players so far are on the page.
     for (const char* variable : {"SFR_TEST_DISPATCH_LOOP", "SFR_CORE_PLAN", "SFR_STEP_WAITS_COLLISION",
                                  "SFR_TEST_NO_INVERTED_DEPTH", "SFR_MAIN_AFFINITY", "SFR_INDEX_CACHE",
-                                 "SFR_PERF_HINT"})
+                                 "SFR_PERF_HINT", "SFR_MAIN_HELPS_JOBS"})
         require(sfr::find_test_option(variable), "a switch asked of players is a test option");
     // None is set by the launcher's own settings: the page would fight them.
     sfr::LauncherSettings defaults;

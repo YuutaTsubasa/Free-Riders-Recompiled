@@ -562,13 +562,90 @@ PPC_FUNC_IMPL(__imp__sub_824D0150);
 PPC_FUNC_IMPL(__imp__sub_8249F048);
 
 namespace sfr { std::atomic<uint32_t> race_jobs_dispatching{0}; }
+
+// The race step's job pool (8249F048, below): it queues the step's jobs,
+// resumes its three workers 8249EF00 (console processors 0, 1 and 3) and
+// waits until each has found the queue empty and signalled. The main thread
+// itself takes no job, so its frame waits for the slowest worker: a phone
+// that puts the workers on slow cores (Issue #176) stalls the race even with
+// the main thread on its fastest core. With the workers held to an AYN
+// Thor's little cores the main thread waited ~6 ms a race frame there.
+// So the main thread takes queued jobs too, before its waits, with the
+// worker loop's own calls (82750B30 empty test, 82750C40 take, the job's
+// second virtual function), as processor 0 - the processor its own worker
+// 8249EF00 has, so a job sees no processor it could not have seen before.
+// The workers take jobs beside it; once the queue is empty they signal and
+// suspend, and the waits stay as they were. (With SFR_PARALLEL_WORKER=cores
+// the processor-0 worker then runs only after the main thread has given its
+// processor back at the wait, and finds the queue empty.)
+// SFR_MAIN_HELPS_JOBS=0 (a Test option) turns this off. In that little-core
+// case a Dolphin Resort race ran at 0.78-0.85 of real time instead of 0.61; in a
+// normal Thor race the main thread spent ~0.75 ms a race frame in the
+// dispatch instead of ~0.95.
+namespace {
+bool main_helps_jobs() {
+    static const bool on=[]{ const char* t=std::getenv("SFR_MAIN_HELPS_JOBS"); return !t || *t!='0'; }();
+    return on;
+}
+constexpr uint32_t race_job_queue_pointer=0x83E52CD0;
+constexpr uint32_t race_job_worker_take_return=0x8249EF40;  // worker 8249EF00's take
+thread_local bool race_jobs_waiting=false;  // in 8249F048, before its first wait
+// RACE_JOBS (every 600 dispatches): who ran the race step's jobs and how long
+// the main thread spent running them and waiting for the workers.
+struct RaceJobCounters {
+    std::atomic<uint64_t> dispatches{0}, main_jobs{0}, worker_jobs{0}, help_ns{0}, wait_ns{0}, collision_ns{0};
+};
+RaceJobCounters race_job_counters;
+uint64_t steady_ns() {
+    return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+}
+static void help_race_jobs(PPCContext& __restrict ctx, uint8_t* base) {
+    const uint64_t started=steady_ns();
+    const PPCRegister r1=ctx.r1, r3=ctx.r3, r4=ctx.r4;
+    const uint64_t lr=ctx.lr;
+    // A frame of the worker's size below the caller's, with its back chain;
+    // the take writes the job at +80, as in the worker.
+    ctx.r1.u64=r1.u32-128;
+    sfr::active_memory->store<uint32_t>(ctx.r1.u32,r1.u32);
+    const uint32_t slot=ctx.r1.u32+80;
+    uint64_t jobs=0;
+    for(;;) {
+        const uint32_t queue=sfr::active_memory->load<uint32_t>(race_job_queue_pointer);
+        if(!queue) break;
+        ctx.r3.u64=queue;
+        sub_82750B30(ctx,base);
+        if(ctx.r3.u32!=0) break;  // empty
+        sfr::active_memory->store<uint32_t>(slot,0);
+        ctx.r3.u64=queue;
+        ctx.r4.u64=slot;
+        sub_82750C40(ctx,base);
+        if(ctx.r3.s32<0) continue;  // lost a race for the entry: try again
+        const uint32_t job=sfr::active_memory->load<uint32_t>(slot);
+        if(!job) continue;
+        const uint32_t call=sfr::active_memory->load<uint32_t>(
+            uint64_t(sfr::active_memory->load<uint32_t>(job))+4);
+        ctx.r3.u64=job;
+        ctx.ctr.u64=call;
+        PPC_CALL_INDIRECT_FUNC(call);
+        ++jobs;
+    }
+    ctx.r1=r1, ctx.r3=r3, ctx.r4=r4, ctx.lr=lr;
+    race_job_counters.main_jobs.fetch_add(jobs,std::memory_order_relaxed);
+    race_job_counters.help_ns.fetch_add(steady_ns()-started,std::memory_order_relaxed);
+}
+
 // While 8249F048 runs, its jobs are expected to run (SFR_WATCH_RACERS counts
 // the racer readers that run outside it).
 SFR_CONCURRENT_HOOK(sub_8249F048) {
     sfr::enter_function(ctx,"sub_8249F048",0x8249F048);
+    const uint64_t collision_started=steady_ns();
     wait_for_collision_batch();
+    race_job_counters.collision_ns.fetch_add(steady_ns()-collision_started,std::memory_order_relaxed);
     sfr::race_jobs_dispatching.fetch_add(1,std::memory_order_relaxed);
-    struct Done { ~Done() { sfr::race_jobs_dispatching.fetch_sub(1,std::memory_order_relaxed); } } done;
+    struct Done { ~Done() { sfr::race_jobs_dispatching.fetch_sub(1,std::memory_order_relaxed); race_jobs_waiting=false; } } done;
+    race_jobs_waiting=sfr::current_guest_thread_id()==1;
     __imp__sub_8249F048(ctx,base);
 }
 
@@ -595,7 +672,28 @@ SFR_CONCURRENT_HOOK(sub_824D0150) {
         if(!reported.exchange(true)) std::cerr << "GAME_PATCH race_job_wait ms=" << wait_ms << '\n';
         ctx.r4.u64=wait_ms;
     }
+    // The first of the main thread's three waits in this dispatch.
+    const bool first_main_wait=race_jobs && race_jobs_waiting;
+    if(first_main_wait) {
+        race_jobs_waiting=false;
+        if(main_helps_jobs()) help_race_jobs(ctx,base);
+        const uint64_t dispatches=race_job_counters.dispatches.fetch_add(1,std::memory_order_relaxed)+1;
+        if(dispatches%600==0) {
+            const double n=600.0;
+            std::cerr << "RACE_JOBS dispatches=" << dispatches << " main_helps=" << main_helps_jobs()
+                      << " jobs_main=" << race_job_counters.main_jobs.exchange(0,std::memory_order_relaxed)/n
+                      << " jobs_workers=" << race_job_counters.worker_jobs.exchange(0,std::memory_order_relaxed)/n
+                      << " help_ms=" << race_job_counters.help_ns.exchange(0,std::memory_order_relaxed)/n/1e6
+                      << " wait_ms=" << race_job_counters.wait_ns.exchange(0,std::memory_order_relaxed)/n/1e6
+                      << " collision_wait_ms=" << race_job_counters.collision_ns.exchange(0,std::memory_order_relaxed)/n/1e6
+                      << '\n';
+        }
+    }
+    const bool collision=ctx.lr==0x823B6DD8;
+    const uint64_t wait_started=(race_jobs || collision) && sfr::current_guest_thread_id()==1 ? steady_ns() : 0;
     __imp__sub_824D0150(ctx,base);
+    if(wait_started) (race_jobs ? race_job_counters.wait_ns : race_job_counters.collision_ns)
+        .fetch_add(steady_ns()-wait_started,std::memory_order_relaxed);
     if(race_jobs && ctx.r3.u32==0x102) {
         static std::atomic<uint32_t> timeouts{0};
         const uint32_t count=++timeouts;
@@ -668,6 +766,8 @@ SFR_CONCURRENT_HOOK(sub_82750C40) {
     static const bool trace=[]{ const char* t=std::getenv("SFR_JOB_TRACE"); return t && *t=='1'; }();
     const uint32_t slot=ctx.r4.u32, caller=uint32_t(ctx.lr);
     __imp__sub_82750C40(ctx,base);
+    if(caller==race_job_worker_take_return && ctx.r3.s32>=0 && slot && sfr::active_memory->load<uint32_t>(slot))
+        race_job_counters.worker_jobs.fetch_add(1,std::memory_order_relaxed);
     if(!sfr::active_memory || !slot || (caller!=0x823B5E58 && caller!=0x823B6114)) return;
     uint32_t job=0;
     try { job=sfr::active_memory->load<uint32_t>(slot); } catch(...) { return; }
