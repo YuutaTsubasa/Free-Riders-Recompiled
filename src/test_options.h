@@ -150,6 +150,12 @@ inline constexpr TestOption table[] = {
       "測試用（Android 13 以上）：每一格告訴 Android 遊戲花了多少時間（目標為六十分之一秒），讓手機更快提高時脈。"
       "適用於比賽中快核心一直停在低時脈的手機。"},
      on, "#176"},
+    {"SFR_MAIN_HELPS_JOBS", TestGroup::processor, test_platform::all,
+     {"Main thread runs race jobs", "主執行緒執行比賽工作"},
+     {"For testing: the game's main thread runs queued race jobs itself instead of only waiting for its helper "
+      "threads (the default). Off waits, as 0.10.24 did, which is slower where the helpers run on slow cores.",
+      "測試用：遊戲的主執行緒自己執行排入佇列的比賽工作，而不是只等輔助執行緒（預設如此）。關閉時改回 0.10.24 的等待方式；輔助執行緒在慢核心上時會比較慢。"},
+     on_off, "#176"},
     {"SFR_MAIN_AFFINITY", TestGroup::processor, test_platform::windows,
      {"Pin the main thread", "固定主執行緒"},
      {"For testing: keeps the game's main thread on one processor (the default with six or more). Off may help "
