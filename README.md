@@ -236,6 +236,8 @@ with [docs/progress.md](docs/progress.md).
   A quick forward tip of the phone is a kick dash (#247). In a race the main thread now runs queued jobs itself instead of waiting for slower cores, and frames that aren't drawn skip the course's object drawing (#176).
 - [v0.10.26 — Leaner game code](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.26)
   The translated game code drops 143,000 checks that only loops need, so on Android the main thread does about 14% less work in a race frame and the game is 9 MB smaller (#176).
+- [v0.10.27 — Shorter collision wait](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.27)
+  While a race frame waits for the game's collision batch, the main thread now runs that batch's queued jobs itself, so slow or throttled helper cores hold the race up about half as long (#176).
 
 ## System Requirements
 
