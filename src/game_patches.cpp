@@ -340,8 +340,39 @@ struct CollisionBatchGate {
     std::mutex mutex;
     std::condition_variable changed;
     State state=State::idle;
+    // The batch's job queue from its first empty test until its own drain
+    // ends (then 0): while it is set, the waiting main thread may take jobs.
+    uint32_t queue=0;
 };
 CollisionBatchGate collision_gate;
+// COLLISION lines (with RACE_JOBS): how long batches took and their pair pass,
+// and the jobs the main thread ran while it waited.
+struct CollisionCounters {
+    std::atomic<uint64_t> batches{0}, batch_ns{0}, drain_ns{0}, pairs_ns{0}, main_jobs{0}, help_ns{0}, waits{0};
+};
+CollisionCounters collision_counters;
+// On the batch's thread: when it started, ended its own drain, and came back
+// from waiting for its helpers (before resetting jobs and pairing bodies).
+thread_local uint64_t batch_started_ns=0, batch_drained_ns=0, batch_waited_ns=0;
+uint64_t collision_steady_ns() {
+    return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+bool main_helps_collision() {
+    static const bool on=[]{ const char* t=std::getenv("SFR_MAIN_HELPS_COLLISION"); return !t || *t!='0'; }();
+    return on;
+}
+void collision_queue_open(uint32_t queue) {
+    { std::lock_guard lock(collision_gate.mutex); collision_gate.queue=queue; }
+    collision_gate.changed.notify_all();
+}
+// The batch's own drain found the queue empty: it now waits for its helpers,
+// resets the jobs and pairs up the bodies, none of which the main thread can share.
+void collision_queue_drained() {
+    batch_drained_ns=collision_steady_ns();
+    { std::lock_guard lock(collision_gate.mutex); collision_gate.queue=0; }
+    collision_gate.changed.notify_all();
+}
 // Whether this 823B6D40 call got to its wait (the WaitForSingleObject that
 // returns to 823B6DD8): frames that skip it, before the race or paused,
 // start no batch.
@@ -356,32 +387,117 @@ void collision_batch_running() {
     collision_gate.changed.notify_all();
 }
 void collision_batch_finished() {
-    { std::lock_guard lock(collision_gate.mutex); collision_gate.state=CollisionBatchGate::State::idle; }
+    { std::lock_guard lock(collision_gate.mutex); collision_gate.state=CollisionBatchGate::State::idle; collision_gate.queue=0; }
     collision_gate.changed.notify_all();
 }
+
+// While the main thread waits for the batch, it takes the batch's queued jobs
+// itself, as the helpers 823B60C0 do: the queue's empty test 82750B30 and take
+// 82750C40, then the job's function at +168 with job+64 and the word at +520,
+// called from the helper's return address so the half-built job rescue
+// (82A53BC0) covers it. Like a helper it holds a helper lease from before its
+// empty test until its job returns, so the batch resets no job it is running.
+// It stops when the queue is empty.
+void help_collision_batch(PPCContext& __restrict ctx, uint8_t* base, uint32_t queue) {
+    sfr::JobLifetime::Lease lease(job_lifetime,sfr::JobLifetime::Kind::helper);
+    if(!lease.try_acquire()) return;  // a deletion holds it: only wait
+    const uint64_t started=collision_steady_ns();
+    const PPCRegister r1=ctx.r1, r3=ctx.r3, r4=ctx.r4, r5=ctx.r5;
+    const uint64_t lr=ctx.lr, ctr=ctx.ctr.u64;
+    // A frame of the helper's size below the caller's, with its back chain;
+    // the take writes the job at +80, as in the helper.
+    ctx.r1.u64=r1.u32-128;
+    sfr::active_memory->store<uint32_t>(ctx.r1.u32,r1.u32);
+    const uint32_t slot=ctx.r1.u32+80;
+    uint64_t jobs=0;
+    for(;;) {
+        ctx.r3.u64=queue;
+        sub_82750B30(ctx,base);
+        if(ctx.r3.u32!=0) break;  // empty
+        sfr::active_memory->store<uint32_t>(slot,0);
+        ctx.r3.u64=queue;
+        ctx.r4.u64=slot;
+        sub_82750C40(ctx,base);
+        if(ctx.r3.s32<0) continue;  // lost a race for the entry: try again
+        const uint32_t job=sfr::active_memory->load<uint32_t>(slot);
+        if(!job) continue;
+        const uint32_t call=sfr::active_memory->load<uint32_t>(uint64_t(job)+168);
+        if(!call) continue;
+        ctx.r3.u64=job;
+        ctx.r4.u64=job+64;
+        ctx.r5.u64=sfr::active_memory->load<uint32_t>(uint64_t(job)+520);
+        ctx.ctr.u64=call;
+        ctx.lr=0x823B6144;  // the helper's call
+        static const bool trace=[]{ const char* t=std::getenv("SFR_JOB_TRACE"); return t && *t=='1'; }();
+        if(trace) {
+            static std::mutex seen_lock;
+            static std::vector<uint32_t> seen;
+            std::lock_guard lock(seen_lock);
+            if(seen.size()<32 && std::find(seen.begin(),seen.end(),call)==seen.end()) {
+                seen.push_back(call);
+                std::cerr << "COLLISION_JOB_CALL call=0x" << std::hex << call << " job=0x" << job << std::dec
+                          << " processor=" << unsigned(sfr::active_memory->load<uint8_t>(uint64_t(ctx.r13.u32)+0x10C)) << '\n';
+            }
+        }
+        PPC_CALL_INDIRECT_FUNC(call);
+        ++jobs;
+    }
+    ctx.r1=r1, ctx.r3=r3, ctx.r4=r4, ctx.r5=r5, ctx.lr=lr, ctx.ctr.u64=ctr;
+    collision_counters.main_jobs.fetch_add(jobs,std::memory_order_relaxed);
+    collision_counters.help_ns.fetch_add(collision_steady_ns()-started,std::memory_order_relaxed);
+}
+
 // Before the main thread's race step: a batch the last wait let start has
 // started within a millisecond here; one that has not after 8 ms is taken as
-// never started. A running batch is waited for (at most 1000 ms, reported).
-void wait_for_collision_batch() {
+// never started. A running batch is waited for (at most 1000 ms, reported);
+// with SFR_MAIN_HELPS_COLLISION (default on) the main thread runs its queued
+// jobs meanwhile.
+void wait_for_collision_batch(PPCContext& __restrict ctx, uint8_t* base) {
     if(!step_waits_collision() || sfr::current_guest_thread_id()!=1) return;
     using State=CollisionBatchGate::State;
     {
         std::lock_guard lock(collision_gate.mutex);
         if(collision_gate.state==State::idle) return;
     }
-    struct Wait { bool finished=false, never_started=false; } wait;
-    sfr::traced_host_wait([](void* argument) {
-        auto& result=*static_cast<Wait*>(argument);
-        std::unique_lock lock(collision_gate.mutex);
-        if(!collision_gate.changed.wait_for(lock,std::chrono::milliseconds(8),
-                                            []{ return collision_gate.state!=State::due; })) {
-            collision_gate.state=State::idle;
-            result.never_started=true;
-            return;
-        }
-        result.finished=collision_gate.changed.wait_for(lock,std::chrono::milliseconds(1000),
-                                                        []{ return collision_gate.state==State::idle; });
-    },&wait,"collision_batch",1000000000);
+    collision_counters.waits.fetch_add(1,std::memory_order_relaxed);
+    // Each host wait ends when the batch has finished, at the deadline, or -
+    // when the main thread helps - when the batch has a queue it has not yet
+    // found empty (queue set).
+    struct Wait {
+        bool helps=false, finished=false, never_started=false;
+        uint32_t queue=0, exhausted=0;
+        std::chrono::steady_clock::time_point deadline{};
+    } wait;
+    wait.helps=main_helps_collision();
+    for(;;) {
+        wait.queue=0;
+        sfr::traced_host_wait([](void* argument) {
+            auto& result=*static_cast<Wait*>(argument);
+            std::unique_lock lock(collision_gate.mutex);
+            if(result.deadline==std::chrono::steady_clock::time_point{}) {
+                if(!collision_gate.changed.wait_for(lock,std::chrono::milliseconds(8),
+                                                    []{ return collision_gate.state!=State::due; })) {
+                    collision_gate.state=State::idle;
+                    result.never_started=true;
+                    return;
+                }
+                result.deadline=std::chrono::steady_clock::now()+std::chrono::milliseconds(1000);
+            }
+            const auto help=[&]{
+                return result.helps && collision_gate.state==State::running && collision_gate.queue &&
+                       collision_gate.queue!=result.exhausted;
+            };
+            collision_gate.changed.wait_until(lock,result.deadline,[&]{
+                return collision_gate.state==State::idle || help();
+            });
+            result.finished=collision_gate.state==State::idle;
+            if(!result.finished && help()) result.queue=collision_gate.queue;
+        },&wait,"collision_batch",1000000000);
+        if(!wait.queue) break;
+        // Run the batch's jobs until its queue is empty, then only wait.
+        help_collision_batch(ctx,base,wait.queue);
+        wait.exhausted=wait.queue;
+    }
     static std::atomic<uint32_t> waits{0},unstarted{0},timeouts{0};
     const uint32_t count=++waits;
     const uint32_t not_started=unstarted+=wait.never_started;
@@ -408,7 +524,22 @@ SFR_CONCURRENT_HOOK(sub_823B5D40) {
     sfr::JobLifetime::Lease batch(job_lifetime,sfr::JobLifetime::Kind::batch);
     acquire_lifetime(batch);
     collision_batch_running();
-    struct Finished { ~Finished() { collision_batch_finished(); } } finished;
+    static std::atomic<bool> reported{false};
+    if(!reported.exchange(true))
+        std::cerr << "COLLISION_BATCH_THREAD guest_id=" << sfr::current_guest_thread_id() << " processor="
+                  << unsigned(sfr::active_memory->load<uint8_t>(uint64_t(ctx.r13.u32)+0x10C)) << '\n';
+    batch_started_ns=collision_steady_ns();
+    batch_drained_ns=batch_waited_ns=0;
+    struct Finished {
+        ~Finished() {
+            collision_batch_finished();
+            const uint64_t ended=collision_steady_ns();
+            collision_counters.batches.fetch_add(1,std::memory_order_relaxed);
+            collision_counters.batch_ns.fetch_add(ended-batch_started_ns,std::memory_order_relaxed);
+            if(batch_drained_ns) collision_counters.drain_ns.fetch_add(batch_drained_ns-batch_started_ns,std::memory_order_relaxed);
+            if(batch_waited_ns) collision_counters.pairs_ns.fetch_add(ended-batch_waited_ns,std::memory_order_relaxed);
+        }
+    } finished;
     __imp__sub_823B5D40(ctx,base);
 }
 
@@ -457,6 +588,8 @@ SFR_CONCURRENT_HOOK(sub_82750B30) {
     sfr::enter_function(ctx,"sub_82750B30",0x82750B30);
     const bool helper=ctx.lr==0x823B60F8 && !job_midasm_hooks.load(std::memory_order_relaxed);
     if(helper) admit_helper();
+    // The collision batch's first empty test, once it has queued its jobs.
+    if(ctx.lr==0x823B5E10) collision_queue_open(ctx.r3.u32);
     __imp__sub_82750B30(ctx,base);
     // Include the interval before a successful queue take, failed takes,
     // and null callbacks. An empty poll means the last callback returned.
@@ -536,6 +669,7 @@ void work_share_wait_done(uint32_t status) {
         if(count<=8 || count%256==0)
             std::cerr << "GAME_PATCH job_drain_wait count=" << count << " still_running=0\n";
     }
+    batch_waited_ns=collision_steady_ns();  // next: reset the jobs, pair up the bodies
 }
 }
 
@@ -545,6 +679,7 @@ void WorkShareWaitMidAsmHook(PPCRegister& r6) {
     static std::atomic<bool> reported{false};
     if(!reported.exchange(true)) std::cerr << "GAME_PATCH work_share_wait midasm=1 ms=" << work_share_wait_ms() << char(10);
     r6.u64=work_share_wait_ms();
+    collision_queue_drained();
 }
 void WorkShareWaitDoneMidAsmHook(PPCRegister& r3) { work_share_wait_done(r3.u32); }
 
@@ -553,7 +688,7 @@ void WorkShareWaitDoneMidAsmHook(PPCRegister& r3) { work_share_wait_done(r3.u32)
 SFR_CONCURRENT_HOOK(sub_824D0B10) {
     sfr::enter_function(ctx,"sub_824D0B10",0x824D0B10);
     const bool work_share=ctx.lr==0x823B5EA0 && ctx.r3.u32==3 && ctx.r5.u32==1 && ctx.r6.u32==16;
-    if(work_share) ctx.r6.u64=work_share_wait_ms();
+    if(work_share) ctx.r6.u64=work_share_wait_ms(), collision_queue_drained();
     __imp__sub_824D0B10(ctx,base);
     if(work_share) work_share_wait_done(ctx.r3.u32);
 }
@@ -593,7 +728,8 @@ thread_local bool race_jobs_waiting=false;  // in 8249F048, before its first wai
 // RACE_JOBS (every 600 dispatches): who ran the race step's jobs and how long
 // the main thread spent running them and waiting for the workers.
 struct RaceJobCounters {
-    std::atomic<uint64_t> dispatches{0}, main_jobs{0}, worker_jobs{0}, help_ns{0}, wait_ns{0}, collision_ns{0};
+    std::atomic<uint64_t> dispatches{0}, main_jobs{0}, worker_jobs{0}, help_ns{0}, wait_ns{0}, collision_ns{0},
+                          step_collision_ns{0};
 };
 RaceJobCounters race_job_counters;
 uint64_t steady_ns() {
@@ -641,8 +777,10 @@ static void help_race_jobs(PPCContext& __restrict ctx, uint8_t* base) {
 SFR_CONCURRENT_HOOK(sub_8249F048) {
     sfr::enter_function(ctx,"sub_8249F048",0x8249F048);
     const uint64_t collision_started=steady_ns();
-    wait_for_collision_batch();
-    race_job_counters.collision_ns.fetch_add(steady_ns()-collision_started,std::memory_order_relaxed);
+    wait_for_collision_batch(ctx,base);
+    const uint64_t collision_ns=steady_ns()-collision_started;
+    race_job_counters.collision_ns.fetch_add(collision_ns,std::memory_order_relaxed);
+    race_job_counters.step_collision_ns.fetch_add(collision_ns,std::memory_order_relaxed);
     sfr::race_jobs_dispatching.fetch_add(1,std::memory_order_relaxed);
     struct Done { ~Done() { sfr::race_jobs_dispatching.fetch_sub(1,std::memory_order_relaxed); race_jobs_waiting=false; } } done;
     race_jobs_waiting=sfr::current_guest_thread_id()==1;
@@ -686,6 +824,17 @@ SFR_CONCURRENT_HOOK(sub_824D0150) {
                       << " help_ms=" << race_job_counters.help_ns.exchange(0,std::memory_order_relaxed)/n/1e6
                       << " wait_ms=" << race_job_counters.wait_ns.exchange(0,std::memory_order_relaxed)/n/1e6
                       << " collision_wait_ms=" << race_job_counters.collision_ns.exchange(0,std::memory_order_relaxed)/n/1e6
+                      << " step_collision_ms=" << race_job_counters.step_collision_ns.exchange(0,std::memory_order_relaxed)/n/1e6
+                      << '\n';
+            // The collision batches since the last line, per batch.
+            const double batches=double(std::max<uint64_t>(1,collision_counters.batches.exchange(0,std::memory_order_relaxed)));
+            std::cerr << "COLLISION_BATCH batches=" << batches << " main_helps=" << main_helps_collision()
+                      << " waits=" << collision_counters.waits.exchange(0,std::memory_order_relaxed)
+                      << " jobs_main=" << collision_counters.main_jobs.exchange(0,std::memory_order_relaxed)/batches
+                      << " help_ms=" << collision_counters.help_ns.exchange(0,std::memory_order_relaxed)/batches/1e6
+                      << " batch_ms=" << collision_counters.batch_ns.exchange(0,std::memory_order_relaxed)/batches/1e6
+                      << " drain_ms=" << collision_counters.drain_ns.exchange(0,std::memory_order_relaxed)/batches/1e6
+                      << " pairs_ms=" << collision_counters.pairs_ns.exchange(0,std::memory_order_relaxed)/batches/1e6
                       << '\n';
         }
     }

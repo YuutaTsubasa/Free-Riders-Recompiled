@@ -156,6 +156,12 @@ inline constexpr TestOption table[] = {
       "threads (the default). Off waits, as 0.10.24 did, which is slower where the helpers run on slow cores.",
       "測試用：遊戲的主執行緒自己執行排入佇列的比賽工作，而不是只等輔助執行緒（預設如此）。關閉時改回 0.10.24 的等待方式；輔助執行緒在慢核心上時會比較慢。"},
      on_off, "#176"},
+    {"SFR_MAIN_HELPS_COLLISION", TestGroup::processor, test_platform::all,
+     {"Main thread runs collision jobs", "主執行緒執行碰撞工作"},
+     {"For testing: while the game's main thread waits for the collision check before a race step, it runs "
+      "that check's queued jobs itself (the default). Off only waits, as 0.10.26 did.",
+      "測試用：遊戲的主執行緒在比賽步進前等待碰撞檢查時，自己執行該檢查排入佇列的工作（預設如此）。關閉時只等待，與 0.10.26 相同。"},
+     on_off, "#176"},
     {"SFR_MAIN_AFFINITY", TestGroup::processor, test_platform::windows,
      {"Pin the main thread", "固定主執行緒"},
      {"For testing: keeps the game's main thread on one processor (the default with six or more). Off may help "
