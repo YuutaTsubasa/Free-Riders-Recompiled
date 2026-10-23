@@ -343,6 +343,9 @@ static uint64_t frame_vertex_bytes=0;
 static uint64_t frame_vertex_cached_bytes=0, frame_vertex_swap_bytes=0, frame_vertex_repack_bytes=0;
 static double frame_vertex_swap_ms=0, frame_vertex_repack_ms=0;
 static uint32_t frame_cached_draws=0;  // drawn from vertex_cache buffers
+// Indexed draws whose vertices are gathered (sub_824F56E8), and the bytes
+// gathered: with SFR_STREAM_CACHE only those of streams that are not kept.
+static uint64_t frame_gathered_draws=0, frame_gathered_bytes=0;
 static uint32_t frame_kept_index_draws=0, frame_indexed_draws=0;  // indexed draws, and those with kept indices
 static uint32_t frame_biggest_draw=0;
 // The distinct stream 0 buffers a frame draws from, and their total size: what
@@ -439,6 +442,26 @@ static bool rendering_this_frame() {
 }
 // Whether this race frame is drawn, for the task manager (race_task_hooks.cpp).
 namespace sfr { bool race_frame_drawn() { return rendering_this_frame(); } }
+// SFR_TEST_TASK_TIMES (race_task_hooks.cpp): the host's part of the draw
+// calls (index decoding, gathering, native_draw), all of them timed, so a
+// task's drawing splits into the title's code and ours.
+namespace sfr {
+std::atomic<uint64_t> draw_call_host_ns{0}, draw_call_count{0};
+}
+namespace {
+bool draw_call_timing() {
+    static const bool on=[]{ const char* t=std::getenv("SFR_TEST_TASK_TIMES"); return t && *t!='0'; }();
+    return on;
+}
+struct DrawCallClock {
+    uint64_t start=draw_call_timing() ? sfr::host_monotonic_ns() : 0;
+    ~DrawCallClock() {
+        if(!start) return;
+        sfr::draw_call_host_ns.fetch_add(sfr::host_monotonic_ns()-start,std::memory_order_relaxed);
+        sfr::draw_call_count.fetch_add(1,std::memory_order_relaxed);
+    }
+};
+}
 
 namespace sfr {
 std::optional<AvatarMatrix> avatar_hand_transform(const AvatarPose& pose, uint32_t bone) {
@@ -707,6 +730,7 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
               << " vertex_cached_bytes=" << frame_vertex_cached_bytes << " vertex_swap_bytes=" << frame_vertex_swap_bytes
               << " vertex_repack_bytes=" << frame_vertex_repack_bytes
               << " vertex_swap_ms=" << frame_vertex_swap_ms << " vertex_repack_ms=" << frame_vertex_repack_ms
+              << " gathered_draws=" << frame_gathered_draws << " gathered_bytes=" << frame_gathered_bytes
               << " biggest=" << frame_biggest_draw
               << " streams=" << frame_streams.size() << " stream_bytes=" << frame_stream_bytes
               << " indices=" << frame_indices << " index_ms=" << frame_index_ms << " cut_ms=" << frame_cut_ms
@@ -769,6 +793,7 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
     frame_vertex_swap_ms=frame_vertex_repack_ms=0;
     frame_cached_draws=0;
     frame_kept_index_draws=frame_indexed_draws=0;
+    frame_gathered_draws=frame_gathered_bytes=0;
     sfr::active_memory->advance_write_epoch();  // vertex_cache's frames
     frame_biggest_draw=0;
     frame_streams.clear();
@@ -891,13 +916,13 @@ static int race_hud_side(const sfr::GuestMemory& memory, uint32_t sp, bool two_p
     return 0;
 }
 
-static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint32_t primitive,
+static bool native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint32_t primitive,
                         uint32_t count, std::span<const uint8_t> vertices, uint32_t stride,
                         std::span<const uint32_t> indices={}, int32_t base_vertex_location=0,
                         uint32_t source_physical=0, const plume::RenderBuffer* index_buffer=nullptr,
-                        uint32_t index_count=0) {
+                        uint32_t index_count=0, bool cached_only=false) {
     auto& memory=*sfr::active_memory;
-    if(skip_draws() || !rendering_this_frame()) return;
+    if(skip_draws() || !rendering_this_frame()) return true;
     // Everything a draw costs beside reading its indices and vertices.
     const auto draw_start=metrics_clock();
     struct DrawTimer {
@@ -946,7 +971,7 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
         const uint64_t count=unsupported.fetch_add(1,std::memory_order_relaxed)+1;
         if((count&(count-1))==0)
             std::cerr << "NATIVE_DRAW_PRIMITIVE_SKIPPED type=" << primitive << " count=" << count << char(10);
-        return;
+        return true;
     }
     }
     // Draws aimed at one of the title's own surfaces share the one native
@@ -957,7 +982,7 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     if(sfr::GuestGraphics::foreign_render_targets &&
        memory.load<uint32_t>(uint64_t(device)+0x3148)!=sfr::GuestGraphics::color_handle) {
         static const bool skip=[]{ const char* t=std::getenv("SFR_SKIP_FOREIGN_TARGETS"); return t && *t!='0'; }();
-        if(skip) { ++foreign_draws; return; }
+        if(skip) { ++foreign_draws; return true; }
     }
     graphics().select_target(device);
     // A sanity cap on one gathered blob, not a hardware limit: the race draws
@@ -1066,6 +1091,9 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
         for(const uint32_t offset:dec3n_offsets) layout=layout*1000003u+offset+1;
         cached=graphics().renderer().vertex_cache(memory,source_physical,vertices.size(),uint64_t(count)*wide,layout);
     }
+    // A whole stream (sub_824F56E8) is drawn only from its kept buffer: the
+    // caller gathers the draw's vertices instead when there is none.
+    if(cached_only && !cached.buffer) return false;
     draw.vertex_buffer=cached.buffer;
     if(cached.buffer && cached.fill.empty()) {
         // Already in its buffer, in host form.
@@ -1174,7 +1202,7 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
                       << memory.load<uint32_t>(uint64_t(device)+0x774) << std::dec
                       << " stride1=" << uint32_t(memory.load<uint8_t>(uint64_t(device)+12705))*4
                       << " reason=untranslatable-shader\n";
-        return;
+        return true;
     }
     if(!vs.shader) throw sfr::RuntimeStop("native-draw",vs_object,"specialized vertex shaders are unsupported");
     const auto& state=graphics().render_state();
@@ -1680,7 +1708,7 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     const uint64_t combination=(uint64_t(vs_object)*0x9E3779B97F4A7C15ull)^(uint64_t(ps_object)*0xC2B2AE3D27D4EB4Full)^
                                (uint64_t(draw.shared.texture_2d[0])<<20)^primitive;
     uint64_t& recent_slot=recent[(combination^(combination>>29))%recent.size()];
-    if(recent_slot==combination) return;
+    if(recent_slot==combination) return true;
     recent_slot=combination;
     if(seen.insert(combination).second)
         std::cerr << "NATIVE_DRAW source=0x" << std::hex << source << std::dec << " primitive=" << primitive
@@ -1691,6 +1719,7 @@ static void native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
                   << " booleans=0x" << draw.shared.booleans << std::dec << " depth=" << draw.depth_enabled
                   << " blend=" << draw.blend.blendEnabled << " alpha_test=" << alpha_test
                   << " lr=0x" << std::hex << ctx.lr << std::dec << '\n';
+    return true;
 }
 
 // Guest vertex data, read in place: native_draw only reads it.
@@ -1738,6 +1767,7 @@ static bool position_out_of_reach(uint32_t device, std::span<const uint8_t> vert
 
 SFR_GRAPHICS_HOOK(sub_824F5288) {
     sfr::enter_function(ctx,"sub_824F5288",0x824F5288);
+    const DrawCallClock draw_call_clock;
     const uint32_t count=ctx.r5.u32, stride=ctx.r7.u32;
     const auto vertices=guest_bytes(ctx.r6.u32,uint64_t(count)*stride);
     if(position_out_of_reach(ctx.r3.u32,vertices,count,stride)) {
@@ -1784,6 +1814,7 @@ static Stream0 stream0(uint32_t device) {
 // (word 0: byte address | type 3).
 SFR_GRAPHICS_HOOK(sub_824F52D0) {
     sfr::enter_function(ctx,"sub_824F52D0",0x824F52D0);
+    const DrawCallClock draw_call_clock;
     auto& memory=*sfr::active_memory;
     const uint32_t device=ctx.r3.u32, primitive=ctx.r4.u32, start=ctx.r5.u32, count=ctx.r6.u32;
     const auto stream=stream0(device);
@@ -1883,8 +1914,24 @@ static KeptIndices kept_indices(sfr::GuestMemory& memory,uint32_t physical,const
     return {cached.buffer,found->second};
 }
 
+// SFR_STREAM_CACHE (default on; Test options): sub_824F56E8 draws scattered
+// indices from a whole kept stream instead of gathering their vertices.
+static bool stream_cache_enabled() {
+    static const bool on=[]{ const char* t=std::getenv("SFR_STREAM_CACHE"); return !t || *t!='0'; }();
+    return on;
+}
+// The guest view a physical range is readable at (as guest_address finds
+// it), or 0 when none is: asked, not thrown, as the caller has another way.
+static uint32_t readable_view(sfr::GuestMemory& memory,uint32_t physical,uint64_t size) {
+    for(const uint64_t candidate:{uint64_t(physical)+0xE0000000u-0x1000u,uint64_t(physical)|0xA0000000u,
+                                  uint64_t(physical)|0xC0000000u})
+        if(candidate+size<=0x100000000ull && memory.readable(candidate,size)) return uint32_t(candidate);
+    return 0;
+}
+
 SFR_GRAPHICS_HOOK(sub_824F56E8) {
     sfr::enter_function(ctx,"sub_824F56E8",0x824F56E8);
+    const DrawCallClock draw_call_clock;
     if(skip_draws() || !rendering_this_frame()) return;
     auto& memory=*sfr::active_memory;
     const uint32_t device=ctx.r3.u32, base_vertex=ctx.r5.u32, start=ctx.r6.u32, count=ctx.r7.u32;
@@ -1914,6 +1961,7 @@ SFR_GRAPHICS_HOOK(sub_824F56E8) {
     static thread_local std::vector<uint32_t> order;
     const KeptIndices kept=restart_enabled ? KeptIndices{}
         : kept_indices(memory,index_physical+start*index_size,index_bytes,count,wide,base_vertex);
+
     bool decoded=false;
     const auto decode=[&] {
         order.resize(count);
@@ -1954,6 +2002,24 @@ SFR_GRAPHICS_HOOK(sub_824F56E8) {
                              -int32_t(lowest),stream.physical+lowest*stream.stride);
             return;
         }
+        // Indices scattered over far more of the stream than they use (the
+        // race's stage meshes, about a hundred draws a frame): the whole
+        // stream, kept in a GPU buffer while the title leaves it unwritten,
+        // is drawn with the kept indices, which number its vertices already.
+        // Gathering, swapping and repacking those draws' vertices again every
+        // frame took about 1 ms of an AYN Thor race frame's main thread
+        // (Issue #176). A stream that is not kept (written by the title, or
+        // in the frames before it is kept) is gathered below as before.
+        // Not for the race HUD's draws (824C08A4), whose placement reads
+        // their vertices. SFR_STREAM_CACHE=0 gathers every such draw.
+        const uint64_t stream_bytes=uint64_t(vertex_count)*stream.stride;
+        if(kept.buffer && stream_cache_enabled() && uint32_t(ctx.lr)!=0x824C08A4 && stream_bytes<=0x800000) {
+            if(const uint32_t whole=readable_view(memory,stream.physical,stream_bytes);
+               whole && native_draw(ctx,0x824F56E8,device,primitive,vertex_count,
+                                    std::span<const uint8_t>(memory.base()+whole,size_t(stream_bytes)),stream.stride,{},0,
+                                    stream.physical,kept.buffer,count,true))
+                return;
+        }
     }
     if(!decoded) decode();  // the paths below rework the indices themselves
     if(cut) {
@@ -1983,6 +2049,7 @@ SFR_GRAPHICS_HOOK(sub_824F56E8) {
     for(auto& vertex:order) vertex-=lowest;  // numbered from the checked range
     const std::span<uint8_t> gathered=byte_scratch(order.size()*stream.stride);
     gather_vertices(gathered.data(),used_bytes,order.data(),order.size(),stream.stride);
+    if(frame_metrics) { ++frame_gathered_draws; frame_gathered_bytes+=gathered.size(); }
     if(frame_metrics) frame_gather_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-gather_start).count();
     native_draw(ctx,0x824F56E8,device,primitive,uint32_t(order.size()),gathered,stream.stride);
 }

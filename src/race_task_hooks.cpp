@@ -4,6 +4,7 @@
 #include "race_frame_clock.h"
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <string>
@@ -23,7 +24,7 @@
 // frame's 11 ms on a PC. A race frame the frame skipper does not draw
 // (race_frame_clock.h) leaves most of that drawing out, so it costs little
 // more than the race itself, and the race keeps real time on a slow device.
-namespace sfr { bool race_frame_drawn(); }
+namespace sfr { bool race_frame_drawn(); extern std::atomic<uint64_t> draw_call_host_ns, draw_call_count; }
 
 namespace {
 constexpr uint32_t race_flag = 0x83E52F8C;
@@ -255,14 +256,15 @@ bool enabled() {
     static const bool on = [] { const char* t = std::getenv("SFR_TEST_TASK_TIMES"); return t && *t != '0'; }();
     return on;
 }
-struct Entry { uint64_t ns = 0, calls = 0; };
+struct Entry { uint64_t ns = 0, calls = 0, host_ns = 0, draws = 0; };
 struct Table { std::unordered_map<uint64_t, Entry> entries; uint64_t frames = 0, manager_ns = 0, manager_calls = 0; };
 Table tables[2];  // [drawn]
 uint64_t now() { return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()); }
 uint64_t key_of(uint32_t function, uint32_t key, uint32_t kind) { return (uint64_t(function) << 32) ^ (uint64_t(key) << 28) ^ kind; }
-void add(bool drawn, uint32_t function, uint32_t key, uint32_t kind, uint64_t ns) {
+// host_ns and draws: the draw calls' host work inside (guest_graphics_hooks.cpp).
+void add(bool drawn, uint32_t function, uint32_t key, uint32_t kind, uint64_t ns, uint64_t host_ns = 0, uint64_t draws = 0) {
     auto& entry = tables[drawn].entries[key_of(function, key, kind)];
-    entry.ns += ns; ++entry.calls;
+    entry.ns += ns; ++entry.calls; entry.host_ns += host_ns; entry.draws += draws;
 }
 // Keys keep function, key and kind recoverable: stored alongside.
 std::unordered_map<uint64_t, std::array<uint32_t, 3>> names;
@@ -272,21 +274,22 @@ void report(uint32_t race_frames) {
         auto& table = tables[drawn];
         if (!table.frames) continue;
         std::vector<std::pair<uint64_t, uint64_t>> order;
-        uint64_t total = 0;
-        for (const auto& [k, e] : table.entries) { order.push_back({e.ns, k}); total += e.ns; }
+        uint64_t total = 0, host = 0, draws = 0;
+        for (const auto& [k, e] : table.entries) { order.push_back({e.ns, k}); total += e.ns; host += e.host_ns; draws += e.draws; }
         std::sort(order.rbegin(), order.rend());
         std::string text;
-        char item[96];
+        char item[128];
         const double n = double(table.frames);
         for (size_t i = 0; i < order.size() && i < 24; ++i) {
             const auto& e = table.entries[order[i].second];
             const auto& nm = names[order[i].second];
-            std::snprintf(item, sizeof item, " %08x/%u/%08x=%.3f/%.1f", nm[0], nm[1], nm[2], double(e.ns) / 1e6 / n, double(e.calls) / n);
+            std::snprintf(item, sizeof item, " %08x/%u/%08x=%.3f/%.1f/host%.3f/draws%.1f", nm[0], nm[1], nm[2], double(e.ns) / 1e6 / n,
+                          double(e.calls) / n, double(e.host_ns) / 1e6 / n, double(e.draws) / n);
             text += item;
         }
-        std::fprintf(stderr, "TASK_TIMES race_frame=%u drawn=%d frames=%llu manager_ms=%.3f managers=%.2f tasks_ms=%.3f%s\n", race_frames, drawn,
-                     static_cast<unsigned long long>(table.frames), double(table.manager_ns) / 1e6 / n, double(table.manager_calls) / n,
-                     double(total) / 1e6 / n, text.c_str());
+        std::fprintf(stderr, "TASK_TIMES race_frame=%u drawn=%d frames=%llu manager_ms=%.3f managers=%.2f tasks_ms=%.3f host_ms=%.3f draws=%.1f%s\n",
+                     race_frames, drawn, static_cast<unsigned long long>(table.frames), double(table.manager_ns) / 1e6 / n,
+                     double(table.manager_calls) / n, double(total) / 1e6 / n, double(host) / 1e6 / n, double(draws) / n, text.c_str());
         table = Table{};
     }
 }
@@ -391,13 +394,17 @@ SFR_CONCURRENT_HOOK(sub_824A00C8) {
                     if (watching) sfr::draw_reads::set_reader(task_kind, key);
                     if (watch_task) watch::before_task(base, task_kind);
                     const uint64_t start = timing ? task_times::now() : 0;
+                    const uint64_t host_start = timing ? sfr::draw_call_host_ns.load(std::memory_order_relaxed) : 0;
+                    const uint64_t draws_start = timing ? sfr::draw_call_count.load(std::memory_order_relaxed) : 0;
                     if (areas_only) find_stage_areas(ctx, base, task);
                     else sfr::call_indirect(ctx, base, function);
                     if (watch_task) watch::after_task(base, task, task_kind);
                     if (timing) {
                         const uint32_t kind = memory.load<uint32_t>(task);
                         task_times::name(function, key, kind);
-                        task_times::add(drawn_frame, function, key, kind, task_times::now() - start);
+                        task_times::add(drawn_frame, function, key, kind, task_times::now() - start,
+                                        sfr::draw_call_host_ns.load(std::memory_order_relaxed) - host_start,
+                                        sfr::draw_call_count.load(std::memory_order_relaxed) - draws_start);
                     }
                 }
                 const uint32_t after = memory.load<uint32_t>(manager + 200);
