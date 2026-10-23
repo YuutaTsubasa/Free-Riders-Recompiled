@@ -2695,8 +2695,15 @@ beside the permit, the main thread's case), together with a hidden symbol
 for the hook filter (an `adrp` instead of a GOT load). The text was 1 MB
 smaller, but on the Thor the main thread's own undrawn work came out at 5.26
 / 5.00 / 5.67 ms against 4.94 / 4.87 / 4.95 for loop heads alone: no gain.
+ThinLTO over the whole game library (`-flto=thin`, with loop heads; text
+44.8 MB) came out at 5.07 / 5.27 ms: no gain either.
 
-**Where the rest goes.** With the forward checkpoints gone, an undrawn frame
+**Where the rest goes.** simpleperf on the Thor (shipped code, forced
+skipping, 30 s from about frame 14,000, main thread): generated guest code
+42.6%, graphics HLE and renderer 15.3%, kernel and clock reads 8.8% (mostly
+the pacing), libc/libc++/locks/TLS 7.3%, entries, permit, indirect calls and
+imports 4.7%, GPR/FPR save-restore helpers 4.5%, hand-written hooks 3.9%,
+guest memory helpers 3.1%, other 8.7%. With the forward checkpoints gone, an undrawn frame
 on the Thor is ~4.9 ms of the main thread's own work and ~1.9 ms of waiting
 for the job workers (the collision job, `RACE_JOBS collision_wait_ms`), so
 the workers' side now bounds the frame as much as the generated code on the
