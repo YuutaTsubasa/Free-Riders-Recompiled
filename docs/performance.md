@@ -2626,11 +2626,13 @@ present limit, on both the shipped and the loop-head-only code; unit tests
 pass on Windows (165) and Linux (158), Python 356 (11 skipped for want of the
 game files).
 
-**Shipping the loop-head part** needs the release's generated directory
+**Shipping the loop-head part** needed the release's generated directory
 copied through `python scripts/loop_head_checkpoints.py <diagnostic> <copy>`
 (`--check` verifies the copy) and the build pointed at the copy with
 `-DSFR_DIAGNOSTIC_DIR`. The generator now emits only loop-head checkpoints
-itself, so new output needs nothing.
+itself, so new output needs nothing. Releases up to 0.10.25 still compiled
+the shipped directory as it was; since 2026-10-23 the build converts it
+itself (below).
 
 **Proposals not done, by expected gain and risk:**
 
@@ -2647,3 +2649,65 @@ itself, so new output needs nothing.
    instead of through the GOT), after exporting `SDL_main` and the JNI entries.
 5. A hot-first symbol order or PGO layout for the 50 MB text (untested here:
    the Thor time went to the checkpoint A/B).
+
+## 2026-10-23: Loop-head checkpoints in every build
+
+The 2026-10-20 pass measured that checkpointing only loop heads takes about
+8% off an undrawn race frame on the AYN Thor, but its release step (pointing
+the build at a converted copy of the generated directory) was never taken:
+the releases kept compiling the shipped generated code, whose 172,524 label
+checkpoints include 143,424 at labels only reached forwards. The build now
+does the conversion. With `SFR_LOOP_HEAD_CHECKPOINTS` (CMake option, on by
+default) each `ppc_recomp.*.cpp` is copied into the build directory
+(`loop-head-checkpoints/`) through `scripts/loop_head_checkpoints.py --file`,
+and the game compiles the copies; the generated directory itself is
+untouched, and output of the current generator passes through unchanged. A
+build configured this way from the shipped directory produces a `.text`
+byte-identical to one pointed at a copy made by hand (Android, 43.8 MB
+against 52.6 MB before). Python 3 is needed at build time when the option is
+on.
+
+**Thor A/B** (this branch's source on the shipped generated code, versionCode
+73, Dolphin Resort moving race `CLAUDE_INPUT=kicks`, forced skipping
+`SFR_RACE_FRAMESKIP=2 SFR_TEST_RACE_DRAW_MS=20`, frames 14,000-20,500, three
+runs each, interleaved). "Own" is an undrawn frame's time less its
+`main_blocked_ms` (the main thread's waits for the guests it depends on),
+from the NATIVE_PRESENT lines of undrawn frames:
+
+| Build | undrawn_ms (HOST_THREADS) | cpu_ms | undrawn: blocked | undrawn: own |
+| --- | --- | --- | --- | --- |
+| shipped code (every label) | 7.23 / 7.24 / 6.85 | 8.87 / 8.77 / 8.68 | 1.39 / 1.45 / 1.32 | 5.87 / 5.80 / 5.55 |
+| loop heads only | 6.70 / 6.86 / 6.73 | 7.95 / 7.87 / 8.02 | 1.77 / 2.01 / 1.76 | 4.94 / 4.87 / 4.95 |
+
+The main thread's own work in an undrawn frame falls by 0.82 ms (14%) and its
+CPU per frame by 0.83 ms (9%); the undrawn frame itself by 0.35 ms (5%),
+because the main thread now reaches its waits for the job workers earlier and
+waits there longer (blocked +0.45 ms). All runs ran to the present limit at
+speed ~0.998 and drew normally. On Windows (i9, D3D12, the same race and
+forced skipping, three runs each) nothing changed: own 2.88 / 2.46 / 2.60 ms
+before, 2.74 / 2.82 / 2.46 after; x86-64 lacks the hidden checkpoint call, so
+a label's checkpoint there costs a decrement more than a register spill.
+
+**Tried and not kept:** reading the entry's four flags and the hook and
+graphics stack pointers as one word each in `enter_function` (three loads and
+one taken branch instead of seven loads and two taken branches for a guest
+beside the permit, the main thread's case), together with a hidden symbol
+for the hook filter (an `adrp` instead of a GOT load). The text was 1 MB
+smaller, but on the Thor the main thread's own undrawn work came out at 5.26
+/ 5.00 / 5.67 ms against 4.94 / 4.87 / 4.95 for loop heads alone: no gain.
+ThinLTO over the whole game library (`-flto=thin`, with loop heads; text
+44.8 MB) came out at 5.07 / 5.27 ms: no gain either.
+
+**Where the rest goes.** simpleperf on the Thor (shipped code, forced
+skipping, 30 s from about frame 14,000, main thread): generated guest code
+42.6%, graphics HLE and renderer 15.3%, kernel and clock reads 8.8% (mostly
+the pacing), libc/libc++/locks/TLS 7.3%, entries, permit, indirect calls and
+imports 4.7%, GPR/FPR save-restore helpers 4.5%, hand-written hooks 3.9%,
+guest memory helpers 3.1%, other 8.7%. With the forward checkpoints gone, an undrawn frame
+on the Thor is ~4.9 ms of the main thread's own work and ~1.9 ms of waiting
+for the job workers (the collision job, `RACE_JOBS collision_wait_ms`), so
+the workers' side now bounds the frame as much as the generated code on the
+main thread. The 2026-10-20 statement shares still describe the generated
+code; the larger remaining levers are the ones listed there (local-register
+regeneration, the save/restore helpers, PGO or a hot-first layout).
+

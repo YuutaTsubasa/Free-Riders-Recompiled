@@ -14,9 +14,12 @@ shipped generated code must not be regenerated with a newer generator).
 
 usage: python scripts/loop_head_checkpoints.py <generated dir> <output dir>
        python scripts/loop_head_checkpoints.py --check <generated dir> <output dir>
+       python scripts/loop_head_checkpoints.py --file <ppc_recomp.N.cpp> <output file>
 The output holds every file of the input; only the ppc_recomp.*.cpp files lose
 checkpoint lines, and --check verifies that the output is exactly the input
-less those lines.
+less those lines. --file converts one source (the build does this for each,
+CMake option SFR_LOOP_HEAD_CHECKPOINTS); output that has only loop-head
+checkpoints already comes out unchanged.
 """
 import re
 import shutil
@@ -68,7 +71,23 @@ def check(source, output):
     return j == len(b)
 
 
+def convert_file(source, output):
+    result, _, _ = transform(source.read_bytes().decode('utf-8'))
+    data = result.encode('utf-8')
+    output.parent.mkdir(parents=True, exist_ok=True)
+    # Written in full every time, so the build sees it newer than its source.
+    output.write_bytes(data)
+
+
 def main(argv):
+    if argv[:1] == ['--file']:
+        if len(argv) != 3:
+            sys.exit(__doc__)
+        source, output = Path(argv[1]), Path(argv[2])
+        if source.resolve() == output.resolve():
+            sys.exit('the output must be another file')
+        convert_file(source, output)
+        return
     verify = argv[:1] == ['--check']
     if verify:
         argv = argv[1:]

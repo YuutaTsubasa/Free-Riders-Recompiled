@@ -1150,6 +1150,26 @@ if(SFR_BUILD_DIAGNOSTIC)
         message(FATAL_ERROR "Run scripts/generate_diagnostic.py first; raw output is not safe to execute.")
     endif()
     file(GLOB SFR_DIAGNOSTIC_SOURCES CONFIGURE_DEPENDS "${SFR_DIAGNOSTIC_DIR}/ppc_recomp.*.cpp")
+    # Label checkpoints only at loop heads (scripts/loop_head_checkpoints.py,
+    # docs/performance.md): older generator output checkpoints after every
+    # label, and the shipped generated code is not regenerated, so the game
+    # compiles copies made in the build directory without the forward ones.
+    # Output of the current generator passes through unchanged.
+    option(SFR_LOOP_HEAD_CHECKPOINTS "Compile the generated code with label checkpoints only at loop heads" ON)
+    set(SFR_DIAGNOSTIC_COMPILED_SOURCES ${SFR_DIAGNOSTIC_SOURCES})
+    if(SFR_LOOP_HEAD_CHECKPOINTS)
+        find_package(Python3 COMPONENTS Interpreter REQUIRED)
+        set(SFR_DIAGNOSTIC_COMPILED_SOURCES)
+        foreach(source IN LISTS SFR_DIAGNOSTIC_SOURCES)
+            get_filename_component(name "${source}" NAME)
+            set(copy "${CMAKE_CURRENT_BINARY_DIR}/loop-head-checkpoints/${name}")
+            add_custom_command(OUTPUT "${copy}"
+                COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/loop_head_checkpoints.py" --file "${source}" "${copy}"
+                DEPENDS "${source}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/loop_head_checkpoints.py"
+                VERBATIM)
+            list(APPEND SFR_DIAGNOSTIC_COMPILED_SOURCES "${copy}")
+        endforeach()
+    endif()
     # The title's depth view (82439998, 82439D80) as generated, copied out of
     # those sources into the build directory and run on test images against
     # the offline extractor (kinect_depth_features.h): bit for bit.
@@ -1214,7 +1234,7 @@ if(SFR_BUILD_DIAGNOSTIC)
         endif()
     endif()
     target_sources(sfr_cpu_diagnostic PRIVATE src/diagnostic_main.cpp src/guest_memory.cpp src/xex_module.cpp src/virtual_memory.cpp src/critical_section.cpp src/hardware_info.cpp src/thread_local_storage.cpp src/system_time.cpp src/guest_clock.cpp src/timestamp_bundle.cpp src/vector_memory.cpp src/optional_import_policy.cpp src/native_modules.cpp src/integer_arithmetic.cpp src/memory_statistics.cpp
-        ${SFR_DIAGNOSTIC_SOURCES} "${SFR_DIAGNOSTIC_DIR}/ppc_func_mapping.cpp" "${SFR_DIAGNOSTIC_DIR}/imports.cpp")
+        ${SFR_DIAGNOSTIC_COMPILED_SOURCES} "${SFR_DIAGNOSTIC_DIR}/ppc_func_mapping.cpp" "${SFR_DIAGNOSTIC_DIR}/imports.cpp")
     if(APPLE)  # the generated names as calls, as Mach-O has no aliases
         if(NOT EXISTS "${SFR_DIAGNOSTIC_DIR}/aliases.cpp")
             message(FATAL_ERROR "Run scripts/generate_diagnostic.py again; this output has no aliases.cpp.")

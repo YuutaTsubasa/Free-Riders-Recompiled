@@ -72,6 +72,20 @@ class LoopHeadCheckpointTest(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 loops.main(['--check', str(source), str(output)])
 
+    def test_single_file_as_the_build_converts_it(self):
+        with tempfile.TemporaryDirectory() as work:
+            source, output, again = Path(work) / 'ppc_recomp.0.cpp', Path(work) / 'build/ppc_recomp.0.cpp', Path(work) / 'again.cpp'
+            source.write_text(SOURCE, newline='')
+            loops.main(['--file', str(source), str(output)])
+            written = output.read_bytes().decode('utf-8')
+            self.assertEqual(written, loops.transform(SOURCE)[0])
+            self.assertTrue(loops.check(SOURCE, written))
+            # current generator output (loop heads only) passes through unchanged
+            loops.main(['--file', str(output), str(again)])
+            self.assertEqual(again.read_bytes(), output.read_bytes())
+            with self.assertRaises(SystemExit):
+                loops.main(['--file', str(source), str(source)])
+
 
 if __name__ == '__main__':
     unittest.main()
