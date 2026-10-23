@@ -2711,3 +2711,94 @@ main thread. The 2026-10-20 statement shares still describe the generated
 code; the larger remaining levers are the ones listed there (local-register
 regeneration, the save/restore helpers, PGO or a hot-first layout).
 
+## 2026-10-24: Drawn race frames: the draw calls' host work (Issue #176)
+
+The Pixel 10a's log on 0.10.27 (Dolphin Resort, hot) keeps real time by
+skipping frames, but once its X4 is held at 1.4 GHz a drawn frame costs
+22-26 ms of the main thread (`HOST_THREADS drawn_ms`) against ~4-6 ms for an
+undrawn one, and `draw_ms` (all of `native_draw`) is 5-10 ms of it.
+
+**Where a drawn frame goes.** `SFR_TEST_TASK_TIMES=1` now also times the
+host part of every draw call (`sub_824F5288`, `sub_824F52D0`,
+`sub_824F56E8`: index decoding, gathering, `native_draw`), so each task's
+drawing splits into the title's code and ours (`host_ms`, `draws` in each
+`TASK_TIMES` entry). AYN Thor, moving Dolphin Resort race (`CLAUDE_INPUT=kicks`),
+frame metrics on, drawn frames, ms a frame:
+
+| | task manager | of it: draw calls' host work | title's code | draws |
+| --- | --- | --- | --- | --- |
+| all tasks | 12.37 | 4.90 | 7.47 (incl. logic 1.0) | 906 |
+| stage 8219F910 | 5.15 | 3.09 | 2.06 | 333 |
+| racers 821A1968 | 1.39 | 0.55 | 0.84 | 94 |
+| 821A61F4 | 0.94 | 0.24 | 0.70 | 124 |
+
+The stage's draws cost 9.3 us each on the host, three times the others. In
+the frame's `NATIVE_PRESENT` (new `gathered_draws`, `gathered_bytes`): about
+96 of its ~850 draws are indexed draws whose indices spread over more than
+four times as many vertices as they number, so `sub_824F56E8` gathers their
+vertices one by one (2.9 MB a frame, out of 38 MB of stream they span),
+swaps them and repacks their DEC3N normals, every frame: gather 0.63 ms,
+repack 0.40, swap 0.16, plus decoding their indices again, on the Thor. Their
+indices are already kept on the GPU (`kept_indices`, stream numbering).
+
+**Change.** Such a draw now takes its whole stream from the vertex cache (the
+same rules: kept once unwritten for a frame, dropped when the title writes
+it, budget 512 MB) and draws it with the kept indices and a base vertex of
+0; `native_draw(..., cached_only)` returns false without drawing when the
+stream is not kept (new, written, or in its dynamic period), and the draw is
+gathered as before. Streams over 8 MB, primitive restart and the race HUD's
+call site (824C08A4, whose placement reads the vertices) keep the gather.
+After it, `gathered_draws` is ~0.1 a frame, the gather, swap and repack
+times ~0.03 ms each, and watch faults a frame are unchanged (8.5 vs 8.9).
+`SFR_STREAM_CACHE=0` (Test options, graphics, "Keep whole vertex streams")
+gathers them as 0.10.27 did.
+
+**Thor A/B** (HOST_THREADS over frames 13,500-21,000, frame metrics off,
+release 0.10.27's libraries and this branch's repackaged alike, runs
+interleaved; `cpu_ms` is the main thread's CPU a frame, nearly all drawn):
+
+| Main thread on | Build | cpu_ms | drawn_ms | draw_ms | frames skipped of 9600 |
+| --- | --- | --- | --- | --- | --- |
+| default plan (X3) | 0.10.27 | 13.39 / 13.29 / 13.35 / 13.27 / 13.39 | ~16 (paced to 60) | 3.46-3.52 | 30-42 |
+| default plan (X3) | stream cache | 12.33 / 12.85 / 12.40 / 12.73 | ~16 | 3.00-3.21 | 26-50 |
+| default plan (X3) | stream cache off (same APK) | 13.37 / 13.33 | ~16 | 3.42-3.44 | 37-39 |
+| one A715 (CPU 3) | 0.10.27 | 14.74 / 15.07 | 16.21 / 16.91 | 4.12 / 4.37 | 493 / 649 |
+| one A715 (CPU 3) | stream cache | 13.25 / 13.29 | 13.72 / 14.42 | 3.26 / 3.43 | 78 / 103 |
+
+The A715 runs (`SFR_TEST_MAIN_CPUS=8 SFR_TEST_RENDER_CPUS=80`: the main
+thread held to a 2.8 GHz mid core, the render thread on CPU 7) stand in for a
+phone whose fast core is slowed: there the main thread can no longer keep 60
+fps, a drawn frame's work falls from 16.2-16.9 ms to 13.7-14.4 ms (-15%), its
+CPU by 1.6 ms (-11%), and frame skipping drops from 5-7% of frames to ~1%.
+With the X3 the race already holds 60 fps and the CPU a frame falls by 0.8 ms
+(-6%). Race speed stays 0.999-1.000 in all runs.
+
+**Windows** (i9, RTX 4090, Vulkan, same race, 640x360, a machine with other
+load): `cpu_ms` 8.16 / 8.04 / 7.77 / 8.01 before, 7.10 / 6.44 after (one
+other run of each disturbed by the machine); `draw_ms` ~2.2 -> ~1.5.
+`TASK_TIMES` (metrics on): task manager 7.57 -> 5.49 ms, the draw calls'
+host work 3.02 -> 1.71 ms, the stage's 1.90 -> 0.83 ms.
+
+**Checks.** Vulkan with the validation layer through a race (7,868 race
+frames, 0 errors); D3D12 through a race; screenshots of the same moments of
+the race before and after (Vulkan and D3D12) show the stage, the glass
+roof, the buildings and the racers as before (runs diverge, so by eye).
+On the Thor every run drew the race to the present limit.
+
+**Tried and not kept:** a count of watch events in `GuestMemory` (a watched
+page's write recorded, a page opened) so that `vertex_cache` and the textures'
+once-a-frame check skip walking a range's pages when nothing changed since
+they last found it unwritten, with a lock-free fast path in `take_written`.
+On Windows it matched the stream cache alone; on the Thor it came out at
+12.73 / 12.77 / 12.90 ms against 12.33-12.85 for the stream cache alone: no
+gain (branch `claude/drawn-frame-cost-watch-events`, local).
+
+**What is left** (simpleperf on the Thor, drawn frames after the change, 30 s,
+main thread): generated code and hooks 39%, graphics HLE and renderer 23%
+(`set_texture` 3.4%, `vertex_cache` and its maps 4.6%, `native_draw` 2.4%,
+`texture` 1.8%, the renderer's `draw` and queueing 2.7%, the render-state
+setters ~1.6%), libc/locks/TLS 9% (the TLS resolver 1.5%), kernel and clock
+8%, save/restore helpers 5%, entries/permit/indirect calls 4%, guest memory
+helpers 3%. The graphics share is spread over many small items now; the
+title's own drawing code (~6 ms of a Thor drawn frame) is the larger part.
+
