@@ -125,6 +125,13 @@ inline constexpr TestOption table[] = {
      {"For testing: Off scans every draw's vertex indices again instead of keeping what an earlier scan found.",
       "測試用：關閉時，每次繪製都重新掃描頂點索引，不沿用先前掃描的結果。"},
      off, "#65"},
+    {"SFR_STREAM_CACHE", TestGroup::graphics, test_platform::all,
+     {"Keep whole vertex streams", "保留整段頂點資料"},
+     {"For testing: Off copies the vertices of a draw whose indices are spread over a large vertex buffer every "
+      "frame, as 0.10.27 did, instead of drawing them from that whole buffer kept on the GPU.",
+      "測試用：關閉時，索引分散在大型頂點緩衝區中的繪製，每一格都重新複製它用到的頂點（與 0.10.27 相同），"
+      "而不是直接從保留在 GPU 上的整段緩衝區繪製。"},
+     off, "#176"},
     {"SFR_CONSTANT_RUNS", TestGroup::graphics, test_platform::all,
      {"Upload only used constants", "只上傳用到的常數"},
      {"For testing: Off uploads all of a draw's shader constants instead of only those its shaders read.",
