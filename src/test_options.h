@@ -174,6 +174,14 @@ inline constexpr TestOption table[] = {
      {"For testing: Off turns off the fix for racers flying out of the course at the Fly board.",
       "測試用：關閉後會停用「選手在飛行板（Fly）處飛出賽道」的修正。"},
      off, "#153"},
+    {"SFR_UNDRAWN_STAGE_AREAS", TestGroup::gameplay, test_platform::all,
+     {"Skipped frames: stage areas only", "跳過的畫格：賽道只找區域"},
+     {"For testing: in a race frame that frame skipping does not show, the course's own task only finds which "
+      "of its areas the camera is in and leaves its objects undrawn (the default). Off runs all of its drawing "
+      "there, as 0.10.24 did, for a course object that stands still or a racer that falls through the course.",
+      "測試用：在比賽中不顯示的畫格（跳格）裡，賽道本身的工作只找出鏡頭所在的區域，不繪製它的物件（預設如此）。"
+      "關閉時改回 0.10.24 的做法，執行它全部的繪製；用於賽道物件不動或選手穿過賽道掉落時。"},
+     off, "#176"},
     // ---- logging
     {"SFR_FRAME_METRICS", TestGroup::logging, test_platform::all,
      {"Frame timing", "畫格時間"},

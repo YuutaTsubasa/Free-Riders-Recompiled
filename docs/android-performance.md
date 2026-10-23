@@ -117,6 +117,35 @@ So an undrawn frame leaves out the drawing of the 14 task kinds in
 `undrawn_skips` (about 12 of 12.4 ms on a PC), and every other kind still
 draws, those that are read among them, and any kind not seen in that race.
 
+That watch missed what the logic reads in physical memory (from
+`0xA0000000`, where the task objects and most of the game's objects are) and
+words the drawing writes again each frame after something else changed them.
+`SFR_TEST_DRAW_READS_KIND=<vtable>[+...]` (with `SFR_TEST_DRAW_READS=1`)
+watches only those kinds' drawing, task by task: written pages under
+`0xA0000000` are made read-only again after each task, physical memory is
+compared before and after it, and every word it changed is watched until the
+next frame's drawing. Each `DRAW_READS` entry also says which kind's method
+was running and in which phase (`@<kind>/<key>/t<thread>`).
+`SFR_TEST_DRAW_EVERY=<n>` watches every n-th race frame only, so a whole race
+takes about half an hour. `SFR_TEST_TASK_TIMES=1` writes `TASK_TIMES` lines:
+the task manager's time by phase and task kind, drawn and undrawn frames
+apart.
+
+Over whole Free Races (Dolphin Resort, Metropolis Speedway, Frozen Forest,
+Magma Rift) it showed why a stage's drawing (`82269638`, the kinds
+`8219F86C`-`8219FA38`, one per course) could not be skipped: it first finds
+which of the course's areas the camera is in (`82272B48`), and the stage's
+logic (`82269468`) updates only the objects of those areas (`82272C90`);
+without it the objects of the area a racer flew into stood still and
+Dolphin Resort's big jump fell short. Nothing else the stage's drawing writes
+is read outside drawing. So an undrawn frame now runs only that part of a
+stage's drawing (`find_stage_areas`; `SFR_UNDRAWN_STAGE_AREAS=0`, a Test
+option, runs all of it as 0.10.24 did): 1.0-1.4 ms less per undrawn frame on
+a PC, 2.2-3.1 ms on an AYN Thor. The racers' visibility flags (`821A1968`
++3337..3339, set by its drawing) are read by the logic, and its drawing keeps
+state the next drawn frame needs (issue #145); `821A61F4`'s drawing output is
+read by other kinds' logic too. Both still draw.
+
 Measured on an AYN Thor, Free Race, `SFR_TEST_RACE_DRAW_MS` making drawn
 frames slower:
 

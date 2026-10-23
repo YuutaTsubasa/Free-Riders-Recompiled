@@ -32,7 +32,8 @@ std::atomic<bool> open{false};
 std::atomic<int> protecting{0};  // handlers between their check of open and their protect
 thread_local uint32_t reprotect_page = 0;
 thread_local bool reprotect_pending = false;
-struct Hit { uint64_t rip; uint32_t address; uint32_t vtable; uint32_t offset; uint32_t thread; };
+struct Hit { uint64_t rip; uint32_t address; uint32_t vtable; uint32_t offset; uint32_t thread; uint32_t reader_kind; uint32_t reader_key; };
+std::atomic<uint32_t> reader_kind{0}, reader_key{0};
 std::array<Hit, 1 << 18> hits;
 std::atomic<uint32_t> hit_count{0};
 std::atomic<uint64_t> faults{0};
@@ -110,6 +111,9 @@ LONG CALLBACK handler(EXCEPTION_POINTERS* info) {
         // Not one of ours: say how the page stands, for when nobody takes it.
         MEMORY_BASIC_INFORMATION mbi{};
         VirtualQuery(guest_base + (guest & ~0xFFFu), &mbi, sizeof mbi);
+        // A page this watch had closed and has opened again since the
+        // access faulted (end_capture on the main thread): run it again.
+        if (mbi.State == MEM_COMMIT && mbi.Protect == PAGE_READWRITE) return EXCEPTION_CONTINUE_EXECUTION;
         char text[160];
         const int length = std::snprintf(text, sizeof text,
             "DRAW_READS_PASS guest=0x%08x write=%u protect=0x%lx state=0x%lx capture=%u open=%u capturing=%u\n",
@@ -137,9 +141,12 @@ LONG CALLBACK handler(EXCEPTION_POINTERS* info) {
     } else if (found != words.end() && found->address == first &&
                !overwritten[found - words.begin()].load(std::memory_order_relaxed)) {
         const uint32_t slot = hit_count.fetch_add(1, std::memory_order_relaxed);
+        const uint32_t thread = thread_id ? thread_id() : 0;
         if (slot < hits.size())
             hits[slot] = {uint64_t(info->ContextRecord->Rip) - uint64_t(uintptr_t(GetModuleHandleW(nullptr))),
-                          found->address, found->vtable, found->offset, thread_id ? thread_id() : 0};
+                          found->address, found->vtable, found->offset, thread,
+                          thread == 1 ? reader_kind.load(std::memory_order_relaxed) : 0,
+                          thread == 1 ? reader_key.load(std::memory_order_relaxed) : 0};
     }
     reprotect_page = page;
     reprotect_pending = true;
@@ -211,6 +218,58 @@ void begin_capture(uint8_t* base, std::vector<std::pair<uint64_t, uint64_t>> ran
     }
 }
 
+namespace {
+struct Copy { uint32_t address; uint32_t size; size_t at; };
+std::vector<Copy> copies;
+std::vector<uint8_t> copied;
+}
+
+void snapshot_physical(uint8_t* base, const std::vector<std::pair<uint64_t, uint64_t>>& ranges) {
+    copies.clear();
+    size_t used = 0;
+    for (const auto& [address, size] : ranges) {
+        if (address < 0xA0000000u) continue;
+        for (uint64_t at = address; at < address + size;) {
+            MEMORY_BASIC_INFORMATION info{};
+            if (!VirtualQuery(base + at, &info, sizeof info)) break;
+            const uint64_t end = (std::min)(address + size, uint64_t(static_cast<uint8_t*>(info.BaseAddress) + info.RegionSize - base));
+            // Plain read-write only: not write-combined GPU buffers (slow to
+            // read) nor pages the runtime or this watch protects.
+            if (info.State == MEM_COMMIT && info.Protect == PAGE_READWRITE) {
+                copies.push_back({uint32_t(at), uint32_t(end - at), used});
+                used += size_t(end - at);
+            }
+            at = end;
+        }
+    }
+    if (copied.size() < used) copied.resize(used);
+    for (const auto& c : copies) std::memcpy(copied.data() + c.at, base + c.address, c.size);
+}
+
+void diff_physical(uint8_t* base, const std::function<void(uint32_t)>& changed) {
+    for (const auto& c : copies)
+        for (uint32_t offset = 0; offset < c.size; offset += 4096) {
+            const uint32_t length = (std::min)(4096u, c.size - offset);
+            if (!std::memcmp(base + c.address + offset, copied.data() + c.at + offset, length)) continue;
+            for (uint32_t word = 0; word < length; word += 4)
+                if (std::memcmp(base + c.address + offset + word, copied.data() + c.at + offset + word, 4))
+                    changed(c.address + offset + word);
+        }
+    copies.clear();
+}
+
+void rearm(const std::function<void(const CapturedPage&)>& written) {
+    const uint32_t count = (std::min)(captured_count.load(), capture_limit);
+    for (uint32_t i = 0; i < count; ++i) {
+        const uint32_t page = captured_pages[i];
+        written({page, capture_pool.get() + size_t(i) * 4096});
+        // Read-only again, saved again at its next write.
+        uint8_t expected = 2;
+        if (capture_marks[page >> 12].compare_exchange_strong(expected, 1)) protect(page, PAGE_READONLY);
+    }
+    captured_count.store(0);
+}
+
 std::vector<CapturedPage> end_capture() {
     capturing.store(false, std::memory_order_release);
     for (const auto& [address, size] : capture_ranges) {
@@ -238,14 +297,30 @@ void end() {
     for (const uint32_t page : pages) page_marks[page >> 12].store(0, std::memory_order_release);
 }
 
+std::vector<Word> close() {
+    end();
+    std::vector<Word> kept;
+    for (size_t i = 0; i < words.size(); ++i)
+        if (!overwritten[i].load(std::memory_order_relaxed)) kept.push_back(words[i]);
+    words.clear();
+    return kept;
+}
+
+void set_reader(uint32_t kind, uint32_t key) {
+    reader_kind.store(kind, std::memory_order_relaxed);
+    reader_key.store(key, std::memory_order_relaxed);
+}
+
+// rip=<offset>:<owner kind>+<offset>@<reader kind>/<key>/t<thread>x<count>
 void report(uint32_t frame) {
     const uint32_t count = (std::min<uint32_t>)(hit_count.exchange(0), uint32_t(hits.size()));
-    std::map<std::tuple<uint64_t, uint32_t, uint32_t>, uint64_t> by_reader;  // rip, vtable, offset
-    for (uint32_t i = 0; i < count; ++i) ++by_reader[{hits[i].rip, hits[i].vtable, hits[i].offset}];
+    std::map<std::tuple<uint64_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t>, uint64_t> by_reader;
+    for (uint32_t i = 0; i < count; ++i)
+        ++by_reader[{hits[i].rip, hits[i].vtable, hits[i].offset, hits[i].reader_kind, hits[i].reader_key, hits[i].thread}];
     std::cerr << "DRAW_READS frame=" << frame << " faults=" << faults.exchange(0) << " hits=" << count;
     for (const auto& [key, n] : by_reader)
         std::cerr << " rip=0x" << std::hex << std::get<0>(key) << ":0x" << std::get<1>(key) << "+" << std::get<2>(key)
-                  << std::dec << "x" << n;
+                  << "@" << std::get<3>(key) << "/" << std::get<4>(key) << "/t" << std::dec << std::get<5>(key) << "x" << n;
     std::cerr << '\n';
 }
 }
@@ -254,8 +329,13 @@ namespace sfr::draw_reads {
 bool enabled() { return false; }
 void begin(uint8_t*, std::vector<Word>, uint32_t (*)()) {}
 void end() {}
+std::vector<Word> close() { return {}; }
+void set_reader(uint32_t, uint32_t) {}
 void report(uint32_t) {}
 void begin_capture(uint8_t*, std::vector<std::pair<uint64_t, uint64_t>>, uint32_t (*)()) {}
 std::vector<CapturedPage> end_capture() { return {}; }
+void rearm(const std::function<void(const CapturedPage&)>&) {}
+void snapshot_physical(uint8_t*, const std::vector<std::pair<uint64_t, uint64_t>>&) {}
+void diff_physical(uint8_t*, const std::function<void(uint32_t)>&) {}
 }
 #endif
