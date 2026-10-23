@@ -319,6 +319,10 @@ add_test(NAME unselected_users COMMAND sfr_unselected_users_test)
 add_executable(sfr_content_files_test tests/content_files_test.cpp src/content_files.cpp src/guest_memory.cpp)
 target_include_directories(sfr_content_files_test PRIVATE src)
 add_test(NAME content_files COMMAND sfr_content_files_test)
+add_executable(sfr_achievements_test tests/achievements_test.cpp src/achievements.cpp)
+target_include_directories(sfr_achievements_test PRIVATE src)
+target_link_libraries(sfr_achievements_test PRIVATE Threads::Threads)
+add_test(NAME achievements COMMAND sfr_achievements_test)
 add_executable(sfr_multibyte_unicode_test tests/multibyte_unicode_test.cpp src/multibyte_unicode.cpp src/guest_memory.cpp)
 target_include_directories(sfr_multibyte_unicode_test PRIVATE src)
 add_test(NAME multibyte_unicode COMMAND sfr_multibyte_unicode_test)
@@ -721,6 +725,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui/imgui.cpp")
     set(SFR_IMGUI "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui")
     # The launcher lists the host cameras and controllers.
     set(SFR_LAUNCHER_SOURCES src/launcher_main.cpp src/launcher_settings.cpp src/mod_loader.cpp src/input_bindings.cpp src/pad_devices.cpp src/pad_assignment.cpp src/launcher_sound.cpp src/launcher_art.cpp src/sony_gamepad.cpp
+        src/achievements.cpp src/image_decode.cpp
         ${SFR_CAMERA_CAPTURE} src/kinect_sensor.cpp ${SFR_KINECT_SENSOR} ${SFR_VOICE}
         src/kinect_preview.cpp src/kinect_preview_window.cpp src/kinect_preview_layout.cpp src/camera_preview_window.cpp src/camera_debug.cpp src/text_wrap.cpp src/touch_scroll.cpp
         src/live_connect.cpp
@@ -1269,6 +1274,7 @@ if(SFR_BUILD_DIAGNOSTIC)
     target_sources(sfr_cpu_diagnostic PRIVATE src/native_country.cpp)
     target_sources(sfr_cpu_diagnostic PRIVATE src/nui_device_status.cpp)
     target_sources(sfr_cpu_diagnostic PRIVATE src/unselected_users.cpp src/local_profile.cpp src/content_files.cpp)
+    target_sources(sfr_cpu_diagnostic PRIVATE src/achievements.cpp)
     target_sources(sfr_cpu_diagnostic PRIVATE src/multibyte_unicode.cpp)
     target_sources(sfr_cpu_diagnostic PRIVATE src/guest_critical_sections.cpp)
     target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_guest_execution)

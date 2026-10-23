@@ -35,10 +35,25 @@
 - 第一次執行時遊戲會問「No previous save data detected. Would you like to create a new save?」，
   選「Create Save Data」。
 
+## 成就（`src/achievements.*`）
+
+遊戲在比賽後等時機以 `XMsgStartIORequest`（XGI 訊息 `0x000B0008`，XUserWriteAchievements）頒發成就，
+內容是（玩家, 成就 id）的清單。沒有 Xbox LIVE，所以已登入玩家的成就記在本機：
+
+- 檔案是 `save/<XUID>/achievements.txt`（跟存檔同一個玩家資料夾，`SFR_SAVE_DIRECTORY` 同樣適用）：
+  `player=<名稱>`，以及每個成就一行 `<id>=<第一次獲得的 UTC 時間>`，例如 `11=2026-10-24T05:12:33Z`。
+  已有的 id 不會被覆寫（時間保持第一次），所以同一個成就重複頒發也沒關係。
+- 寫入在獨立的執行緒進行（先寫 `achievements.txt.new` 再改名蓋過），遊戲執行緒不會等磁碟。
+  log 會有 `RESULT XUserWriteAchievements count=1 id=11 stored=1 file=...`。
+- 遊戲本身不會讀回成就（它沒有匯入成就列舉的函式），自己的進度記在 `SfrAllData.sav`。
+- 啟動器的「成就」分頁顯示清單：名稱、說明、成就點數與圖示讀自遊戲 XEX 內的標題資料（以 title id
+  `5345084D` 命名的 XDBF 資源：XACH 成就表、各語言 XSTR 字串表、PNG 圖示），讀的是安裝後的
+  `image.bin`／`xex_header.bin`。字串依遊戲語言（光碟有英、日、德、法、西、義），「自動」與中文用英文。
+
 ## 驗證
 
 ```bash
-ctest --test-dir out/build/host -R content_files
+ctest --test-dir out/build/host -R "content_files|achievements"
 ```
 
 以 `SFR_PROFILE=1` 從標題進入主選單：遊戲建立存檔（23 MB），之後在選單中每次變更都會重新

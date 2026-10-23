@@ -38,6 +38,8 @@
 #include "text_wrap.h"
 #include "touch_scroll.h"
 #include "voice_commands.h"
+#include "achievements.h"
+#include "image_decode.h"
 #include "launcher_settings.h"
 #include "launcher_fonts.h"
 #include "launcher_screen_fit.h"
@@ -63,6 +65,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
@@ -144,6 +147,9 @@ enum Text {
     TabTest, TestIntro, TestDefault, TestReset, TestActive, TestActiveNone,
     OnlinePasswordLabel, OnlinePasswordHint, OnlinePasswordHostHint, OnlineReachPasswordRequired, OnlineReachWrongPassword,
     FpsOverlay, FpsOverlayHint, FpsInset, FpsInsetHint, TouchNames, TouchNamesHint,
+    TabAchievements, AchievementsSummary, AchievementsScore, AchievementsHint, AchievementsNoGame, AchievementsUnreadable,
+    AchievementUnlocked, AchievementLocked, AchievementSecret, AchievementSecretHint, AchievementsPlayer,
+    SectionUnlocked, SectionLocked,
     TextCount
 };
 
@@ -537,16 +543,35 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
      "計數器離角落多遠（螢幕高度的百分比）。若被螢幕圓角切掉就調高。"},
     {"Button names", "按鈕名稱"},
     {"Show A, B, X, Y and the other names on the touch buttons.", "在觸控按鈕上顯示 A、B、X、Y 等名稱。"},
+    {"Achievements", "成就"},
+    {"%d of %d unlocked", "已解鎖 %d / %d"},
+    {"%d / %d G", "%d / %d G"},
+    {"The game awards these to the signed-in player as you play, with no Xbox network needed. They are kept with that player's saves, in achievements.txt.",
+     "遊戲進行中會把成就頒給已登入的玩家，不需要 Xbox 網路。成就跟該玩家的存檔放在一起（achievements.txt）。"},
+    {"Install the game files to see the achievements.", "安裝遊戲檔案後即可查看成就。"},
+    {"The achievement list could not be read from the game files (%s).", "無法從遊戲檔案讀取成就清單（%s）。"},
+    {"Unlocked %s", "%s 解鎖"},
+    {"Locked", "未解鎖"},
+    {"Secret achievement", "隱藏成就"},
+    {"Keep playing to reveal it.", "繼續遊玩來揭曉。"},
+    {"Player: %s", "玩家：%s"},
+    {"Unlocked", "已解鎖"},
+    {"Locked", "未解鎖"},
 }};
 
 int language = 0;
 const char* tr(Text text) { return texts[text][language]; }
+
+// Texts from elsewhere the fonts must draw too: the game's achievement names
+// in a locale beyond Latin (Japanese), set before the fonts are built.
+std::vector<std::string> font_extra_text;
 
 // Every text the launcher may show in either language: the table above and
 // the Test options' own (test_options.h), for the fonts' glyphs.
 template <class Visit>
 void for_each_text(Visit visit) {
     for (const auto& text : texts) { visit(text[0]); visit(text[1]); }
+    for (const auto& text : font_extra_text) visit(text.c_str());
     for (const auto& group : sfr::test_group_names) { visit(group[0]); visit(group[1]); }
     for (const auto& option : sfr::test_options()) {
         for (int i = 0; i < 2; ++i) { visit(option.label[i]); visit(option.hint[i]); }
@@ -724,6 +749,48 @@ HICON make_icon(int size) {
     return icon;
 }
 
+#endif
+
+// ---------------------------------------------------------------- pictures
+// An RGBA picture (top row first) as a texture ImGui draws; 0 if none could
+// be made. Kept until release_texture.
+#ifdef _WIN32
+ImTextureID make_texture(const uint8_t* rgba, int width, int height) {
+    if (!device || width <= 0 || height <= 0) return 0;
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = UINT(width);
+    desc.Height = UINT(height);
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_IMMUTABLE;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    const D3D11_SUBRESOURCE_DATA data{rgba, UINT(width * 4), 0};
+    ID3D11Texture2D* texture = nullptr;
+    if (FAILED(device->CreateTexture2D(&desc, &data, &texture))) return 0;
+    ID3D11ShaderResourceView* view = nullptr;
+    device->CreateShaderResourceView(texture, nullptr, &view);
+    texture->Release();
+    return ImTextureID(intptr_t(view));
+}
+void release_texture(ImTextureID texture) {
+    if (texture) reinterpret_cast<ID3D11ShaderResourceView*>(intptr_t(texture))->Release();
+}
+#else
+SDL_Renderer* picture_renderer = nullptr;  // the launcher's, once it draws text
+ImTextureID make_texture(const uint8_t* rgba, int width, int height) {
+    if (!picture_renderer || width <= 0 || height <= 0) return 0;
+    SDL_Texture* texture = SDL_CreateTexture(picture_renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, width, height);
+    if (!texture) return 0;
+    SDL_UpdateTexture(texture, nullptr, rgba, width * 4);
+    SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
+    SDL_SetTextureScaleMode(texture, SDL_ScaleModeLinear);
+    return ImTextureID(intptr_t(texture));
+}
+void release_texture(ImTextureID texture) {
+    if (texture) SDL_DestroyTexture(reinterpret_cast<SDL_Texture*>(intptr_t(texture)));
+}
 #endif
 
 // ---------------------------------------------------------------- files
@@ -1452,7 +1519,7 @@ float draw_prompt(ImDrawList* draw, ImVec2 at, float size, InputKind kind, Promp
 
 // ---------------------------------------------------------------- app
 enum class Page { Settings, Stopped, Install, Installing, Installed };
-enum Tab { GeneralTab, DisplayTab, SoundTab, ControlsTab, MotionTab, AvatarTab, ModsTab, FilesTab, TestTab, TabCount };
+enum Tab { GeneralTab, DisplayTab, SoundTab, ControlsTab, MotionTab, AvatarTab, ModsTab, AchievementsTab, FilesTab, TestTab, TabCount };
 enum class Question { none, quit, cancel_install, quit_during_install, online_unreachable };
 
 // An installation running on its own thread; the page reads its progress.
@@ -1696,6 +1763,7 @@ struct Launcher {
         exit_code = game->exit_code().value_or(0);
         game.reset();
         stopped_lines = log_tail(log_file, 14);
+        achievements.stale = true;  // the game may have awarded some
         bool closed = exit_code == 0;
         for (const auto& line : stopped_lines)
             if (line.find("STOP window-closed") != std::string::npos) closed = true;
@@ -2017,7 +2085,7 @@ struct Launcher {
     void tab_list(ImVec2 size) {
         const float left = ImGui::GetCursorPosX();
         ImGui::PushFont(fonts.heading);
-        constexpr Text names[TabCount] = {TabGeneral, TabDisplay, TabSound, TabControls, TabMotion, TabAvatar, TabMods, TabFiles, TabTest};
+        constexpr Text names[TabCount] = {TabGeneral, TabDisplay, TabSound, TabControls, TabMotion, TabAvatar, TabMods, TabAchievements, TabFiles, TabTest};
         for (int i = 0; i < TabCount; ++i) {
             ImGui::SetCursorPosX(left);
             const ImVec2 at = ImGui::GetCursorScreenPos();
@@ -2692,6 +2760,252 @@ struct Launcher {
         if (changed) sfr::save_mods(directory, mod_list);
     }
 
+    // ------------------------------------------------ achievements
+    // The game's list (names, texts, icons) from the installed game's title
+    // data, and what the player unlocked from beside their saves
+    // (achievements.h). Read again each time the page is opened.
+    struct Achievements {
+        bool stale = true;
+        int last_frame = -10;
+        fs::path source;                    // the image directory read
+        std::vector<uint8_t> resource;      // its XDBF title data
+        std::string resource_error;
+        uint32_t locale = 0;                // asked for
+        std::optional<sfr::TitleData> title;
+        std::string error;
+        ImTextureID atlas = 0;              // every icon, in a grid
+        std::map<uint32_t, ImVec4> icons;   // image id -> uv min, uv max
+        sfr::UnlockedAchievements unlocked;
+    } achievements;
+
+    // The achievements' texts follow the game's language (the disc has
+    // English, Japanese, German, French, Spanish and Italian); "auto" and a
+    // Chinese launcher read English.
+    uint32_t achievement_locale() const {
+        const uint32_t id = sfr::game_language_id(settings.game_language);
+        return id ? id : 1;
+    }
+    void read_achievement_resource() {
+        if (!achievements.resource.empty() && achievements.source == settings.image_directory) return;
+        achievements.source = settings.image_directory;
+        achievements.resource_error.clear();
+        achievements.resource = sfr::is_image_directory(settings.image_directory)
+            ? sfr::read_title_resource(settings.image_directory, &achievements.resource_error)
+            : std::vector<uint8_t>{};
+        achievements.title.reset();
+    }
+    // Before the fonts are built: Japanese names need their glyphs.
+    void prepare_achievement_glyphs() {
+        if (achievement_locale() != 2) return;
+        read_achievement_resource();
+        if (const auto title = sfr::parse_title_data(achievements.resource, 2); title && title->locale == 2)
+            for (const auto& a : title->achievements) {
+                font_extra_text.push_back(a.name);
+                font_extra_text.push_back(a.description);
+                font_extra_text.push_back(a.locked_description);
+            }
+    }
+    bool font_draws(const std::string& text) const {
+        if (!fonts.body) return false;
+        for (const char* at = text.c_str(); *at;) {
+            unsigned int codepoint = 0;
+            at += ImTextCharFromUtf8(&codepoint, at, nullptr);
+            if (codepoint >= 0x80 && codepoint != 0x3000 && !fonts.body->FindGlyphNoFallback(ImWchar(codepoint))) return false;
+        }
+        return true;
+    }
+    void refresh_achievements() {
+        achievements.stale = false;
+        achievements.unlocked = sfr::read_unlocked(sfr::newest_achievement_file(sfr::resolved_save_directory(settings, directory)));
+        const fs::path before = achievements.source;
+        read_achievement_resource();
+        if (achievements.title && achievements.source == before && achievements.locale == achievement_locale()) return;
+        achievements.locale = achievement_locale();
+        release_texture(achievements.atlas);
+        achievements.atlas = 0;
+        achievements.icons.clear();
+        achievements.error = achievements.resource_error;
+        achievements.title.reset();
+        if (achievements.resource.empty()) return;
+        achievements.title = sfr::parse_title_data(achievements.resource, achievements.locale, &achievements.error);
+        // Texts the fonts cannot draw (Japanese read after the fonts were
+        // built): English instead.
+        if (achievements.title && achievements.title->locale != 1 &&
+            !std::all_of(achievements.title->achievements.begin(), achievements.title->achievements.end(),
+                         [&](const sfr::TitleAchievement& a) {
+                             return font_draws(a.name) && font_draws(a.description) && font_draws(a.locked_description);
+                         }))
+            achievements.title = sfr::parse_title_data(achievements.resource, 1, &achievements.error);
+        if (!achievements.title) return;
+        // The icons, 64 x 64 each, in one texture eight wide.
+        constexpr int cell = 64, columns = 8;
+        const auto& images = achievements.title->images;
+        if (images.empty()) return;
+        const int rows = int((images.size() + columns - 1) / columns), width = cell * columns, height = cell * rows;
+        std::vector<uint8_t> atlas(size_t(width) * height * 4, 0);
+        int slot = 0;
+        for (const auto& [id, png] : images) {
+            const sfr::DecodedImage picture = sfr::decode_png(png);
+            if (!picture) continue;
+            const int x0 = slot % columns * cell, y0 = slot / columns * cell;
+            for (int y = 0; y < cell; ++y)
+                for (int x = 0; x < cell; ++x) {
+                    const uint32_t sx = uint32_t(x) * picture.width / cell, sy = uint32_t(y) * picture.height / cell;
+                    std::memcpy(&atlas[(size_t(y0 + y) * width + x0 + x) * 4], &picture.rgba[(size_t(sy) * picture.width + sx) * 4], 4);
+                }
+            achievements.icons[id] = ImVec4(float(x0) / width, float(y0) / height, float(x0 + cell) / width, float(y0 + cell) / height);
+            ++slot;
+        }
+        achievements.atlas = make_texture(atlas.data(), width, height);
+        if (!achievements.atlas) achievements.icons.clear();
+    }
+
+    static std::string local_time_text(int64_t seconds) {
+        const std::time_t time = std::time_t(seconds);
+        std::tm local{};
+#ifdef _WIN32
+        localtime_s(&local, &time);
+#else
+        localtime_r(&time, &local);
+#endif
+        char text[32];
+        std::strftime(text, sizeof text, "%Y-%m-%d %H:%M", &local);
+        return text;
+    }
+
+    // One achievement: its icon, name, gamerscore, text and when it was
+    // unlocked. A row the pad and keyboard step through (and so scroll).
+    void achievement_row(const sfr::TitleAchievement& a, const sfr::UnlockedAchievement* unlocked) {
+        ImGui::PushID(int(a.id));
+        const bool hidden = !unlocked && a.secret();
+        const float icon = 64 * scale, gap = 16 * scale, width = content_width;
+        char score[16];
+        std::snprintf(score, sizeof score, "%u G", unsigned(a.gamerscore));
+        ImFont* heading = fonts.heading ? fonts.heading : ImGui::GetFont();
+        ImFont* body = ImGui::GetFont();
+        const float score_width = heading->CalcTextSizeA(heading->FontSize, FLT_MAX, 0.0f, score).x;
+        const float text_width = (std::max)(width - icon - gap - score_width - gap, 40 * scale);
+        const std::string name = hidden ? tr(AchievementSecret) : a.name;
+        const std::string text = wrapped(hidden ? tr(AchievementSecretHint) : unlocked ? a.description.c_str() : a.locked_description.c_str(), text_width);
+        char status[96];
+        if (unlocked) std::snprintf(status, sizeof status, tr(AchievementUnlocked), local_time_text(unlocked->unlocked).c_str());
+        else std::snprintf(status, sizeof status, "%s", tr(AchievementLocked));
+        const float line = ImGui::GetTextLineHeight();
+        const float text_height = heading->FontSize + 4 * scale + body->CalcTextSizeA(body->FontSize, FLT_MAX, 0.0f, text.c_str()).y + 4 * scale + line;
+        const float height = (std::max)(icon, text_height);
+
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        ImGui::InvisibleButton("##achievement", ImVec2(width, height), ImGuiButtonFlags_EnableNav);
+        const float lit = focus_amount(ImGui::IsItemFocused() && nav_visible());
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        if (lit > 0.01f) {
+            const float pad = 10 * scale;
+            const ImVec2 a0(at.x - pad, at.y - pad * 0.6f), b0(at.x + width + pad, at.y + height + pad * 0.6f);
+            draw->AddRectFilledMultiColor(a0, b0, color(accent, 0.30f * lit), color(accent, 0.06f * lit),
+                                          color(accent, 0.06f * lit), color(accent, 0.30f * lit));
+            draw->AddRectFilled(a0, ImVec2(a0.x + 4 * scale, b0.y), color(cyan, lit), 2 * scale);
+        }
+        const ImVec2 icon_min(at.x, at.y + (height - icon) * 0.5f), icon_max(icon_min.x + icon, icon_min.y + icon);
+        const auto uv = achievements.icons.find(a.image_id);
+        if (!hidden && achievements.atlas && uv != achievements.icons.end()) {
+            draw->AddImageRounded(achievements.atlas, icon_min, icon_max, ImVec2(uv->second.x, uv->second.y),
+                                  ImVec2(uv->second.z, uv->second.w), unlocked ? IM_COL32_WHITE : IM_COL32(120, 120, 130, 150),
+                                  6 * scale);
+        } else {
+            draw->AddRectFilled(icon_min, icon_max, IM_COL32(255, 255, 255, 18), 6 * scale);
+            const ImVec2 mark = heading->CalcTextSizeA(heading->FontSize, FLT_MAX, 0.0f, "?");
+            draw->AddText(heading, heading->FontSize, ImVec2(icon_min.x + (icon - mark.x) * 0.5f, icon_min.y + (icon - mark.y) * 0.5f),
+                          color(dim_text, 0.8f), "?");
+        }
+        if (unlocked)
+            draw->AddRect(icon_min, icon_max, color(cyan, 0.9f), 6 * scale, 0, 2 * scale);
+        const float x = at.x + icon + gap;
+        float y = at.y + (height - text_height) * 0.5f;
+        draw->AddText(heading, heading->FontSize, ImVec2(x, y), unlocked ? IM_COL32_WHITE : color(dim_text, 1.0f), name.c_str());
+        draw->AddText(heading, heading->FontSize, ImVec2(at.x + width - score_width, y),
+                      unlocked ? color(cyan, 1.0f) : color(dim_text, 0.8f), score);
+        y += heading->FontSize + 4 * scale;
+        draw->AddText(body, body->FontSize, ImVec2(x, y), color(dim_text, unlocked ? 1.0f : 0.8f), text.c_str());
+        y += body->CalcTextSizeA(body->FontSize, FLT_MAX, 0.0f, text.c_str()).y + 4 * scale;
+        draw->AddText(body, body->FontSize, ImVec2(x, y), unlocked ? color(cyan, 1.0f) : color(dim_text, 0.6f), status);
+        ImGui::Dummy(ImVec2(0, 10 * scale));
+        ImGui::PopID();
+    }
+
+    void achievements_settings() {
+        if (achievements.stale || ImGui::GetFrameCount() - achievements.last_frame > 1) refresh_achievements();
+        achievements.last_frame = ImGui::GetFrameCount();
+        // Nothing here to change: the page opens at its top (the totals)
+        // rather than scrolled to a first row; Down steps into the list.
+        focus_first_control = false;
+        const auto hint = [this] {
+            ImGui::PushStyleColor(ImGuiCol_Text, dim_text);
+            ImGui::TextUnformatted(wrapped(tr(AchievementsHint), room()).c_str());
+            ImGui::PopStyleColor();
+        };
+        if (!achievements.title) {
+            hint();
+            char text[512];
+            if (!sfr::is_image_directory(settings.image_directory)) std::snprintf(text, sizeof text, "%s", tr(AchievementsNoGame));
+            else std::snprintf(text, sizeof text, tr(AchievementsUnreadable), achievements.error.c_str());
+            ImGui::Dummy(ImVec2(0, 8 * scale));
+            ImGui::TextColored(warning_text, "%s", wrapped(text, room()).c_str());
+            return;
+        }
+        const auto& list = achievements.title->achievements;
+        int unlocked = 0, score = 0, total_score = 0;
+        for (const auto& a : list) {
+            total_score += a.gamerscore;
+            if (achievements.unlocked.find(a.id)) {
+                ++unlocked;
+                score += a.gamerscore;
+            }
+        }
+        // The totals, and a bar filling with them.
+        ImGui::Dummy(ImVec2(0, 6 * scale));
+        char summary[96], points[64];
+        std::snprintf(summary, sizeof summary, tr(AchievementsSummary), unlocked, int(list.size()));
+        std::snprintf(points, sizeof points, tr(AchievementsScore), score, total_score);
+        ImGui::PushFont(fonts.heading);
+        ImGui::TextUnformatted(summary);
+        ImGui::SameLine(content_width - ImGui::CalcTextSize(points).x);
+        ImGui::TextColored(cyan, "%s", points);
+        ImGui::PopFont();
+        {
+            const ImVec2 at = ImGui::GetCursorScreenPos();
+            const float bar = 8 * scale, fill = list.empty() ? 0.0f : float(unlocked) / float(list.size());
+            ImDrawList* draw = ImGui::GetWindowDrawList();
+            draw->AddRectFilled(at, ImVec2(at.x + content_width, at.y + bar), IM_COL32(255, 255, 255, 24), bar * 0.5f);
+            if (fill > 0)
+                draw->AddRectFilledMultiColor(at, ImVec2(at.x + content_width * fill, at.y + bar), color(accent, 1.0f),
+                                              color(cyan, 1.0f), color(cyan, 1.0f), color(accent, 1.0f));
+            ImGui::Dummy(ImVec2(content_width, bar + 4 * scale));
+        }
+        if (!achievements.unlocked.player.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, dim_text);
+            ImGui::Text(tr(AchievementsPlayer), achievements.unlocked.player.c_str());
+            ImGui::PopStyleColor();
+        }
+        hint();
+        // Unlocked ones first, the newest at the top; then the rest in the
+        // game's order.
+        std::vector<std::pair<const sfr::TitleAchievement*, const sfr::UnlockedAchievement*>> rows;
+        for (const auto& a : list) rows.emplace_back(&a, achievements.unlocked.find(a.id));
+        std::stable_sort(rows.begin(), rows.end(), [](const auto& l, const auto& r) {
+            if (bool(l.second) != bool(r.second)) return bool(l.second);
+            return l.second && r.second && l.second->unlocked > r.second->unlocked;
+        });
+        bool locked_heading = false;
+        if (unlocked) settings_section(SectionUnlocked);
+        for (const auto& [a, when] : rows) {
+            if (!when && !locked_heading) {
+                settings_section(SectionLocked);
+                locked_heading = true;
+            }
+            achievement_row(*a, when);
+        }
+    }
+
     // The Avatar page: the models added (settings.avatar_models), one of them
     // chosen or none (Issue #132). Android keeps its own copy of each.
     void avatar_model_settings() {
@@ -3312,6 +3626,7 @@ struct Launcher {
         case MotionTab: motion_settings(); break;
         case AvatarTab: avatar_model_settings(); break;
         case ModsTab: mods_settings(); break;
+        case AchievementsTab: achievements_settings(); break;
         case FilesTab: file_settings(); break;
         case TestTab: test_settings(); break;
         }
@@ -3824,6 +4139,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     io.IniFilename = nullptr;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
     apply_style(launcher.scale);
+    launcher.prepare_achievement_glyphs();
     launcher.fonts = load_fonts(launcher.scale);
     apply_language(launcher.settings.language);  // Chinese needs a font for it
     ImGui_ImplWin32_Init(window);
@@ -4029,6 +4345,7 @@ int main(int argc, char** argv) {
         ImGui_ImplSDLRenderer2_Shutdown();
         return false;
     };
+    launcher.prepare_achievement_glyphs();
     bool font_texture = make_font_texture();
 #if !defined(__ANDROID__) && !defined(SFR_IOS)
     if (!font_texture) {
@@ -4049,6 +4366,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
+    picture_renderer = renderer;
 
     bool running = true;
     while (running) {
