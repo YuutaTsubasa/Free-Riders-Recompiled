@@ -231,7 +231,9 @@ with [docs/progress.md](docs/progress.md).
 - [v0.10.23 — Sound on iPhone and iPad](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.23)
   The game plays sound on iOS again: the launcher no longer keeps the only sound output to itself (#249).
 - [v0.10.24 — Tilt to lean](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.24)
-  On phones, a new Tilt to lean switch leans the board forward and back as you tip the phone, next to Tilt to steer (#247).
+  On phones, a new Tilt to lean switch, next to Tilt to steer (#247). In 0.10.25 it became Tilt to kick.
+- [v0.10.25 — Tilt to kick, faster races on slow phones](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.25)
+  A quick forward tip of the phone is a kick dash (#247). In a race the main thread now runs queued jobs itself instead of waiting for slower cores, and frames that aren't drawn skip the course's object drawing (#176).
 
 ## System Requirements
 
