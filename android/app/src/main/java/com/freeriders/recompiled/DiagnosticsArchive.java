@@ -38,7 +38,7 @@ final class DiagnosticsArchive {
         "SFR_TEST_DEPTH_D24S8", "SFR_TEST_NO_DEVICE_ADDRESS", "SFR_TEST_NO_INVERTED_DEPTH",
         "SFR_RENDER_THREAD", "SFR_INDEX_CACHE", "SFR_STREAM_CACHE", "SFR_CONSTANT_RUNS", "SFR_CONSTANT_UPLOAD_REUSE", "SFR_CORE_PLAN", "SFR_PERF_HINT", "SFR_AUDIO_PRIORITY",
         "SFR_MAIN_HELPS_JOBS", "SFR_MAIN_HELPS_COLLISION", "SFR_MAIN_AFFINITY", "SFR_HOST_TIMING", "SFR_STEP_WAITS_COLLISION", "SFR_UNDRAWN_STAGE_AREAS", "SFR_GPU_TIMING",
-        "SFR_AUDIO_CUES"));
+        "SFR_AUDIO_CUES", "SFR_TOUCH_IN_SCENES", "SFR_HIDE_KINECT_UI"));
 
     static void write(File root, OutputStream output, String device) throws IOException {
         write(root, output, device, Collections.emptyList());

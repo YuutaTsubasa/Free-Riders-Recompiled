@@ -2433,7 +2433,14 @@ void NativePresentation::finish_preparation() {
 
 void NativePresentation::pump_events() {
 #ifdef _WIN32
-    // The window's own thread handles its messages (WindowThread).
+    // The window's own thread handles its messages (WindowThread). Windows
+    // reads no touches, but SFR_TOUCH_CONTROLS=1 shows the controls at rest,
+    // following the scene (hidden in movies and story scenes, Issue #274).
+    if (touch_controls_enabled()) {
+        static TouchControls resting;
+        resting.update({}, 0.0f, touch_scene());
+        publish_touch_controls(resting.state(), resting.overlay());
+    }
 #else
     // SDL keeps keyboard and controller state from these events too.
     SDL_Event event;

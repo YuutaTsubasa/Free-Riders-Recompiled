@@ -313,6 +313,38 @@ void tilt_lean() {
     require(controls.state().buttons & sfr::gamepad_button::x, "the kick works with the stick held");
 }
 
+// Issue #274: movies and story scenes draw no controls, and a touch anywhere
+// is START, which skips.
+void scenes() {
+    using sfr::TouchScene;
+    TouchControls controls;
+    controls.update({}, 0.0f, TouchScene::scene);
+    for (const auto& circle : controls.overlay().circle) require(circle[3] == 0.0f, "a scene draws no controls");
+    require(controls.state() == sfr::GamepadState{}, "a scene untouched presses nothing");
+    controls.update(std::vector<TouchPoint>{at(1, TouchControls::a)}, 0.0f, TouchScene::scene);
+    require(controls.state().buttons == button::start && !controls.pointer(), "a touch on A's place is START");
+    controls.update(std::vector<TouchPoint>{at(1, TouchControls::a), {2, 0.1f, 0.7f}}, 0.0f, TouchScene::scene);
+    require(controls.state().buttons == button::start && !controls.state().thumb_lx,
+            "a second finger moves no stick");
+    for (const auto& circle : controls.overlay().circle) require(circle[3] == 0.0f, "nothing is drawn pressed");
+    controls.update({}, 0.0f, TouchScene::scene);
+    require(!controls.state().buttons, "lifting the finger releases START");
+    controls.update(std::vector<TouchPoint>{{3, 0.5f, 0.5f}}, 0.0f, TouchScene::scene);
+    controls.update({}, 0.0f, TouchScene::menu);
+    require(controls.overlay().circle[TouchControls::a][3] == 1.0f, "back in the menus the controls return");
+
+    // Which scene: a race first, then a movie, the title, a story scene.
+    require(sfr::touch_scene_for(true, true, true, true, false) == TouchScene::race, "a race is a race");
+    require(sfr::touch_scene_for(false, true, true, false, false) == TouchScene::scene,
+            "the opening movie inside the title's states is a scene");
+    require(sfr::touch_scene_for(false, false, true, true, false) == TouchScene::title, "the title keeps its controls");
+    require(sfr::touch_scene_for(false, false, false, true, false) == TouchScene::scene, "a story scene hides them");
+    require(sfr::touch_scene_for(false, true, false, true, true) == TouchScene::menu &&
+                sfr::touch_scene_for(false, true, true, false, true) == TouchScene::title,
+            "SFR_TOUCH_IN_SCENES=1 keeps them");
+    require(sfr::touch_scene_for(false, false, false, false, false) == TouchScene::menu, "otherwise the menus");
+}
+
 int main() {
 #ifdef _WIN32
     _putenv_s("SFR_TOUCH_CONTROLS", "1");
@@ -323,6 +355,7 @@ int main() {
         run();
         race_actions();
         pointer();
+        scenes();
         packing();
         controller_handover();
         tilt_lean();

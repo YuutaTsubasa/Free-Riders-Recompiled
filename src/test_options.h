@@ -201,6 +201,12 @@ inline constexpr TestOption table[] = {
       "測試用：在比賽中不顯示的畫格（跳格）裡，賽道本身的工作只找出鏡頭所在的區域，不繪製它的物件（預設如此）。"
       "關閉時改回 0.10.24 的做法，執行它全部的繪製；用於賽道物件不動或選手穿過賽道掉落時。"},
      off, "#176"},
+    {"SFR_TOUCH_IN_SCENES", TestGroup::gameplay, test_platform::android | test_platform::ios,
+     {"Touch controls in cutscenes", "過場畫面顯示觸控按鈕"},
+     {"For testing: On keeps the touch controls on screen in movies and story scenes, as 0.10.30 did. By default "
+      "they are hidden there and a tap anywhere is START, which skips.",
+      "測試用：開啟時，影片與劇情畫面也顯示觸控按鈕（與 0.10.30 相同）。預設在這些畫面隱藏按鈕，點一下畫面任何地方即為 START，可以略過。"},
+     on, "#274"},
     // ---- logging
     {"SFR_FRAME_METRICS", TestGroup::logging, test_platform::all,
      {"Frame timing", "畫格時間"},
