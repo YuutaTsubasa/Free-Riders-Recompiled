@@ -44,6 +44,17 @@
 //   SFR_TEST_WORKER_CPUS  every other guest thread,
 //   SFR_TEST_RENDER_CPUS  the render thread.
 // A thread's test mask replaces the plan's choice for it.
+//
+// Android resets a thread's cores when it moves the app between cpusets
+// (top-app, foreground, background: leaving the game for a moment, the
+// notification shade, the recents screen). A Pixel 10a's main thread, put on
+// the X4 alone (0x80), went to 0x7f (its foreground cpuset has no X4) and,
+// when the game came back, to every core (0xff), and stayed there for the
+// rest of the session, mostly on an A720 (Issue #176). So each placed thread
+// is kept (remember_placement) and checked about once a second
+// (restore_placement): one allowed on a core its role avoids is placed again,
+// and the log says CORE_PLAN_REAPPLIED. A mask narrower than the role's
+// (cores the system paused, a cpuset without them) is left alone.
 // Linux and Android only; elsewhere the calls do nothing.
 #include <cstdint>
 #include <cstdio>
@@ -52,7 +63,11 @@
 #if defined(__linux__)
 #include <dirent.h>
 #include <fstream>
+#include <mutex>
 #include <sched.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#include <vector>
 #endif
 
 namespace sfr {
@@ -157,6 +172,14 @@ inline uint64_t host_role_mask(HostThreadRole role, unsigned plan, const long (&
     return mask;
 }
 
+// Whether a thread allowed the cores `now` must be placed again for its
+// role's mask `role`: it may run on a core the role avoids. Not where nothing
+// is known (0), nor where it is narrower than the role (paused cores, a
+// smaller cpuset).
+inline bool needs_placement(uint64_t now, uint64_t role) {
+    return now && role && (now & ~role);
+}
+
 inline uint64_t parse_cpu_mask(const char* text) {
     return text && *text ? uint64_t(std::strtoull(text, nullptr, 16)) : 0;
 }
@@ -232,10 +255,82 @@ inline uint64_t host_role_mask(HostThreadRole role) {
                           test_process_cpus());
 }
 
-// Places the calling thread (tid 0) or thread tid by its role; returns the
-// new mask, or 0 where nothing changed.
+namespace core_plan_detail {
+inline pid_t current_tid() { return pid_t(syscall(SYS_gettid)); }
+inline uint64_t allowed_of(pid_t tid) {
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    if (sched_getaffinity(tid, sizeof set, &set) != 0) return 0;
+    uint64_t mask = 0;
+    for (int cpu = 0; cpu < 64; ++cpu)
+        if (CPU_ISSET(cpu, &set)) mask |= uint64_t{1} << cpu;
+    return mask;
+}
+struct Placed { pid_t tid; HostThreadRole role; };
+inline std::mutex placed_lock;
+inline std::vector<Placed> placed;
+}
+
+// Keeps thread tid (0 = the calling one) to be placed again by its role
+// where the system resets its cores; forget_placement before it exits.
+inline void remember_placement(HostThreadRole role, pid_t tid = 0) {
+    if (!tid) tid = core_plan_detail::current_tid();
+    std::lock_guard lock(core_plan_detail::placed_lock);
+    for (auto& entry : core_plan_detail::placed)
+        if (entry.tid == tid) return void(entry.role = role);
+    core_plan_detail::placed.push_back({tid, role});
+}
+inline void forget_placement(pid_t tid = 0) {
+    if (!tid) tid = core_plan_detail::current_tid();
+    std::lock_guard lock(core_plan_detail::placed_lock);
+    auto& list = core_plan_detail::placed;
+    for (size_t i = 0; i < list.size(); ++i)
+        if (list[i].tid == tid) {
+            list[i] = list.back();
+            list.pop_back();
+            return;
+        }
+}
+
+// Places the calling thread (tid 0) or thread tid by its role and keeps it
+// for restore_placement; returns the new mask, or 0 where nothing changed.
 inline uint64_t place_host_thread(HostThreadRole role, pid_t tid = 0) {
-    return core_plan_detail::narrow_to(host_role_mask(role), tid);
+    const uint64_t mask = host_role_mask(role);
+    if (mask) remember_placement(role, tid);
+    return core_plan_detail::narrow_to(mask, tid);
+}
+
+// Places again every kept thread the system has let onto cores its role
+// avoids. Returns a log line, or "" where there was none: CORE_PLAN_REAPPLIED,
+// then for each role placed again the mask its first thread had and the one
+// it has now, workers with their count (main=0xff>0x80 workers=3:0xff>0x70).
+inline std::string restore_placement() {
+    struct Change { unsigned count = 0; uint64_t was = 0, now = 0; } changes[3];
+    {
+        std::lock_guard lock(core_plan_detail::placed_lock);
+        for (const auto& entry : core_plan_detail::placed) {
+            const uint64_t role = host_role_mask(entry.role);
+            const uint64_t was = core_plan_detail::allowed_of(entry.tid);
+            if (!needs_placement(was, role) || !core_plan_detail::narrow_to(role, entry.tid)) continue;
+            auto& change = changes[size_t(entry.role)];
+            if (!change.count++) change.was = was, change.now = core_plan_detail::allowed_of(entry.tid);
+        }
+    }
+    std::string line;
+    static const char* const names[3] = {"main", "workers", "render"};
+    for (size_t role = 0; role < 3; ++role) {
+        const auto& change = changes[role];
+        if (!change.count) continue;
+        char part[96];
+        if (role == size_t(HostThreadRole::worker))
+            std::snprintf(part, sizeof part, " %s=%u:0x%llx>0x%llx", names[role], change.count,
+                          static_cast<unsigned long long>(change.was), static_cast<unsigned long long>(change.now));
+        else
+            std::snprintf(part, sizeof part, " %s=0x%llx>0x%llx", names[role],
+                          static_cast<unsigned long long>(change.was), static_cast<unsigned long long>(change.now));
+        line += part;
+    }
+    return line.empty() ? line : "CORE_PLAN_REAPPLIED" + line;
 }
 
 // One line for the log: the plan, each core's speed and the masks it gives
@@ -259,6 +354,8 @@ inline uint64_t test_process_cpus() { return 0; }
 inline uint64_t apply_test_process_cpus() { return 0; }
 inline uint64_t host_role_mask(HostThreadRole) { return 0; }
 inline uint64_t place_host_thread(HostThreadRole) { return 0; }
+inline void forget_placement() {}
+inline std::string restore_placement() { return {}; }
 inline std::string describe_core_plan() { return {}; }
 #endif
 
