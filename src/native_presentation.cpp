@@ -277,6 +277,7 @@ struct NativePresentation::Impl {
         bool prepared = false;  // recording side: its first barriers are in a list
         // Asking side: colour (1) and depth (2) laid out for sampling.
         uint8_t reading = 0;
+        uint16_t pass_category = 0;  // SFR_GPU_TIMING=2
     };
     std::function<void(const void*)> before_surface_write;
     // Asking side, before a draw or clear records into the current target:
@@ -290,16 +291,17 @@ struct NativePresentation::Impl {
         surface->reading = 0;
         if (before_surface_write) before_surface_write(surface);
         struct Writable {
-            plume::RenderTexture* color; plume::RenderTexture* depth;
+            plume::RenderTexture* color; plume::RenderTexture* depth; Impl* impl;
             void operator()(plume::RenderCommandList& list, uint64_t) const {
                 std::array<plume::RenderTextureBarrier, 2> barriers{};
                 uint32_t count = 0;
                 if (color) barriers[count++] = plume::RenderTextureBarrier(color, plume::RenderTextureLayout::COLOR_WRITE);
                 if (depth) barriers[count++] = plume::RenderTextureBarrier(depth, plume::RenderTextureLayout::DEPTH_WRITE);
                 list.barriers(plume::RenderBarrierStage::GRAPHICS, barriers.data(), count);
+                if (gpu_pass_timing()) impl->mark_pass(impl->bound_category());
             }
         };
-        const Writable writable{(reading & 1) ? surface->color.get() : nullptr, (reading & 2) ? surface->depth.get() : nullptr};
+        const Writable writable{(reading & 1) ? surface->color.get() : nullptr, (reading & 2) ? surface->depth.get() : nullptr, this};
         enqueue_body(writable);
     }
     template <class Body> void enqueue_body(const Body& body) {
@@ -333,6 +335,7 @@ struct NativePresentation::Impl {
             command_list->setFramebuffer(framebuffer.get());
         }
         bound = next;
+        if (gpu_pass_timing()) mark_pass(bound_category());
     }
     // A logical rectangle on the current target, in its pixels.
     plume::RenderRect target_rectangle(const plume::RenderRect& rect) const {
@@ -659,6 +662,7 @@ struct NativePresentation::Impl {
         std::swap(fence, spare_fence);
         std::swap(timing, spare_timing);
         std::swap(timing_ended, spare_timing_ended);
+        std::swap(passes, spare_passes);
         spare_in_flight = true;
     }
     static std::function<void(const std::function<void()>&)>& gpu_wait() {
@@ -855,13 +859,92 @@ struct NativePresentation::Impl {
     // start and end), read only after the CPU has waited for that list
     // anyway, and logged as GPU_TIMING every 120 lists. Off: nothing is created.
     static bool gpu_timing() {
-        static const bool enabled = [] { const char* t = std::getenv("SFR_GPU_TIMING"); return t && *t == '1'; }();
+        static const bool enabled = [] { const char* t = std::getenv("SFR_GPU_TIMING"); return t && (*t == '1' || *t == '2'); }();
         return enabled;
     }
     std::unique_ptr<plume::RenderQueryPool> timing, spare_timing;
     bool timing_ended = false, spare_timing_ended = false;
     uint32_t timing_count = 0;
     double timing_sum_ms = 0, timing_max_ms = 0;
+    // SFR_GPU_TIMING=2 also times each render pass: a timestamp wherever the
+    // list leaves one pass for another (a new target, a resolve's copy, the
+    // present), each span charged to what it drew into: the framebuffer
+    // ("fb"), a render surface ("s<width>x<height>" in guest pixels), a
+    // resolve copy, the present's blit. Logged as GPU_PASSES every 120 lists,
+    // per list: milliseconds and spans (render passes) of each.
+    static bool gpu_pass_timing() {
+        static const bool enabled = [] { const char* t = std::getenv("SFR_GPU_TIMING"); return t && *t == '2'; }();
+        return enabled;
+    }
+    static constexpr uint32_t pass_capacity = 512;
+    struct PassTiming {
+        std::unique_ptr<plume::RenderQueryPool> pool;
+        std::vector<uint16_t> category;  // of the span each timestamp starts
+        uint32_t used = 0;
+        bool ended = false;
+    };
+    PassTiming passes, spare_passes;
+    std::mutex pass_mutex;  // the names, read when a list completes
+    std::vector<std::string> pass_names;
+    std::vector<double> pass_ms;
+    std::vector<uint32_t> pass_spans;
+    uint32_t pass_lists = 0;
+    uint16_t pass_category(const std::string& name) {
+        std::lock_guard lock(pass_mutex);
+        if (pass_names.empty()) {
+            pass_names = {"fb", "copy", "present"};  // fb_category, copy_category, blit_category
+            pass_ms.assign(3, 0.0);
+            pass_spans.assign(3, 0u);
+        }
+        for (size_t i = 0; i < pass_names.size(); ++i)
+            if (pass_names[i] == name) return uint16_t(i);
+        pass_names.push_back(name);
+        pass_ms.push_back(0);
+        pass_spans.push_back(0);
+        return uint16_t(pass_names.size() - 1);
+    }
+    static constexpr uint16_t fb_category = 0, copy_category = 1, blit_category = 2;
+    std::vector<uint16_t> copy_categories;  // recording side: by bound category
+    // Recording side: a span of this category starts here.
+    void mark_pass(uint16_t category) {
+        if (!passes.pool || passes.used + 1 >= pass_capacity) return;
+        command_list->writeTimestamp(passes.pool.get(), passes.used);
+        passes.category[passes.used++] = category;
+    }
+    uint16_t bound_category() const { return bound ? bound->pass_category : fb_category; }
+    void read_passes(PassTiming& timing) {
+        if (!timing.pool || !timing.ended) return;
+        timing.ended = false;
+        timing.pool->queryResults();
+        const uint64_t* r = timing.pool->getResults();
+        if (!r) return;
+        std::lock_guard lock(pass_mutex);
+        for (uint32_t i = 0; i < timing.used; ++i) {
+            if (r[i + 1] < r[i]) continue;
+            pass_ms[timing.category[i]] += double(r[i + 1] - r[i]) / 1e6;
+            ++pass_spans[timing.category[i]];
+        }
+        if (++pass_lists < 120) return;
+        std::vector<size_t> order(pass_names.size());
+        for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+        std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return pass_ms[a] > pass_ms[b]; });
+        double total = 0;
+        for (double ms : pass_ms) total += ms;
+        char text[128];
+        std::snprintf(text, sizeof text, "GPU_PASSES lists=%u render=%ux%u total_ms=%.3f", pass_lists, render_width,
+                      render_height, total / pass_lists);
+        std::string line = text;
+        for (size_t i : order) {
+            if (!pass_spans[i]) continue;
+            std::snprintf(text, sizeof text, " %s=%.3f/%.1f", pass_names[i].c_str(), pass_ms[i] / pass_lists,
+                          double(pass_spans[i]) / pass_lists);
+            line += text;
+        }
+        std::cerr << line << '\n';
+        std::fill(pass_ms.begin(), pass_ms.end(), 0.0);
+        std::fill(pass_spans.begin(), pass_spans.end(), 0u);
+        pass_lists = 0;
+    }
     void begin_list() {
         drain();
         command_list->begin();
@@ -874,16 +957,33 @@ struct NativePresentation::Impl {
             }
             timing_ended = false;
         }
+        if (gpu_pass_timing()) {
+            if (!passes.pool) {
+                passes.pool = graphics->device().createQueryPool(pass_capacity);
+                passes.category.assign(pass_capacity, 0);
+                pass_category("fb");
+            }
+            if (passes.pool) command_list->resetQueryPool(passes.pool.get(), 0, pass_capacity);
+            passes.used = 0;
+            passes.ended = false;
+        }
     }
     void end_list() {
         if (gpu_timing() && timing) {
             command_list->writeTimestamp(timing.get(), 1);
             timing_ended = true;
         }
+        if (gpu_pass_timing() && passes.pool) {
+            // The end of the last span, then every unused query (Plume
+            // reads them all, and an unwritten one fails the read).
+            for (uint32_t i = passes.used; i < pass_capacity; ++i) command_list->writeTimestamp(passes.pool.get(), i);
+            passes.ended = true;
+        }
         command_list->end();
     }
     // The list whose fence was just waited for: its two timestamps are final.
     void read_timing(plume::RenderQueryPool* pool, bool& ended) {
+        if (gpu_pass_timing()) read_passes(pool == timing.get() ? passes : spare_passes);
         if (!pool || !ended) return;
         ended = false;
         pool->queryResults();
@@ -909,6 +1009,7 @@ struct NativePresentation::Impl {
         command_list->setFramebuffer(framebuffer.get());
         bound = nullptr;
         open = true;
+        if (gpu_pass_timing()) mark_pass(fb_category);
     }
     void flush() {
         try { drain(); }
@@ -1684,6 +1785,8 @@ void NativePresentation::set_target(uint64_t key, uint32_t surface_width, uint32
         const plume::RenderTexture* attachment = made->color.get();
         made->framebuffer = device.createFramebuffer(plume::RenderFramebufferDesc(&attachment, 1, made->depth.get()));
         if (!made->framebuffer) throw std::runtime_error("render surface framebuffer creation failed");
+        if (Impl::gpu_pass_timing())
+            made->pass_category = impl_->pass_category("s" + std::to_string(surface_width) + 'x' + std::to_string(surface_height));
         static uint32_t reported = 0;
         if (reported++ < 64)
             std::cerr << "NATIVE_SURFACE_TARGET key=0x" << std::hex << key << std::dec << " surface=" << surface_width
@@ -1712,6 +1815,28 @@ plume::RenderTexture& NativePresentation::target_depth() {
 }
 
 const void* NativePresentation::target_identity() const noexcept { return impl_->target; }
+
+void NativePresentation::mark_gpu_pass(bool copy) {
+    if (!Impl::gpu_pass_timing()) return;
+    const uint16_t bound = impl_->bound_category();
+    if (!copy) {
+        impl_->mark_pass(bound);
+        return;
+    }
+    // Charged to the target bound at the copy: the framebuffer's own copies
+    // ("copy-fb") apart from those out of a render surface.
+    auto& copies = impl_->copy_categories;
+    if (copies.size() <= bound) copies.resize(bound + 1, 0);
+    if (!copies[bound]) {
+        std::string name;
+        {
+            std::lock_guard lock(impl_->pass_mutex);
+            name = "copy-" + impl_->pass_names[bound];
+        }
+        copies[bound] = impl_->pass_category(name);
+    }
+    impl_->mark_pass(copies[bound]);
+}
 
 void NativePresentation::begin_non_writing_records() noexcept { ++impl_->non_writing; }
 void NativePresentation::end_non_writing_records() noexcept { --impl_->non_writing; }
@@ -2057,8 +2182,12 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
     // Scaled into the window keeping its shape, the rest black; a straight
     // copy when the window is exactly the framebuffer and supports transfers.
     const uint32_t out_width = impl_->swap_chain->getWidth(), out_height = impl_->swap_chain->getHeight();
-    const bool can_copy = impl_->graphics->backend() != GraphicsBackend::vulkan ||
-        (static_cast<plume::VulkanSwapChain*>(impl_->swap_chain.get())->createInfo.imageUsage & VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    // A copy moves bytes, so only into a swap chain of the framebuffer's own
+    // channel order: Android's is RGBA, and copying the BGRA frame there
+    // swapped red and blue (a 1920x1080 screen at render scale 150%).
+    const bool can_copy = swap_chain_format == plume::RenderFormat::B8G8R8A8_UNORM &&
+        (impl_->graphics->backend() != GraphicsBackend::vulkan ||
+         (static_cast<plume::VulkanSwapChain*>(impl_->swap_chain.get())->createInfo.imageUsage & VK_IMAGE_USAGE_TRANSFER_DST_BIT));
     // The Pause Gesture's gauge and the touch controls are drawn by the blit
     // too, so they take the blit.
     const float pause = pause_gauge();
@@ -2079,6 +2208,10 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
     else {
         impl_->flush();
         impl_->begin_list();
+    }
+    if (Impl::gpu_pass_timing()) {
+        impl_->command_list->setFramebuffer(nullptr);  // ends the frame's last pass first
+        impl_->mark_pass(Impl::blit_category);
     }
     if (stretch) {
         impl_->build_blit();
