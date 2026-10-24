@@ -53,7 +53,7 @@ class ShaderPackageTests(unittest.TestCase):
                 (root / name).write_bytes(b'program')
             pack = root / 'shaders.pack'
             pack.write_bytes(b'SFRSHPK2' + struct.pack('<II', SHADER_ABI, 1) +
-                             struct.pack('<5I', 0, 0, 4, 1, 1) + b'gameDS')
+                             struct.pack('<6I', 0, 0, 4, 1, 1, 1) + b'gameDSR')
             defaults = root / 'data/pipeline-manifests'
             defaults.mkdir(parents=True)
             name = 'pipelines-vulkan.manifest'
@@ -74,7 +74,7 @@ class ShaderPackageTests(unittest.TestCase):
             for header in (b'SFRSHPK1' + struct.pack('<I', 1),
                            b'SFRSHPK2' + struct.pack('<II', 6, 1)):
                 with self.subTest(header=header):
-                    pack.write_bytes(header + struct.pack('<5I', 0, 0, 4, 1, 1) + b'gameDS')
+                    pack.write_bytes(header + struct.pack('<6I', 0, 0, 4, 1, 1, 1) + b'gameDSR')
                     with self.assertRaisesRegex(SystemExit, 'shader.*(ABI|outdated)'):
                         package.desktop_files('linux', root, pack)
 
@@ -84,7 +84,7 @@ class ShaderPackageTests(unittest.TestCase):
             for name in ('FreeRidersRecompiled', 'sfr_cpu_diagnostic'):
                 (root / name).write_bytes(b'program')
             pack = root / 'shaders.pack'
-            valid = b'SFRSHPK2' + struct.pack('<II', SHADER_ABI, 1) + struct.pack('<5I', 0, 0, 4, 1, 1) + b'gameDS'
+            valid = b'SFRSHPK2' + struct.pack('<II', SHADER_ABI, 1) + struct.pack('<6I', 0, 0, 4, 1, 1, 1) + b'gameDSR'
             pack.write_bytes(valid)
             self.assertIn(('shaders.pack', pack), package.desktop_files('linux', root, pack))
             for size in (0, 8, 15, 16, len(valid) - 1):

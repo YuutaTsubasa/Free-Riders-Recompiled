@@ -36,7 +36,7 @@ int main() {
             output.write("SFRSHPK2",8);
             const auto word = [&](uint32_t n) { for (int i=0;i<4;++i) output.put(char(n>>(i*8))); };
             word(sfr::shader_abi_version); word(1);
-            word(1); word(2); word(original.size()); word(1); word(0);
+            word(1); word(2); word(original.size()); word(1); word(0); word(0);
             output.write(reinterpret_cast<const char*>(original.data()), original.size());
             output.put(char(0xA9));
         }
