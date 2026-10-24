@@ -34,10 +34,26 @@ public:
     Step next(uint32_t queued);
     uint64_t underruns() const { return underruns_; }
     uint64_t dropped() const { return dropped_; }
+    // The fewest and most frames queued ahead of a frame since the last
+    // call (game.log's NATIVE_AUDIO_FRAMES): a minimum near 0 is a device
+    // about to run dry, a growing maximum a device playing slower than
+    // the frames come.
+    struct Window { uint32_t queued_min = 0, queued_max = 0; };
+    Window take_window();
 private:
     uint32_t frames_;
     bool playing_ = false;
     uint64_t underruns_ = 0, dropped_ = 0;
+    uint32_t queued_min_ = UINT32_MAX, queued_max_ = 0;
+};
+
+// What the frames themselves held, for game.log: silent frames (every
+// sample 0) and jumps (from one stereo sample to the next by more than
+// half of full scale, the shape of a click; music and effects rarely do).
+struct AudioContent {
+    uint64_t silent = 0, jumps = 0;
+    float last_left = 0.0f, last_right = 0.0f;
+    void count(const float* stereo);  // audio_frame_samples stereo pairs
 };
 
 // Plays the frames on the default output device (XAudio2; SDL elsewhere),
@@ -48,5 +64,6 @@ public:
     static std::unique_ptr<NativeAudio> create();
     virtual ~NativeAudio() = default;
     virtual void submit(const uint8_t* frame) = 0;
+    virtual AudioCushion& cushion() = 0;
 };
 }

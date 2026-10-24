@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -44,8 +45,29 @@ uint32_t AudioCushion::configured() {
     return uint32_t(std::clamp(std::atoi(text), 0, int(limit) - 2));
 }
 
+AudioCushion::Window AudioCushion::take_window() {
+    const Window window{queued_min_ == UINT32_MAX ? 0 : queued_min_, queued_max_};
+    queued_min_ = UINT32_MAX;
+    queued_max_ = 0;
+    return window;
+}
+
+void AudioContent::count(const float* stereo) {
+    bool silent_frame = true;
+    for (uint32_t sample = 0; sample < audio_frame_samples; ++sample) {
+        const float left = stereo[sample * 2], right = stereo[sample * 2 + 1];
+        silent_frame = silent_frame && left == 0.0f && right == 0.0f;
+        if (std::fabs(left - last_left) > 0.5f || std::fabs(right - last_right) > 0.5f) ++jumps;
+        last_left = left;
+        last_right = right;
+    }
+    if (silent_frame) ++silent;
+}
+
 AudioCushion::Step AudioCushion::next(uint32_t queued) {
     Step step;
+    queued_min_ = std::min(queued_min_, queued);
+    queued_max_ = std::max(queued_max_, queued);
     if (queued >= limit) {
         if (dropped_++ % 100 == 0) std::cerr << "NATIVE_AUDIO_DROPPED count=" << dropped_ << '\n';
         return step;
@@ -110,6 +132,7 @@ public:
         voice_->SubmitSourceBuffer(&submission);
         if (step.start) voice_->Start();
     }
+    AudioCushion& cushion() override { return cushion_; }
 private:
     AudioCushion cushion_{AudioCushion::configured()};
     bool com_ = false;
@@ -177,6 +200,7 @@ public:
         SDL_QueueAudio(device_, buffer_.data(), Uint32(sizeof(buffer_)));
         if (step.start) SDL_PauseAudioDevice(device_, 0);
     }
+    AudioCushion& cushion() override { return cushion_; }
 private:
     AudioCushion cushion_{AudioCushion::configured()};
     bool initialized_ = false;

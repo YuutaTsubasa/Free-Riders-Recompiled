@@ -157,6 +157,12 @@ inline constexpr TestOption table[] = {
       "測試用（Android 13 以上）：每一格告訴 Android 遊戲花了多少時間（目標為六十分之一秒），讓手機更快提高時脈。"
       "適用於比賽中快核心一直停在低時脈的手機。"},
      on, "#176"},
+    {"SFR_AUDIO_PRIORITY", TestGroup::processor, test_platform::android,
+     {"Sound threads first", "音效執行緒優先"},
+     {"For testing: the threads that make the game's sound run ahead of its busy threads (the default), so a "
+      "hot phone does not crackle. Off leaves them at normal priority, as 0.10.30 did.",
+      "測試用：讓產生遊戲聲音的執行緒優先於忙碌的執行緒（預設如此），手機發熱時聲音才不會劈啪作響。關閉時改回 0.10.30 的一般優先權。"},
+     off, "#176"},
     {"SFR_MAIN_HELPS_JOBS", TestGroup::processor, test_platform::all,
      {"Main thread runs race jobs", "主執行緒執行比賽工作"},
      {"For testing: the game's main thread runs queued race jobs itself instead of only waiting for its helper "
