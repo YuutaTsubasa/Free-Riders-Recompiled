@@ -242,6 +242,8 @@ with [docs/progress.md](docs/progress.md).
   Achievements the game awards are kept with the player's saves, and a new Achievements page in the launcher lists all 50 with their icons, descriptions and gamerscore (#263).
 - [v0.10.29 — Cheaper drawn frames](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.29)
   About a hundred of the course's draws each frame no longer have their vertices copied and converted on the CPU; their vertex buffers stay on the GPU, so a drawn race frame costs less on slow or throttled phones (#176).
+- [v0.10.30 — Right colours at full-screen render size](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.30)
+  On Android, when the render size matched the screen exactly (e.g. 1920x1080 at 150%), red and blue were swapped. The shader dispatch-loop test option no longer stops the game on GPUs that can't build some rewritten shaders.
 
 ## System Requirements
 
