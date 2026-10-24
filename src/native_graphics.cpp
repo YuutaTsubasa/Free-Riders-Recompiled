@@ -6,6 +6,7 @@
 #include "plume_d3d12.h"
 #endif
 #include "plume_render_interface.h"
+#include "shader_set_use.h"
 #include "spirv_bounded_descriptors.h"
 #include "spirv_clip_distance.h"
 #include "spirv_dispatch_loop.h"
@@ -203,6 +204,7 @@ struct NativeGraphics::Impl {
 #else
     SDL_Window* window = nullptr;
     ~Impl() {
+        loop_fallbacks.clear();
         pipeline_cache.reset();
         idle_signal.reset();
         idle_list.reset();
@@ -223,6 +225,16 @@ struct NativeGraphics::Impl {
     bool without_dispatch_loop = false;
     // The device's vertex attributes when fewer than vertex_input_locations.
     uint32_t vertex_attributes = 0;
+    // Shaders made without their dispatch loop: the code they came from,
+    // and the same shader with the loop kept once a pipeline needed it
+    // (NativeGraphics::with_dispatch_loop). Released before the device.
+    struct LoopFallback {
+        std::span<const uint8_t> code;
+        std::unique_ptr<plume::RenderShader> kept;
+        bool tried = false;
+    };
+    std::mutex loop_fallback_mutex;
+    std::unordered_map<const plume::RenderShader*, LoopFallback> loop_fallbacks;
 };
 
 NativeGraphics::NativeGraphics() = default;
@@ -595,10 +607,58 @@ bool NativeGraphics::rewrites_shaders() const noexcept {
 
 std::vector<uint8_t> NativeGraphics::shader_code(std::span<const uint8_t> code,
                                                  std::optional<std::vector<uint32_t>>* vertex_inputs) const {
+    return rewritten_code(code, vertex_inputs, false);
+}
+
+bool NativeGraphics::removes_dispatch_loops() const noexcept {
+    return impl_ && impl_->without_dispatch_loop;
+}
+
+void NativeGraphics::note_shader(const plume::RenderShader* shader, std::span<const uint8_t> code) {
+    if (!shader || !removes_dispatch_loops()) return;
+    std::lock_guard lock(impl_->loop_fallback_mutex);
+    impl_->loop_fallbacks[shader].code = code;
+}
+
+const plume::RenderShader* NativeGraphics::with_dispatch_loop(const plume::RenderShader* shader) {
+    if (!shader || !removes_dispatch_loops()) return nullptr;
+    std::lock_guard lock(impl_->loop_fallback_mutex);
+    const auto found = impl_->loop_fallbacks.find(shader);
+    if (found == impl_->loop_fallbacks.end()) return nullptr;
+    auto& fallback = found->second;
+    if (!fallback.tried) {
+        fallback.tried = true;
+        try {
+            // Only a shader that lost a loop has another form to fall back to.
+            const std::vector<uint8_t> original(fallback.code.begin(), fallback.code.end());
+            const auto without = without_dispatch_loop_spirv(original);
+            if (without && *without != original) {
+                std::optional<std::vector<uint32_t>> vertex_inputs;
+                const auto code = rewritten_code(fallback.code, &vertex_inputs, true);
+                auto kept = impl_->device->createShader(code.data(), code.size(), "shaderMain",
+                                                        plume::RenderShaderFormat::SPIRV);
+                if (kept && static_cast<const plume::VulkanShader*>(kept.get())->vk != VK_NULL_HANDLE) {
+                    if (vertex_inputs) VertexInputUse::note(kept.get(), std::move(*vertex_inputs));
+#ifdef __APPLE__
+                    ShaderSetUse::note(kept.get(), code);
+#endif
+                    fallback.kept = std::move(kept);
+                }
+            }
+        } catch (const std::exception& error) {
+            std::cerr << std::string("NATIVE_DISPATCH_LOOP_FALLBACK shader_failed=") + error.what() + '\n';
+        }
+    }
+    return fallback.kept.get();
+}
+
+std::vector<uint8_t> NativeGraphics::rewritten_code(std::span<const uint8_t> code,
+                                                    std::optional<std::vector<uint32_t>>* vertex_inputs,
+                                                    bool keep_dispatch_loop) const {
     std::vector<uint8_t> result(code.begin(), code.end());
     std::string why;
     if (vertex_inputs) vertex_inputs->reset();
-    if (impl_ && impl_->without_dispatch_loop) {
+    if (impl_ && impl_->without_dispatch_loop && !keep_dispatch_loop) {
         auto rewritten = without_dispatch_loop_spirv(result, &why);
         if (!rewritten) throw std::runtime_error("a shader cannot go without its dispatch loop: " + why);
         result = std::move(*rewritten);
