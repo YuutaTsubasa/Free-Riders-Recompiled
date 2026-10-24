@@ -583,6 +583,19 @@ this device's cache. Keep the `pipeline-cache` folder. Close the window or press
 Escape to cancel (hold Back on Android). Unrecorded combinations can still compile
 during play. See [Pipeline preparation](docs/pipeline-preparation.md).
 
+**Can DEC3N vertex decoding run on the GPU?** On D3D12, set
+`SFR_GPU_DEC3N=1` before starting the game to try the optional packed-vertex
+path. It is off by default; unsupported declarations and other backends keep
+CPU decoding. Eligible fills retain the packed stride and skip CPU SNORM16
+expansion. Guest reads, byte swapping and gathering remain, and the vertex
+shader gains decoding work. Net game performance has not been established.
+
+This path needs an ABI13 shader pack with paired legacy/raw vertex libraries.
+Rebuild older source packs with `sfr_shader_cache_rebuild`, then pack the new
+cache with `scripts/pack_shaders.py`; do not reuse old compiled bytecode.
+Existing ABI12 pipeline recipes remain usable through their legacy mask-zero
+path, while newly recorded recipes use format2/ABI13.
+
 **Where are the settings and saves?** Beside the launcher: `settings.ini`,
 `save/` and `game.log` (on Android, in the app's files directory). The game
 plays as a local profile named "Player"; answer *Yes* when it asks "Are you

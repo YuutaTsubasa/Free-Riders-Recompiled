@@ -9,6 +9,7 @@
 #include "native_presentation.h"
 #include "native_raster_state.h"
 #include "native_shaders.h"
+#include "runtime_shader_cache.h"
 #include "native_render_state.h"
 #include "render_state_entries.h"
 #include "native_renderer.h"
@@ -992,6 +993,7 @@ static bool native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     if(vertices.size()!=size_t(count)*stride) throw sfr::RuntimeStop("native-draw",count,"vertex data size mismatch");
     frame_vertex_bytes+=vertices.size();
     frame_biggest_draw=(std::max)(frame_biggest_draw,count);
+    draw.vertex_dec3n_mask=0;
     draw.vertex_count=count;
     draw.stride=stride;
     draw.indices=indices;
@@ -1012,8 +1014,8 @@ static bool native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     swapped[5]=&draw.shared.swapped_texcoords; swapped[3]=&draw.shared.swapped_normals;
     swapped[7]=&draw.shared.swapped_binormals; swapped[6]=&draw.shared.swapped_tangents;
     swapped[1]=&draw.shared.swapped_blend_weights;
-    // DEC3N (signed normalized 10:10:10) has no D3D12 format: each such
-    // element is converted to four SNORM16 components appended to its vertex.
+    // Eligible D3D12 layouts decode DEC3N in the vertex shader; all other
+    // layouts retain the original appended SNORM16 conversion.
     // Declarations have at most 16 elements. Reuse the small offset list
     // instead of allocating/freeing it for each skinned draw.
     static thread_local std::vector<uint32_t> dec3n_offsets;
@@ -1021,6 +1023,10 @@ static bool native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     static thread_local sfr::NativeVertexLayoutCache layout_cache;
     static const bool cache_layout=[] { const char* t=std::getenv("SFR_VERTEX_LAYOUT_CACHE"); return !t || *t!='0'; }();
     static const bool verify_layout=[] { const char* t=std::getenv("SFR_VERTEX_LAYOUT_VERIFY"); return t && *t=='1'; }();
+    static const bool gpu_dec3n_enabled=[] { const char* t=std::getenv("SFR_GPU_DEC3N"); return t && *t=='1'; }();
+    const bool gpu_dec3n=gpu_dec3n_enabled && !verify_layout && sfr::runtime_shader_translation &&
+        sfr::selected_graphics_backend()==sfr::GraphicsBackend::d3d12 && !(stride&3) &&
+        !(reinterpret_cast<uintptr_t>(vertices.data())&3);
     const sfr::NativeVertexLayout* layout=nullptr;
     if(cache_layout) {
         // A cached pointer alone is insufficient: the title may rewrite or
@@ -1029,7 +1035,7 @@ static bool native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
         // scalar decoder below, including its exact read/exception order.
         const auto* bytes=elements?memory.fast_read(uint64_t(declaration)+52,12*elements):nullptr;
         if(bytes || !elements) {
-            try { layout=&layout_cache.get(declaration,stride,{bytes,size_t(12*elements)}); }
+            try { layout=&layout_cache.get(declaration,stride,{bytes,size_t(12*elements)},gpu_dec3n); }
             catch(const sfr::NativeVertexLayoutError& error) {
                 throw sfr::RuntimeStop("native-draw",error.value,error.what());
             }
@@ -1037,6 +1043,7 @@ static bool native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     }
     if(layout && !verify_layout) {
         draw.elements=layout->elements;
+        draw.vertex_dec3n_mask=layout->dec3n_mask;
         dec3n_offsets=layout->dec3n_offsets;
         for(uint32_t usage=0;usage<8;++usage)
             if(swapped[usage]) *swapped[usage]=layout->swapped[usage];
@@ -1207,7 +1214,8 @@ static bool native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     if(!vs.shader) throw sfr::RuntimeStop("native-draw",vs_object,"specialized vertex shaders are unsupported");
     const auto& state=graphics().render_state();
     const bool alpha_test=state.alpha_test_enabled.value_or(false);
-    draw.vertex_shader=vs.shader.get();
+    draw.vertex_shader=draw.vertex_dec3n_mask
+        ? graphics().renderer().specialized_vertex(*vs.entry,draw.vertex_dec3n_mask) : vs.shader.get();
     // Vulkan creates every pixel shader and specializes its pipeline; D3D12
     // links a specialized shader per constant value.
     draw.pixel_shader=ps.shader?ps.shader.get():graphics().renderer().specialized(*ps.entry,alpha_test?2u:0u);

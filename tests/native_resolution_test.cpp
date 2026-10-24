@@ -5,6 +5,15 @@
 #include "resolution_shader_source.h"
 #include "vulkan_shader_source.h"
 #include "plume_render_interface.h"
+#include "native_formats.h"
+#include "native_vertex_layout.h"
+#include "shader_inputs.h"
+#include "shader_cache.h"
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <sstream>
+#include <string_view>
 #include <array>
 #include <bit>
 #include <chrono>
@@ -41,11 +50,12 @@ std::string quote(const fs::path& path) {
     return result + "'";
 #endif
 }
-std::unique_ptr<plume::RenderShader> compile(sfr::NativeGraphics& graphics, const fs::path& directory,
-                                          const std::string& header, const std::string& body, bool vertex) {
+std::string compile_bytecode(sfr::NativeGraphics& graphics, const fs::path& directory,
+                             const std::string& header, const std::string& body, bool vertex, bool library=false) {
     const bool vulkan = graphics.backend() == sfr::GraphicsBackend::vulkan;
-    const auto source = directory / (vertex ? "vertex.hlsl" : "pixel.hlsl");
-    const auto output = directory / (vertex ? "vertex.bin" : "pixel.bin");
+    require(!library || (vertex && !vulkan), "raw library compiles only on D3D12");
+    const auto source = directory / (library ? "vertex.raw.hlsl" : vertex ? "vertex.hlsl" : "pixel.hlsl");
+    const auto output = directory / (library ? "vertex.raw.bin" : vertex ? "vertex.bin" : "pixel.bin");
     std::string text = header + body;
     if (vulkan) {
         auto converted = sfr::vulkan_shader_source(text);
@@ -62,8 +72,8 @@ std::unique_ptr<plume::RenderShader> compile(sfr::NativeGraphics& graphics, cons
     constexpr const char* compiler = "tools/XenosRecomp/thirdparty/dxc-bin/bin/x64/dxc-linux";
 #endif
     const fs::path dxc = override ? fs::path(override) : fs::path(SFR_SOURCE_DIR) / compiler;
-    const std::string command = quote(dxc) + " -T " + (vertex ? "vs_6_0" : "ps_6_0") +
-        " -E shaderMain -HV 2021 -all-resources-bound -Qstrip_debug" +
+    const std::string command = quote(dxc) + " -T " + (library ? "lib_6_3" : vertex ? "vs_6_0" : "ps_6_0") +
+        (library ? "" : " -E shaderMain") + " -HV 2021 -all-resources-bound -Qstrip_debug" +
         (vulkan ? " -spirv -fvk-use-dx-layout -fspv-target-env=vulkan1.2" : "") +
         (vulkan && vertex ? " -fvk-invert-y" : "") + " -Fo " + quote(output) + " " + quote(source) +
         " > " + quote(directory / "compile.log") + " 2>&1";
@@ -81,7 +91,12 @@ std::unique_ptr<plume::RenderShader> compile(sfr::NativeGraphics& graphics, cons
     const int status = std::system((library_environment + quote(libraries) + " " + command).c_str());
 #endif
     if (status) throw std::runtime_error(read(directory / "compile.log"));
-    const auto code = read(output);
+    return read(output);
+}
+std::unique_ptr<plume::RenderShader> compile(sfr::NativeGraphics& graphics,const fs::path& directory,
+                                           const std::string& header,const std::string& body,bool vertex) {
+    const bool vulkan=graphics.backend()==sfr::GraphicsBackend::vulkan;
+    const auto code=compile_bytecode(graphics,directory,header,body,vertex);
     auto shader = graphics.device().createShader(code.data(), code.size(), "shaderMain",
         vulkan ? plume::RenderShaderFormat::SPIRV : plume::RenderShaderFormat::DXIL);
     require(bool(shader), "resolution fixture shader creation succeeds");
@@ -419,13 +434,243 @@ float4 shaderMain() : SV_Target {
         std::cerr << "DEPTH_STENCIL_PRESERVATION scale=" << percent << " cycles=3 passed\n";
     }
 }
-void run() {
+// The original upstream CPU oracle: same signed10 clamp, lround and SNORM16 IA input.
+std::vector<uint8_t> dec3n_reference(std::span<const uint8_t> input,uint32_t stride,uint32_t count,
+                                     std::span<const uint32_t> offsets,bool guest,size_t prefix) {
+    std::array<int16_t,1024> table{};
+    for(uint32_t bits=0;bits<1024;++bits){const int32_t value=int32_t(bits<<22)>>22;
+        table[bits]=int16_t(std::lround((std::max)(float(value)/511.0f,-1.0f)*32767.0f));}
+    std::vector<uint8_t> host(size_t(count)*stride);
+    const auto source=input.subspan(prefix,host.size());
+    if(guest)sfr::swap_words_into(host,source);else std::memcpy(host.data(),source.data(),host.size());
+    const uint32_t wide=stride+8*uint32_t(offsets.size());std::vector<uint8_t> result(size_t(count)*wide);
+    for(uint32_t v=0;v<count;++v){const auto* from=host.data()+size_t(v)*stride;auto* to=result.data()+size_t(v)*wide;
+        std::memcpy(to,from,stride);
+        for(size_t f=0;f<offsets.size();++f){uint32_t word;std::memcpy(&word,from+offsets[f],4);
+            const int16_t out[]{table[word&1023],table[(word>>10)&1023],table[(word>>20)&1023],32767};
+            std::memcpy(to+stride+8*f,out,8);}}
+    return result;
+}
+void gpu_dec3n_readback(sfr::NativeGraphics& graphics,const fs::path& directory,const std::string& header) {
+    const bool raw=graphics.backend()==sfr::GraphicsBackend::d3d12;
+    const char* requested=std::getenv("SFR_GRAPHICS");
+    require(requested && std::string_view(requested)==(raw?"d3d12":"vulkan"),
+            "DEC3N fixture requires the requested real backend without fallback");
+    environment("SFR_RENDER_SCALE","100");
+    constexpr uint32_t columns=64,rows=49,tile=4,width=columns*tile,height=rows*tile;
+    constexpr std::array<const char*,9> names{"Normal0","Normal1","Normal2","Normal3","Tangent0","Tangent1","Tangent2","Tangent3","Binormal0"};
+    constexpr std::array<const char*,9> references{"Position0","Position1","Position2","Position3","TexCoord0","TexCoord1","TexCoord2","TexCoord3","Color0"};
+    constexpr std::array<const char*,9> ref_semantics{"POSITION","POSITION","POSITION","POSITION","TEXCOORD","TEXCOORD","TEXCOORD","TEXCOORD","COLOR"};
+    constexpr std::array<uint32_t,9> ref_indices{0,1,2,3,0,1,2,3,0},ref_locations{0,1,2,3,13,14,15,16,17};
+    std::ostringstream source;
+    source<<"struct VertexShaderInput\n{\n";
+    const auto member=[&](const std::string& name,const char* semantic,uint32_t index,uint32_t location){
+        if(!raw)source<<"[[vk::location("<<location<<")]] ";
+        source<<"float4 i"<<name<<" : "<<semantic<<index<<";\n";
+    };
+    for(uint32_t bit=0;bit<9;++bit)member(names[bit],bit<4?"NORMAL":bit<8?"TANGENT":"BINORMAL",bit<8?bit%4:0,4+bit);
+    for(uint32_t bit=0;bit<9;++bit)member(references[bit],ref_semantics[bit],ref_indices[bit],ref_locations[bit]);
+    member("BlendWeight0","BLENDWEIGHT",0,19);
+    source<<"\n};\nstruct O{float4 position:SV_Position;nointerpolation float4 color:TEXCOORD0;};\n"
+              "[shader(\"vertex\")]\nO shaderMain(VertexShaderInput input,uint id:SV_VertexID){uint4 bad=uint4(0,0,0,0);\n";
+    for(uint32_t bit=0;bit<9;++bit)
+        source<<"bad|=asuint(input.i"<<names[bit]<<")^asuint(input.i"<<references[bit]<<");\n";
+    source<<"bool4 good=bad==0;float2 corners[6]={float2(0,0),float2(0,1),float2(1,0),float2(1,0),float2(0,1),float2(1,1)};"
+              "uint cell=id/6;float2 p=float2(cell%64,cell/64)+corners[id%6];O o;"
+              "o.position=float4(p.x*(2.0/64.0)-1.0,1.0-p.y*(2.0/49.0),0.5,1);"
+              "if(input.iBlendWeight0.x<0){uint bits=asuint(input.iBlendWeight0.x==-1?input.iNormal0.x:input.iPosition0.x);"
+              "o.color=float4(bits&255,(bits>>8)&255,(bits>>16)&255,bits>>24)/255.0;return o;}"
+              "o.color=float4(good.x?0:1,all(good)?1:0,input.iBlendWeight0.x,good.w?1:0);return o;}";
+    const auto legacy_source=source.str();
+    const auto legacy_code=compile_bytecode(graphics,directory,header,legacy_source,true);
+    const auto legacy_vertex=graphics.device().createShader(legacy_code.data(),legacy_code.size(),"shaderMain",
+        raw?plume::RenderShaderFormat::DXIL:plume::RenderShaderFormat::SPIRV);
+    require(bool(legacy_vertex),"legacy DEC3N oracle shader exists");
+    std::string library;
+    if(raw){const auto adapted=sfr::dec3n_vertex_shader_source(legacy_source);
+        require(adapted.has_value(),"production DEC3N source adapter accepts the fixture's actual input structure");
+        library=compile_bytecode(graphics,directory,header,*adapted,true,true);}
+    const auto bytes=[](const std::string& text){return std::span(reinterpret_cast<const uint8_t*>(text.data()),text.size());};
+    sfr::ShaderCacheEntry entry{bytes(legacy_source),bytes(legacy_code),sfr::ShaderStage::vertex,0};
+    entry.dec3n_dxil=bytes(library);
+    const auto pixel=compile(graphics,directory,header,
+        "float4 shaderMain(float4 p:SV_Position,nointerpolation float4 color:TEXCOORD0):SV_Target{return color;}",false);
+    // Shader bytecode/entry owners are declared before the renderer; none are replaced while a PSO can retain them.
+    sfr::NativePresentation presentation(graphics,width,height);
+    sfr::NativeRenderer renderer(graphics,presentation);
+    sfr::NativeVertexLayoutCache cache;
+    sfr::NativeClear clear{};clear.color=true;
+    const auto write_word=[](std::vector<uint8_t>& out,size_t at,uint32_t value,bool guest){
+        for(unsigned b=0;b<4;++b)out.at(at+b)=uint8_t(value>>(guest?24-8*b:8*b));
+    };
+    const auto element=[](auto& layout,uint32_t location)->plume::RenderInputElement&{
+        const auto found=std::find_if(layout.begin(),layout.end(),[&](const auto& e){return e.location==location;});
+        require(found!=layout.end(),"DEC3N reference input exists");return *found;
+    };
+    struct Probe {sfr::NativeDraw draw;std::vector<uint8_t> payload;uint32_t mask=0;};
+    const auto make=[&](const std::vector<uint32_t>& words,uint32_t stride,const std::vector<std::pair<uint32_t,uint32_t>>& fields,
+                        bool order=true,size_t prefix=0,uint8_t tag=0){
+        require(!words.empty() && !fields.empty() && words.size()%fields.size()==0,"nonempty finite packed corpus");
+        const uint32_t cells=uint32_t(words.size()/fields.size()),count=cells*6;
+        std::vector<uint8_t> declaration(fields.size()*12),input(prefix+size_t(count)*stride+8,0x5a);
+        std::vector<uint32_t> offsets;
+        for(uint32_t f=0;f<fields.size();++f){const auto [bit,offset]=fields[f];require(bit<9,"packed semantic range");
+            write_word(declaration,f*12,offset,true);write_word(declaration,f*12+4,0x2A2187,true);
+            declaration[f*12+9]=uint8_t(bit<4?3:bit<8?6:7);declaration[f*12+10]=uint8_t(bit<8?bit%4:0);offsets.push_back(offset);
+            for(uint32_t cell=0;cell<cells;++cell)for(uint32_t v=0;v<6;++v)
+                write_word(input,prefix+size_t(cell*6+v)*stride+offset,words[cell*fields.size()+f],order==true);
+        }
+        const uint32_t wide=stride+uint32_t(fields.size())*8;
+        const auto converted=dec3n_reference(input,stride,count,offsets,order,prefix);
+        Probe result;const auto& layout=cache.get(0xdec30000,stride,declaration,raw);
+        result.mask=layout.dec3n_mask;result.draw.stride=wide+4;result.draw.vertex_count=count;result.draw.elements=layout.elements;
+        result.draw.vertex_shader=raw&&layout.dec3n_mask?renderer.specialized_vertex(entry,layout.dec3n_mask):legacy_vertex.get();
+        result.draw.vertex_dec3n_mask=layout.dec3n_mask;result.draw.pixel_shader=pixel.get();
+        result.draw.cull=plume::RenderCullMode::NONE;
+        for(uint32_t f=0;f<fields.size();++f){const auto bit=fields[f].first;
+            auto& ref=element(result.draw.elements,ref_locations[bit]);ref.format=plume::RenderFormat::R16G16B16A16_SNORM;
+            ref.slotIndex=0;ref.alignedByteOffset=stride+8*f;
+        }
+        auto& color=element(result.draw.elements,19);
+        require(color.semanticName && std::string_view(color.semanticName)=="BLENDWEIGHT" && color.semanticIndex==0,
+                "numeric tag location19 is exactly BLENDWEIGHT0");
+        color.format=plume::RenderFormat::R32_FLOAT;color.slotIndex=0;color.alignedByteOffset=wide;
+        result.payload.resize(size_t(count)*result.draw.stride);
+        const float color_value=float(tag)/255.0f;
+        for(uint32_t v=0;v<count;++v){std::memcpy(result.payload.data()+size_t(v)*result.draw.stride,converted.data()+size_t(v)*wide,wide);
+            std::memcpy(result.payload.data()+size_t(v)*result.draw.stride+wide,&color_value,4);}
+        return result;
+    };
+    const auto paint=[&](Probe& probe,uint32_t x=0){probe.draw.vertices=probe.payload;
+        presentation.set_raster_state({float(x),0,width,height},{int(x),0,width,height});renderer.draw(probe.draw);};
+    const auto check=[&](uint32_t cells,const std::vector<uint8_t>& tags,const Probe* numeric_probe=nullptr){const auto pixels=presentation.readback_color();
+        require(pixels.size()==size_t(width)*height*4,"DEC3N readback finishes at the full expected extent");
+        for(uint32_t y=0;y<height;++y)for(uint32_t x=0;x<width;++x){const uint32_t cell=(y/tile)*columns+x/tile;const size_t at=(size_t(y)*width+x)*4;
+            const bool covered=cell<cells;
+            if(covered && !(pixels[at]==tags[cell] && pixels[at+1]==255 && pixels[at+2]==0 && pixels[at+3]==255)){
+                std::cerr<<"GPU_DEC3N_EXACT_MISMATCH cell="<<cell<<" x="<<x<<" y="<<y<<" BGRA="<<unsigned(pixels[at])<<','<<unsigned(pixels[at+1])<<','<<unsigned(pixels[at+2])<<','<<unsigned(pixels[at+3])<<'\n';
+                if(numeric_probe)try {
+                    for(const float selector:{-1.0f,-2.0f}){
+                        Probe diagnostic=*numeric_probe;
+                        const auto& color=element(diagnostic.draw.elements,19);
+                        require(color.semanticName && std::string_view(color.semanticName)=="BLENDWEIGHT" && color.semanticIndex==0 &&
+                                color.slotIndex==0 && color.format==plume::RenderFormat::R32_FLOAT &&
+                                color.alignedByteOffset+4<=diagnostic.draw.stride,"numeric bit dump uses the original tag field");
+                        for(uint32_t v=0;v<diagnostic.draw.vertex_count;++v)
+                            std::memcpy(diagnostic.payload.data()+size_t(v)*diagnostic.draw.stride+color.alignedByteOffset,&selector,4);
+                        presentation.clear(clear);paint(diagnostic);
+                        const auto dumped=presentation.readback_color();
+                        require(dumped.size()==pixels.size(),"numeric bit dump preserves the original full readback extent");
+                        const uint32_t bits=uint32_t(dumped[at+2])|(uint32_t(dumped[at+1])<<8)|
+                                            (uint32_t(dumped[at])<<16)|(uint32_t(dumped[at+3])<<24);
+                        const auto flags=std::cerr.flags();
+                        std::cerr<<"GPU_DEC3N_NUMERIC_BITS role="<<(selector==-1.0f?"decoded":"hardware_snorm16")
+                                 <<" cell="<<cell<<" x="<<x<<" y="<<y<<" bits=0x"<<std::hex<<bits<<std::dec
+                                 <<" BGRA="<<unsigned(dumped[at])<<','<<unsigned(dumped[at+1])<<','
+                                 <<unsigned(dumped[at+2])<<','<<unsigned(dumped[at+3])<<'\n';
+                        std::cerr.flags(flags);
+                    }
+                } catch(const std::exception& error) {std::cerr<<"GPU_DEC3N_NUMERIC_DUMP_ERROR "<<error.what()<<'\n';}
+                throw std::runtime_error("GPU DEC3N differs bitwise from CPU-table/hardware-SNORM16 or an owned queued version");}
+            if(!covered)require(pixels[at]==0 && pixels[at+1]==0 && pixels[at+2]==0 && pixels[at+3]==0,"unused DEC3N tiles retain clear pixels");
+        }
+    };
+    unsigned cases=0;
+    std::vector<uint32_t> corpus;corpus.reserve(3104);
+    for(uint32_t component=0;component<3;++component)for(uint32_t bits=0;bits<1024;++bits){
+        uint32_t lane[3]={513,127,400};lane[component]=bits;corpus.push_back(lane[0]|(lane[1]<<10)|(lane[2]<<20));}
+    constexpr uint32_t triples[][3]={{0,0,0},{511,511,511},{512,512,512},{513,513,513},{1023,1,512},{1,1023,511},{0,511,512},{512,513,1023}};
+    for(const auto& triple:triples)for(uint32_t high=0;high<4;++high)
+        corpus.push_back(triple[0]|(triple[1]<<10)|(triple[2]<<20)|(high<<30));
+    require(corpus.size()==3104,"three exhaustive component sweeps plus32 high-bit/mixed canaries");
+    presentation.clear(clear);auto numeric=make(corpus,16,{{0,4}});
+    require(numeric.mask==(raw?1u:0u),"backend selects actual raw decoder or legacy CPU fallback");
+    paint(numeric);check(3104,std::vector<uint8_t>(3104,0),&numeric);++cases;
+    if(raw){auto legacy=numeric;legacy.draw.vertex_shader=legacy_vertex.get();legacy.draw.vertex_dec3n_mask=0;
+        auto& normal=element(legacy.draw.elements,4);normal.format=plume::RenderFormat::R16G16B16A16_SNORM;normal.slotIndex=0;normal.alignedByteOffset=16;
+        presentation.clear(clear);paint(legacy);check(3104,std::vector<uint8_t>(3104,0));++cases;}
+    for(uint32_t bit=0;bit<9;++bit){presentation.clear(clear);auto route=make({0xdff80200},16,{{bit,4}});
+        require(route.mask==(raw?1u<<bit:0u),"each semantic uses exactly its specialization bit");
+        paint(route);check(1,{0});++cases;}
+    std::vector<std::pair<uint32_t,uint32_t>> all_fields;std::vector<uint32_t> all_words;
+    for(uint32_t bit=0;bit<9;++bit){all_fields.push_back({bit,bit*4});all_words.push_back((bit*73u)|((1023-bit*71u)<<10)|((bit*109u)<<20));}
+    presentation.clear(clear);auto multiple=make(all_words,36,all_fields);
+    require(multiple.mask==(raw?0x1ffu:0u),"all nine fields share a single specialization without narrowing raw stride");
+    paint(multiple);check(1,{0});++cases;
+    for(auto order:{true,false}){
+        presentation.clear(clear);auto phased=make({0xe007fdff},20,{{4,4}},order,4);paint(phased);check(1,{0});++cases;
+    }
+    presentation.clear(clear);auto unsorted=make({0x2007fdff,0x1ff00200},32,{{8,28},{2,12}});paint(unsorted);check(1,{0});++cases;
+    presentation.clear(clear);auto shared=make({0x1ff80000,0x1ff80000},16,{{1,4},{6,4}});paint(shared);check(1,{0});++cases;
+    for(const auto& domain:std::array<std::pair<uint32_t,uint32_t>,2>{{{16,2},{18,4}}}){
+        presentation.clear(clear);auto declined=make({0xc007fe00},domain.first,{{0,domain.second}});
+        require(!declined.mask,"under-aligned packed field or stride uses whole-layout legacy fallback");
+        paint(declined);check(1,{0});++cases;
+    }
+    // Keep Normal0 packed on D3D12 while Normal1 retains each ordinary IA format.
+    for(auto format:{plume::RenderFormat::R32G32B32A32_FLOAT,plume::RenderFormat::R16G16B16A16_SNORM,plume::RenderFormat::R16G16B16A16_UNORM}){
+        presentation.clear(clear);auto ordinary=make({0x1ff80000},16,{{0,4}});
+        require(ordinary.draw.vertex_dec3n_mask==(raw?1u:0u),"ordinary field is tested beside an actually active packed variant");
+        const uint32_t size=format==plume::RenderFormat::R32G32B32A32_FLOAT?16u:8u,offset=ordinary.draw.stride;
+        const auto original=std::move(ordinary.payload);ordinary.draw.stride+=size;
+        ordinary.payload.resize(6*ordinary.draw.stride);const std::array<float,4> value{-0.25f,0.5f,0.75f,1};
+        const std::array<int16_t,4> snorm{-8192,16384,24575,32767};const std::array<uint16_t,4> unorm{0,16384,49151,65535};
+        for(unsigned v=0;v<6;++v){auto* to=ordinary.payload.data()+v*ordinary.draw.stride;
+            std::memcpy(to,original.data()+v*offset,offset);std::memcpy(to+offset,
+                format==plume::RenderFormat::R32G32B32A32_FLOAT?static_cast<const void*>(value.data()):
+                format==plume::RenderFormat::R16G16B16A16_SNORM?static_cast<const void*>(snorm.data()):static_cast<const void*>(unorm.data()),size);}
+        for(uint32_t location:{5u,1u}){auto& e=element(ordinary.draw.elements,location);e.format=format;e.slotIndex=0;e.alignedByteOffset=offset;}
+        paint(ordinary);check(1,{0});++cases;
+    }
+    // Use only upstream's own cache/ring retirement; no fork manager or snapshot API.
+    struct RestoreDirect{bool value;~RestoreDirect(){sfr::GuestMemory::direct_guest_access=value;}} restore{sfr::GuestMemory::direct_guest_access};
+    sfr::GuestMemory::direct_guest_access=false;sfr::GuestMemory memory;
+    constexpr uint32_t backing=0xe0030000,physical=0x31000;memory.map(backing,4096);
+    auto old=make({0x2007fdff},16,{{0,4}},true,0,64);
+    auto newer=make({0xdff80000},16,{{0,4}},false,0,128);
+    const auto fill=[&](Probe& probe){
+        for(size_t at=0;at<probe.payload.size();++at)memory.store<uint8_t>(backing+uint32_t(at),probe.payload[at]);
+        memory.advance_write_epoch();
+        const auto first=renderer.vertex_cache(memory,physical,probe.payload.size(),probe.payload.size(),probe.draw.stride);
+        require(!first.buffer,"cold or written source uses ordinary cache admission");
+        memory.advance_write_epoch();
+        const auto value=renderer.vertex_cache(memory,physical,probe.payload.size(),probe.payload.size(),probe.draw.stride);
+        require(value.buffer && value.fill.size()==probe.payload.size(),"one unwritten epoch admits actual upstream cache fill");
+        std::memcpy(value.fill.data(),probe.payload.data(),probe.payload.size());
+        probe.draw.vertices={};probe.draw.vertex_buffer=value.buffer;
+        const auto hit=renderer.vertex_cache(memory,physical,probe.payload.size(),probe.payload.size(),probe.draw.stride);
+        require(hit.buffer==value.buffer && hit.fill.empty(),"filled same-version cache is a real ready hit");
+    };
+    const auto queued=[&](Probe& probe,uint32_t column){presentation.set_raster_state({float(column*tile),0,width,height},
+        {int(column*tile),0,int((column+1)*tile),int(tile)});renderer.draw(probe.draw);};
+    presentation.clear(clear);fill(old);queued(old,0);fill(newer);queued(newer,1);
+    auto legacy=newer;legacy.draw.vertex_shader=legacy_vertex.get();legacy.draw.vertex_dec3n_mask=0;
+    const uint32_t previous_stride=legacy.draw.stride;legacy.draw.stride+=8;
+    legacy.payload.resize(size_t(legacy.draw.vertex_count)*legacy.draw.stride);
+    for(uint32_t v=0;v<legacy.draw.vertex_count;++v){auto* to=legacy.payload.data()+size_t(v)*legacy.draw.stride;
+        const auto* from=newer.payload.data()+size_t(v)*previous_stride;std::memcpy(to,from,previous_stride);
+        std::memcpy(to+previous_stride,from+16,8);}
+    auto& legacy_normal=element(legacy.draw.elements,4);legacy_normal.format=plume::RenderFormat::R16G16B16A16_SNORM;
+    legacy_normal.slotIndex=0;legacy_normal.alignedByteOffset=previous_stride;
+    fill(legacy);queued(legacy,2);queued(old,3);
+    old.payload.assign(old.payload.size(),0xdd);newer.payload.assign(newer.payload.size(),0xee);
+    legacy.payload.assign(legacy.payload.size(),0xcc);memory.release(backing,4096);
+    check(4,{64,128,128,64});++cases;
+    // The first readback consumed one flush; this repeat is within the existing +2 retirement margin.
+    presentation.clear(clear);queued(legacy,0);queued(old,1);check(2,{128,64});++cases;
+    std::cout<<"GPU_DEC3N passed backend="<<sfr::graphics_backend_name(graphics.backend())<<" raw="<<raw
+             <<" values=3104 routing=9 cases="<<cases<<" exact_snorm=passed w1=passed queued=passed fallback=passed readback=finished\n";
+}
+
+void run(bool gpu_dec3n=false) {
     environment("SFR_GPU_PIPELINE", "1");
     const fs::path directory = fs::temp_directory_path() / ("sfr-resolution-" +
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     fs::create_directories(directory);
     struct Cleanup { fs::path path; ~Cleanup() { std::error_code error; fs::remove_all(path, error); } } cleanup{directory};
-    auto header = sfr::resolution_shader_header(read(fs::path(SFR_SOURCE_DIR) / "tools/XenosRecomp/XenosRecomp/shader_common.h"));
+    const char* common=gpu_dec3n?std::getenv("SFR_TEST_SHADER_COMMON"):nullptr;
+    auto header = sfr::resolution_shader_header(read(common && *common ? fs::path(common) :
+        fs::path(SFR_SOURCE_DIR) / "tools/XenosRecomp/XenosRecomp/shader_common.h"));
     // Mirror the production extended header's shared and push-constant ABI.
     const std::string push = "    uint64_t SharedConstants;";
     header.replace(header.find(push), push.size(), push + "\n    uint64_t VertexPalette;\n    uint64_t LoopConstants;");
@@ -451,6 +696,7 @@ uint g_SpecConstants() { return 0; }
 )";
     sfr::NativeGraphics graphics;
     graphics.initialize();
+    if(gpu_dec3n){gpu_dec3n_readback(graphics,directory,header);return;}
     depth_stencil_preservation_readback(graphics, directory, header);
     resolved_allocation_reuse_readback(graphics, directory, header);
     batched_texture_readback(graphics, directory, header);
@@ -547,7 +793,9 @@ float4 shaderMain() : SV_Target {
     constant_upload_readback(graphics, directory, header);
 }
 }
-int main() {
-    try { run(); std::cout << "Internal resolution readback checks passed\n"; }
+int main(int argc,char** argv) {
+    try {
+        require(argc==1 || (argc==2 && std::string_view(argv[1])=="--gpu-dec3n"),"unknown resolution fixture option");
+        run(argc==2); std::cout << "Internal resolution readback checks passed\n"; }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

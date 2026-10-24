@@ -54,7 +54,7 @@ foreach ($line in $environmentLines) {
 $compiler = Join-Path $env:ProgramFiles 'LLVM/bin/clang++.exe'
 $executable = Join-Path $output 'shader_translate.exe'
 $pending = Join-Path $output 'shader_translate.pending.exe'
-$arguments = @('-std=c++20', '-fms-extensions', '-DFMT_HEADER_ONLY', '-Wno-null-arithmetic', '-Wno-switch', '-Wno-unused-variable', '-include', $pchPath, '-I', $source, '-I', (Join-Path $fmt 'include'), (Join-Path $source 'shader_recompiler.cpp'), (Join-Path $repoRoot 'src/shader_translate_main.cpp'), '-o', $pending)
+$arguments = @('-std=c++20', '-fms-extensions', '-DFMT_HEADER_ONLY', '-Wno-null-arithmetic', '-Wno-switch', '-Wno-unused-variable', '-include', $pchPath, '-I', $source, '-I', (Join-Path $fmt 'include'), (Join-Path $source 'shader_recompiler.cpp'), (Join-Path $repoRoot 'src/shader_translate_main.cpp'), (Join-Path $repoRoot 'src/shader_inputs.cpp'), '-o', $pending)
 & $compiler @arguments
 if ($LASTEXITCODE -ne 0) { throw 'Shader translator build failed.' }
 Move-Item -LiteralPath $pending -Destination $executable -Force
@@ -63,7 +63,9 @@ foreach ($name in $names) {
     $relative = 'tools/XenosRecomp/XenosRecomp/' + $name
     $hashes[$relative] = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $repoRoot $relative)).Hash.ToLowerInvariant()
 }
-$hashes['src/shader_translate_main.cpp'] = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $repoRoot 'src/shader_translate_main.cpp')).Hash.ToLowerInvariant()
+foreach ($relative in @('src/shader_translate_main.cpp', 'src/shader_inputs.h', 'src/shader_inputs.cpp')) {
+    $hashes[$relative] = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $repoRoot $relative)).Hash.ToLowerInvariant()
+}
 $provenance = [ordered]@{ commit = $dependency.commit; fmt_commit = $fmtHead; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $executable).Hash.ToLowerInvariant(); compiler = $compiler; compiler_version = (& $compiler --version | Out-String).Trim(); arguments = $arguments; sources = $hashes }
 $provenance | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $output 'shader_translate.json') -Encoding utf8
 Write-Output "Built pinned shader translator: $executable"

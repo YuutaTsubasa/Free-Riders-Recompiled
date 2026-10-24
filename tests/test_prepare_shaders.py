@@ -79,13 +79,16 @@ def synthetic_basic_asset():
                     for index in range(68))
 
 
-def fake_shader_tools(translator, seen, fail_compile=None):
+def fake_shader_tools(translator, seen, fail_compile=None, fail_raw=False):
     compiled = 0
     def run(args, **kwargs):
         nonlocal compiled
         args = [str(arg) for arg in args]
         if '--version' in args:
             return subprocess.CompletedProcess(args, 0, b'test compiler', b'')
+        if args[0] == str(translator) and args[1] == '--dec3n-variant':
+            Path(args[3]).write_bytes(b'test raw HLSL')
+            return subprocess.CompletedProcess(args, 0, b'', b'')
         if args[0] == str(translator):
             original = Path(args[1]).read_bytes()
             stage = 'vertex' if struct.unpack_from('>I', original)[0] & 1 else 'pixel'
@@ -94,8 +97,10 @@ def fake_shader_tools(translator, seen, fail_compile=None):
             Path(args[2]).write_bytes(b'test HLSL')
             return subprocess.CompletedProcess(args, 0,
                 f'{stage} HLSL bytes=9 spec_constants_mask={mask}\n'.encode(), b'')
-        compiled += 1
-        if compiled == fail_compile:
+        raw = Path(args[args.index('-Fo') + 1]).name == 'shader.dec3n.dxil'
+        if not raw:
+            compiled += 1
+        if (not raw and compiled == fail_compile) or (raw and fail_raw):
             return subprocess.CompletedProcess(args, 1, b'', b'late embedded compile rejected')
         profile = args[args.index('-T') + 1]
         kind = 6 if profile == 'lib_6_3' else (1 if profile == 'vs_6_0' else 0)
@@ -165,6 +170,32 @@ class ShaderPreparationTests(unittest.TestCase):
             translator.with_suffix('.json').write_text(json.dumps(record), encoding='utf-8-sig')
             with patch.object(shaders.subprocess, 'check_output', return_value=shaders.TOOL_PIN), patch.object(shaders.subprocess, 'check_call', return_value=0):
                 self.assertEqual(shaders.verify_translator(translator), record)
+
+    def test_raw_vertex_library_validation_and_profile(self):
+        shaders.validate_dxil(dxil(6), 'vertex', 0, dec3n=True)
+        with self.assertRaisesRegex(ValueError, 'stage'):
+            shaders.validate_dxil(dxil(1), 'vertex', 0, dec3n=True)
+        with self.assertRaisesRegex(ValueError, 'must be vertex'):
+            shaders.validate_dxil(dxil(6), 'pixel', 7, dec3n=True)
+        self.assertIn('src/shader_inputs.h', shaders.TRANSLATOR_SOURCES)
+        self.assertIn('src/shader_inputs.cpp', shaders.TRANSLATOR_SOURCES)
+
+    def test_raw_compile_failure_does_not_publish_unpaired_cache(self):
+        basic = synthetic_basic_asset()
+        with working_directory() as folder:
+            asset = folder / 'asset'; asset.write_bytes(basic)
+            translator = folder / 'translator'; translator.write_bytes(b'test translator')
+            compiler = folder / 'dxc'; compiler.write_bytes(b'test compiler')
+            output = folder / 'cache'; output.mkdir()
+            (output / 'shader_cache_data.cpp').write_bytes(b'previous cache')
+            (output / 'manifest.json').write_bytes(b'previous manifest')
+            with patch.object(shaders, 'ASSET_SHA256', hashlib.sha256(basic).hexdigest()), \
+                 patch.object(shaders, 'verify_translator', return_value={'commit': 'test'}), \
+                 patch.object(shaders.subprocess, 'run', side_effect=fake_shader_tools(translator, [], fail_raw=True)):
+                with self.assertRaisesRegex(RuntimeError, 'late embedded compile rejected'):
+                    shaders.prepare(asset, translator, compiler, output)
+            self.assertEqual((output / 'shader_cache_data.cpp').read_bytes(), b'previous cache')
+            self.assertEqual((output / 'manifest.json').read_bytes(), b'previous manifest')
 
     def test_rejects_provenance_missing_upstream_sources(self):
         with working_directory() as folder:
@@ -381,6 +412,13 @@ class ShaderPreparationTests(unittest.TestCase):
                 self.assertEqual(record['specialization_mask'], 0 if record['stage'] == 'vertex' else 7)
                 self.assertIn('translator_args', record)
                 self.assertIn('compiler_args', record)
+                if record['stage'] == 'vertex':
+                    self.assertEqual(record['dec3n_dxil_sha256'], hashlib.sha256((item / 'shader.dec3n.dxil').read_bytes()).hexdigest())
+                    self.assertEqual(record['dec3n_hlsl_sha256'], hashlib.sha256((item / 'shader.dec3n.hlsl').read_bytes()).hexdigest())
+                    self.assertEqual(record['dec3n_variant_args'][1], '--dec3n-variant')
+                    self.assertEqual(record['dec3n_compiler_args'][1:3], ['-T', 'lib_6_3'])
+                else:
+                    self.assertNotIn('dec3n_dxil_sha256', record)
             self.assertEqual(json.loads((output / 'manifest.json').read_text()), manifest)
             self.assertEqual(json.loads((generation / 'manifest.json').read_text()), manifest)
             self.assertEqual(manifest['cache_cpp_sha256'], hashlib.sha256((output / 'shader_cache_data.cpp').read_bytes()).hexdigest())

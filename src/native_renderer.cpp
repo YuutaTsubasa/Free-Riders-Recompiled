@@ -140,8 +140,9 @@ public:
             FAILED(create(CLSID_DxcUtils, IID_PPV_ARGS(utils_.GetAddressOf()))))
             unsupported(0, "DXC compiler, linker or utilities are unavailable");
     }
-    std::vector<uint8_t> link(std::span<const uint8_t> library, uint32_t spec_constants) {
-        const std::string hlsl = "export uint g_SpecConstants() { return " + std::to_string(spec_constants) + "; }";
+    std::vector<uint8_t> link(std::span<const uint8_t> library, uint32_t spec_constants, bool vertex = false) {
+        const std::string hlsl = std::string("export uint ") + (vertex ? "g_VertexDec3n" : "g_SpecConstants") +
+            "() { return " + std::to_string(spec_constants) + "; }";
         DxcBuffer source{hlsl.data(), hlsl.size(), DXC_CP_ACP};
         const wchar_t* arguments[] = {L"-T", L"lib_6_3"};
         Microsoft::WRL::ComPtr<IDxcResult> compiled;
@@ -154,18 +155,18 @@ public:
         Microsoft::WRL::ComPtr<IDxcBlobEncoding> shader;
         if (FAILED(utils_->CreateBlob(library.data(), uint32_t(library.size()), DXC_CP_ACP, shader.GetAddressOf())))
             unsupported(0, "shader library blob creation failed");
-        const std::wstring spec_name = L"SpecConstants_" + std::to_wstring(spec_constants);
+        const std::wstring spec_name = (vertex ? L"VertexDec3n_" : L"SpecConstants_") + std::to_wstring(spec_constants);
         const std::wstring shader_name = L"Shader_" + std::to_wstring(++libraries_);
         linker_->RegisterLibrary(spec_name.c_str(), spec.Get());
         linker_->RegisterLibrary(shader_name.c_str(), shader.Get());
         const wchar_t* names[] = {spec_name.c_str(), shader_name.c_str()};
         Microsoft::WRL::ComPtr<IDxcOperationResult> linked;
         Microsoft::WRL::ComPtr<IDxcBlob> output;
-        if (FAILED(linker_->Link(L"shaderMain", L"ps_6_0", names, 2, nullptr, 0, linked.GetAddressOf())) ||
+        if (FAILED(linker_->Link(L"shaderMain", vertex ? L"vs_6_0" : L"ps_6_0", names, 2, nullptr, 0, linked.GetAddressOf())) ||
             FAILED(linked->GetStatus(&status)) || FAILED(status) || FAILED(linked->GetResult(output.GetAddressOf())) || !output) {
             Microsoft::WRL::ComPtr<IDxcBlobEncoding> errors;
             if (linked) linked->GetErrorBuffer(errors.GetAddressOf());
-            std::string message = "pixel shader link failed";
+            std::string message = vertex ? "vertex shader link failed" : "pixel shader link failed";
             if (errors && errors->GetBufferSize())
                 message += ": " + std::string(static_cast<const char*>(errors->GetBufferPointer()), errors->GetBufferSize());
             unsupported(spec_constants, message);
@@ -472,6 +473,7 @@ struct NativeRenderer::Impl {
     std::shared_ptr<plume::RenderPipeline>* last_pipeline = nullptr;
     bool last_pipeline_flipped = false;
     std::unordered_map<const ShaderCacheEntry*, std::unique_ptr<plume::RenderShader>> prepared_shaders;
+    std::unordered_map<const ShaderCacheEntry*, std::unordered_map<uint32_t, std::unique_ptr<plume::RenderShader>>> linked_vertex;
     std::filesystem::path learned_manifest;
     bool manifest_dirty = false, preparation_started = false;
     std::chrono::steady_clock::time_point manifest_saved_at{};
@@ -886,7 +888,8 @@ void NativeRenderer::prepare_pipelines() {
                 const auto* vs = packed_pipeline_shader(ShaderStage::vertex, recipe.vertex.hash, recipe.vertex.size);
                 const auto* ps = packed_pipeline_shader(ShaderStage::pixel, recipe.pixel.hash, recipe.pixel.size);
                 if (!vs || !ps || (recipe.state.pixel_spec_constants & ~ps->specialization_mask) ||
-                    (recipe.pixel_link_constants & ~ps->specialization_mask)) {
+                    (recipe.pixel_link_constants & ~ps->specialization_mask) ||
+                    (recipe.state.vertex_dec3n_mask && (backend != 0 || vs->dec3n_dxil.empty()))) {
                     ++stale;
                     continue;
                 }
@@ -959,7 +962,8 @@ void NativeRenderer::prepare_pipelines() {
                 const auto* vs = packed_pipeline_shader(ShaderStage::vertex, recipe.vertex.hash, recipe.vertex.size);
                 const auto* ps = packed_pipeline_shader(ShaderStage::pixel, recipe.pixel.hash, recipe.pixel.size);
                 if (!vs || !ps || (recipe.state.pixel_spec_constants & ~ps->specialization_mask) ||
-                    (recipe.pixel_link_constants & ~ps->specialization_mask)) {
+                    (recipe.pixel_link_constants & ~ps->specialization_mask) ||
+                    (recipe.state.vertex_dec3n_mask && (backend != 0 || vs->dec3n_dxil.empty()))) {
                     ++skipped;
                 } else {
                     const auto shader = [&](const ShaderCacheEntry& entry) -> const plume::RenderShader* {
@@ -985,7 +989,7 @@ void NativeRenderer::prepare_pipelines() {
                         return result.get();
                     };
                     NativeDraw state = recipe.state;
-                    state.vertex_shader = shader(*vs);
+                    state.vertex_shader = state.vertex_dec3n_mask ? specialized_vertex(*vs, state.vertex_dec3n_mask) : shader(*vs);
                     state.pixel_shader = backend == 0 && ps->specialization_mask ?
                         specialized(*ps, recipe.pixel_link_constants) : shader(*ps);
                     const plume::RenderShader* depth_flip = nullptr;
@@ -1090,10 +1094,16 @@ std::vector<NativeDraw> NativeRenderer::prepared_draws() {
         if (!impl_->recipe_pipelines.contains(key) && !impl_->recipe_flipped_pipelines.contains(key)) continue;
         const auto* vs = packed_pipeline_shader(ShaderStage::vertex, recipe.vertex.hash, recipe.vertex.size);
         const auto* ps = packed_pipeline_shader(ShaderStage::pixel, recipe.pixel.hash, recipe.pixel.size);
-        const auto vertex = vs ? impl_->prepared_shaders.find(vs) : impl_->prepared_shaders.end();
-        if (vertex == impl_->prepared_shaders.end()) continue;
         NativeDraw state = recipe.state;
-        state.vertex_shader = vertex->second.get();
+        if (!vs || !ps) continue;
+        if (state.vertex_dec3n_mask) {
+            if (backend != 0 || vs->dec3n_dxil.empty()) continue;
+            state.vertex_shader = specialized_vertex(*vs, state.vertex_dec3n_mask);
+        } else {
+            const auto vertex = impl_->prepared_shaders.find(vs);
+            if (vertex == impl_->prepared_shaders.end()) continue;
+            state.vertex_shader = vertex->second.get();
+        }
         if (backend == 0 && ps->specialization_mask) {
             state.pixel_shader = specialized(*ps, recipe.pixel_link_constants);
         } else {
@@ -1498,6 +1508,23 @@ const plume::RenderShader* NativeRenderer::specialized(const ShaderCacheEntry& e
                                                        plume::RenderShaderFormat::DXIL);
 #endif
         if (!shader) unsupported(spec_constants, "linked pixel shader creation failed");
+    }
+    return shader.get();
+}
+
+const plume::RenderShader* NativeRenderer::specialized_vertex(const ShaderCacheEntry& entry, uint32_t mask) {
+    if (impl_->graphics.backend() != GraphicsBackend::d3d12 || entry.stage != ShaderStage::vertex ||
+        !mask || (mask & ~0x1ffu) || entry.dec3n_dxil.empty())
+        unsupported(mask, "raw DEC3N vertex library is unavailable");
+    auto& shader = impl_->linked_vertex[&entry][mask];
+    if (!shader) {
+#ifdef _WIN32
+        if (!impl_->dxc) impl_->dxc = std::make_unique<DxcLinker>();
+        const auto bytes = impl_->dxc->link(entry.dec3n_dxil, mask, true);
+        shader = impl_->graphics.device().createShader(bytes.data(), bytes.size(), "shaderMain",
+                                                       plume::RenderShaderFormat::DXIL);
+#endif
+        if (!shader) unsupported(mask, "linked DEC3N vertex shader creation failed");
     }
     return shader.get();
 }
