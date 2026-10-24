@@ -95,6 +95,9 @@ public:
     void prepare_surface_write();
     // Records made between these (a resolve's own barriers and copies) do
     // not write the current surface, so they leave its resolves aliased.
+    // SFR_GPU_TIMING=2, from inside a record: a resolve's copy starts here
+    // (copy), or the current target's next render pass does (!copy).
+    void mark_gpu_pass(bool copy);
     void begin_non_writing_records() noexcept;
     void end_non_writing_records() noexcept;
     [[nodiscard]] std::pair<uint32_t, uint32_t> target_size() const noexcept;
