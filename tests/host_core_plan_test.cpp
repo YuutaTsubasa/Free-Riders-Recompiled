@@ -1,10 +1,66 @@
 #include "host_core_plan.h"
 #include <iostream>
 #include <stdexcept>
+#if defined(__linux__)
+#include <condition_variable>
+#include <thread>
+#endif
 
 void require(bool value, const char* message) {
     if (!value) throw std::runtime_error(message);
 }
+
+#if defined(__linux__)
+// A kept worker the system lets onto every core is placed again, once, and
+// one that has left is no longer touched (Issue #176). The role's mask comes
+// from SFR_TEST_WORKER_CPUS (the first allowed core), as on a phone.
+void placement_is_restored() {
+    const uint64_t all = sfr::core_plan_detail::allowed_of(0);
+    if (!all || !(all & (all - 1))) {
+        std::cout << "one core only: placement restore not tested\n";
+        return;
+    }
+    const uint64_t first = all & (~all + 1);
+    char text[24];
+    std::snprintf(text, sizeof text, "%llx", static_cast<unsigned long long>(first));
+    setenv("SFR_TEST_WORKER_CPUS", text, 1);
+    std::mutex lock;
+    std::condition_variable changed;
+    pid_t tid = 0;
+    bool leave = false;
+    std::thread worker([&] {
+        require(sfr::place_host_thread(sfr::HostThreadRole::worker) == first, "the worker is placed by its test mask");
+        {
+            std::lock_guard guard(lock);
+            tid = sfr::core_plan_detail::current_tid();
+        }
+        changed.notify_all();
+        std::unique_lock wait(lock);
+        changed.wait(wait, [&] { return leave; });
+        sfr::forget_placement();
+    });
+    {
+        std::unique_lock wait(lock);
+        changed.wait(wait, [&] { return tid != 0; });
+    }
+    require(sfr::restore_placement().empty(), "placed as planned: nothing to say");
+    require(sfr::core_plan_detail::narrow_to(all, tid) == all, "the system resets the worker to every core");
+    const std::string line = sfr::restore_placement();
+    std::snprintf(text, sizeof text, "0x%llx", static_cast<unsigned long long>(first));
+    require(line.rfind("CORE_PLAN_REAPPLIED workers=1:", 0) == 0 && line.find(">" + std::string(text)) != std::string::npos,
+            "a reset worker is placed again and logged");
+    require(sfr::core_plan_detail::allowed_of(tid) == first, "the worker is back on its core");
+    require(sfr::restore_placement().empty(), "once placed again, nothing more to say");
+    {
+        std::lock_guard guard(lock);
+        leave = true;
+    }
+    changed.notify_all();
+    worker.join();
+    require(sfr::core_plan_detail::placed.empty(), "a thread that left is forgotten");
+    unsetenv("SFR_TEST_WORKER_CPUS");
+}
+#endif
 int main() {
     try {
         // AYN Thor (Snapdragon 8 Gen 2): cpu_capacity 280 x3, 855 x4, 1024.
@@ -65,8 +121,20 @@ int main() {
         require(sfr::host_role_mask(HostThreadRole::main, 45, thor, 0, 0) == 0xf8, "plan 45 on the Thor: as plan 13");
         require(sfr::host_role_mask(HostThreadRole::worker, 45, thor, 0, 0) == 0xf8, "plan 45 on the Thor: workers as plan 13");
         require(sfr::host_role_mask(HostThreadRole::main, 13, pixel, 0, 0) == 0xf0, "without bit 32 the Pixel is as before");
+        // Placing again: only a thread the system let onto cores its role avoids (Issue #176).
+        require(sfr::needs_placement(0xff, 0x80), "Pixel main back from another cpuset on every core: place again");
+        require(sfr::needs_placement(0x7f, 0x80), "Pixel main in a cpuset without the X4: try again (refused there)");
+        require(sfr::needs_placement(0xff, 0x70) && sfr::needs_placement(0x07, 0xf8), "workers reset: place again");
+        require(!sfr::needs_placement(0x80, 0x80) && !sfr::needs_placement(0xf8, 0xf8), "placed as planned: leave it");
+        require(!sfr::needs_placement(0x58, 0xf8) && !sfr::needs_placement(0x38, 0xf8),
+                "Thor main with cores paused by the system: narrower than the plan, leave it");
+        require(!sfr::needs_placement(0, 0x80), "affinity unknown: leave it");
+        require(!sfr::needs_placement(0xff, 0), "no plan for the role: leave it");
         require(sfr::parse_cpu_mask("0xf7") == 0xf7 && sfr::parse_cpu_mask("78") == 0x78 && !sfr::parse_cpu_mask(""),
                 "masks are hexadecimal");
+#if defined(__linux__)
+        placement_is_restored();
+#endif
         std::cout << "host core plan tests passed\n";
         return 0;
     } catch (const std::exception& error) {

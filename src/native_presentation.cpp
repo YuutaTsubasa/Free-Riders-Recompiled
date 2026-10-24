@@ -715,6 +715,7 @@ struct NativePresentation::Impl {
             if (const uint64_t mask = place_host_thread(HostThreadRole::render))
                 std::fprintf(stderr, "RENDER_THREAD_AFFINITY mask=0x%llx\n", static_cast<unsigned long long>(mask));
             run_render_thread();
+            forget_placement();  // host_core_plan.h: before the thread id can be reused
         });
     }
     void run_render_thread() {

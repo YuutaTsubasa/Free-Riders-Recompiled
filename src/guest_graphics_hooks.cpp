@@ -17,6 +17,7 @@
 #include "guest_execution.h"
 #include "wait_trace.h"
 #include "race_frame_clock.h"
+#include "race_hud_owners.h"
 #include "title_stats.h"
 #include <map>
 #include <plume_render_interface.h>
@@ -653,6 +654,14 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
         if(!line.empty()) std::cerr << line;
     }
 #endif
+    {   // host_core_plan.h: placement the system reset (a trip out of the app), about once a second
+        static unsigned placement_frames=0;
+        if(++placement_frames>=60) {
+            placement_frames=0;
+            const std::string line=sfr::restore_placement();
+            if(!line.empty()) std::cerr << line << " frame=" << sfr::present_count.load() << '\n';
+        }
+    }
     {   // SFR_GRAPHICS_LOCK_STATS (diagnostic_main.cpp)
         static unsigned lock_frames=0;
         if(++lock_frames==120) {
@@ -871,36 +880,11 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
 // command buffer and appends a draw. The device shadow mirrors those GPU
 // registers, so the native draw reads its state from the same fields.
 // Shared native draw: count vertices of stride bytes (guest byte order).
-// The race HUD's corner pieces, by the title function that draws them. A HUD
-// sprite goes through the title's generic UI layer (the sprite drawer
-// 824C06E0 returning to 824C08A4, its callers 824C0C88/824C0D78, 824AC17C/
-// 824AC1C8, the node drawer 824AD1A0, which recurses, and the tree's root
-// 824AE4F0, and the textured-quad path 824C6A04/8223CED8 the map itself is
-// drawn through: Issue #145, where the map stayed in the middle while its
-// markers went to the edge); the first return address above that layer is
-// the HUD element's own function. Found with the guest return-address chain of every 2D draw in
-// scripted one- and two-player races at 22:9 (2026-10-16).
-constexpr int race_hud_by_half=2;
-struct RaceHudOwner { uint32_t site; int8_t one_player, two_players; };
-constexpr RaceHudOwner race_hud_owners[]={
-    {0x82401C9C,-1,-1}, {0x82401CE0,-1,-1},  // rings, LV
-    {0x824023BC,-1,-1}, {0x82402404,-1,-1},  // skills
-    {0x82402088,-1,-1},                      // the left column's frame and effects
-    {0x82402300,-1,-1},                      // rank
-    {0x82400624,-1,-1},                      // rank effects
-    {0x8240069C,-1,-1},                      // LAP, RECORD
-    {0x823EFF80,+1,+1}, {0x82403158,+1,+1},  // map and its markers
-    {0x823F97E4,+1,race_hud_by_half},        // speed gauge (one per player)
-    {0x823F9AF4,+1,race_hud_by_half},        // SPEED
-    {0x823F9D8C,race_hud_by_half,race_hud_by_half},  // effects at both edges
-    {0x823FC63C,0,race_hud_by_half},         // gauge scale
-    {0x82240F74,0,race_hud_by_half},         // a two-player race's per-player time
-    {0x823F09C8,0,race_hud_by_half},
-};
-// -1 left edge, +1 right edge, race_hud_by_half, or 0: stays in the middle.
+// The race HUD's corner pieces, by the title function that draws them
+// (race_hud_owners.h). -1 left edge, +1 right edge, race_hud_by_half, or 0:
+// stays in the middle.
+constexpr int race_hud_by_half=sfr::race_hud::by_half;
 static int race_hud_side(const sfr::GuestMemory& memory, uint32_t sp, bool two_players) {
-    constexpr uint32_t generic[]={0x824C0C88,0x824C0D78,0x824AC17C,0x824AC1C8,0x824AD1A0,0x824AE4F0,
-                                  0x824C6A04,0x8223CED8};
     // Each frame keeps its caller's link register 8 below the caller's stack pointer.
     uint32_t frame=sp;
     for(int depth=0;depth<12 && frame && memory.readable(frame,4);++depth) {
@@ -908,10 +892,7 @@ static int race_hud_side(const sfr::GuestMemory& memory, uint32_t sp, bool two_p
         if(!caller || caller<=frame || !memory.readable(caller-8,4)) return 0;
         const uint32_t site=memory.load<uint32_t>(caller-8);
         frame=caller;
-        if(std::find(std::begin(generic),std::end(generic),site)!=std::end(generic)) continue;
-        for(const auto& owner : race_hud_owners)
-            if(owner.site==site) return two_players ? owner.two_players : owner.one_player;
-        return 0;
+        if(!sfr::race_hud::generic(site)) return sfr::race_hud::owner_side(site,two_players);
     }
     return 0;
 }
@@ -1437,15 +1418,16 @@ static bool native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
                 if(side==race_hud_by_half && draw.vertex_count>=3 && draw.stride>=8 && draw.stride<=32 &&
                    draw.vertices.size()>=size_t(draw.vertex_count)*draw.stride) {
                     // One function drawing a piece at each edge (the speed gauge's
-                    // effects; in a two-player race each player's gauge): its own
-                    // half of the title's 1280-wide layout says which.
+                    // effects; in a two-player race each player's gauge; a Grand
+                    // Prix mission's counters): its own half of the title's
+                    // 1280-wide layout says which.
                     float lo=1e30f,hi=-1e30f;
                     for(uint32_t v=0;v<draw.vertex_count;++v) {
                         float x;
                         std::memcpy(&x,draw.vertices.data()+size_t(v)*draw.stride,4);
                         lo=(std::min)(lo,x); hi=(std::max)(hi,x);
                     }
-                    side=(lo+hi)*0.5f<layout_width*0.5f ? -1 : +1;
+                    side=sfr::race_hud::half_side(lo,hi,float(layout_width));
                 }
                 if(side==-1 || side==+1) draw.shared.screen_space_offset[0]=float(side)*(1.0f-layout_share);
             }
