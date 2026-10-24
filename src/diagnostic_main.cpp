@@ -68,6 +68,7 @@
 #include "native_input.h"
 #include "input_trace.h"
 #include "native_audio.h"
+#include "audio_priority.h"
 #include "guest_printf.h"
 #include "native_presentation.h"
 #include "test_options.h"
@@ -356,6 +357,15 @@ static GuestTimers* guest_timers = nullptr;
 // 1 synchronization event, 5 semaphore), SignalState at +4, semaphore Limit at +16.
 static struct { uint32_t routine, context; } audio_client{};
 static std::atomic<uint64_t> audio_frames_requested{0}, audio_frames_submitted{0};
+// The audio pump's timing since the last NATIVE_AUDIO_FRAMES line (only the
+// pump thread touches it): how late a frame fell due at the latest, how
+// many times frames due were rendered back to back (and the most at once),
+// frames given up after a long stall, and how long the title's callback
+// took (it waits for the title's audio thread to mix the frame).
+static struct {
+    double late_max_ms = 0, callback_max_ms = 0, callback_total_ms = 0;
+    uint64_t catch_ups = 0, catch_up_max = 0, lost = 0, callbacks = 0;
+} audio_pump_window;
 static uint32_t audio_pump_handle = 0;
 static std::unordered_map<uint32_t, uint32_t> dispatcher_objects;
 static std::atomic<uint64_t> dispatcher_waits{0};
@@ -3023,11 +3033,34 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         }();
         if (dump.is_open())
             dump.write(reinterpret_cast<const char*>(active_memory->base() + ctx.r4.u32), audio_frame_bytes);
-        if (audio_frames_submitted++ % 1875 == 0)
+        static AudioContent content;
+        {
+            std::array<float, audio_frame_samples * 2> stereo;
+            downmix_audio_frame(active_memory->base() + ctx.r4.u32, stereo.data());
+            content.count(stereo.data());
+        }
+        if (audio_frames_submitted++ % 1875 == 0) {
+            // Every 10 s of audio: the pump's timing, what the frames held and
+            // the output's queue (AudioCushion), all since the last line.
+            auto& pump = audio_pump_window;
+            const auto queue = output ? output->cushion().take_window() : AudioCushion::Window{};
+            char details[320];
+            std::snprintf(details, sizeof details,
+                          " late_max_ms=%.1f catch_ups=%llu catch_up_max=%llu lost=%llu callback_avg_ms=%.2f"
+                          " callback_max_ms=%.1f silent=%llu jumps=%llu queued_min=%u queued_max=%u underruns=%llu dropped=%llu",
+                          pump.late_max_ms, (unsigned long long)pump.catch_ups, (unsigned long long)pump.catch_up_max,
+                          (unsigned long long)pump.lost, pump.callbacks ? pump.callback_total_ms / double(pump.callbacks) : 0.0,
+                          pump.callback_max_ms, (unsigned long long)content.silent, (unsigned long long)content.jumps,
+                          queue.queued_min, queue.queued_max,
+                          (unsigned long long)(output ? output->cushion().underruns() : 0),
+                          (unsigned long long)(output ? output->cushion().dropped() : 0));
+            pump = {};
+            content.silent = content.jumps = 0;
             std::cerr << "NATIVE_AUDIO_FRAMES submitted=" << audio_frames_submitted
                       << " requested=" << audio_frames_requested << " host_ms="
                       << std::chrono::duration_cast<std::chrono::milliseconds>(
-                             std::chrono::steady_clock::now().time_since_epoch()).count() << '\n';
+                             std::chrono::steady_clock::now().time_since_epoch()).count() << details << '\n';
+        }
         ctx.r3.u64 = 0;
         return;
     }
@@ -5009,7 +5042,10 @@ int main(int argc, char** argv) {
                         sfr::current_id = state.id;
                         std::cerr << "GUEST_HOST_THREAD guest_id=" << state.id
                                   << " tid=" << sfr::host_thread_id() << " worker=0x" << std::hex
-                                  << state.worker << std::dec << '\n';
+                                  << state.worker << std::dec;
+                        if (const int nice = sfr::audio_thread_nice_for(state.worker); nice && sfr::audio_priority_enabled())
+                            std::cerr << " audio_priority_error=" << sfr::raise_thread_for_audio(0, nice);
+                        std::cerr << '\n';
                         sfr::current_tls = state.tls_static;
                         sfr::current_tls_dynamic = state.tls_dynamic;
 #ifdef _WIN32
@@ -5071,7 +5107,10 @@ int main(int argc, char** argv) {
                             // Audio render driver: like the console's audio
                             // hardware, request one 256-sample frame (48 kHz)
                             // every 5.33 ms from the registered client callback.
-                            std::cerr << "NATIVE_AUDIO_PUMP_BEGIN guest_id=" << state.id << '\n';
+                            std::cerr << "NATIVE_AUDIO_PUMP_BEGIN guest_id=" << state.id;
+                            if (sfr::audio_priority_enabled())
+                                std::cerr << " audio_priority_error=" << sfr::raise_thread_for_audio(0);
+                            std::cerr << '\n';
                             execution.set_urgent(state.id, true);
                             if (permit->detached()) sfr::core_executions[sfr::core_index]->set_urgent(state.id, true);
                             using clock = std::chrono::steady_clock;
@@ -5085,6 +5124,13 @@ int main(int argc, char** argv) {
                                 const auto due = clock::now() - next;
                                 const int64_t frames = due < clock::duration::zero() ? 1
                                     : std::min<int64_t>(due / period + 1, 32);
+                                auto& window = sfr::audio_pump_window;
+                                window.late_max_ms = std::max(window.late_max_ms,
+                                    std::chrono::duration<double, std::milli>(due).count());
+                                if (frames > 1) {
+                                    ++window.catch_ups;
+                                    window.catch_up_max = std::max<uint64_t>(window.catch_up_max, uint64_t(frames));
+                                }
                                 for (int64_t frame = 0; frame < frames; ++frame, next += period) {
                                     const auto client = sfr::audio_client;
                                     if (!client.routine) continue;
@@ -5096,11 +5142,19 @@ int main(int argc, char** argv) {
                                     context->r1.u64 = state.stack_base - 0x100;
                                     context->r13.u64 = state.pcr;
                                     context->r3.u64 = wrapped;
+                                    const auto called = clock::now();
                                     sfr::call_indirect(*context, memory.base(), client.routine);
+                                    const double took = std::chrono::duration<double, std::milli>(clock::now() - called).count();
+                                    window.callback_max_ms = std::max(window.callback_max_ms, took);
+                                    window.callback_total_ms += took;
+                                    ++window.callbacks;
                                     ++sfr::audio_frames_requested;
                                 }
                                 const auto now = clock::now();
-                                if (next + std::chrono::milliseconds(500) < now) next = now;  // drop a long stall
+                                if (next + std::chrono::milliseconds(500) < now) {  // drop a long stall
+                                    window.lost += uint64_t((now - next) / period);
+                                    next = now;
+                                }
                                 const auto sleep = [next](std::stop_token token) {
                                     while (!token.stop_requested() && clock::now() < next)
                                         std::this_thread::sleep_for(std::min<clock::duration>(next - clock::now(),

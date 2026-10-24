@@ -56,6 +56,31 @@ int main() {
         require(off.next(0).start, "without a cushion the first frame plays");
         step = off.next(0);
         require(step.submit && !step.pause && !step.start && off.underruns() == 1, "and a dry device keeps playing");
+        // The window: the fewest and most frames queued since the last look.
+        sfr::AudioCushion watched(3);
+        for (uint32_t queued : {0u, 1u, 2u, 5u, 4u}) watched.next(queued);
+        auto window = watched.take_window();
+        require(window.queued_min == 0 && window.queued_max == 5, "the window holds the fewest and most queued");
+        watched.next(3);
+        window = watched.take_window();
+        require(window.queued_min == 3 && window.queued_max == 3, "and starts again after each look");
+        window = watched.take_window();
+        require(window.queued_min == 0 && window.queued_max == 0, "an empty window reads 0");
+
+        // The frames' content: silent frames and sample-to-sample jumps.
+        sfr::AudioContent content;
+        std::vector<float> quiet(sfr::audio_frame_samples * 2, 0.0f);
+        content.count(quiet.data());
+        require(content.silent == 1 && content.jumps == 0, "a frame of zeros is silent");
+        std::vector<float> tone(sfr::audio_frame_samples * 2);
+        for (uint32_t sample = 0; sample < sfr::audio_frame_samples; ++sample)
+            tone[sample * 2] = tone[sample * 2 + 1] = 0.6f * std::sin(float(sample) * 0.05f);
+        content.count(tone.data());
+        require(content.silent == 1 && content.jumps == 0, "a smooth tone has no jumps");
+        tone[100] = 0.9f;  // left, beside samples near 0.6 sin(5)
+        tone[2] = -0.8f;
+        content.count(tone.data());
+        require(content.jumps >= 2, "a sample far from its neighbours is a jump");
         std::cout << "native audio tests passed\n";
         return 0;
     } catch (const std::exception& error) {
