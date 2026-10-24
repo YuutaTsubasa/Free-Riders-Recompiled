@@ -248,6 +248,8 @@ with [docs/progress.md](docs/progress.md).
   On Android the game's sound threads now run ahead of the rest, so the sound keeps up when a hot phone slows its cores down, instead of crackling (#176).
 - [v0.10.32 — Main thread stays on the fast core](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.32)
   On some phones Android forgot which cores the game's threads should use after the game had been in the background; the game now puts them back (#176).
+- [v0.10.33 — Ultrawide mission counters, quieter cutscenes on touch](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.33)
+  On wide screens a Grand Prix mission's counters (e.g. the Ring Challenge's ring count) now move with their panel. On phones the touch buttons hide in story scenes and the opening movie (a tap skips), and the Kinect-only icons hide when no camera is used (#274).
 
 ## System Requirements
 
