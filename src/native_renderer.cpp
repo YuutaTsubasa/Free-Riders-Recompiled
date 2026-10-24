@@ -239,6 +239,32 @@ std::unique_ptr<plume::RenderPipeline> create_draw_pipeline(plume::RenderDevice&
         return pipeline;
 }
 
+// The pipeline as above; when the driver refuses it and its shaders lost
+// their dispatch loops (spirv_dispatch_loop.h), the same pipeline with the
+// loops kept (NativeGraphics::with_dispatch_loop). An Adreno 740 (driver
+// 512.676) failed to link 17 of the game's 455 without them ("Failed to link
+// shaders.", VK_ERROR_UNKNOWN), each with one of 11 large vertex shaders, and
+// the game stopped at the first such draw.
+// One line in game.log names each pipeline made so.
+std::unique_ptr<plume::RenderPipeline> create_draw_pipeline(NativeGraphics& graphics,
+        const plume::RenderPipelineLayout* layout, const NativeDraw& draw, const plume::RenderShader* depth_flip,
+        const std::string& what) {
+    auto pipeline = create_draw_pipeline(graphics.device(), layout, draw, graphics.backend(), graphics.depth_format(),
+                                         depth_flip);
+    if (pipeline || !graphics.removes_dispatch_loops()) return pipeline;
+    const auto* vertex = graphics.with_dispatch_loop(draw.vertex_shader);
+    const auto* pixel = graphics.with_dispatch_loop(draw.pixel_shader);
+    if (!vertex && !pixel) return pipeline;
+    NativeDraw kept = draw;
+    if (vertex) kept.vertex_shader = vertex;
+    if (pixel) kept.pixel_shader = pixel;
+    pipeline = create_draw_pipeline(graphics.device(), layout, kept, graphics.backend(), graphics.depth_format(),
+                                    depth_flip);
+    std::cerr << "NATIVE_DISPATCH_LOOP_FALLBACK " << what << " vertex=" << (vertex != nullptr)
+              << " pixel=" << (pixel != nullptr) << " made=" << (pipeline != nullptr) << '\n';
+    return pipeline;
+}
+
 void report_vulkan_formats(NativeGraphics& graphics);
 
 // Most phone GPUs have no BC (DXT) formats; their textures are decoded to
@@ -978,6 +1004,7 @@ void NativeRenderer::prepare_pipelines() {
                                 static_cast<const plume::VulkanShader*>(result.get())->vk == VK_NULL_HANDLE))
                                 throw std::runtime_error("prepared shader creation failed");
                             if (vertex_inputs) VertexInputUse::note(result.get(), std::move(*vertex_inputs));
+                            if (backend == 1) impl_->graphics.note_shader(result.get(), entry.code(true));
 #ifdef __APPLE__
                             if (backend == 1) ShaderSetUse::note(result.get(), bytes);
 #endif
@@ -992,9 +1019,10 @@ void NativeRenderer::prepare_pipelines() {
                     if (flip && !(depth_flip = impl_->presentation.depth_flip_shader(state.topology)))
                         throw std::runtime_error("no depth flip geometry shader for the topology");
                     current_step.store(2, std::memory_order_relaxed);
-                    auto pipeline = create_draw_pipeline(impl_->graphics.device(), impl_->layout.get(), state,
-                                                         impl_->graphics.backend(), impl_->graphics.depth_format(),
-                                                         depth_flip);
+                    auto pipeline = create_draw_pipeline(impl_->graphics, impl_->layout.get(), state, depth_flip,
+                                                         "recipe=" + std::to_string(index) + " vs=" +
+                                                             hex64(recipe.vertex.hash) + " ps=" +
+                                                             hex64(recipe.pixel.hash));
                     if (pipeline) {
                         prepared.emplace(key, std::move(pipeline));
                         ++compiled;
@@ -1997,8 +2025,11 @@ void NativeRenderer::draw(const NativeDraw& draw) {
         const plume::RenderShader* depth_flip = nullptr;
         if (flip && !(depth_flip = impl_->presentation.depth_flip_shader(draw.topology)))
             unsupported(uint32_t(draw.topology), "no depth flip geometry shader for the topology");
-        pipeline = create_draw_pipeline(device, impl_->layout.get(), draw, impl_->graphics.backend(),
-                                        impl_->graphics.depth_format(), depth_flip);
+        pipeline = create_draw_pipeline(impl_->graphics, impl_->layout.get(), draw, depth_flip,
+                                        draw.vertex_entry && draw.pixel_entry
+                                            ? "vs=" + hex64(pipeline_shader_id(draw.vertex_entry->source).hash) +
+                                                  " ps=" + hex64(pipeline_shader_id(draw.pixel_entry->source).hash)
+                                            : std::string("draw"));
         if (!pipeline) unsupported(0, "native graphics pipeline creation failed");
         ++impl_->pipelines_created;
         impl_->pipeline_ms += std::chrono::duration<double, std::milli>(

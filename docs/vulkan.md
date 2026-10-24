@@ -181,6 +181,21 @@ Intel GPU（vendor 0x8086）也一律拿掉。有迴圈時一格比賽的 GPU �
 （Issue #134，HD 5500）；拿掉後在 UHD 620（Linux、Mesa 26.2）上是 20–36 ms，比賽從約 7 fps 變成全速
 （略過繪製補上）（Issue #239）。Intel 只走 Vulkan 時才有影響（Windows 預設的 D3D12 不受影響）。
 
+驅動可能拒絕拿掉迴圈後的管線。AYN Thor（Adreno 740，驅動 512.676.53）用 `SFR_TEST_DISPATCH_LOOP=1`
+時，455 條裡有 17 條 `vkCreateGraphicsPipelines` 回 `VK_ERROR_UNKNOWN`（logcat `AdrenoVK-0: Failed to
+link shaders.`），全都用到同樣 11 個大的頂點著色器；比賽開始時遊戲停在 `native graphics pipeline
+creation failed`。改寫後的 SPIR-V 都過 `spirv-val`，問題在 Adreno 的編譯器處理不了那麼多 Function
+變數：每個變數先給初值，11 個裡有 9 個就連得起來；用 `spirv-opt --ssa-rewrite` 把變數變回 SSA
+（phi）則 17 條全部連得起來。現在一條管線用拿掉迴圈的著色器做不出來時，就用保留迴圈的同一個
+著色器再做一次（`NativeGraphics::with_dispatch_loop`，每個著色器第一次需要時才做），`game.log`
+每條記一行 `NATIVE_DISPATCH_LOOP_FALLBACK recipe=<n>|vs=<hash> ps=<hash> vertex=0|1 pixel=0|1
+made=0|1`。管線快取（`VkPipelineCache`）以著色器內容為鍵，學到的配方以原始著色器為準，兩種
+都不必另外區分。
+
+Adreno 不預設拿掉迴圈：Thor 上 Dolphin Resort 的比賽（720p，`SFR_GPU_TIMING=1`）保留迴圈時 GPU
+每幀約 10 ms，拿掉後約 32–34 ms（SSA 形式也一樣），跳過的繪製從 ~35 變成 ~5000 幀（共 9600）。
+Pixel 10a（Mali-G715）也沒有變快（Issue #176 回報者：15–24 ms 對 15–23 ms），Mali 同樣不預設。
+
 準備管線時，一條配方（recipe）超過 5 秒就記 `PIPELINE_PREWARM slow recipe=<n> of=<total>
 step=shaders|pipeline vs=<hash> ps=<hash> seconds=<s> resident_mb=<MB>`（之後 10、20、40 秒…再記），
 每 10 秒記一次 `PIPELINE_PREWARM progress=`，完成時記最慢的一條；Android 上也寫進 logcat。

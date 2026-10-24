@@ -106,6 +106,9 @@ uint32_t NativeShaders::create(ShaderStage stage, uint32_t container) {
         if(!next->shader) unsupported(container,"native shader bytecode ownership failed");
         // Its pipelines declare the vertex inputs it reads at their compacted locations.
         if(vertex_inputs) VertexInputUse::note(next->shader.get(),std::move(*vertex_inputs));
+        // A pipeline the driver refuses without the dispatch loop is made
+        // again with it (NativeGraphics::with_dispatch_loop).
+        if(vulkan) impl_->graphics.note_shader(next->shader.get(),found->code(true));
 #ifdef __APPLE__
         if(vulkan) ShaderSetUse::note(next->shader.get(),code);
 #endif

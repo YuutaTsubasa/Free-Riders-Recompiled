@@ -14,6 +14,7 @@ namespace plume {
 enum class RenderFormat;
 struct RenderCommandQueue;
 struct RenderDevice;
+struct RenderShader;
 }
 
 namespace sfr {
@@ -76,12 +77,28 @@ public:
     // vertex_inputs (for VertexInputUse::note once it is made).
     [[nodiscard]] std::vector<uint8_t> shader_code(std::span<const uint8_t> code,
                                                    std::optional<std::vector<uint32_t>>* vertex_inputs = nullptr) const;
+    // Whether shader_code takes XenosRecomp's dispatch loops out
+    // (spirv_dispatch_loop.h; SFR_TEST_DISPATCH_LOOP).
+    [[nodiscard]] bool removes_dispatch_loops() const noexcept;
+    // A driver can refuse a pipeline with a shader whose dispatch loop came
+    // out: an Adreno 740 failed to link 17 of the game's 455 ("Failed to
+    // link shaders.", VK_ERROR_UNKNOWN), and the game stopped at the first
+    // such draw. Every shader made from shader_code's code is made known
+    // here with its code as it came (which must outlive this: the shader
+    // cache's entries do); with_dispatch_loop then makes the same shader with
+    // its loop kept, once, for a pipeline to be made again with. Null for a
+    // shader that kept its loop anyway (nothing to fall back to).
+    void note_shader(const plume::RenderShader* shader, std::span<const uint8_t> code);
+    [[nodiscard]] const plume::RenderShader* with_dispatch_loop(const plume::RenderShader* shader);
     // Linux: the SDL window Plume's Vulkan instance was made for (hidden
     // until presentation shows it). Null on Windows.
     [[nodiscard]] void* host_window() const noexcept;
     void wait_idle(const std::function<bool()>& cancelled = {});
 
 private:
+    [[nodiscard]] std::vector<uint8_t> rewritten_code(std::span<const uint8_t> code,
+                                                      std::optional<std::vector<uint32_t>>* vertex_inputs,
+                                                      bool keep_dispatch_loop) const;
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
