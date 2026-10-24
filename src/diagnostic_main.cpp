@@ -5123,13 +5123,13 @@ int main(int argc, char** argv) {
                                 // movie decoder - keeps real time.
                                 const auto due = clock::now() - next;
                                 const int64_t frames = due < clock::duration::zero() ? 1
-                                    : std::min<int64_t>(due / period + 1, 32);
+                                    : (std::min<int64_t>)(due / period + 1, 32);
                                 auto& window = sfr::audio_pump_window;
-                                window.late_max_ms = std::max(window.late_max_ms,
+                                window.late_max_ms = (std::max)(window.late_max_ms,
                                     std::chrono::duration<double, std::milli>(due).count());
                                 if (frames > 1) {
                                     ++window.catch_ups;
-                                    window.catch_up_max = std::max<uint64_t>(window.catch_up_max, uint64_t(frames));
+                                    window.catch_up_max = (std::max<uint64_t>)(window.catch_up_max, uint64_t(frames));
                                 }
                                 for (int64_t frame = 0; frame < frames; ++frame, next += period) {
                                     const auto client = sfr::audio_client;
@@ -5145,7 +5145,7 @@ int main(int argc, char** argv) {
                                     const auto called = clock::now();
                                     sfr::call_indirect(*context, memory.base(), client.routine);
                                     const double took = std::chrono::duration<double, std::milli>(clock::now() - called).count();
-                                    window.callback_max_ms = std::max(window.callback_max_ms, took);
+                                    window.callback_max_ms = (std::max)(window.callback_max_ms, took);
                                     window.callback_total_ms += took;
                                     ++window.callbacks;
                                     ++sfr::audio_frames_requested;

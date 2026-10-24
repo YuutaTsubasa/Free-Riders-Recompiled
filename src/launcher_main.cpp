@@ -150,6 +150,7 @@ enum Text {
     TabAchievements, AchievementsSummary, AchievementsScore, AchievementsHint, AchievementsNoGame, AchievementsUnreadable,
     AchievementUnlocked, AchievementLocked, AchievementSecret, AchievementSecretHint, AchievementsPlayer,
     SectionUnlocked, SectionLocked,
+    HideKinectUi, HideKinectUiHint,
     TextCount
 };
 
@@ -557,6 +558,9 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Player: %s", "玩家：%s"},
     {"Unlocked", "已解鎖"},
     {"Locked", "未解鎖"},
+    {"Hide Kinect icons", "隱藏 Kinect 圖示"},
+    {"Without a camera, hides the Kinect's player figure, its sensor icon and the microphone bar at the top of the menus, races and story scenes: they only show what a Kinect sees and hears. With Voice commands on, the microphone bar stays. Always shown with a camera.",
+     "未使用攝影機時，隱藏選單、比賽與劇情畫面上方的 Kinect 玩家人形、感應器圖示與麥克風列；它們只表示 Kinect 看到與聽到的狀態。開啟語音指令時保留麥克風列。使用攝影機時一律顯示。"},
 }};
 
 int language = 0;
@@ -3245,6 +3249,11 @@ struct Launcher {
                 ImGui::SetCursorPos(ImVec2(line_x, line_y));
             }
         });
+        // The Kinect's own indicators mean nothing without a camera (Issue
+        // #274); with one they always show.
+        if (settings.camera == "off")
+            setting_row(tr(HideKinectUi), tr(HideKinectUiHint), switch_width, scale,
+                        [&] { toggle("##hide_kinect_ui", &settings.hide_kinect_ui); });
         if (kinect_chosen) {
             // Anything short of a working sensor: what to install and check.
             if (!kinect_failure.empty()) {

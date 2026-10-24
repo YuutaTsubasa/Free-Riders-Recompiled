@@ -10,6 +10,7 @@
 #include "avatar_clip_pose.h"
 #include "job_lifetime.h"
 #include "stream_reader_gate.h"
+#include "touch_controls.h"
 #include <mutex>
 #include <algorithm>
 #include <bit>
@@ -204,6 +205,56 @@ SFR_CONCURRENT_HOOK(sub_8249B068) {
     __imp__sub_8249B068(ctx,base);
 }
 
+// The Kinect's own indicators (Issue #274), which mean nothing to a player
+// with a controller and no camera: the player figure (red while nobody is
+// tracked, at the top of menus, races and story scenes), the sensor icon
+// beside it, and the voice bar with its microphone (the title and some
+// menus). SFR_HIDE_KINECT_UI=1 hides all three; "player" leaves the voice
+// bar (a player using the host's microphone, SFR_VOICE). The launcher sets
+// it only when no camera is chosen. Nothing else the game draws changes:
+// the hand cursor, the page header the sensor icon sits on and the voice
+// words the pads say keep working.
+namespace {
+enum class KinectUiHidden { none, player, all };
+KinectUiHidden kinect_ui_hidden() {
+    static const KinectUiHidden hidden=[]{
+        const char* t=std::getenv("SFR_HIDE_KINECT_UI");
+        const std::string value=t?t:"";
+        const KinectUiHidden chosen=value=="1" ? KinectUiHidden::all
+                                   : value=="player" ? KinectUiHidden::player : KinectUiHidden::none;
+        if(chosen!=KinectUiHidden::none) std::cerr << "GAME_PATCH hide_kinect_ui=" << value << '\n';
+        return chosen;
+    }();
+    return hidden;
+}
+}
+
+PPC_FUNC_IMPL(__imp__sub_82432718);
+// The player figure's draw (this +160 bit 0 hidden, +20 its state; it sets
+// its render state and draws through 824327C0 > 82432970).
+SFR_CONCURRENT_HOOK(sub_82432718) {
+    if(kinect_ui_hidden()!=KinectUiHidden::none) return;
+    __imp__sub_82432718(ctx,base);
+}
+
+PPC_FUNC_IMPL(__imp__sub_82434420);
+// The voice bar's draw (this +68 == 1 shown): the bar (82434548), the
+// microphone (824345D8) and the word heard (82434888) or the level (82434660).
+SFR_CONCURRENT_HOOK(sub_82434420) {
+    if(kinect_ui_hidden()==KinectUiHidden::all) return;
+    __imp__sub_82434420(ctx,base);
+}
+
+PPC_FUNC_IMPL(__imp__sub_8223CE58);
+// A textured quad of the 2D layer. Two callers draw the Kinect sensor icon
+// with it, beside the player figure: the menu page header (82459300, return
+// 82459FDC) and the title screen (82451300, return 82451518).
+SFR_CONCURRENT_HOOK(sub_8223CE58) {
+    const uint32_t from=uint32_t(ctx.lr);
+    if((from==0x82459FDCu || from==0x82451518u) && kinect_ui_hidden()!=KinectUiHidden::none) return;
+    __imp__sub_8223CE58(ctx,base);
+}
+
 PPC_FUNC_IMPL(__imp__sub_82817B48);
 
 // Movie frame: the game calls the XMV player's RenderNextFrame (vtable +80)
@@ -219,6 +270,7 @@ PPC_FUNC_IMPL(__imp__sub_82817B48);
 // 8243A728 and 8243A968 test). Decoder throughput depends on the host.
 SFR_CONCURRENT_HOOK(sub_82817B48) {
     sfr::enter_function(ctx,"sub_82817B48",0x82817B48);
+    sfr::note_touch_movie();  // the touch controls hide while it plays (Issue #274)
     // A movie ended before its first frames leaves the title waiting on a
     // white screen, so SFR_SKIP_MOVIES lets each player show 30 frames.
     // An empty value is off, like every other switch: the launcher writes the

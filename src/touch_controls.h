@@ -42,7 +42,12 @@ namespace sfr {
 // circle). Selection stays the game's own: the cursor rests where the finger
 // left it and the item under it fills and is chosen, as with a hand. On the
 // title screen a touch away from the controls is START.
-enum class TouchScene { menu, race, title };
+//
+// A movie or a story scene (Issue #274) needs no controls and they hid the
+// picture, so none are drawn there: a touch anywhere is START, which ends a
+// movie and brings the hand to a story scene's SKIP, as START on a pad does
+// (scene below). SFR_TOUCH_IN_SCENES=1 keeps them as in the menus.
+enum class TouchScene { menu, race, title, scene };
 
 struct TouchPoint {
     int64_t id;
@@ -100,6 +105,7 @@ private:
     int64_t pointer_finger_ = -1;  // the menus' hand cursor, or START's on the title
     std::optional<std::array<float, 2>> pointer_;
     std::array<bool, TouchOverlay::circles> pressed_{};
+    bool hidden_ = false;  // a scene: nothing drawn
 };
 
 // The phone's pitch in degrees from an accelerometer reading (the sensor's
@@ -184,7 +190,17 @@ std::optional<std::array<float, 2>> pointer_from_window(float x, float y);
 // Whether the title screen waits for START (the Kinect hooks know); with
 // touch_racing, the scene the touches are read for.
 void set_touch_title(bool waiting);
+// A movie frame was asked for (the movie player's hook, each frame it plays).
+void note_touch_movie();
+// Whether a story scene is on (the Kinect hooks know: no menu page, dialog
+// or ring for a while, not racing; the same test START's skip uses).
+void set_touch_story(bool on);
+// The scene of the touches: a race first, then a movie, the title, a story
+// scene, the menus. touch_scene_for is that choice for given states (movie
+// and story as above, show_in_scenes SFR_TOUCH_IN_SCENES=1).
 TouchScene touch_scene();
+TouchScene touch_scene_for(bool racing, bool movie, bool title, bool story, bool show_in_scenes);
+bool touch_in_scenes();
 
 // The latest touch state, published by the thread that reads touches (the
 // presentation's event pump) for the input and the blit.

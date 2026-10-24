@@ -368,6 +368,32 @@ void custom_window_size() {
     require(sfr::internal_resolution(custom).output_height == 1300, "the scale follows the custom size");
 }
 
+// Issue #274: the Kinect's figure, sensor icon and microphone bar.
+void hide_kinect_ui_settings() {
+    sfr::LauncherSettings defaults;
+    require(defaults.hide_kinect_ui && value_of(defaults, "SFR_HIDE_KINECT_UI") == "1",
+            "without a camera the Kinect's indicators are hidden by default");
+    auto voice = defaults;
+    voice.voice = true;
+    require(value_of(voice, "SFR_HIDE_KINECT_UI") == "player", "voice commands keep the microphone bar");
+    for (const char* camera : {"motion", "kinect", "kinect_v2"}) {
+        auto with_camera = defaults;
+        with_camera.camera = camera;
+        require(value_of(with_camera, "SFR_HIDE_KINECT_UI").empty(), "a camera always shows them");
+    }
+    auto shown = defaults;
+    shown.hide_kinect_ui = false;
+    require(value_of(shown, "SFR_HIDE_KINECT_UI").empty(), "turned off, they are shown");
+    const auto read = sfr::parse_launcher_settings(sfr::format_launcher_settings(shown));
+    require(!read.hide_kinect_ui, "turned off survives a round trip");
+    require(sfr::parse_launcher_settings(sfr::format_launcher_settings(defaults)).hide_kinect_ui,
+            "on survives a round trip");
+    require(sfr::parse_launcher_settings("").hide_kinect_ui, "an older settings file hides them");
+    require(sfr::parse_launcher_settings("hide_kinect_ui=0\n").hide_kinect_ui == false &&
+                sfr::parse_launcher_settings("hide_kinect_ui=1\n").hide_kinect_ui,
+            "the key reads both ways");
+}
+
 void title_stats_settings() {
     const sfr::LauncherSettings defaults;
     require(defaults.title_stats && value_of(defaults, "SFR_TITLE_STATS") == "1" &&
@@ -980,6 +1006,7 @@ int main() {
         kinect_v2_view_settings();
         save_directory_settings();
         title_stats_settings();
+        hide_kinect_ui_settings();
         race_frameskip_settings();
         test_option_table();
         test_option_settings();

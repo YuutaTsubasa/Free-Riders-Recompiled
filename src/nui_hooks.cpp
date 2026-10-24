@@ -662,6 +662,19 @@ SFR_INPUT_HOOK(sub_827707B0) {
         if(title!=was_title) std::cerr << "NUI_TITLE_WAITING " << (title?"on":"off") << " present=" << now << '\n';
         was_title=title;
         sfr::set_touch_title(title);
+        // A story scene (Issue #274), as START's skip below sees one: no menu
+        // page, dialog or ring for half a second of input updates, not racing,
+        // not the title. The touch controls hide there.
+        const bool story=!racing && !title && input_frames>30 && input_frames-menu_page_frame>30 &&
+                         !(dialog_seen && input_frames-dialog_frame<=30) &&
+                         now_ms()-ring_asked_ms.load(std::memory_order_relaxed)>500 && !sfr::kinect_tuner_open();
+        static bool was_story=false;
+        if(story!=was_story)
+            std::cerr << "NUI_TOUCH_STORY " << (story?"on":"off") << " present=" << now
+                      << " page_age=" << (input_frames-menu_page_frame)
+                      << " manager_age=" << (input_frames-menu_manager_frame) << '\n';
+        was_story=story;
+        sfr::set_touch_story(story);
     }
     const char* const choice=std::getenv("SFR_CAMERA");
     if(choice && std::string_view(choice)=="kinect") {

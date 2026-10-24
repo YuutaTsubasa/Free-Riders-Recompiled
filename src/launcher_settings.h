@@ -121,6 +121,11 @@ struct LauncherSettings {
     // microphone (a Kinect's array, made the default, is heard), in English
     // or Traditional Chinese; the pad's buttons still say them too.
     bool voice = false;  // SFR_VOICE
+    // Hide the Kinect's player figure, sensor icon and microphone bar
+    // (Issue #274; SFR_HIDE_KINECT_UI, game_patches.cpp). Only without a
+    // camera: with one they are shown whatever this says. The microphone bar
+    // stays with voice commands on.
+    bool hide_kinect_ui = true;
     // Windows motion mode: show the skeleton submitted to the game in a
     // separate window, without a camera image (SFR_CAMERA_DEBUG).
     bool camera_debug = false;

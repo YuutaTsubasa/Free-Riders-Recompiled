@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <atomic>
+#include <chrono>
 #include <mutex>
 
 namespace sfr {
@@ -65,6 +66,23 @@ void TouchControls::update(std::span<const TouchPoint> touches, float tilt, Touc
     const bool racing = scene == TouchScene::race;
     state_ = {};
     pressed_.fill(false);
+    hidden_ = scene == TouchScene::scene;
+    if (hidden_) {
+        // Nothing is drawn, so nothing is held: the sticks let go, and a
+        // finger anywhere is START until it lifts (the title's pointer).
+        stick_active_ = false;
+        stick_finger_ = right_finger_ = -1;
+        right_knob_ = {layout(right_stick)[0], layout(right_stick)[1]};
+        pointer_.reset();
+        const auto held = std::find_if(touches.begin(), touches.end(),
+                                       [&](const TouchPoint& t) { return t.id == pointer_finger_; });
+        if (held == touches.end()) pointer_finger_ = touches.empty() ? -1 : touches.front().id;
+        if (pointer_finger_ >= 0) {
+            pressed_[start] = true;
+            state_.buttons |= button::start;
+        }
+        return;
+    }
     // Each stick follows the finger that started it until that finger lifts.
     const auto held = [&](int64_t finger) {
         return std::find_if(touches.begin(), touches.end(), [&](const TouchPoint& t) { return t.id == finger; });
@@ -153,6 +171,7 @@ void TouchControls::update(std::span<const TouchPoint> touches, float tilt, Touc
 
 TouchOverlay TouchControls::overlay() const {
     TouchOverlay overlay;
+    if (hidden_) return overlay;  // every circle at state 0
     for (size_t index = 0; index < TouchOverlay::circles; ++index) {
         auto [cx, cy, radius] = layout(Button(index));
         if (index == stick && stick_active_) { cx = stick_base_[0]; cy = stick_base_[1]; }
@@ -280,9 +299,41 @@ std::array<float, 6> pointer_view{};
 
 void set_touch_title(bool waiting) { title_now.store(waiting, std::memory_order_relaxed); }
 
+namespace {
+std::atomic<int64_t> movie_ms{-1000000};
+std::atomic<bool> story_now{false};
+int64_t steady_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+}
+
+void note_touch_movie() { movie_ms.store(steady_ms(), std::memory_order_relaxed); }
+void set_touch_story(bool on) { story_now.store(on, std::memory_order_relaxed); }
+
+bool touch_in_scenes() {
+    static const bool shown = [] {
+        const char* text = std::getenv("SFR_TOUCH_IN_SCENES");
+        return text && *text == '1';
+    }();
+    return shown;
+}
+
+TouchScene touch_scene_for(bool racing, bool movie, bool title, bool story, bool show_in_scenes) {
+    if (racing) return TouchScene::race;
+    // The opening movie (titleMovie, the disc's only one) plays inside the
+    // title's states: there it is a scene, and a touch is START either way.
+    if (movie && !show_in_scenes) return TouchScene::scene;
+    if (title) return TouchScene::title;
+    if (story && !show_in_scenes) return TouchScene::scene;
+    return TouchScene::menu;
+}
+
 TouchScene touch_scene() {
-    if (touch_racing()) return TouchScene::race;
-    return title_now.load(std::memory_order_relaxed) ? TouchScene::title : TouchScene::menu;
+    // A movie plays at most a few frames apart; a quarter of a second without
+    // one is its end.
+    const bool movie = steady_ms() - movie_ms.load(std::memory_order_relaxed) < 250;
+    return touch_scene_for(touch_racing(), movie, title_now.load(std::memory_order_relaxed),
+                           story_now.load(std::memory_order_relaxed), touch_in_scenes());
 }
 
 void publish_pointer(float x, float y, bool landed, bool held) {
