@@ -147,6 +147,7 @@ target_link_libraries(sfr_native_timer_resolution_test PRIVATE sfr_native_timer_
 add_test(NAME native_timer_resolution COMMAND sfr_native_timer_resolution_test)
 find_package(Threads REQUIRED)
 target_link_libraries(sfr_guest_execution PUBLIC Threads::Threads)
+target_link_libraries(sfr_host_core_plan_test PRIVATE Threads::Threads)  # placement restore test (Linux)
 target_include_directories(sfr_guest_execution PUBLIC src)
 add_executable(sfr_guest_execution_test tests/guest_execution_test.cpp)
 target_link_libraries(sfr_guest_execution_test PRIVATE sfr_guest_execution)

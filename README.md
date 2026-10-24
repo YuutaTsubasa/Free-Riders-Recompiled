@@ -244,6 +244,10 @@ with [docs/progress.md](docs/progress.md).
   About a hundred of the course's draws each frame no longer have their vertices copied and converted on the CPU; their vertex buffers stay on the GPU, so a drawn race frame costs less on slow or throttled phones (#176).
 - [v0.10.30 — Right colours at full-screen render size](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.30)
   On Android, when the render size matched the screen exactly (e.g. 1920x1080 at 150%), red and blue were swapped. The shader dispatch-loop test option no longer stops the game on GPUs that can't build some rewritten shaders.
+- [v0.10.31 — Sound on hot phones](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.31)
+  On Android the game's sound threads now run ahead of the rest, so the sound keeps up when a hot phone slows its cores down, instead of crackling (#176).
+- [v0.10.32 — Main thread stays on the fast core](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.32)
+  On some phones Android forgot which cores the game's threads should use after the game had been in the background; the game now puts them back (#176).
 
 ## System Requirements
 

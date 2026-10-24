@@ -654,6 +654,14 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
         if(!line.empty()) std::cerr << line;
     }
 #endif
+    {   // host_core_plan.h: placement the system reset (a trip out of the app), about once a second
+        static unsigned placement_frames=0;
+        if(++placement_frames>=60) {
+            placement_frames=0;
+            const std::string line=sfr::restore_placement();
+            if(!line.empty()) std::cerr << line << " frame=" << sfr::present_count.load() << '\n';
+        }
+    }
     {   // SFR_GRAPHICS_LOCK_STATS (diagnostic_main.cpp)
         static unsigned lock_frames=0;
         if(++lock_frames==120) {

@@ -129,6 +129,9 @@ struct NativeThread::Impl {
             }
         }
         self.exit_code = result;
+#ifdef __ANDROID__
+        forget_placement();  // host_core_plan.h: before the thread id can be reused
+#endif
         self.completed.store(true, std::memory_order_release);
         portable::set_event(*self.exit);
         return nullptr;
@@ -270,8 +273,10 @@ uint64_t NativeThread::set_guest_processor(uint32_t guest_cpu) {
             for (int cpu = 0; cpu < 64; ++cpu)
                 if (mask >> cpu & 1) CPU_SET(cpu, &set);
             // Refused (EINVAL) while the app's cpuset holds none of these
-            // cores, as in the background: the thread keeps what it has.
+            // cores, as in the background: the thread keeps what it has
+            // until restore_placement places it again.
             (void)set_thread_affinity(impl_->thread, set);
+            remember_placement(HostThreadRole::worker, pthread_gettid_np(impl_->thread));
         }
         return affinity_mask();
     }
