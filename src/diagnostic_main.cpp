@@ -5125,7 +5125,7 @@ int main(int argc, char** argv) {
                                 const int64_t frames = due < clock::duration::zero() ? 1
                                     : std::min<int64_t>(due / period + 1, 32);
                                 auto& window = sfr::audio_pump_window;
-                                window.late_max_ms = std::max(window.late_max_ms,
+                                window.late_max_ms = (std::max)(window.late_max_ms,
                                     std::chrono::duration<double, std::milli>(due).count());
                                 if (frames > 1) {
                                     ++window.catch_ups;
@@ -5145,7 +5145,7 @@ int main(int argc, char** argv) {
                                     const auto called = clock::now();
                                     sfr::call_indirect(*context, memory.base(), client.routine);
                                     const double took = std::chrono::duration<double, std::milli>(clock::now() - called).count();
-                                    window.callback_max_ms = std::max(window.callback_max_ms, took);
+                                    window.callback_max_ms = (std::max)(window.callback_max_ms, took);
                                     window.callback_total_ms += took;
                                     ++window.callbacks;
                                     ++sfr::audio_frames_requested;
