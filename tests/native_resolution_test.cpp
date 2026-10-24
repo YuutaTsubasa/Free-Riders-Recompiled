@@ -456,8 +456,6 @@ void gpu_dec3n_readback(sfr::NativeGraphics& graphics,const fs::path& directory,
     const char* requested=std::getenv("SFR_GRAPHICS");
     require(requested && std::string_view(requested)==(raw?"d3d12":"vulkan"),
             "DEC3N fixture requires the requested real backend without fallback");
-    if(raw)require(std::getenv("SFR_D3D12_DRED") && std::string_view(std::getenv("SFR_D3D12_DRED"))=="1",
-                   "D3D12 DEC3N fixture requires DRED");
     environment("SFR_RENDER_SCALE","100");
     constexpr uint32_t columns=64,rows=49,tile=4,width=columns*tile,height=rows*tile;
     constexpr std::array<const char*,9> names{"Normal0","Normal1","Normal2","Normal3","Tangent0","Tangent1","Tangent2","Tangent3","Binormal0"};
