@@ -250,6 +250,8 @@ with [docs/progress.md](docs/progress.md).
   On some phones Android forgot which cores the game's threads should use after the game had been in the background; the game now puts them back (#176).
 - [v0.10.33 — Ultrawide mission counters, quieter cutscenes on touch](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.33)
   On wide screens a Grand Prix mission's counters (e.g. the Ring Challenge's ring count) now move with their panel. On phones the touch buttons hide in story scenes and the opening movie (a tap skips), and the Kinect-only icons hide when no camera is used (#274).
+- [v0.10.34 — Faster on slow processors, big jump fixed](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.34)
+  The game's translated code keeps the console's registers in the processor's own registers, about 13-18% less CPU time per race frame. On slow devices, where frames are skipped, racers no longer fall short of Dolphin Resort's big jump (#176).
 
 ## System Requirements
 
