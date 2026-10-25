@@ -2802,3 +2802,88 @@ setters ~1.6%), libc/locks/TLS 9% (the TLS resolver 1.5%), kernel and clock
 helpers 3%. The graphics share is spread over many small items now; the
 title's own drawing code (~6 ms of a Thor drawn frame) is the larger part.
 
+## 2026-10-26: Guest registers as C++ locals
+
+XenonRecomp's `*_as_local` options (all off in `config/freeriders.toml`; on
+in Unleashed Recompiled) keep PPC registers in locals of each generated
+function, where the compiler can hold them in host registers; in the
+`PPCContext` every call forces them back to memory. The shipped generated
+code is not regenerated, and `generate_diagnostic.py` rewrites many
+instructions in their `ctx.` form, so `scripts/register_locals.py` does the
+conversion on the finished output at build time (CMake `SFR_REGISTER_LOCALS`,
+a list of classes: `ctr`, `xer`, `cr`, `nonargument` = r0 r2 r11 r12 f0
+v32-v63, `nonvolatile` = r14-r31 f14-f31 v14-v31 v64-v127; default all,
+`none` turns it off). It writes `register-locals/` in the build directory and
+a report beside it.
+
+Unlike XenonRecomp, which trusts the calling convention, it checks it with a
+whole-program liveness analysis and keeps the context as the mailbox where
+the program does not follow it: a callee that reads a register at entry
+(4,095 exception funclets read r12; jump-table fragments read r11, cr6 or
+ctr) gets it stored by its callers first; a caller that reads a volatile
+register after a call (outside the convention, 200 functions) gets it from
+the callee through the context; code after a call that never returns
+(throws, KeBugCheck) asks nothing. Host code that reads its caller's
+registers is listed by call site (`SITE_READS`: the stream reader's idle
+wait at 8249C224, which is called through a pointer, read stale r19/r30 and
+stopped the first build at boot; four diagnostic audits). The nonvolatile
+save and restore helpers are dropped, keeping what else they do: the
+return address stored at -8(r1) (the back chain the HUD placement and stack
+traces read) and loaded into LR on return; one restore whose entry an audit
+watches (unselected-user, 822345EC) stays. Indirect calls are taken to reach
+functions with the standard convention (an escaped address), plus r12 for
+the funclets. LR, MSR and the reservation stay in the context (`skip_lr`
+would break the HUD's return-address chain; MSR is global state; the
+reservation field holds the thread state). Unknown control flow or a helper
+handed the whole context stops the build instead of being guessed at.
+
+**Equivalence.** `SFR_RACE_DIGEST=10` prints every tenth race step the race
+clock and the first 3 KiB of each of the 12 racers;
+`scripts/race_digest_compare.py` compares runs. Two runs of the same build do
+not run the same race: even with `SFR_TEST_RAND_SEED` (srand 82A54FA0 seeded
+with a constant), `SFR_PARALLEL_WORKER=0` and `SFR_REALTIME_UI=0`, six
+baseline runs (Dolphin Resort Free Race, player braking, 11 AI racers,
+D3D12) agree only to step 770-780 (the countdown; per-racer values set from
+the clock differ from creation). A run takes one of several courses from
+there. One locals run (`all-s1`) took the same course as a baseline run
+(`seed-2`) and matched it word for word, every racer, 9,229 words a
+sample, from racer creation (step 760) to step 1940 (~20 s of racing, past
+the start), and its screenshots at presents 13,200 and 14,400 are
+pixel-identical to that run's (0 of 921,600 pixels; two baseline runs differ
+in ~850,000). No two baseline runs matched each other that long. Every
+locals run (all, `ctr,xer,cr`, `+nonargument`) agreed with some baseline
+run at least as far as the baselines agree among themselves. The title's
+depth view (82439998, 82439D80) converted by the script runs bit for bit
+against the offline extractor (`kinect_depth_view_locals` in ctest, beside
+the unconverted `kinect_depth_view_guest`).
+
+What it cannot catch: anything after the courses part (races are not
+deterministic in this port), code the race does not reach (menus beyond the
+scripted path, other courses and modes, two players, online), and timing
+effects. The analysis rests on assumptions stated in the script (indirect
+targets follow the convention; host code reads registers only where
+audited; XER.SO and OV are never set but by one context-restore function);
+`SFR_DIAGNOSTIC_ENTRIES=1` audits keyed on entries of the dropped helpers
+no longer see them.
+
+**Speed.** AYN Thor (Dolphin Resort moving race `CLAUDE_INPUT=kicks`,
+`SFR_TEST_WORKER_CPUS=7 SFR_TEST_RENDER_CPUS=7`, versionCode 81, frames
+14,000-20,500, A B A B):
+
+| Build | undrawn_ms | drawn_ms | cpu_ms | race speed | frames skipped of 9600 |
+| --- | --- | --- | --- | --- | --- |
+| context (`none`) | 9.40 / 10.09 | 25.43 / 25.65 | 11.15 / 11.05 | 0.983 / 0.992 | 4116 / 4542 |
+| all classes | 7.90 / 8.01 | 22.36 / 21.88 | 11.82 / 12.10 | 0.9994 / 0.9993 | 2970 / 2730 |
+
+Undrawn frames take 18% less, drawn ones 13% less; the race now keeps its
+speed in this configuration (the context build fell behind and resynced). The
+main thread's CPU per frame rises because a third fewer frames are skipped.
+Windows (i9, D3D12, the same race with forced skipping
+`SFR_RACE_FRAMESKIP=2 SFR_TEST_RACE_DRAW_MS=20`, frames 13,500-17,000):
+undrawn_ms 2.75 / 3.09 (a third run disturbed: 4.43) for the context build,
+2.09 / 2.27 / 2.25 with all classes; cpu_ms 4.33 / 4.43 against 3.78 / 4.05 /
+3.91. By class (one run each): `ctr,xer,cr` 2.76 undrawn, 4.31 cpu;
+`+nonargument` 2.25, 3.96; `+nonvolatile` 2.25, 3.91. The executable's code is
+16% smaller (51.1 to 43.1 MB). Vulkan with the validation layer through the
+race: 0 messages; ctest 181/181.
+
