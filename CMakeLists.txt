@@ -54,6 +54,30 @@ option(SFR_HIDDEN_CHECKPOINT "Label checkpoints hide their permit call from the 
 if(NOT SFR_HIDDEN_CHECKPOINT)
     add_compile_definitions(SFR_HIDDEN_CHECKPOINT=0)
 endif()
+# Profile-guided optimisation with Clang (docs/performance.md): "generate"
+# builds an instrumented game that writes default_*.profraw into its working
+# directory when it exits (on Android the app's files directory); a merged
+# .profdata file (llvm-profdata merge) builds the game optimised with it.
+# Functions the profile does not match are compiled as without it.
+set(SFR_PGO "" CACHE STRING "Profile-guided optimisation: empty (off), generate, or a .profdata file")
+if(SFR_PGO)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+        message(FATAL_ERROR "SFR_PGO needs Clang with its GNU-style driver (Android, Linux, macOS).")
+    endif()
+    if(SFR_PGO STREQUAL "generate")
+        add_compile_options(-fprofile-generate)
+        add_link_options(-fprofile-generate)
+        add_compile_definitions(SFR_PGO_GENERATE=1)
+    else()
+        get_filename_component(SFR_PGO_PROFILE "${SFR_PGO}" ABSOLUTE)
+        if(NOT EXISTS "${SFR_PGO_PROFILE}")
+            message(FATAL_ERROR "SFR_PGO: no profile at ${SFR_PGO_PROFILE}")
+        endif()
+        # Ninja does not see the profile as an input: a new profile at the
+        # same path needs a clean build.
+        add_compile_options("-fprofile-use=${SFR_PGO_PROFILE}" -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date -Wno-profile-instr-missing)
+    endif()
+endif()
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/XenonRecomp/CMakeLists.txt")
     message(FATAL_ERROR "Run scripts/bootstrap.py to obtain the pinned XenonRecomp tools.")
 endif()

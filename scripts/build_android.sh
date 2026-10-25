@@ -4,6 +4,7 @@
 # scripts/bootstrap.py first and generate the game code (README).
 # Usage: scripts/build_android.sh [--diagnostic DIR] [--abi x86_64|arm64-v8a]... [--no-apk] [--launcher-only]
 #        [--pack shaders.pack] (carried in the APK; the launcher copies it out) [--validation]
+#        [--pgo generate|PROFILE.profdata] (profile-guided optimisation, docs/performance.md)
 # --launcher-only builds the launcher and SDL without the game (no generated
 # code needed, no APK; what the CI does).
 # Environment: ANDROID_HOME (default ~/AppData/Local/Android/Sdk on Windows,
@@ -20,6 +21,7 @@ apk=1
 pack=""
 game=1
 validation=OFF
+pgo=""
 api="${SFR_ANDROID_API:-28}"
 [[ "$api" =~ ^[0-9]+$ ]] && [ "$api" -ge 28 ] || { echo "SFR_ANDROID_API must be at least 28" >&2; exit 2; }
 while [ $# -gt 0 ]; do
@@ -30,6 +32,7 @@ while [ $# -gt 0 ]; do
         --pack) pack="$(native "$(cd "$(dirname "$2")" && pwd)/$(basename "$2")")"; shift 2 ;;
         --launcher-only) game=0; apk=0; shift ;;
         --validation) validation=ON; shift ;;
+        --pgo) pgo="$2"; [ "$pgo" = generate ] || pgo="$(native "$(cd "$(dirname "$2")" && pwd)/$(basename "$2")")"; shift 2 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
@@ -55,7 +58,7 @@ for abi in "${abis[@]}"; do
     cmake -S "$root" -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_TOOLCHAIN_FILE="$ndk/build/cmake/android.toolchain.cmake" \
         -DANDROID_ABI="$abi" -DANDROID_PLATFORM="android-$api" -DANDROID_STL=c++_shared \
-        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DBUILD_TESTING=OFF -DSFR_VULKAN_VALIDATION="${validation:-OFF}" "${game_options[@]}"
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DBUILD_TESTING=OFF -DSFR_VULKAN_VALIDATION="${validation:-OFF}" -DSFR_PGO="$pgo" "${game_options[@]}"
     cmake --build "$build" --target "${targets[@]}"
     mkdir -p "$jni/$abi"
     # Debug information stays in the build directory (the game's is ~800 MB).
