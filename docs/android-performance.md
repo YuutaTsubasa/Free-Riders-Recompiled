@@ -139,8 +139,9 @@ logic (`82269468`) updates only the objects of those areas (`82272C90`);
 without it the objects of the area a racer flew into stood still and
 Dolphin Resort's big jump fell short. Nothing else the stage's drawing writes
 is read outside drawing. So an undrawn frame now runs only that part of a
-stage's drawing (`find_stage_areas`; `SFR_UNDRAWN_STAGE_AREAS=0`, a Test
-option, runs all of it as 0.10.24 did): 1.0-1.4 ms less per undrawn frame on
+stage's drawing (`find_stage_areas`, now only with `SFR_UNDRAWN_STAGE_AREAS=1`,
+a Test option: from 0.10.34 the whole drawing runs again, because with frames
+skipped the player still fell short of Dolphin Resort's big jump): 1.0-1.4 ms less per undrawn frame on
 a PC, 2.2-3.1 ms on an AYN Thor. The racers' visibility flags (`821A1968`
 +3337..3339, set by its drawing) are read by the logic, and its drawing keeps
 state the next drawn frame needs (issue #145); `821A61F4`'s drawing output is
