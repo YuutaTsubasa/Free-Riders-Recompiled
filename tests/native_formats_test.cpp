@@ -309,6 +309,181 @@ int main() {
             }
             require(!sfr::linear_texture_layout(invalid), "unaudited 4444 fetch modes remain unsupported");
         }
+
+        // Xenos mip chains (texture_mip_levels), worked by hand.
+        require(sfr::packed_mip_level(256, 256) == 4 && sfr::packed_mip_level(64, 64) == 2 &&
+                sfr::packed_mip_level(17, 17) == 1 && sfr::packed_mip_level(16, 16) == 0 &&
+                sfr::packed_mip_level(8, 8) == 0 && sfr::packed_mip_level(256, 32) == 1 &&
+                sfr::packed_mip_level(32, 256) == 1, "the packed tail starts where the short side is 16 or less");
+        {
+            using Offset = std::pair<uint32_t, uint32_t>;
+            const auto offset = [](uint32_t w, uint32_t h, uint32_t relative) {
+                const auto at = sfr::packed_mip_offset(w, h, relative);
+                return Offset{at.x, at.y};
+            };
+            // Square (and tall): 16, 8, 4 along x; 2 and 1 down y.
+            require(offset(16, 16, 0) == Offset{16, 0} && offset(16, 16, 1) == Offset{8, 0} &&
+                    offset(16, 16, 2) == Offset{4, 0} && offset(16, 16, 3) == Offset{0, 8} &&
+                    offset(16, 16, 4) == Offset{0, 4}, "square packed levels sit where Xenia's diagram puts them");
+            require(offset(16, 64, 1) == Offset{8, 0}, "a tall tail runs along x like a square one");
+            // Wide: the other way round.
+            require(offset(64, 16, 0) == Offset{0, 16} && offset(64, 16, 2) == Offset{0, 4} &&
+                    offset(64, 16, 3) == Offset{8, 0} && offset(64, 16, 4) == Offset{4, 0},
+                    "wide packed levels stack down y first");
+            // The five levels of a 16x16 tail do not overlap in their 32x32 region.
+            std::vector<int> owner(32 * 32, -1);
+            for (uint32_t relative = 0; relative < 5; ++relative) {
+                const auto at = sfr::packed_mip_offset(16, 16, relative);
+                const uint32_t size = 16u >> relative;
+                for (uint32_t y = 0; y < size; ++y)
+                    for (uint32_t x = 0; x < size; ++x) {
+                        require(at.x + x < 32 && at.y + y < 32, "packed level stays in its region");
+                        int& cell = owner[(at.y + y) * 32 + at.x + x];
+                        require(cell < 0, "packed levels do not overlap");
+                        cell = int(relative);
+                    }
+            }
+        }
+        sfr::TextureFetch chain{};
+        chain.format = 18;  // DXT1, 8-byte 4x4 blocks
+        chain.dimension = sfr::TextureDimension::two;
+        chain.width = chain.height = 256;
+        chain.pitch = 8;
+        chain.tiled = true;
+        chain.packed_mips = true;
+        chain.max_mip = 8;
+        chain.base_address = 0x10000000;
+        chain.mip_address = 0x10020000;
+        require(sfr::texture_level_count(chain) == 9, "256x256 has nine levels");
+        {
+            auto capped = chain;
+            capped.max_mip = 15;
+            require(sfr::texture_level_count(capped) == 9, "levels stop at 1x1");
+            capped.max_mip = 0;
+            require(sfr::texture_level_count(capped) == 1, "max mip 0 is the base only");
+            capped.width = 640; capped.height = 480; capped.max_mip = 13;
+            require(sfr::texture_level_count(capped) == 10, "640x480 halves down to 1 in ten levels");
+        }
+        const auto chain_base = *sfr::linear_texture_layout(chain);
+        const auto chain_levels = sfr::texture_mip_levels(chain, chain_base, 9);
+        require(chain_levels.size() == 8, "levels 1..8 are listed");
+        // Levels 1-3: 32, 16 and 8 blocks wide, each padded to one 32x32-block
+        // tile row of 256 bytes x 32 rows = 8 KiB.
+        for (uint32_t i = 0; i < 3; ++i) {
+            const auto& level = chain_levels[i];
+            require(level.level == i + 1 && level.address == chain.mip_address + i * 8192,
+                    "unpacked levels follow each other at 8 KiB steps");
+            require(level.layout.row_bytes == 256 && level.layout.tiled && level.layout.guest_rows == 32 &&
+                    level.bytes == 8192 && !level.layout.base_x_blocks && !level.layout.base_y_blocks,
+                    "an unpacked level is one tile row");
+            require(level.layout.width == 128u >> i && level.layout.rows == 32u >> i, "level size halves");
+        }
+        // Level 4 (16x16) starts the packed tail; 5-8 share its storage.
+        const uint32_t tail = chain.mip_address + 3 * 8192;
+        const std::pair<uint32_t, uint32_t> tail_blocks[] = {{4, 0}, {2, 0}, {1, 0}, {0, 2}, {0, 1}};
+        for (uint32_t i = 3; i < 8; ++i) {
+            const auto& level = chain_levels[i];
+            require(level.address == tail, "packed levels share the packed level's storage");
+            require(level.layout.base_x_blocks == tail_blocks[i - 3].first &&
+                    level.layout.base_y_blocks == tail_blocks[i - 3].second, "packed offsets are in blocks");
+            constexpr uint32_t rows[] = {4, 2, 1, 1, 1};
+            require(level.layout.rows == rows[i - 3], "a level below 4 texels is one block row");
+            require(level.layout.row_bytes == 256 && level.bytes == 8192, "the packed tail is one tile");
+        }
+        require(chain_levels[7].layout.width == 1 && chain_levels[7].layout.height == 1, "the last level is 1x1");
+        {
+            // Base in the tail (16x16): the chain is in the base's storage.
+            auto tail_fetch = chain;
+            tail_fetch.width = tail_fetch.height = 16;
+            tail_fetch.max_mip = 4;
+            tail_fetch.pitch = 1;
+            tail_fetch.mip_address = 0;
+            const auto tail_base = *sfr::linear_texture_layout(tail_fetch);
+            const auto tail_levels = sfr::texture_mip_levels(tail_fetch, tail_base, sfr::texture_level_count(tail_fetch));
+            require(tail_levels.size() == 4 && tail_levels[0].address == tail_fetch.base_address &&
+                    tail_levels[0].layout.row_bytes == tail_base.row_bytes &&
+                    tail_levels[0].layout.base_x_blocks == 2 && tail_levels[3].layout.base_y_blocks == 1,
+                    "a packed base keeps its mips beside it");
+            // Without a mip address an unpacked chain cannot be found.
+            auto lost = chain;
+            lost.mip_address = 0;
+            require(sfr::texture_mip_levels(lost, chain_base, 9).empty(), "no mip address, no mips");
+        }
+        {
+            // Linear RGBA8 128x64: level 1 pitch 256 bytes; level 2 (32x16)
+            // is the packed level of a wide texture, so 16 rows down.
+            sfr::TextureFetch linear{};
+            linear.format = 6; linear.endian = 2; linear.swizzle = 0x688;
+            linear.dimension = sfr::TextureDimension::two;
+            linear.width = 128; linear.height = 64; linear.pitch = 4;
+            linear.packed_mips = true; linear.max_mip = 7;
+            linear.base_address = 0x20000000; linear.mip_address = 0x20008000;
+            const auto base = *sfr::linear_texture_layout(linear);
+            const auto levels = sfr::texture_mip_levels(linear, base, sfr::texture_level_count(linear));
+            require(levels.size() == 7, "128x64 has eight levels");
+            require(levels[0].address == linear.mip_address && levels[0].layout.row_bytes == 256 &&
+                    levels[0].layout.rows == 32 && !levels[0].layout.tiled, "linear level 1");
+            require(levels[1].address == linear.mip_address + 256 * 32 && levels[1].layout.row_bytes == 256 &&
+                    levels[1].layout.base_y_blocks == 16 && levels[1].layout.base_x_blocks == 0 &&
+                    levels[1].layout.guest_rows == 32 && levels[1].bytes == 256 * 32,
+                    "wide packed level 2 of a linear texture");
+            require(levels[4].layout.base_x_blocks == 8 && levels[4].layout.base_y_blocks == 0,
+                    "fourth packed level of a wide tail is along x");
+        }
+        {
+            // Round trip: a tiled RGBA8 64x64 chain written level by level
+            // where the layout says, read back level by level.
+            sfr::TextureFetch tiled{};
+            tiled.format = 6; tiled.endian = 2; tiled.swizzle = 0x688;
+            tiled.dimension = sfr::TextureDimension::two;
+            tiled.width = tiled.height = 64; tiled.pitch = 2; tiled.tiled = true;
+            tiled.packed_mips = true; tiled.max_mip = 6;
+            tiled.base_address = 0x30000000; tiled.mip_address = 0x30004000;
+            const auto base = *sfr::linear_texture_layout(tiled);
+            const auto levels = sfr::texture_mip_levels(tiled, base, sfr::texture_level_count(tiled));
+            require(levels.size() == 6, "64x64 has seven levels");
+            std::vector<uint8_t> memory(0x10000);
+            for (const auto& level : levels) {
+                const uint32_t pitch = level.layout.row_bytes / 4;
+                for (uint32_t y = 0; y < level.layout.height; ++y)
+                    for (uint32_t x = 0; x < level.layout.width; ++x) {
+                        const size_t at = level.address - tiled.mip_address + size_t(sfr::tiled_block_index(
+                            x + level.layout.base_x_blocks, y + level.layout.base_y_blocks, pitch, 4)) * 4;
+                        require(at + 4 <= memory.size(), "level stays in its storage");
+                        memory[at] = uint8_t(level.level);
+                        memory[at + 1] = uint8_t(x);
+                        memory[at + 2] = uint8_t(y);
+                        memory[at + 3] = 0xA5;
+                    }
+            }
+            for (const auto& level : levels) {
+                const size_t from = level.address - tiled.mip_address;
+                require(from + level.bytes <= memory.size(), "a level's read stays in the chain");
+                const auto linear_bytes = sfr::untile_texture(
+                    std::span<const uint8_t>(memory.data() + from, level.bytes), level.layout);
+                for (uint32_t y = 0; y < level.layout.height; ++y)
+                    for (uint32_t x = 0; x < level.layout.width; ++x) {
+                        const uint8_t* texel = linear_bytes.data() + size_t(y) * level.layout.row_bytes + x * 4;
+                        require(texel[0] == level.level && texel[1] == x && texel[2] == y && texel[3] == 0xA5,
+                                "each level reads back its own texels");
+                    }
+            }
+        }
+        {
+            // Sampler mip state: off by default; with mips, min mip and bias.
+            sfr::FetchWords words{};
+            words[3] = 1u << 23;                                 // linear mip filter
+            words[4] = (2u << 2) | (9u << 6) | (0x3F0u << 12);   // mips 2..9, bias -16/32
+            const auto plain = sfr::fetch_sampler(words);
+            require(plain.minLOD == 0.0f && plain.mipLODBias == 0.0f, "without mips the sampler ignores w4");
+            const auto mipped = sfr::fetch_sampler(words, true);
+            require(mipped.mipmapMode == plume::RenderMipmapMode::LINEAR && mipped.minLOD == 2.0f &&
+                    mipped.maxLOD > 1000.0f && mipped.mipLODBias == -0.5f,
+                    "min mip and bias from w4; the texture's own levels end the range");
+            words[3] = 2u << 23;                                 // base map
+            const auto base_map = sfr::fetch_sampler(words, true);
+            require(base_map.minLOD == 2.0f && base_map.maxLOD == 2.0f, "base map samples min mip only");
+        }
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

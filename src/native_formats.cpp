@@ -395,6 +395,85 @@ std::optional<TextureLayout> linear_texture_layout(const TextureFetch& fetch) {
     return layout;
 }
 
+namespace {
+uint32_t log2_ceil(uint32_t value) { return value <= 1 ? 0 : uint32_t(std::bit_width(value - 1)); }
+uint32_t align_up(uint32_t value, uint32_t alignment) { return (value + alignment - 1) / alignment * alignment; }
+}
+
+uint32_t packed_mip_level(uint32_t width, uint32_t height) {
+    const uint32_t log2_size = log2_ceil((std::min)(width, height));
+    return log2_size > 4 ? log2_size - 4 : 0;
+}
+
+TexelOffset packed_mip_offset(uint32_t width, uint32_t height, uint32_t relative) {
+    // 16, 8 and 4 texel levels at 16, 8 and 4 along one axis; the 2 and 1
+    // texel levels at 8 and 4 along the other (Xenia's packed tile diagram).
+    const uint32_t first = relative < 3 ? 16u >> relative : 0;
+    const uint32_t second = relative >= 3 && relative - 2 < 5 ? 16u >> (relative - 2) : 0;
+    if (log2_ceil(width) > log2_ceil(height)) return {second, first};  // wide: stacked down y
+    return {first, second};
+}
+
+uint32_t texture_level_count(const TextureFetch& fetch) {
+    const uint32_t chain = uint32_t(std::bit_width((std::max)(fetch.width, fetch.height)));
+    return (std::max)(1u, (std::min)(fetch.max_mip + 1, chain));
+}
+
+std::vector<TextureMipLevel> texture_mip_levels(const TextureFetch& fetch, const TextureLayout& base, uint32_t count) {
+    std::vector<TextureMipLevel> levels;
+    if (count < 2) return levels;
+    const uint32_t packed = fetch.packed_mips ? packed_mip_level(fetch.width, fetch.height) : UINT32_MAX;
+    if (packed != 0 && !fetch.mip_address) return levels;
+    const uint32_t block = base.block_width, bytes = base.block_bytes;
+    const uint32_t width_pow2 = std::bit_ceil(fetch.width), height_pow2 = std::bit_ceil(fetch.height);
+    // Storage of mip level s >= 1: power-of-two size, pitch in whole tiles
+    // (tiled) or 256-byte rows (linear), height in whole 32-block tiles.
+    struct Storage { uint32_t row_bytes, rows; uint64_t size; };
+    const auto storage = [&](uint32_t level) {
+        const uint32_t width_blocks = ((std::max)(width_pow2 >> level, 1u) + block - 1) / block;
+        const uint32_t height_blocks = ((std::max)(height_pow2 >> level, 1u) + block - 1) / block;
+        const uint32_t row_bytes = base.tiled ? align_up(width_blocks, 32) * bytes : align_up(width_blocks * bytes, 256);
+        const uint32_t rows = align_up(height_blocks, 32);
+        return Storage{row_bytes, rows, (uint64_t(row_bytes) * rows + 4095) / 4096 * 4096};
+    };
+    uint64_t offset = 0;      // from the mip address to storage level `next`
+    uint32_t next = 1;
+    for (uint32_t level = 1; level < count; ++level) {
+        TextureMipLevel out{};
+        out.level = level;
+        TextureLayout& layout = out.layout;
+        layout = base;
+        layout.width = (std::max)(fetch.width >> level, 1u);
+        layout.height = (std::max)(fetch.height >> level, 1u);
+        layout.rows = (layout.height + block - 1) / block;
+        layout.base_x_blocks = layout.base_y_blocks = 0;
+        const uint32_t stored = (std::min)(level, packed);
+        if (stored == 0) {
+            // The base is in the packed tail: so is the whole chain.
+            out.address = fetch.base_address;
+            layout.row_bytes = base.row_bytes;
+        } else {
+            for (; next < stored; ++next) offset += storage(next).size;
+            out.address = uint32_t(fetch.mip_address + offset);
+            layout.row_bytes = storage(stored).row_bytes;
+        }
+        if (level >= packed) {
+            const TexelOffset at = packed_mip_offset(fetch.width, fetch.height, level - packed);
+            layout.base_x_blocks = at.x / block;
+            layout.base_y_blocks = at.y / block;
+        }
+        // A level never reads past its own pitch.
+        const uint32_t width_blocks = (layout.width + block - 1) / block;
+        layout.row_bytes = (std::max)(layout.row_bytes, (layout.base_x_blocks + width_blocks) * bytes);
+        if (layout.tiled) layout.row_bytes = align_up(layout.row_bytes / bytes, 32) * bytes;
+        layout.guest_rows = layout.rows + layout.base_y_blocks;
+        if (layout.tiled) layout.guest_rows = align_up(layout.guest_rows, 32);
+        out.bytes = uint64_t(layout.row_bytes) * layout.guest_rows;
+        levels.push_back(out);
+    }
+    return levels;
+}
+
 void decode_rgba4(std::vector<uint8_t>& bytes, TextureLayout& layout) {
     // Xenos X/Y/Z/W occupy successive low-to-high nibbles after the endian
     // swap (Xenia pixel_formats.xesli, XeR4G4B4A4ToB4G4R4A4). Expanding each
@@ -523,7 +602,7 @@ plume::RenderFilter filter(uint32_t value) {
 }
 }
 
-plume::RenderSamplerDesc fetch_sampler(const FetchWords& words) {
+plume::RenderSamplerDesc fetch_sampler(const FetchWords& words, bool mips) {
     plume::RenderSamplerDesc desc;
     desc.addressU = address_mode((words[0] >> 10) & 7);
     desc.addressV = address_mode((words[0] >> 13) & 7);
@@ -533,6 +612,19 @@ plume::RenderSamplerDesc fetch_sampler(const FetchWords& words) {
     desc.mipmapMode = ((words[3] >> 23) & 3) == 1 ? plume::RenderMipmapMode::LINEAR : plume::RenderMipmapMode::NEAREST;
     desc.maxAnisotropy = 1;
     desc.anisotropyEnabled = false;
+    if (mips) {
+        // w4: mip_min_level [2:5] and lod_bias [12:21] (signed, 1/32 steps).
+        // mip_max_level [6:9] needs no clamp: the texture is created with
+        // exactly that many levels (the renderer keys textures by it), so
+        // leaving it out keeps the number of distinct samplers down. Mip
+        // filter 2 is "base map": no mipping, min mip only.
+        const uint32_t lowest = (words[4] >> 2) & 0xF;
+        int32_t bias = int32_t((words[4] >> 12) & 0x3FF);
+        if (bias >= 512) bias -= 1024;
+        desc.mipLODBias = (std::clamp)(float(bias) / 32.0f, -15.0f, 15.0f);
+        desc.minLOD = float(lowest);
+        if (((words[3] >> 23) & 3) == 2) desc.maxLOD = float(lowest);
+    }
     return desc;
 }
 }
