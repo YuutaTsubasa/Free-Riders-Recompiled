@@ -201,6 +201,6 @@ $targets += 'sfr_guest_texture_binding_test'
 $targets += 'sfr_native_notification_event_test'
 $targets += 'sfr_native_notifications_test'
 $targets += 'sfr_notification_placement_test'
-if ($Diagnostic) { $targets += 'sfr_cpu_diagnostic'; $targets += 'sfr_native_winsock_test'; $targets += 'sfr_kinect_depth_view_guest_test' }
+if ($Diagnostic) { $targets += 'sfr_cpu_diagnostic'; $targets += 'sfr_native_winsock_test'; $targets += 'sfr_kinect_depth_view_guest_test'; $targets += 'sfr_kinect_depth_view_locals_test' }
 & cmake --build $build --target $targets --parallel $Jobs
 if ($LASTEXITCODE -ne 0) { throw 'Xenon tools build failed.' }

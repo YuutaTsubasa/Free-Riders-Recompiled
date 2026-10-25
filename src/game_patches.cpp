@@ -824,10 +824,62 @@ static void help_race_jobs(PPCContext& __restrict ctx, uint8_t* base) {
     race_job_counters.help_ns.fetch_add(steady_ns()-started,std::memory_order_relaxed);
 }
 
+// SFR_RACE_DIGEST=<n>: every n-th race step, before it runs, the racers'
+// state as words (the first 3 KiB of each racer of [83E52FDC]+36, and the
+// race clock at 83E53810). Two builds that run the same race the same way
+// print the same words, but for those that differ between two runs of one
+// build too (heap addresses, timing): scripts/race_digest_compare.py finds
+// those from repeated runs and compares the rest. This is how changes to the
+// generated code are checked (scripts/register_locals.py).
+static void race_state_digest() {
+    static const uint32_t every=[]{ const char* t=std::getenv("SFR_RACE_DIGEST"); return t?uint32_t(std::strtoul(t,nullptr,10)):0u; }();
+    if(!every || !sfr::active_memory) return;
+    auto& memory=*sfr::active_memory;
+    if(!memory.readable(0x83E52F8C,4) || !memory.load<uint32_t>(0x83E52F8C)) return;
+    static uint32_t step=0;
+    if(step++%every) return;
+    const uint32_t team=memory.readable(0x83E52FDC,4)?memory.load<uint32_t>(0x83E52FDC):0;
+    const uint32_t begin=team && memory.readable(team+36,8)?memory.load<uint32_t>(team+36):0;
+    const uint32_t end=begin?memory.load<uint32_t>(team+40):0;
+    const uint32_t count=end>begin && end-begin<=64?(end-begin)/4:0;
+    std::ostringstream text;
+    text << std::hex << "RACE_STATE step=" << std::dec << step-1 << " racers=" << count << std::hex << " clock=";
+    for(uint32_t offset=0;offset<48;offset+=4) text << memory.load<uint32_t>(0x83E53810+offset) << ',';
+    text << '\n';
+    constexpr uint32_t size=0xC00;
+    for(uint32_t i=0;i<count;++i) {
+        const uint32_t racer=memory.load<uint32_t>(begin+4*i);
+        text << "RACE_RACER step=" << std::dec << step-1 << " racer=" << i << std::hex << " words=";
+        if(racer && memory.readable(racer,size))
+            for(uint32_t offset=0;offset<size;offset+=4) text << memory.load<uint32_t>(racer+offset) << ',';
+        text << '\n';
+    }
+    std::cerr << text.str();
+}
+
+// SFR_TEST_RAND_SEED=<n>: the CRT's srand (82A54FA0; rand is 82A54FA0+0x30,
+// a per-thread LCG) seeds with n instead of the value the title passes, so
+// the AI's choices do not change from one run to the next with it. For
+// comparing builds with SFR_RACE_DIGEST; never for play.
+PPC_FUNC_IMPL(__imp__sub_82A54FA0);
+SFR_CONCURRENT_HOOK(sub_82A54FA0) {
+    sfr::enter_function(ctx,"sub_82A54FA0",0x82A54FA0);
+    static const char* const seed=std::getenv("SFR_TEST_RAND_SEED");
+    if(seed) {
+        static std::atomic<uint32_t> reports{0};
+        if(reports.fetch_add(1,std::memory_order_relaxed)<8)
+            std::cerr << "TEST_RAND_SEED title=0x" << std::hex << ctx.r3.u32 << std::dec << " seed=" << seed
+                      << " lr=0x" << std::hex << uint32_t(ctx.lr) << std::dec << '\n';
+        ctx.r3.u64=std::strtoul(seed,nullptr,0);
+    }
+    __imp__sub_82A54FA0(ctx,base);
+}
+
 // While 8249F048 runs, its jobs are expected to run (SFR_WATCH_RACERS counts
 // the racer readers that run outside it).
 SFR_CONCURRENT_HOOK(sub_8249F048) {
     sfr::enter_function(ctx,"sub_8249F048",0x8249F048);
+    race_state_digest();
     const uint64_t collision_started=steady_ns();
     wait_for_collision_batch(ctx,base);
     const uint64_t collision_ns=steady_ns()-collision_started;

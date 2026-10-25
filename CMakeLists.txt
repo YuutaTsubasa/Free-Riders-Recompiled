@@ -1166,7 +1166,40 @@ if(SFR_BUILD_DIAGNOSTIC)
     # Output of the current generator passes through unchanged.
     option(SFR_LOOP_HEAD_CHECKPOINTS "Compile the generated code with label checkpoints only at loop heads" ON)
     set(SFR_DIAGNOSTIC_COMPILED_SOURCES ${SFR_DIAGNOSTIC_SOURCES})
-    if(SFR_LOOP_HEAD_CHECKPOINTS)
+    # Guest registers as C++ locals (scripts/register_locals.py, the effect of
+    # XenonRecomp's *_as_local options, done on the finished output with a
+    # whole-program check of the calling convention): a comma list of the
+    # classes ctr, xer, cr, nonargument, nonvolatile, or none. The copies it
+    # writes also get the loop-head checkpoints above. Every class by default
+    # (docs/performance.md, 2026-10-26); "none" compiles the context form.
+    set(SFR_REGISTER_LOCALS "ctr,xer,cr,nonargument,nonvolatile" CACHE STRING "Guest register classes compiled as C++ locals (ctr,xer,cr,nonargument,nonvolatile or none)")
+    if(SFR_REGISTER_LOCALS AND NOT SFR_REGISTER_LOCALS STREQUAL "none")
+        find_package(Python3 COMPONENTS Interpreter REQUIRED)
+        set(SFR_REGISTER_LOCALS_DIR "${CMAKE_CURRENT_BINARY_DIR}/register-locals")
+        set(SFR_DIAGNOSTIC_COMPILED_SOURCES)
+        foreach(source IN LISTS SFR_DIAGNOSTIC_SOURCES)
+            get_filename_component(name "${source}" NAME)
+            list(APPEND SFR_DIAGNOSTIC_COMPILED_SOURCES "${SFR_REGISTER_LOCALS_DIR}/${name}")
+        endforeach()
+        set(SFR_REGISTER_LOCALS_ARGUMENTS --classes "${SFR_REGISTER_LOCALS}")
+        if(SFR_LOOP_HEAD_CHECKPOINTS)
+            list(APPEND SFR_REGISTER_LOCALS_ARGUMENTS --loop-heads)
+        endif()
+        # The image beside the generated directory (prepare_recomp.py's
+        # layout) narrows indirect calls to functions whose address escapes.
+        get_filename_component(SFR_GENERATED_ROOT "${SFR_DIAGNOSTIC_DIR}" DIRECTORY)
+        if(EXISTS "${SFR_GENERATED_ROOT}/image/image.bin")
+            list(APPEND SFR_REGISTER_LOCALS_ARGUMENTS --image "${SFR_GENERATED_ROOT}/image/image.bin")
+        endif()
+        add_custom_command(OUTPUT ${SFR_DIAGNOSTIC_COMPILED_SOURCES}
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/register_locals.py"
+                    ${SFR_REGISTER_LOCALS_ARGUMENTS} --report "${SFR_REGISTER_LOCALS_DIR}.json"
+                    "${SFR_DIAGNOSTIC_DIR}" "${SFR_REGISTER_LOCALS_DIR}"
+            DEPENDS ${SFR_DIAGNOSTIC_SOURCES} "${CMAKE_CURRENT_SOURCE_DIR}/scripts/register_locals.py"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/loop_head_checkpoints.py"
+            COMMENT "Guest registers as locals: ${SFR_REGISTER_LOCALS}"
+            VERBATIM)
+    elseif(SFR_LOOP_HEAD_CHECKPOINTS)
         find_package(Python3 COMPONENTS Interpreter REQUIRED)
         set(SFR_DIAGNOSTIC_COMPILED_SOURCES)
         foreach(source IN LISTS SFR_DIAGNOSTIC_SOURCES)
@@ -1204,6 +1237,24 @@ if(SFR_BUILD_DIAGNOSTIC)
     endif()
     set_source_files_properties(tests/kinect_depth_view_guest_test.cpp PROPERTIES COMPILE_OPTIONS "${SFR_DEPTH_VIEW_GUEST_OPTIONS}")
     add_test(NAME kinect_depth_view_guest COMMAND sfr_kinect_depth_view_guest_test)
+    # The same two functions with every register class as locals
+    # (scripts/register_locals.py --file), against the same extractor: the
+    # conversion keeps real generated code (vector, CR bit and loop code) bit
+    # for bit.
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    set(SFR_DEPTH_VIEW_LOCALS "${CMAKE_CURRENT_BINARY_DIR}/register-locals-test/kinect_depth_view_guest.inc")
+    add_custom_command(OUTPUT "${SFR_DEPTH_VIEW_LOCALS}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/register-locals-test"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/register_locals.py" --file
+                --classes ctr,xer,cr,nonargument,nonvolatile "${SFR_DEPTH_VIEW_GUEST}" "${SFR_DEPTH_VIEW_LOCALS}"
+        DEPENDS "${SFR_DEPTH_VIEW_GUEST}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/register_locals.py"
+        VERBATIM)
+    add_executable(sfr_kinect_depth_view_locals_test tests/kinect_depth_view_guest_test.cpp src/kinect_depth_features.cpp
+        "${SFR_DEPTH_VIEW_LOCALS}")
+    set_source_files_properties("${SFR_DEPTH_VIEW_LOCALS}" PROPERTIES HEADER_FILE_ONLY TRUE)
+    target_include_directories(sfr_kinect_depth_view_locals_test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/register-locals-test"
+        src "${SFR_DIAGNOSTIC_DIR}" tools/XenonRecomp/thirdparty/simde)
+    add_test(NAME kinect_depth_view_locals COMMAND sfr_kinect_depth_view_locals_test)
     if(ANDROID)
         # The game is libmain.so; SDL's activity calls its SDL_main
         # (src/android_main.cpp), which sets up and calls the usual main.
