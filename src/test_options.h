@@ -150,6 +150,14 @@ inline constexpr TestOption table[] = {
       "測試用（Vulkan）：在繪製階段（render pass）開始時清除整個目標，改由該階段本身完成，手機 GPU 就不必先從記憶體讀回該目標。"
       "這是針對 Mali GPU 在高渲染解析度下的效能實驗；請比較開啟與預設時的 GPU 時間。"},
      on, "#176"},
+    {"SFR_TEXTURE_MIPS", TestGroup::graphics, test_platform::all,
+     {"Texture mip levels", "貼圖的 mip 層級"},
+     {"For testing: textures also get the smaller copies (mip levels) the game stores beside them, so distant "
+      "surfaces are drawn from those, as on the console: less shimmer and less memory traffic for the GPU, a "
+      "little more texture memory. Compare the picture and the GPU timing with it On and at Default.",
+      "測試用：貼圖同時載入遊戲存在旁邊的縮小版本（mip 層級），遠處的表面改用它們繪製，與主機上相同："
+      "閃爍較少，GPU 讀取記憶體的量也較少，但貼圖記憶體稍微增加。請比較開啟與預設時的畫面與 GPU 時間。"},
+     on, "#176"},
     // ---- processor
     {"SFR_CORE_PLAN", TestGroup::processor, test_platform::android,
      {"Core placement", "核心配置"},

@@ -215,6 +215,8 @@ public:
         // draws spent choosing and writing their sets.
         uint32_t descriptor_sets = 0, descriptor_writes = 0, descriptor_binds = 0;
         double descriptor_milliseconds = 0;
+        // Native bytes of the guest textures currently cached (all levels).
+        uint64_t texture_bytes = 0;
     };
     PipelineWork take_pipeline_work() noexcept;
     // Unchanged while texture() and sampler() would answer the same fetch

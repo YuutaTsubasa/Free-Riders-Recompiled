@@ -2887,3 +2887,26 @@ undrawn_ms 2.75 / 3.09 (a third run disturbed: 4.43) for the context build,
 16% smaller (51.1 to 43.1 MB). Vulkan with the validation layer through the
 race: 0 messages; ctest 181/181.
 
+**Fix: nonvolatile registers left changed (the title movie).** 0.10.34
+decoded the title's attract movie (`titleMovie_j.wmv`) to blocky
+green/magenta noise. Bisecting the classes and then address ranges (an
+exclude list in a copy of the script) put it in the nonvolatile vector
+registers of the decoder at 82A7F000-82A81000. The decoder's entry
+(82A796E8, called through a pointer) brackets its work with two register-file
+swaps: 82A7FFE8 stores v32-v127 to a buffer and loads the codec's constants
+into v64-v72; 82A80330 stores the codec's set and loads the caller's back.
+The leaf routines then read the constants on entry (v69 in the IDCT,
+82A9B720). The analysis assumed nonvolatile registers come back unchanged,
+so 82A7FFE8's loads stayed in its own locals and the entry stored its stale
+v69 before each leaf call. Now a function that writes a nonvolatile register
+it never saves (itself or through a callee; a stack switch such as longjmp
+82A57E40 or the context restore 82A6BA5C does not count, nor `mr rN,rN`)
+returns it through the context when the caller needs it after the call, for
+its own reads or a later callee's. Nine functions return such registers: the
+two swaps and three decoder entries that call them (82A7F688, 82A7FA50,
+82A7FBF8), and four CRT fragments that run in their parent's frame
+(82984D5C r29, 82A5D9EC r27, 82A6DDA0 r29, 82A6E044 r24-r30), which the
+locals build had also cut off from their callers' later reads. The movie then
+matches 0.10.33 (the two showings at presents ~5800 and ~7650 of an idle
+title, the same frames ~30 presents apart).
+

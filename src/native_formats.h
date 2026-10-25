@@ -72,6 +72,43 @@ uint32_t tiled_block_index(uint32_t x, uint32_t y, uint32_t pitch_blocks, uint32
 std::vector<uint8_t> untile_texture(std::span<const uint8_t> tiled, const TextureLayout& layout);
 // Base-level layout of a linear 2D texture; empty when the format is unsupported.
 std::optional<TextureLayout> linear_texture_layout(const TextureFetch& fetch);
+// Xenos mip storage (after Xenia's texture_util, GetGuestTextureLayout and
+// GetPackedMipOffset). Level 0 is at the fetch's base address. Levels 1 and
+// up are at its mip address, one after another, each with power-of-two
+// dimensions (of the base's next power of two, halved per level), rows padded
+// to whole 32x32-block tiles (tiled) or to 256 bytes (linear), and each level
+// padded to 4 KiB. With packed mips, every level from packed_mip_level() on
+// shares one 32x32-texel region (the storage of the packed level itself) at
+// the offsets packed_mip_offset() gives; when that is level 0, the whole chain
+// lives in the base's storage.
+//
+// The first level in the packed tail: the one whose shorter side is 16 texels
+// or less.
+uint32_t packed_mip_level(uint32_t width, uint32_t height);
+// Texel offset of the level `relative` levels after the packed level inside
+// the packed region. width and height are the base's (only which side is
+// longer matters): a wide texture stacks the 16, 8 and 4 texel levels down
+// the y axis and the 2 and 1 texel ones along x; others the other way round.
+struct TexelOffset { uint32_t x, y; };
+TexelOffset packed_mip_offset(uint32_t width, uint32_t height, uint32_t relative);
+// The number of levels a fetch asks for that a 2D texture can have: 1 + the
+// fetch's max mip, limited to the full chain of a width x height texture.
+uint32_t texture_level_count(const TextureFetch& fetch);
+// Where one level lives in guest memory and how to read it: `layout` is as
+// linear_texture_layout returns for a base level (row_bytes is the level's
+// pitch, base_x/y_blocks its offset in a packed region), and `bytes` from
+// `address` cover it.
+struct TextureMipLevel {
+    uint32_t level;
+    uint32_t address;
+    uint64_t bytes;
+    TextureLayout layout;
+};
+// Levels 1 .. count-1 of a 2D texture whose base layout `base` came from
+// linear_texture_layout(fetch). Empty when count < 2, or when the levels are
+// not in the base's storage and the fetch has no mip address.
+std::vector<TextureMipLevel> texture_mip_levels(const TextureFetch& fetch, const TextureLayout& base, uint32_t count);
+
 // Expands linear k_4_4_4_4 after endian conversion to eight-bit components.
 // The layout's RGBA/BGRA view preserves the fetch's XYZW/ZYXW swizzle.
 void decode_rgba4(std::vector<uint8_t>& bytes, TextureLayout& layout);
@@ -86,6 +123,9 @@ void decode_block_compression(std::vector<uint8_t>& bytes, TextureLayout& layout
 // because the native backend has no offscreen targets.
 extern bool depth_texture_placeholder;
 
-// Sampler state from fetch words: clamps from w0, filters from w3.
-plume::RenderSamplerDesc fetch_sampler(const FetchWords& words);
+// Sampler state from fetch words: clamps from w0, filters from w3. With
+// `mips` (textures carry their mip chains, SFR_TEXTURE_MIPS), also the mip
+// LOD bias of w4 and its min mip as the lowest LOD (its max mip is the
+// texture's level count), and the base map mip filter (2) samples min mip only.
+plume::RenderSamplerDesc fetch_sampler(const FetchWords& words, bool mips = false);
 }

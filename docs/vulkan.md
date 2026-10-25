@@ -283,6 +283,54 @@ framebuffer 在 pass 開始前再設定一次時不再結束什麼。`SFR_CLEAR_
 時間；DXC 預設已跑過 spirv-opt 的效能 pass，`-O` 只改了幾個窺孔（SPIR-V 大小 0.999 倍）。Mali 上
 尚未量測，所以這個開關留給 Mali 的玩家比較。
 
+### 貼圖的 mip 層級（`SFR_TEXTURE_MIPS`，Issue #176）
+
+原本每張貼圖只建立、上傳最大的一層，遠處的表面也從全尺寸的貼圖取樣：比主機上閃爍，GPU 讀的貼圖
+資料也多。`SFR_TEXTURE_MIPS=1`（啟動器測試選項「貼圖的 mip 層級」，預設關閉；兩個後端都適用）讓
+`NativeRenderer::texture` 照 Xenos 的存放方式讀進第 1 到 max mip 層（`texture_mip_levels`，依 Xenia
+的 `texture_util`）：
+
+- 第 0 層在 fetch 的 base address；其餘從 mip address 開始依序存放，每層的寬高是 base 寬高進位到
+  2 的次方再逐層減半，列寬補到整個 tile（tiled，32 個 block）或 256 位元組（linear），高度補到 32 個
+  block，每層再補到 4 KiB。
+- packed mips：短邊 16 texel 以下的那一層起（`packed_mip_level`）全部擠在那一層的 32x32 texel 區域，
+  位置照 Xenia 的 `GetPackedMipOffset`（16、8、4 texel 的層沿一軸，2、1 texel 的層沿另一軸；寬的貼圖
+  先沿 y）。base 本身就在 tail 裡時，整串都在 base 的儲存空間。
+- 每層跟 base 一樣做位元組交換、解 tiling、4444 展開，GPU 沒有 BC 時在 CPU 解成 RGBA8
+  （`SFR_DECODE_BC=1` 可強制）；一個 staging buffer 放所有層（每層 512 位元組對齊）一次上傳。
+- 取樣器帶上 fetch 的 min mip（最低 LOD）與 LOD bias，mip filter 2（base map）只取 min mip；max mip
+  就是貼圖的層數（貼圖以它為鍵的一部分）。
+- mip 的儲存位置也監看寫入；緊接在 base 後面（遊戲都是這樣放）時與 base 合成一個範圍。
+
+`NATIVE_PRESENT` 的 `texture_mb` 是目前快取的貼圖（所有層）的大小；`NATIVE_TEXTURE_MIP_CHAIN` 記前
+256 串的位址與層數；`SFR_TEXTURE_MIP_DUMP=<資料夾>`（`SFR_TEXTURE_MIP_DUMP_COUNT`，預設 96）把各層
+寫成 RGBA8 檔，用來檢查每層是不是前一層縮小一半。
+
+**資料檢查。** 從開機到 Dolphin Resort 起跑共 457 串（DXT1/3/5 與 8888，tiled、packed），每層與 base
+縮到同尺寸（box filter）比較：平均差多為 1-5（0-255），而同一張圖上下左右翻轉的差是 10-110；差較大的
+幾張逐一看過，都是美術手做的層（植物的 alpha 往下層加厚、霓虹往下層提亮、DXT1 透明 texel 的顏色），
+結構都對，packed tail 的 2x2、1x1 也對。`SFR_DECODE_BC=1` 得到一樣的層。
+
+**畫面。** 選單相同（平均差 < 1，只有時間性的動畫）；比賽中遠處的地毯、地面、欄杆變平滑，近處不變；
+沒有錯色、方塊或缺貼圖。Windows Vulkan 加 Khronos validation layer 跑到比賽中段 0 個錯誤
+（BC 與 `SFR_DECODE_BC=1` 各一次），D3D12 跑完同一段（沒有 D3D12 debug layer：Agility SDK 的
+`D3D12SDKLayers.dll` 沒有隨附）。
+
+**量測**（Dolphin Resort，比賽視窗 13500-19500 格，同一個 APK 用開關 A/B）：
+
+| AYN Thor（Adreno 740，1920x1080） | 關 | 開 |
+| --- | --- | --- |
+| `GPU_TIMING`（毫秒／格） | 12.55、12.46、12.11、12.45、12.76 | 12.40、12.25、12.54、12.48、12.59 |
+| `texture_mb`（比賽中最大） | 74-79 | 96-101 |
+| `texture_ms`（比賽中每格） | 0.95、0.98 | 0.97、0.99 |
+| `texture_ms`（整次執行合計，秒） | 14.0、14.2 | 14.3、14.4 |
+
+（後兩列是 mip 範圍與 base 合併之後的 APK；合併之前比賽中每格多約 0.2 毫秒，是每格多走一次監看範圍。）
+在 Adreno 740 上 GPU 時間沒有可量出的差別：它的快取夠大，而遊戲的取樣器多半帶 -2.5 到 -3 的 LOD bias，
+大部分表面本來就取接近第 0 層。貼圖記憶體多約 25%，載入貼圖的 CPU 時間多 2-3%。Windows（RTX 4090）
+兩組 0.99→0.82 與 1.51→1.50 毫秒，機器上同時有其他負載，看不出結論。Mali（Issue #176 的 Pixel 10a）
+尚未量測，所以預設仍關閉，留給玩家以測試選項比較。
+
 ## 著色器包
 
 `python scripts/pack_shaders.py` 把執行期快取中已編好的著色器（原始容器、mask、DXIL、SPIR-V）

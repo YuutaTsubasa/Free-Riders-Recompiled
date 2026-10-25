@@ -41,6 +41,14 @@ program decides what goes through it:
   writing (a result outside the convention), and the callee stores it at its
   returns. Only the caller's own reads ask for this; code after a call that
   never returns (KeBugCheck, throws) asks nothing.
+- A function that writes a nonvolatile register it never saves (itself, or
+  through a callee) leaves it changed for its caller: CLOBBERS below. The
+  movie decoder does it on purpose: its entry (sub_82A796E8) calls a routine
+  (sub_82A7FFE8) that saves v32..v127 and loads its constants into
+  v64..v72, which its leaf routines then read on entry (v69 in sub_82A9B720);
+  another (sub_82A80330) swaps the caller's set back in at the end. Such a
+  register is returned through the context like a volatile one, whenever the
+  caller needs it after the call: for its own reads or for a later callee's.
 - The nonvolatile save and restore helpers (__savegprlr_N, __restgprlr_N,
   __savefpr_N, ...) only move registers that are now locals, which the C++
   frame preserves; they are dropped, as XenonRecomp drops them, but for what
@@ -313,13 +321,14 @@ def uses_defs(text):
 
 class Function:
     __slots__ = ('name', 'begin', 'end', 'nodes', 'labels', 'callees', 'indirect', 'livein',
-                 'ret', 'referenced', 'livebefore')
+                 'ret', 'referenced', 'livebefore', 'written', 'saved', 'clobbers')
 
     def __init__(self, name, begin):
         self.name, self.begin, self.end = name, begin, None
         self.nodes, self.labels, self.callees = [], {}, set()
         self.indirect = False
         self.livein = self.ret = self.referenced = 0
+        self.written = self.saved = self.clobbers = 0
         self.livebefore = []
 
 
@@ -476,7 +485,66 @@ def parse(lines, source=''):
         for i in range(function.begin, function.end):
             function.referenced |= refs(lines[i])
         whole_lane_runs(function.nodes)
+        written_and_saved(function, lines)
     return functions
+
+
+# Any write of a register, whole or in part (a statement that begins with it).
+WRITE = re.compile(r'^\t\t?ctx\.(r\d+|f\d+|v\d+)\b[^=]*= ')
+SELF_MOVE = re.compile(r'^\t\t?ctx\.(r\d+)\.u64 = ctx\.\1\.u64;$')
+# stvx/stvlx into the frame through an address computed first (824DBDC4, a
+# memcpy, keeps v64/v65 so): ea = r1 + rN, then the store.
+FRAME_EA = re.compile(r'^\t\t?ea = ctx\.r1\.u32 \+ ctx\.r\d+\.u32;$')
+EA_VECTOR_SAVE = re.compile(r'^\t\t?sfr::store_vector_(?:memory|left)\(ea, ctx\.(v\d+)\.u8\);$')
+# A stack pointer loaded through another register: a switch to another
+# frame (longjmp, sub_82A57E40; the context restore, sub_82A6BA5C). The
+# registers such a function loads are that frame's, not its caller's.
+STACK_SWITCH = re.compile(r'^\t\t?ctx\.r1\.u(?:64|32) = PPC_LOAD_U(?:64|32)\(ctx\.r(?!1\.)\d+\.')
+SAVE_FIRST = {'__savegprlr': 'r', '__savefpr': 'f', '__savevmx': 'v'}
+
+
+def written_and_saved(function, lines):
+    """The nonvolatile registers the function writes, and those it saves for
+    its caller (a store into its frame, or a save helper), over the
+    statements reachable from its entry (a jump table's data decoded as code
+    follows some switches)."""
+    nodes = function.nodes
+    seen, stack = {0}, [0] if nodes else []
+    while stack:
+        for succ in nodes[stack.pop()].succ:
+            if succ not in seen:
+                seen.add(succ)
+                stack.append(succ)
+    written = saved = 0
+    for i in seen:
+        node = nodes[i]
+        if node.kind == CALL_K:
+            match = SAVE_RESTORE.match(node.callee)
+            if match and match[1] in SAVE_FIRST:
+                first, prefix = int(match[2]), SAVE_FIRST[match[1]]
+                last = 128 if prefix == 'v' and first >= 64 else 32
+                saved |= mask(f'{prefix}{n}' for n in range(first, last))
+            continue
+        if node.kind != PLAIN:
+            continue
+        line = lines[node.line].rstrip('\r')
+        if SELF_MOVE.match(line):
+            continue  # mr rN,rN changes nothing
+        written |= node.defs
+        match = WRITE.match(line)
+        if match:
+            written |= BIT[match[1]]
+        match = ABI_SAVE.match(line) or VECTOR_SAVE.match(line)
+        if match:
+            saved |= BIT[match[1]]
+        match = EA_VECTOR_SAVE.match(line)
+        if match and i and FRAME_EA.match(lines[nodes[i - 1].line].rstrip('\r')):
+            saved |= BIT[match[1]]
+        if STACK_SWITCH.match(line):
+            written = 0
+            break
+    function.written = written & NONVOLATILE_SAVED
+    function.saved = saved & NONVOLATILE_SAVED
 
 
 def whole_lane_runs(nodes):
@@ -557,6 +625,34 @@ class Program:
                     changed = True
         self.noreturn = noreturn
 
+    def find_clobbers(self):
+        """Nonvolatile registers each function may return changed: written
+        and not saved, by it or by a callee (least fixed point). The save and
+        restore helpers are the convention itself, and a call that never
+        returns changes nothing for the code after it."""
+        functions = [f for f in self.functions.values() if not SAVE_RESTORE.match(f.name)]
+        for f in functions:
+            f.clobbers = f.written & ~f.saved
+        changed = True
+        while changed:
+            changed = False
+            for f in functions:
+                value = f.clobbers
+                for name in f.callees:
+                    callee = self.functions.get(name)
+                    if callee is not None and name not in self.noreturn:
+                        value |= callee.clobbers
+                value &= ~f.saved
+                if value != f.clobbers:
+                    f.clobbers = value
+                    changed = True
+
+    def callee_clobbers(self, name):
+        if SAVE_RESTORE.match(name) or name in self.noreturn:
+            return 0
+        function = self.functions.get(name)
+        return function.clobbers if function is not None else 0
+
     def callee_livein(self, name):
         if self.drop_save_restore and SAVE_RESTORE.match(name):
             return BIT['r12'] if name.startswith('__savegprlr') else 0
@@ -628,6 +724,7 @@ class Program:
         """
         functions = list(self.functions.values())
         self.find_noreturn()
+        self.find_clobbers()
         self.ret_seeds = []
         if indirect_targets is None:
             targets = [f for f in functions if not SAVE_RESTORE.match(f.name)]
@@ -681,6 +778,15 @@ class Program:
                     for succ in node.succ:
                         after |= own[succ]
                     need = after & VOLATILE & self.localised
+                    if node.kind == CALL_K:
+                        # A nonvolatile register the callee leaves changed,
+                        # which the caller or a later callee of it reads.
+                        changed_nv = self.callee_clobbers(node.callee) & self.localised
+                        if changed_nv:
+                            full = 0
+                            for succ in node.succ:
+                                full |= f.livebefore[succ]
+                            need |= full & changed_nv
                     if not need:
                         continue
                     if node.kind == CALL_K:
@@ -983,6 +1089,9 @@ def summary(program, functions):
         'targets_with_livein': {f.name: names_of(f.livein) for f in functions
                                 if program.targets is not None and f.name in set(program.targets) and f.livein},
         'with_ret': {f.name: names_of(f.ret) for f in functions if f.ret},
+        # Functions returning nonvolatile registers they leave changed (CLOBBERS).
+        'nonvolatile_ret': {f.name: names_of(f.ret & NONVOLATILE_SAVED) for f in functions
+                            if f.ret & NONVOLATILE_SAVED},
         'ret_seeds': getattr(program, 'ret_seeds', []),
         'noreturn': len(getattr(program, 'noreturn', ())),
         'functions': len(functions),
