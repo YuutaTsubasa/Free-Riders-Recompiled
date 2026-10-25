@@ -337,7 +337,7 @@ void report_vulkan_formats(NativeGraphics& graphics) {
 // A guest GPU physical address as a readable virtual address. Physical
 // allocations are mapped in the 0xE0000000 view (GPU address + 4 KiB) or the
 // 0xA0000000/0xC0000000 views.
-uint32_t guest_view(GuestMemory& memory, uint32_t physical, uint64_t size) {
+std::optional<uint32_t> readable_view(GuestMemory& memory, uint32_t physical, uint64_t size) {
     for (uint64_t candidate : {uint64_t(physical) + 0xE0000000u - 0x1000u, uint64_t(physical) | 0xA0000000u,
                                uint64_t(physical) | 0xC0000000u}) {
         if (candidate > 0xFFFFFFFFu) continue;
@@ -345,6 +345,11 @@ uint32_t guest_view(GuestMemory& memory, uint32_t physical, uint64_t size) {
         // and an exception costs microseconds (docs/performance.md).
         if (memory.readable(candidate, size)) return uint32_t(candidate);
     }
+    return std::nullopt;
+}
+
+uint32_t guest_view(GuestMemory& memory, uint32_t physical, uint64_t size) {
+    if (const auto view = readable_view(memory, physical, size)) return *view;
     unsupported(physical, "texture data is not mapped in any physical view");
 }
 }
@@ -360,6 +365,20 @@ static bool frame_metrics_timed() {
         return metrics ? *metrics != '0' : !trace || *trace != '0';
     }();
     return timed;
+}
+
+// SFR_TEXTURE_MIPS=1: guest textures are created with the mip chain the title
+// stores (at the fetch's mip address, see texture_mip_levels), and samplers
+// take the fetch's mip range and LOD bias. Off, every texture has its base
+// level only, as before, and distant surfaces sample the full-size image.
+static bool texture_mips_enabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("SFR_TEXTURE_MIPS");
+        const bool on = value && *value == '1';
+        std::cerr << "NATIVE_TEXTURE_MIPS enabled=" << on << '\n';
+        return on;
+    }();
+    return enabled;
 }
 
 struct NativeRenderer::Impl {
@@ -393,8 +412,12 @@ struct NativeRenderer::Impl {
     // dynamic: the CPU has rewritten this memory before (lock or watched
     // write); such textures are compared by content hash at their first use
     // in each frame (the planes may be write-combined, uncached memory).
+    // mip_begin..mip_end: the mip levels stored outside the base's range
+    // (empty without SFR_TEXTURE_MIPS). bytes: the native texture's size.
     struct TextureRange { std::array<uint32_t, 4> key; uint64_t begin, end; uint64_t hash; bool dynamic;
-                          uint64_t checked_frame = 0; uint64_t seen_frame = 0; };
+                          uint64_t checked_frame = 0; uint64_t seen_frame = 0;
+                          uint64_t mip_begin = 0, mip_end = 0, bytes = 0; };
+    uint64_t texture_bytes = 0;  // native bytes of the textures in texture_ranges
     uint64_t frame = 1;  // counts flushes
     // Opt-in probe only: compare CPU bytes, never read write-combined uploads.
     // Actual uploads and bindings remain unchanged while measuring reuse.
@@ -1404,6 +1427,7 @@ NativeRenderer::PipelineWork NativeRenderer::take_pipeline_work() noexcept {
     work.constant_saved_bytes = impl_->constant_saved_bytes;
     impl_->constant_saved_bytes = 0;
     work.resolve_copies = impl_->resolve_copies;
+    work.texture_bytes = impl_->texture_bytes;
     if (auto* bounded = impl_->bounded.get()) {
         work.descriptor_sets = bounded->frame_sets;
         work.descriptor_writes = bounded->frame_writes;
@@ -1712,6 +1736,54 @@ void NativeRenderer::materialize_aliases(const void* surface) {
     }
 }
 
+namespace {
+// One level of a texture on its way to the GPU: host-ready rows of
+// layout.row_bytes (untiled and decoded as the device needs).
+struct TextureLevelData { std::vector<uint8_t> bytes; TextureLayout layout; };
+
+// SFR_TEXTURE_MIP_DUMP=<directory>: the levels of the first 96 (or
+// SFR_TEXTURE_MIP_DUMP_COUNT) textures with
+// mip chains, as tight RGBA8 rows in <base>_L<level>_<w>x<h>_f<format>.rgba,
+// to check that each level is the one before it, halved.
+void dump_texture_levels(const TextureFetch& fetch, const std::vector<TextureLevelData>& levels) {
+    static int dumped = 0;
+    static const int limit = [] {
+        const char* count = std::getenv("SFR_TEXTURE_MIP_DUMP_COUNT");
+        return count ? std::atoi(count) : 96;
+    }();
+    if (levels.size() < 2 || dumped >= limit) return;
+    const char* directory = std::getenv("SFR_TEXTURE_MIP_DUMP");
+    if (!directory || !*directory) return;
+    ++dumped;
+    for (size_t index = 0; index < levels.size(); ++index) {
+        auto bytes = levels[index].bytes;
+        auto layout = levels[index].layout;
+        decode_block_compression(bytes, layout);
+        const auto format = layout.format;
+        const uint32_t texel = format == plume::RenderFormat::R8_UNORM ? 1
+            : (format == plume::RenderFormat::R8G8B8A8_UNORM || format == plume::RenderFormat::B8G8R8A8_UNORM) ? 4 : 0;
+        if (!texel) return;
+        std::vector<uint8_t> rgba(size_t(layout.width) * layout.height * 4);
+        for (uint32_t y = 0; y < layout.height; ++y)
+            for (uint32_t x = 0; x < layout.width; ++x) {
+                const size_t from = size_t(y) * layout.row_bytes + size_t(x) * texel;
+                if (from + texel > bytes.size()) continue;
+                uint8_t* to = rgba.data() + (size_t(y) * layout.width + x) * 4;
+                if (texel == 1) { to[0] = to[1] = to[2] = bytes[from]; to[3] = 255; continue; }
+                std::memcpy(to, bytes.data() + from, 4);
+                if (format == plume::RenderFormat::B8G8R8A8_UNORM) std::swap(to[0], to[2]);
+            }
+        char name[1024];
+        std::snprintf(name, sizeof(name), "%s/%08x_L%zu_%ux%u_f%u.rgba", directory, fetch.base_address, index,
+                      layout.width, layout.height, fetch.format);
+        if (FILE* file = std::fopen(name, "wb")) {
+            std::fwrite(rgba.data(), 1, rgba.size(), file);
+            std::fclose(file);
+        }
+    }
+}
+}
+
 uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
     // Timed as a whole: the lookup, the content hash that decides whether the
     // guest changed it, and the upload when it did. Only for the frame
@@ -1745,7 +1817,12 @@ uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
             std::cerr << "NATIVE_TEXTURE_SURVEY base=0x" << std::hex << fetch.base_address << std::dec
                       << " size=" << fetch.width << "x" << fetch.height << " format=" << fetch.format << '\n';
     }
-    const std::array<uint32_t, 4> key{words[0] & 0x80000000u | ((words[0] >> 22) & 0x1FF), words[1] & ~0x800u, words[2], words[5]};
+    // With mip chains, the number of levels is part of the texture (w4's max
+    // mip, which the device's per-slot limit may lower).
+    static const bool mips = texture_mips_enabled();
+    const uint32_t level_key = mips ? ((words[4] >> 6) & 0xF) << 12 : 0;
+    const std::array<uint32_t, 4> key{words[0] & 0x80000000u | ((words[0] >> 22) & 0x1FF) | level_key,
+                                      words[1] & ~0x800u, words[2], words[5]};
     // Every mapped view of a physical range (writes may use any of them).
     const auto views = [&](uint32_t physical, uint64_t size, const auto& visit) {
         for (uint64_t candidate : {uint64_t(physical) + 0xE0000000u - 0x1000u, uint64_t(physical) | 0xA0000000u,
@@ -1770,6 +1847,10 @@ uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
         views(uint32_t(range.begin), range.end - range.begin, [&](uint64_t view) {
             written |= memory.take_written(view, range.end - range.begin);
         });
+        if (range.mip_end > range.mip_begin)
+            views(uint32_t(range.mip_begin), range.mip_end - range.mip_begin, [&](uint64_t view) {
+                written |= memory.take_written(view, range.mip_end - range.mip_begin);
+            });
         if (!written && range.dynamic && range.checked_frame != impl_->frame) {
             range.checked_frame = impl_->frame;
             // Content check for textures the CPU rewrites (e.g. movie planes).
@@ -1801,29 +1882,87 @@ uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
     memory.check(source, guest_size);
     std::memcpy(bytes.data(), memory.base() + source, guest_size);
     const uint64_t hash = content_hash(bytes.data(), bytes.size());
-    swap_texture_bytes(bytes, fetch.endian);
-    if (layout->tiled || layout->base_x_blocks || layout->base_y_blocks)
-        bytes = untile_texture(bytes, *layout);
-    if (fetch.format == 15) decode_rgba4(bytes, *layout);
-    if (!block_compression_supported(impl_->graphics)) decode_block_compression(bytes, *layout);
+    // The mip levels' places, worked out from the base layout before
+    // decoding rewrites it. The placeholder formats (render targets the
+    // native backend never filled) get no chain.
+    std::vector<TextureMipLevel> mip_levels;
+    if (mips && fetch.format != 23 && fetch.format != 32)
+        mip_levels = texture_mip_levels(fetch, *layout, texture_level_count(fetch));
+    const bool native_bc = block_compression_supported(impl_->graphics);
+    const auto prepare = [&](std::vector<uint8_t>& data, TextureLayout& shape) {
+        swap_texture_bytes(data, fetch.endian);
+        if (shape.tiled || shape.base_x_blocks || shape.base_y_blocks)
+            data = untile_texture(data, shape);
+        if (fetch.format == 15) decode_rgba4(data, shape);
+        if (!native_bc) decode_block_compression(data, shape);
+    };
+    prepare(bytes, *layout);
+    std::vector<TextureLevelData> levels;
+    levels.reserve(1 + mip_levels.size());
+    levels.push_back({std::move(bytes), *layout});
+    uint64_t mip_begin = 0, mip_end = 0;
+    for (const auto& level : mip_levels) {
+        // A level outside mapped memory ends the chain there.
+        const auto view = readable_view(memory, level.address, level.bytes);
+        if (!view) break;
+        TextureLevelData read{std::vector<uint8_t>(level.bytes), level.layout};
+        std::memcpy(read.bytes.data(), memory.base() + *view, level.bytes);
+        prepare(read.bytes, read.layout);
+        levels.push_back(std::move(read));
+        const uint64_t begin = level.address, end = begin + level.bytes;
+        if (begin >= fetch.base_address && end <= fetch.base_address + guest_size) continue;
+        mip_begin = mip_end > mip_begin ? (std::min)(mip_begin, begin) : begin;
+        mip_end = (std::max)(mip_end, end);
+    }
+    static uint32_t chains_logged = 0;
+    if (mips && fetch.max_mip && chains_logged < 256) {
+        ++chains_logged;
+        std::cerr << "NATIVE_TEXTURE_MIP_CHAIN base=0x" << std::hex << fetch.base_address << " mips=0x"
+                  << fetch.mip_address << std::dec << " format=" << fetch.format << " size=" << fetch.width << 'x'
+                  << fetch.height << " tiled=" << fetch.tiled << " packed=" << fetch.packed_mips << " mip_range="
+                  << fetch.min_mip << ".." << fetch.max_mip << " listed=" << mip_levels.size() + 1
+                  << " read=" << levels.size() << '\n';
+    }
+    static const bool dump_levels = std::getenv("SFR_TEXTURE_MIP_DUMP") != nullptr;
+    if (dump_levels) dump_texture_levels(fetch, levels);
     static const bool stats = std::getenv("SFR_TEXTURE_STATS") != nullptr;
     if (stats && fetch.format == 2) {
         uint64_t sum = 0, nonzero = 0;
-        for (const uint8_t b : bytes) { sum += b; nonzero += b != 0; }
+        const auto& base_bytes = levels.front().bytes;
+        for (const uint8_t b : base_bytes) { sum += b; nonzero += b != 0; }
         std::cerr << "TEXTURE_STATS physical=0x" << std::hex << fetch.base_address << std::dec << " mean="
-                  << double(sum) / double(bytes.size()) << " nonzero=" << nonzero << '\n';
+                  << double(sum) / double(base_bytes.size()) << " nonzero=" << nonzero << '\n';
     }
 
     auto& device = impl_->graphics.device();
-    const uint32_t blocks = (layout->width + layout->block_width - 1) / layout->block_width;
-    const uint32_t copy_row = uint32_t(align(uint64_t(blocks) * layout->block_bytes, 256));
-    auto staging = device.createBuffer(plume::RenderBufferDesc::UploadBuffer(uint64_t(copy_row) * layout->rows));
+    // One staging buffer for every level: rows padded to 256 bytes and each
+    // level placed at a multiple of 512 (D3D12's placement alignment).
+    struct Placement { uint64_t offset; uint32_t copy_row; };
+    std::vector<Placement> placements;
+    placements.reserve(levels.size());
+    uint64_t staging_size = 0, native_bytes = 0;
+    for (const auto& level : levels) {
+        const auto& shape = level.layout;
+        const uint32_t blocks = (shape.width + shape.block_width - 1) / shape.block_width;
+        const uint32_t copy_row = uint32_t(align(uint64_t(blocks) * shape.block_bytes, 256));
+        staging_size = align(staging_size, 512);
+        placements.push_back({staging_size, copy_row});
+        staging_size += uint64_t(copy_row) * shape.rows;
+        native_bytes += uint64_t(blocks) * shape.block_bytes * shape.rows;
+    }
+    auto staging = device.createBuffer(plume::RenderBufferDesc::UploadBuffer(staging_size));
     auto* mapped = static_cast<uint8_t*>(staging->map());
-    for (uint32_t row = 0; row < layout->rows; ++row)
-        std::memcpy(mapped + uint64_t(row) * copy_row, bytes.data() + uint64_t(row) * layout->row_bytes,
-                    std::min<uint64_t>(layout->row_bytes, uint64_t(blocks) * layout->block_bytes));
+    for (size_t i = 0; i < levels.size(); ++i) {
+        const auto& shape = levels[i].layout;
+        const uint32_t blocks = (shape.width + shape.block_width - 1) / shape.block_width;
+        for (uint32_t row = 0; row < shape.rows; ++row)
+            std::memcpy(mapped + placements[i].offset + uint64_t(row) * placements[i].copy_row,
+                        levels[i].bytes.data() + uint64_t(row) * shape.row_bytes,
+                        std::min<uint64_t>(shape.row_bytes, uint64_t(blocks) * shape.block_bytes));
+    }
     staging->unmap();
-    auto texture = device.createTexture(plume::RenderTextureDesc::Texture2D(layout->width, layout->height, 1, layout->format));
+    const uint32_t level_count = uint32_t(levels.size());
+    auto texture = device.createTexture(plume::RenderTextureDesc::Texture2D(layout->width, layout->height, level_count, layout->format));
     if (!texture) unsupported(fetch.format, "native texture creation failed");
     // Released indices are recycled only after their consuming frame finishes.
     uint32_t index;
@@ -1848,14 +1987,20 @@ uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
     // Retain the destination before recording a copy. A later descriptor or
     // metadata failure must not leave teardown submitting a dangling texture.
     auto* upload_texture = impl_->texture_objects[slot].get();
+    const auto copy_levels = [&](plume::RenderCommandList& list, plume::RenderBuffer& source_buffer) {
+        for (uint32_t i = 0; i < level_count; ++i) {
+            const auto& shape = levels[i].layout;
+            list.copyTextureRegion(plume::RenderTextureCopyLocation::Subresource(upload_texture, i),
+                plume::RenderTextureCopyLocation::PlacedFootprint(&source_buffer, shape.format, shape.width, shape.height, 1,
+                    placements[i].copy_row / shape.block_bytes * shape.block_width, placements[i].offset));
+        }
+    };
     if (impl_->upload_batch) {
-        impl_->upload_batch->record(std::move(staging), uint64_t(copy_row) * layout->rows,
+        impl_->upload_batch->record(std::move(staging), staging_size,
             [&](plume::RenderCommandList& list, plume::RenderBuffer& source_buffer) {
                 list.barriers(plume::RenderBarrierStage::COPY,
                     plume::RenderTextureBarrier(upload_texture, plume::RenderTextureLayout::COPY_DEST));
-                list.copyTextureRegion(plume::RenderTextureCopyLocation::Subresource(upload_texture),
-                    plume::RenderTextureCopyLocation::PlacedFootprint(&source_buffer, layout->format,
-                        layout->width, layout->height, 1, copy_row / layout->block_bytes * layout->block_width));
+                copy_levels(list, source_buffer);
                 list.barriers(plume::RenderBarrierStage::GRAPHICS,
                     plume::RenderTextureBarrier(upload_texture, plume::RenderTextureLayout::SHADER_READ));
             });
@@ -1878,9 +2023,7 @@ uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
         auto& list = *upload.list;
         list.begin();
         list.barriers(plume::RenderBarrierStage::COPY, plume::RenderTextureBarrier(upload_texture, plume::RenderTextureLayout::COPY_DEST));
-        list.copyTextureRegion(plume::RenderTextureCopyLocation::Subresource(upload_texture),
-            plume::RenderTextureCopyLocation::PlacedFootprint(staging.get(), layout->format, layout->width, layout->height, 1,
-                                                              copy_row / layout->block_bytes * layout->block_width));
+        copy_levels(list, *staging);
         list.barriers(plume::RenderBarrierStage::GRAPHICS,
                       plume::RenderTextureBarrier(upload_texture, plume::RenderTextureLayout::SHADER_READ));
         list.end();
@@ -1904,17 +2047,40 @@ uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
     impl_->texture_indices.emplace(key, index);
     ++impl_->texture_generation;
     const uint64_t physical = fetch.base_address;
-    impl_->texture_ranges[index] = {key, physical, physical + guest_size, hash, impl_->dynamic_ranges.contains(physical)};
-    views(fetch.base_address, guest_size, [&](uint64_t view) {
-        memory.watch_writes(view, guest_size);
-        memory.take_written(view, guest_size);
+    // The title stores a chain right after its base (within a page): one
+    // range then covers both, so the once-a-frame write check walks one
+    // range, not two, and the content hash covers the mips as well.
+    uint64_t watched = guest_size, watched_hash = hash;
+    if (mip_end > mip_begin && mip_begin > physical && mip_begin <= physical + guest_size + 4096 &&
+        mip_end - physical <= 0xFFFFFFFFull) {
+        if (const auto view = readable_view(memory, uint32_t(physical), mip_end - physical)) {
+            watched = mip_end - physical;
+            watched_hash = content_hash(memory.base() + *view, watched);
+            mip_begin = mip_end = 0;
+        }
+    }
+    auto& range = impl_->texture_ranges[index];
+    range = {key, physical, physical + watched, watched_hash, impl_->dynamic_ranges.contains(physical)};
+    range.mip_begin = mip_begin;
+    range.mip_end = mip_end;
+    range.bytes = native_bytes;
+    impl_->texture_bytes += native_bytes;
+    views(fetch.base_address, watched, [&](uint64_t view) {
+        memory.watch_writes(view, watched);
+        memory.take_written(view, watched);
     });
+    if (mip_end > mip_begin)
+        views(uint32_t(mip_begin), mip_end - mip_begin, [&](uint64_t view) {
+            memory.watch_writes(view, mip_end - mip_begin);
+            memory.take_written(view, mip_end - mip_begin);
+        });
     ++impl_->textures_uploaded;
     static uint64_t uploads = 0;
     if (uploads++ < 256)
     std::cerr << "NATIVE_TEXTURE_UPLOAD index=" << index << " format=" << fetch.format << " size=" << layout->width
               << 'x' << layout->height << " endian=" << fetch.endian << " source=0x" << std::hex << source
-              << std::dec << " bytes=" << guest_size << '\n';
+              << std::dec << " bytes=" << guest_size << " levels=" << level_count << " native_bytes=" << native_bytes
+              << " texture_mb=" << impl_->texture_bytes / (1024 * 1024) << '\n';
     return index;
 }
 
@@ -1937,7 +2103,9 @@ void NativeRenderer::invalidate(uint32_t physical, uint32_t size) {
         it = impl_->resolved_own.erase(it);
     }
     for (auto it = impl_->texture_ranges.begin(); it != impl_->texture_ranges.end();) {
-        if (it->second.begin < end && begin < it->second.end) {
+        const auto& range = it->second;
+        if ((range.begin < end && begin < range.end) || (range.mip_begin < end && begin < range.mip_end)) {
+            impl_->texture_bytes -= range.bytes;
             impl_->dynamic_ranges.insert(it->second.begin);
             impl_->texture_indices.erase(it->second.key);
             ++impl_->texture_generation;
@@ -1954,11 +2122,22 @@ uint32_t NativeRenderer::guest_address(GuestMemory& memory, uint32_t physical, u
 }
 
 uint32_t NativeRenderer::sampler(const FetchWords& words) {
-    const std::array<uint32_t, 2> key{words[0] & 0x0007FC00u, words[3] & 0x01F80000u};
+    // With mip chains the sampler also carries w4's min mip [2:5] and LOD
+    // bias [12:21] (fetch_sampler), folded into bits of the key's filter word
+    // that w3 leaves clear.
+    static const bool mips = texture_mips_enabled();
+    const uint32_t mip_key = mips ? ((words[4] >> 2) & 0xF) | (((words[4] >> 12) & 0x3FF) << 8) : 0;
+    const std::array<uint32_t, 2> key{words[0] & 0x0007FC00u, (words[3] & 0x01F80000u) | mip_key};
     if (auto found = impl_->sampler_indices.find(key); found != impl_->sampler_indices.end()) return found->second;
     const uint32_t index = uint32_t(impl_->sampler_objects.size());
     if (index >= sampler_capacity) unsupported(index, "native sampler descriptor capacity exhausted");
-    impl_->sampler_objects.push_back(impl_->graphics.device().createSampler(fetch_sampler(words)));
+    const auto desc = fetch_sampler(words, mips);
+    if (mips && index < 64)
+        std::cerr << "NATIVE_SAMPLER index=" << index << " mag=" << ((words[3] >> 19) & 3) << " min="
+                  << ((words[3] >> 21) & 3) << " mip_filter=" << ((words[3] >> 23) & 3) << " aniso="
+                  << ((words[3] >> 25) & 7) << " lod=" << desc.minLOD << ".." << desc.maxLOD << " bias="
+                  << desc.mipLODBias << '\n';
+    impl_->sampler_objects.push_back(impl_->graphics.device().createSampler(desc));
     impl_->set_sampler(index, impl_->sampler_objects.back().get());
     impl_->sampler_indices.emplace(key, index);
     return index;

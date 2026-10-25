@@ -761,6 +761,7 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
               << " upload_peak_bytes=" << pipeline_work.upload_peak_bytes
               << " upload_budget_drains=" << pipeline_work.upload_budget_drains
               << " textures=" << pipeline_work.textures << " texture_ms=" << pipeline_work.texture_milliseconds
+              << " texture_mb=" << double(pipeline_work.texture_bytes) / (1024.0 * 1024.0)
               << " frame_ms=" << frame_ms << " pacing_ms=" << pacing_ms
               << " present_ms=" << present_ms << " main_queued_ms="
               << double(queued_ns)/1e6
