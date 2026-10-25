@@ -57,8 +57,67 @@ loc_1024:
 PPC_FUNC_IMPL(__imp__sub_2000) {
 \tPPC_FUNC_PROLOGUE();
 \tsfr::enter_function(ctx, "sub_2000", 0x2000);
+\tPPC_STORE_U64(ctx.r1.u32 + -8, ctx.r31.u64);
 \tctx.r3.u64 = ctx.r11.u64;
 \tctx.r31.s64 = 0;
+\tctx.r31.u64 = PPC_LOAD_U64(ctx.r1.u32 + -8);
+\treturn;
+}
+'''
+
+# The movie decoder's register swap (sub_82A7FFE8): a routine loads
+# constants into nonvolatile vector registers and returns without restoring
+# them, and later callees of its caller read them on entry.
+SWAP = '''PPC_FUNC_IMPL(__imp__sub_7000) {
+\tPPC_FUNC_PROLOGUE();
+\tsfr::enter_function(ctx, "sub_7000", 0x7000);
+\tsfr::store_vector_memory(uint32_t(ctx.r4.u32), ctx.v69.u8);
+\tsfr::load_vector_memory(uint32_t(ctx.r3.u32), ctx.v69.u8);
+\treturn;
+}
+
+PPC_FUNC_IMPL(__imp__sub_7100) {
+\tPPC_FUNC_PROLOGUE();
+\tsfr::enter_function(ctx, "sub_7100", 0x7100);
+\tsimde_mm_store_si128((simde__m128i*)ctx.v3.u8, simde_mm_load_si128((simde__m128i*)ctx.v69.u8));
+\treturn;
+}
+
+PPC_FUNC_IMPL(__imp__sub_7200) {
+\tPPC_FUNC_PROLOGUE();
+\tsfr::enter_function(ctx, "sub_7200", 0x7200);
+\tsub_7000(ctx, base);
+\tsub_7100(ctx, base);
+\treturn;
+}
+
+PPC_FUNC_IMPL(__imp__sub_7300) {
+\tPPC_FUNC_PROLOGUE();
+\tsfr::enter_function(ctx, "sub_7300", 0x7300);
+\tsimde_mm_store_si128((simde__m128i*)ctx.v69.u8, simde_mm_load_si128((simde__m128i*)ctx.v4.u8));
+\tsub_7000(ctx, base);
+\tsub_7100(ctx, base);
+\tsimde_mm_store_si128((simde__m128i*)ctx.v5.u8, simde_mm_load_si128((simde__m128i*)ctx.v69.u8));
+\treturn;
+}
+
+PPC_FUNC_IMPL(__imp__sub_7400) {
+\tPPC_FUNC_PROLOGUE();
+\tsfr::enter_function(ctx, "sub_7400", 0x7400);
+\tsimde_mm_store_si128((simde__m128i*)ctx.v69.u8, simde_mm_load_si128((simde__m128i*)ctx.v4.u8));
+\tsub_7050(ctx, base);
+\tsub_7100(ctx, base);
+\treturn;
+}
+
+PPC_FUNC_IMPL(__imp__sub_7050) {
+\tPPC_FUNC_PROLOGUE();
+\tsfr::enter_function(ctx, "sub_7050", 0x7050);
+\tctx.r11.s64 = -32;
+\tsfr::store_vector_memory(uint32_t(ctx.r1.u32 + ctx.r11.u32), ctx.v69.u8);
+\tsfr::load_vector_memory(uint32_t(ctx.r3.u32), ctx.v69.u8);
+\tsfr::store_vector_memory(uint32_t(ctx.r4.u32), ctx.v69.u8);
+\tsfr::load_vector_memory(uint32_t(ctx.r1.u32 + ctx.r11.u32), ctx.v69.u8);
 \treturn;
 }
 '''
@@ -144,6 +203,62 @@ class RegisterLocalsTest(unittest.TestCase):
         self.assertIn('\tctx.r11 = r11;\n\treturn;', body(text, 'sub_3000'))
         caller = body(text, 'sub_3100')
         self.assertIn('\tsub_3000(ctx, base);\n\tr11 = ctx.r11;', caller)
+
+    def test_a_callee_saving_a_nonvolatile_register_returns_nothing(self):
+        prog, functions, _ = program(SOURCE)
+        self.assertEqual(prog.functions['sub_2000'].clobbers, 0)
+        self.assertEqual(prog.functions['sub_2000'].ret, 0)
+        self.assertNotIn('r31 = ctx.r31;', body(convert(SOURCE), 'sub_1000'))
+
+    def test_a_nonvolatile_register_left_changed_reaches_a_later_callee(self):
+        prog, functions, _ = program(SWAP)
+        self.assertEqual(prog.functions['sub_7000'].clobbers, rl.BIT['v69'])
+        self.assertEqual(prog.functions['sub_7050'].clobbers, 0)
+        # The swap routine stores what it loaded, for its caller's next callee.
+        text = convert(SWAP)
+        self.assertIn('\tctx.v69 = v69;\n\treturn;', body(text, 'sub_7000'))
+        # The caller reloads it after the swap and stores it again before the
+        # reader (sub_7200 passes its caller's value to the swap's save).
+        for name in ('sub_7200', 'sub_7300'):
+            self.assertIn('\tsub_7000(ctx, base);\n\tv69 = ctx.v69;\n\tctx.v69 = v69;\n\tsub_7100(ctx, base);',
+                          body(text, name))
+        # A callee that saves and restores the register is not asked for it.
+        self.assertEqual(prog.functions['sub_7050'].ret, 0)
+        self.assertIn('\tsub_7050(ctx, base);\n\tctx.v69 = v69;\n\tsub_7100(ctx, base);', body(text, 'sub_7400'))
+
+    def test_what_does_not_leave_a_register_changed(self):
+        source = '''PPC_FUNC_IMPL(__imp__sub_8000) {
+\tPPC_FUNC_PROLOGUE();
+\tsfr::enter_function(ctx, "sub_8000", 0x8000);
+\tctx.r31.u64 = PPC_LOAD_U64(ctx.r7.u32 + 296);
+\tctx.r1.u64 = PPC_LOAD_U64(ctx.r7.u32 + 144);
+\treturn;
+}
+
+PPC_FUNC_IMPL(__imp__sub_8100) {
+\tPPC_FUNC_PROLOGUE();
+\tsfr::enter_function(ctx, "sub_8100", 0x8100);
+\tctx.r15.u64 = ctx.r15.u64;
+\treturn;
+}
+
+PPC_FUNC_IMPL(__imp__sub_8200) {
+\tPPC_FUNC_PROLOGUE();
+\tsfr::enter_function(ctx, "sub_8200", 0x8200);
+\tuint32_t ea{};
+\tctx.r6.s64 = -32;
+\tea = ctx.r1.u32 + ctx.r6.u32;
+\tsfr::store_vector_left(ea, ctx.v64.u8);
+\tsfr::load_vector_memory(uint32_t(ctx.r4.u32), ctx.v64.u8);
+\tsfr::load_vector_memory(uint32_t(ctx.r1.u32 + ctx.r6.u32), ctx.v64.u8);
+\treturn;
+}
+'''
+        prog, functions, _ = program(source)
+        # longjmp's loads are the frame it switches to; mr r15,r15 is a no-op;
+        # a vector kept in the frame through ea is saved.
+        for name in ('sub_8000', 'sub_8100', 'sub_8200'):
+            self.assertEqual(prog.functions[name].clobbers, 0, name)
 
     def test_code_after_a_call_that_never_returns_asks_nothing(self):
         prog, functions, _ = program(RETURNS)
