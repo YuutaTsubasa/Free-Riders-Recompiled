@@ -946,10 +946,19 @@ struct NativePresentation::Impl {
         std::fill(pass_spans.begin(), pass_spans.end(), 0u);
         pass_lists = 0;
     }
+    // SFR_GPU_TIMING (Vulkan): render passes begun, and those that cleared
+    // through their load operations (SFR_CLEAR_LOAD_OPS), per list.
+    std::atomic<uint64_t> passes_begun{0}, passes_clearing{0};
+    plume::VulkanCommandList* vulkan_list() const {
+        return graphics->backend() == GraphicsBackend::vulkan ? static_cast<plume::VulkanCommandList*>(command_list.get())
+                                                              : nullptr;
+    }
     void begin_list() {
         drain();
         command_list->begin();
         ++list_generation;
+        if (gpu_timing())
+            if (auto* list = vulkan_list()) list->renderPassesBegun = list->renderPassesClearing = 0;
         if (gpu_timing()) {
             if (!timing) timing = graphics->device().createQueryPool(2);
             if (timing) {
@@ -981,6 +990,11 @@ struct NativePresentation::Impl {
             passes.ended = true;
         }
         command_list->end();
+        if (gpu_timing())
+            if (auto* list = vulkan_list()) {
+                passes_begun += list->renderPassesBegun;
+                passes_clearing += list->renderPassesClearing;
+            }
     }
     // The list whose fence was just waited for: its two timestamps are final.
     void read_timing(plume::RenderQueryPool* pool, bool& ended) {
@@ -995,7 +1009,11 @@ struct NativePresentation::Impl {
         timing_max_ms = (std::max)(timing_max_ms, ms);
         if (++timing_count == 120) {
             std::cerr << "GPU_TIMING lists=" << timing_count << " mean_ms=" << timing_sum_ms / timing_count
-                      << " max_ms=" << timing_max_ms << '\n';
+                      << " max_ms=" << timing_max_ms;
+            if (vulkan_list())
+                std::cerr << " passes=" << double(passes_begun.exchange(0)) / timing_count
+                          << " clearing_passes=" << double(passes_clearing.exchange(0)) / timing_count;
+            std::cerr << '\n';
             timing_count = 0;
             timing_sum_ms = timing_max_ms = 0;
         }
