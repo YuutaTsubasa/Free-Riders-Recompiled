@@ -485,6 +485,21 @@ void NativeGraphics::initialize() {
                   << " d32s8=" << d32s8 << " d24s8=" << d24s8 << " forced=" << forced << '\n';
     }
 
+    // SFR_CLEAR_LOAD_OPS=1 (Issue #176, an experiment for Mali): a clear of a
+    // whole target recorded before its render pass begins (a race frame's
+    // first framebuffer pass, the shadow map's depth, a new surface's depth,
+    // the present's black border) becomes the pass's LOAD_OP_CLEAR, so a
+    // tiling GPU starts the pass with cleared tiles instead of reading the
+    // target from memory first. Off by default: on an Adreno 740 (AYN Thor,
+    // a race at 1080 lines) it changed nothing (13.60 ms a frame either way),
+    // and the Mali it is meant for has not measured it yet.
+    if (backend == GraphicsBackend::vulkan) {
+        const char* setting = std::getenv("SFR_CLEAR_LOAD_OPS");
+        const bool fold = setting && *setting == '1';
+        static_cast<plume::VulkanDevice*>(render_device.get())->foldClearsIntoLoadOps = fold;
+        std::cerr << "NATIVE_CLEAR_LOAD_OPS enabled=" << fold << '\n';
+    }
+
     // Every draw declares an attribute at each of the twenty locations a
     // vertex shader may read (native_vertex_layout.cpp). Vulkan guarantees
     // 16, an old Mali (G72, G76) has no more, and twenty hung its GPU at the

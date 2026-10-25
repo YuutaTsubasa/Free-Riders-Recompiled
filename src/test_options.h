@@ -142,6 +142,14 @@ inline constexpr TestOption table[] = {
      {"For testing: On uploads a draw's shader constants only when they changed. A performance experiment.",
       "測試用：開啟時，著色器常數只在改變時才上傳。這是效能實驗。"},
      on, "#65"},
+    {"SFR_CLEAR_LOAD_OPS", TestGroup::graphics, test_platform::all,
+     {"Clear passes at their start", "在繪製階段開始時清除"},
+     {"For testing (Vulkan): a clear of a whole target at the start of a render pass is done by the pass itself, "
+      "so a phone GPU does not first read that target from memory. A performance experiment for Mali GPUs at "
+      "high render sizes; compare the GPU timing with it On and at Default.",
+      "測試用（Vulkan）：在繪製階段（render pass）開始時清除整個目標，改由該階段本身完成，手機 GPU 就不必先從記憶體讀回該目標。"
+      "這是針對 Mali GPU 在高渲染解析度下的效能實驗；請比較開啟與預設時的 GPU 時間。"},
+     on, "#176"},
     // ---- processor
     {"SFR_CORE_PLAN", TestGroup::processor, test_platform::android,
      {"Core placement", "核心配置"},

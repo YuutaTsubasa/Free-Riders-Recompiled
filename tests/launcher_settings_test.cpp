@@ -487,6 +487,11 @@ void test_option_table() {
     require(sfr::test_option_applies(*hint, sfr::test_platform::android) &&
                 !sfr::test_option_applies(*hint, sfr::test_platform::windows) && sfr::find_test_choice(*hint, "1"),
             "performance hints are an Android option that turns on");
+    // Off by default in the game, so the page offers only On (Issue #176's Mali experiment).
+    const auto* clear_load_ops = sfr::find_test_option("SFR_CLEAR_LOAD_OPS");
+    require(clear_load_ops && sfr::test_option_applies(*clear_load_ops, sfr::test_platform::android) &&
+                sfr::find_test_choice(*clear_load_ops, "1") && !sfr::find_test_choice(*clear_load_ops, "0"),
+            "clearing passes at their start is an option that turns on");
 }
 
 void test_option_settings() {

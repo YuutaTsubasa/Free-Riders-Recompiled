@@ -254,6 +254,35 @@ Pro 的內建螢幕和縮放成 2560x1440 的外接螢幕都會，1x 的 1920x10
 SPIR-V 輸出）；DXIL 那一步在 Vulkan 上略過，所以 Vulkan 版執行時不需要 Windows SDK。
 SPIR-V 編譯失敗不寫入 `untranslatable.txt`，因為 D3D12 共用同一個資料夾。
 
+### 以 render pass 的 load op 清除（`SFR_CLEAR_LOAD_OPS`，Issue #176）
+
+Plume 的每個 render pass 對顏色與深度都用 `LOAD_OP_LOAD`／`STORE_OP_STORE`，遊戲的清除是 pass
+開始後的 `vkCmdClearAttachments`。分塊（tile-based）GPU 因此會先把整個目標從記憶體讀回再清掉。
+`patches/plume-clear-load-ops.patch` 讓 pass 開始前錄下、涵蓋整個目標的清除，改由 pass 自己的
+`LOAD_OP_CLEAR` 完成（同一 framebuffer 的相容 render pass 變體，依清除的附件快取）；同一個
+framebuffer 在 pass 開始前再設定一次時不再結束什麼。`SFR_CLEAR_LOAD_OPS=1` 開啟（啟動器測試選項
+「在繪製階段開始時清除」），預設關閉。`SFR_GPU_TIMING` 的 `GPU_TIMING` 行在 Vulkan 上另有每份清單的
+`passes=`（開始的 render pass 數）與 `clearing_passes=`（以 load op 清除的）。
+
+一格比賽（Dolphin Resort，1080 行）約 27 個 render pass：framebuffer 第一個 pass（全清，127 個繪製）、
+陰影圖（1152x1152）、主場景 pass（清除只涵蓋 1320x1080 的比賽版面，所以仍要 load）、三次 1920x1080
+的 resolve 複製之間的 pass、約 20 個 bloom 小 pass，最後一個 pass 是一個繪製加 9 次全畫面 stencil
+清除。可以折進 load op 的只有 4 個（第一個 pass、陰影深度、present 的黑底）。
+
+2026-10-26 在 AYN Thor（Adreno 740）上的量測，比賽視窗平均 `GPU_TIMING`（毫秒／格，同一個 APK）：
+
+| 設定 | GPU |
+| --- | --- |
+| 關（兩次） | 13.60、13.60 |
+| `SFR_CLEAR_LOAD_OPS=1`（兩次） | 13.68、13.60 |
+| 開 + `SFR_DECODE_BC=1`（BC 在 CPU 解成 RGBA8，如 Mali） | 13.22 |
+| 開 + 以 `spirv-opt -O` 再優化過的著色器包 | 13.56 |
+| 開 + `SFR_TEST_DEPTH_D24S8=1` | 12.97 |
+
+在 Adreno 上都在 10% 以內：load op 沒有差別；RGBA8 貼圖不比 BC 慢，所以轉成 ASTC／ETC2 不會省 GPU
+時間；DXC 預設已跑過 spirv-opt 的效能 pass，`-O` 只改了幾個窺孔（SPIR-V 大小 0.999 倍）。Mali 上
+尚未量測，所以這個開關留給 Mali 的玩家比較。
+
 ## 著色器包
 
 `python scripts/pack_shaders.py` 把執行期快取中已編好的著色器（原始容器、mask、DXIL、SPIR-V）
