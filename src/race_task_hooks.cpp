@@ -90,11 +90,15 @@ bool skipped_when_undrawn(uint32_t vtable) {
 // is not drawn the stage now finds its areas and leaves the drawing of its
 // objects out (1.0-1.4 ms of a PC's undrawn frame, 2.2-3.1 ms on an AYN
 // Thor). A read watch over races at four courses (SFR_TEST_DRAW_READS_KIND
-// below) found nothing else of its drawing read outside drawing.
-// SFR_UNDRAWN_STAGE_AREAS=0 (a Test option) runs all of it, as 0.10.24 did.
+// below) found nothing else of its drawing read outside drawing, but it is
+// not enough: on an AYN Thor with frames skipped (threads on one little core)
+// the player still fell short of Dolphin Resort's big jump in every race from
+// 0.10.25 to 0.10.33, and cleared it with the whole drawing run or with no
+// frame skipping. So the whole drawing runs again, as in 0.10.24;
+// SFR_UNDRAWN_STAGE_AREAS=1 (a Test option) finds only the areas.
 constexpr uint32_t stage_draw = 0x82269638;
 bool stage_areas_only() {
-    static const bool on = [] { const char* t = std::getenv("SFR_UNDRAWN_STAGE_AREAS"); return !t || *t != '0'; }();
+    static const bool on = [] { const char* t = std::getenv("SFR_UNDRAWN_STAGE_AREAS"); return t && *t == '1'; }();
     return on;
 }
 }

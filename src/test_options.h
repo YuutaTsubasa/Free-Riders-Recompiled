@@ -203,12 +203,12 @@ inline constexpr TestOption table[] = {
      off, "#153"},
     {"SFR_UNDRAWN_STAGE_AREAS", TestGroup::gameplay, test_platform::all,
      {"Skipped frames: stage areas only", "跳過的畫格：賽道只找區域"},
-     {"For testing: in a race frame that frame skipping does not show, the course's own task only finds which "
-      "of its areas the camera is in and leaves its objects undrawn (the default). Off runs all of its drawing "
-      "there, as 0.10.24 did, for a course object that stands still or a racer that falls through the course.",
-      "測試用：在比賽中不顯示的畫格（跳格）裡，賽道本身的工作只找出鏡頭所在的區域，不繪製它的物件（預設如此）。"
-      "關閉時改回 0.10.24 的做法，執行它全部的繪製；用於賽道物件不動或選手穿過賽道掉落時。"},
-     off, "#176"},
+     {"For testing: On makes the course's own task, in a race frame that frame skipping does not show, only find "
+      "which of its areas the camera is in and leave its objects undrawn, as 0.10.25 to 0.10.33 did. It is faster "
+      "on a slow phone, but a racer can fall short of a big jump (Dolphin Resort).",
+      "測試用：開啟時，在比賽中不顯示的畫格（跳格）裡，賽道本身的工作只找出鏡頭所在的區域、不繪製它的物件，"
+      "如同 0.10.25 到 0.10.33。在慢的手機上比較快，但選手可能跳不過大跳台（Dolphin Resort）。"},
+     on, "#176"},
     {"SFR_TOUCH_IN_SCENES", TestGroup::gameplay, test_platform::android | test_platform::ios,
      {"Touch controls in cutscenes", "過場畫面顯示觸控按鈕"},
      {"For testing: On keeps the touch controls on screen in movies and story scenes, as 0.10.30 did. By default "
