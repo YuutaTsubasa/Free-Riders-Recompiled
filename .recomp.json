@@ -6,7 +6,7 @@
   "original": { "region": "USA/Europe" },
   "project": "Free Riders Recompiled",
   "status": "playable",
-  "targets": ["Windows", "Linux", "Android"],
+  "targets": ["Windows", "Linux", "macOS", "Android", "iOS"],
   "toolchain": ["XenonRecomp", "XenosRecomp"],
   "maintainers": [{ "name": "YuutaTsubasa", "link": "https://github.com/YuutaTsubasa" }],
   "links": [{ "url": "https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases", "label": "Releases" }]
