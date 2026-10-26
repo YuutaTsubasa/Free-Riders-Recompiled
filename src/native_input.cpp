@@ -1,5 +1,6 @@
 #include "native_input.h"
 #include "input_bindings.h"
+#include "control_prompts.h"
 #include "pad_assignment.h"
 #include "pad_devices.h"
 #include "sony_gamepad.h"
@@ -152,6 +153,13 @@ bool uses_keyboard(uint8_t device) {
     const PlayerDevice which = PlayerDevice(device);
     return which == PlayerDevice::both || which == PlayerDevice::keyboard;
 }
+// Whether anything is pressed or pushed, for the button prompts' "what the
+// player last used" (control_prompts.h).
+bool in_use(const GamepadState& state) {
+    constexpr int dead_zone = 8000;
+    return state.buttons || state.left_trigger > 30 || state.right_trigger > 30 || std::abs(state.thumb_lx) > dead_zone ||
+           std::abs(state.thumb_ly) > dead_zone || std::abs(state.thumb_rx) > dead_zone || std::abs(state.thumb_ry) > dead_zone;
+}
 }
 
 namespace {
@@ -167,12 +175,17 @@ std::optional<GamepadState> NativeInput::current(uint32_t user) const {
     if (uses_pad(player.device)) {
         state = pad_(user);
         if (state && player.pad) state = remap_pad(*player.pad, *state);
+        if (state && in_use(*state)) prompts::note_pad_used(user);
     }
     if (uses_keyboard(player.device)) {
         // The first player's keyboard is the one the factory always made;
         // anybody else brings their own.
         const auto& keys = user == 0 ? keyboard_ : player.keyboard;
-        if (keys) state = merge_gamepads(state.value_or(GamepadState{}), keys());
+        if (keys) {
+            const GamepadState pressed = keys();
+            if (in_use(pressed)) prompts::note_device(user, prompts::Glyphs::keyboard);
+            state = merge_gamepads(state.value_or(GamepadState{}), pressed);
+        }
     }
     if (user == 0) state = merge_gamepads(state.value_or(GamepadState{}), script_());
     if (user == 1 && second_script_) state = merge_gamepads(state.value_or(GamepadState{}), second_script_());
@@ -309,6 +322,8 @@ struct WindowsPads {
         std::lock_guard guard(mutex);
         look();
         const uint64_t pad = assignment.pad_of(player);
+        prompts::note_pad_present(player, pad != PadAssignment::no_pad,
+                                  pad == sony_pad ? prompts::Glyphs::playstation : prompts::Glyphs::xbox);
         if (pad == PadAssignment::no_pad) return std::nullopt;
         if (pad == sony_pad) return sony::latest();
         XINPUT_STATE native{};
@@ -351,6 +366,8 @@ NativeInput NativeInput::windows(std::function<void*()> focus_window, std::funct
     NativeInput input(pad, reader(first.bindings));
     input.set_player(0, first.device, first.bindings);
     input.set_player(1, second.device, second.bindings, reader(second.bindings));
+    prompts::set_bindings(0, first.bindings);
+    prompts::set_bindings(1, second.bindings);
     input.attach_script(std::move(script_clock));
     input.vibrate_ = [pads](uint32_t user, uint16_t left, uint16_t right) {
         return pads->vibrate(user, left, right);
@@ -510,6 +527,10 @@ NativeInput NativeInput::sdl(std::function<void*()> focus_window, std::function<
         std::lock_guard lock(pads->mutex);
         SDL_GameController* controller = pads->get(user);
         if (user == 0) note_controller(controller != nullptr);
+        // A PlayStation pad's prompts show its shapes (control_prompts.h).
+        const SDL_GameControllerType type = controller ? SDL_GameControllerGetType(controller) : SDL_CONTROLLER_TYPE_UNKNOWN;
+        const bool sony = type == SDL_CONTROLLER_TYPE_PS3 || type == SDL_CONTROLLER_TYPE_PS4 || type == SDL_CONTROLLER_TYPE_PS5;
+        prompts::note_pad_present(user, controller != nullptr, sony ? prompts::Glyphs::playstation : prompts::Glyphs::xbox);
         if (!controller) return std::nullopt;
         const GamepadState state = read_sdl_pad(controller);
         // A button or a stick past a small dead zone takes over from the
@@ -555,6 +576,8 @@ NativeInput NativeInput::sdl(std::function<void*()> focus_window, std::function<
     NativeInput input(pad, reader(first.bindings, true));
     input.set_player(0, first.device, first.bindings);
     input.set_player(1, second.device, second.bindings, reader(second.bindings, false));
+    prompts::set_bindings(0, first.bindings);
+    prompts::set_bindings(1, second.bindings);
     input.attach_script(std::move(script_clock));
     input.vibrate_ = [pads, controllers](uint32_t user, uint16_t left, uint16_t right) {
         if (!controllers) return false;

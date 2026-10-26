@@ -368,6 +368,17 @@ void custom_window_size() {
     require(sfr::internal_resolution(custom).output_height == 1300, "the scale follows the custom size");
 }
 
+// Issue #284: the button prompts under the game's pose pictures.
+void button_prompt_settings() {
+    sfr::LauncherSettings defaults;
+    require(defaults.button_prompts && value_of(defaults, "SFR_BUTTON_PROMPTS") == "1", "prompts are on by default");
+    auto off = defaults;
+    off.button_prompts = false;
+    require(value_of(off, "SFR_BUTTON_PROMPTS") == "0", "turned off, the game is told so");
+    require(!sfr::parse_launcher_settings(sfr::format_launcher_settings(off)).button_prompts, "off survives a round trip");
+    require(sfr::parse_launcher_settings("").button_prompts, "an older settings file shows them");
+}
+
 // Issue #274: the Kinect's figure, sensor icon and microphone bar.
 void hide_kinect_ui_settings() {
     sfr::LauncherSettings defaults;
@@ -1020,6 +1031,7 @@ int main() {
         save_directory_settings();
         title_stats_settings();
         hide_kinect_ui_settings();
+        button_prompt_settings();
         race_frameskip_settings();
         test_option_table();
         test_option_settings();
