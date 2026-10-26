@@ -54,28 +54,86 @@ option(SFR_HIDDEN_CHECKPOINT "Label checkpoints hide their permit call from the 
 if(NOT SFR_HIDDEN_CHECKPOINT)
     add_compile_definitions(SFR_HIDDEN_CHECKPOINT=0)
 endif()
-# Profile-guided optimisation with Clang (docs/performance.md): "generate"
-# builds an instrumented game that writes default_*.profraw into its working
-# directory when it exits (on Android the app's files directory); a merged
-# .profdata file (llvm-profdata merge) builds the game optimised with it.
-# Functions the profile does not match are compiled as without it.
-set(SFR_PGO "" CACHE STRING "Profile-guided optimisation: empty (off), generate, or a .profdata file")
-if(SFR_PGO)
+# Profile-guided optimisation with Clang (docs/performance.md, data/pgo):
+#   auto (default)  Android game builds use the committed profile
+#                   data/pgo/android-<abi>.profdata.gz when there is one;
+#                   every other build is off
+#   off, none or empty: no profile
+#   generate        an instrumented game that writes default_*.profraw into
+#                   its working directory when it exits (on Android the app's
+#                   files directory); merge them with llvm-profdata
+#   a .profdata or .profdata.gz file: that profile
+# Functions the profile does not match are compiled as without it; Clang
+# warns per file with the number whose code changed since the profile was
+# collected (-Wprofile-instr-out-of-date): collect it again then.
+set(SFR_PGO "auto" CACHE STRING "Profile-guided optimisation: auto, off, generate, or a .profdata(.gz) file")
+set(SFR_PGO_SOURCE "${SFR_PGO}")
+string(TOLOWER "${SFR_PGO_SOURCE}" SFR_PGO_KEYWORD)
+if(SFR_PGO_KEYWORD STREQUAL "auto")
+    set(SFR_PGO_SOURCE "")
+    if(ANDROID AND SFR_BUILD_DIAGNOSTIC)
+        string(REPLACE "arm64-v8a" "arm64" SFR_PGO_ABI "${ANDROID_ABI}")
+        set(SFR_PGO_DEFAULT "${CMAKE_CURRENT_SOURCE_DIR}/data/pgo/android-${SFR_PGO_ABI}.profdata.gz")
+        if(EXISTS "${SFR_PGO_DEFAULT}")
+            set(SFR_PGO_SOURCE "${SFR_PGO_DEFAULT}")
+        endif()
+    endif()
+elseif(SFR_PGO_KEYWORD MATCHES "^(off|none)$")
+    set(SFR_PGO_SOURCE "")
+endif()
+if(SFR_PGO_SOURCE)
     if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
         message(FATAL_ERROR "SFR_PGO needs Clang with its GNU-style driver (Android, Linux, macOS).")
     endif()
-    if(SFR_PGO STREQUAL "generate")
-        add_compile_options(-fprofile-generate)
+    # A static function's profile name is its file name and its own name,
+    # not the full path, so a profile collected from one checkout or build
+    # directory matches another.
+    set(SFR_PGO_NAMES "SHELL:-mllvm -static-func-full-module-prefix=false")
+    if(SFR_PGO_KEYWORD STREQUAL "generate")
+        message(STATUS "SFR_PGO: instrumented build (-fprofile-generate)")
+        add_compile_options(-fprofile-generate "${SFR_PGO_NAMES}")
         add_link_options(-fprofile-generate)
-        add_compile_definitions(SFR_PGO_GENERATE=1)
     else()
-        get_filename_component(SFR_PGO_PROFILE "${SFR_PGO}" ABSOLUTE)
-        if(NOT EXISTS "${SFR_PGO_PROFILE}")
-            message(FATAL_ERROR "SFR_PGO: no profile at ${SFR_PGO_PROFILE}")
+        get_filename_component(SFR_PGO_SOURCE "${SFR_PGO_SOURCE}" ABSOLUTE)
+        if(NOT EXISTS "${SFR_PGO_SOURCE}")
+            message(FATAL_ERROR "SFR_PGO: no profile at ${SFR_PGO_SOURCE}")
         endif()
-        # Ninja does not see the profile as an input: a new profile at the
-        # same path needs a clean build.
-        add_compile_options("-fprofile-use=${SFR_PGO_PROFILE}" -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date -Wno-profile-instr-missing)
+        # The profile is copied (unpacked) into the build directory under a
+        # name with its hash: a changed profile changes every compile command,
+        # so Ninja rebuilds what it affects, and editing it reconfigures.
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${SFR_PGO_SOURCE}")
+        file(SHA256 "${SFR_PGO_SOURCE}" SFR_PGO_HASH)
+        string(SUBSTRING "${SFR_PGO_HASH}" 0 16 SFR_PGO_HASH)
+        set(SFR_PGO_PROFILE "${CMAKE_CURRENT_BINARY_DIR}/pgo/profile-${SFR_PGO_HASH}.profdata")
+        if(NOT EXISTS "${SFR_PGO_PROFILE}")
+            file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/pgo")
+            if(SFR_PGO_SOURCE MATCHES "\\.gz$")
+                find_package(Python3 COMPONENTS Interpreter REQUIRED)
+                execute_process(COMMAND "${Python3_EXECUTABLE}" -c
+                        "import gzip, shutil, sys\nwith gzip.open(sys.argv[1]) as i, open(sys.argv[2], 'wb') as o: shutil.copyfileobj(i, o)"
+                        "${SFR_PGO_SOURCE}" "${SFR_PGO_PROFILE}.part" RESULT_VARIABLE SFR_PGO_UNPACKED)
+                if(NOT SFR_PGO_UNPACKED EQUAL 0)
+                    message(FATAL_ERROR "SFR_PGO: could not unpack ${SFR_PGO_SOURCE}")
+                endif()
+                file(RENAME "${SFR_PGO_PROFILE}.part" "${SFR_PGO_PROFILE}")
+            else()
+                configure_file("${SFR_PGO_SOURCE}" "${SFR_PGO_PROFILE}" COPYONLY)
+            endif()
+        endif()
+        message(STATUS "SFR_PGO: optimising with ${SFR_PGO_SOURCE}")
+        # Files and functions the profile has no counts for are normal (a
+        # sparse profile leaves out what never ran): only changed functions
+        # are reported.
+        add_compile_options("-fprofile-use=${SFR_PGO_PROFILE}" "${SFR_PGO_NAMES}"
+            -Wno-profile-instr-unprofiled -Wno-profile-instr-missing)
+        # Clang warns for each function whose code changed since the profile
+        # was collected (hash mismatch) and compiles it without the profile;
+        # scripts/pgo_compile.py counts them, and the game's link prints the
+        # total (a warning, not an error).
+        find_package(Python3 COMPONENTS Interpreter REQUIRED)
+        foreach(language C CXX)
+            set(CMAKE_${language}_COMPILER_LAUNCHER "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/pgo_compile.py" ${CMAKE_${language}_COMPILER_LAUNCHER})
+        endforeach()
     endif()
 endif()
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/XenonRecomp/CMakeLists.txt")
@@ -1446,5 +1504,18 @@ if(WIN32)
         endforeach()
     else()
         message(STATUS "D3D12 Agility SDK runtime: not fetched (Windows 10 will draw with Vulkan)")
+    endif()
+endif()
+if(SFR_PGO_PROFILE)
+    # The profile counts only the game library: the launcher is built
+    # without it (a function both define, such as SDL_main, would otherwise
+    # be reported as changed).
+    if(TARGET sfr_launcher)
+        target_compile_options(sfr_launcher PRIVATE -fno-profile-use)
+    endif()
+    if(TARGET sfr_cpu_diagnostic)
+        add_custom_command(TARGET sfr_cpu_diagnostic POST_BUILD
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/pgo_compile.py" --summary "${CMAKE_CURRENT_BINARY_DIR}"
+            VERBATIM)
     endif()
 endif()

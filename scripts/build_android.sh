@@ -4,7 +4,8 @@
 # scripts/bootstrap.py first and generate the game code (README).
 # Usage: scripts/build_android.sh [--diagnostic DIR] [--abi x86_64|arm64-v8a]... [--no-apk] [--launcher-only]
 #        [--pack shaders.pack] (carried in the APK; the launcher copies it out) [--validation]
-#        [--pgo generate|PROFILE.profdata] (profile-guided optimisation, docs/performance.md)
+#        [--pgo auto|off|generate|PROFILE.profdata[.gz]] (profile-guided optimisation, data/pgo/README.md;
+#        default auto: the committed data/pgo/android-<abi>.profdata.gz)
 # --launcher-only builds the launcher and SDL without the game (no generated
 # code needed, no APK; what the CI does).
 # Environment: ANDROID_HOME (default ~/AppData/Local/Android/Sdk on Windows,
@@ -21,7 +22,7 @@ apk=1
 pack=""
 game=1
 validation=OFF
-pgo=""
+pgo=auto
 api="${SFR_ANDROID_API:-28}"
 [[ "$api" =~ ^[0-9]+$ ]] && [ "$api" -ge 28 ] || { echo "SFR_ANDROID_API must be at least 28" >&2; exit 2; }
 while [ $# -gt 0 ]; do
@@ -32,7 +33,7 @@ while [ $# -gt 0 ]; do
         --pack) pack="$(native "$(cd "$(dirname "$2")" && pwd)/$(basename "$2")")"; shift 2 ;;
         --launcher-only) game=0; apk=0; shift ;;
         --validation) validation=ON; shift ;;
-        --pgo) pgo="$2"; [ "$pgo" = generate ] || pgo="$(native "$(cd "$(dirname "$2")" && pwd)/$(basename "$2")")"; shift 2 ;;
+        --pgo) pgo="$2"; [[ "$pgo" =~ ^(auto|off|none|generate)$ ]] || pgo="$(native "$(cd "$(dirname "$2")" && pwd)/$(basename "$2")")"; shift 2 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
