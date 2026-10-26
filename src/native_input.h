@@ -79,6 +79,10 @@ public:
     // XamInputSetState: forward rumble motor speeds to a host pad when present.
     // User 0 is always connected (keyboard-backed), so it always succeeds.
     uint32_t set_vibration(uint32_t user, uint16_t left_motor, uint16_t right_motor);
+    // A key (Windows virtual-key number) held while the game window has
+    // focus, whether or not the input is held and whatever it is bound to
+    // (the achievements page's own keys, achievement_overlay.h).
+    bool key_down(int key) const { return key_down_ && key_down_(key); }
     // script_clock (optional) gives the SFR_INPUT_SCRIPT time in seconds,
     // negative before the script starts; by default time since creation.
     static NativeInput windows(std::function<void*()> focus_window, std::function<double()> script_clock = {});
@@ -103,6 +107,7 @@ private:
     std::array<Player, 4> players_{};
     std::function<GamepadState()> script_ = [] { return GamepadState{}; };
     std::function<GamepadState()> second_script_;
+    std::function<bool(int)> key_down_;
     std::function<bool(uint32_t, uint16_t, uint16_t)> vibrate_ = [](uint32_t, uint16_t, uint16_t) { return false; };
     // Held only over last_ and packets_. Indirect because a NativeInput is
     // built by a factory and copied out of it, and a mutex is neither

@@ -321,7 +321,11 @@ gamerscore, and the date each was unlocked, plus the totals (for example
 network: each one is kept with the player's saves (`achievements.txt` beside
 the player's save folder, see [Saves](docs/saves.md)), so it survives updates.
 Names, texts and icons come from the installed game's own title data, in the
-game language when the disc has it (English otherwise).
+game language when the disc has it (English otherwise). Achievements that need
+a number of things (Bomb-Happy's 30 Target Torpedo hits, 16 wins, 10,000 Rings,
+every course of a mode ...) show how far the player is, read from the game's
+own save. **Achievement notifications** (on by default) shows the console's
+"Achievement unlocked" notification in the game.
 
 The window size defaults to the desktop size until you choose another. The last
 entry of the window size list, **Custom**, shows width and height boxes for any
@@ -394,6 +398,7 @@ beside itself. Linux and Android builds, and what each step does, are in
 | Hold hands (Tag Race, both players) | R | LT |
 | Swap in the next racer (Relay Race) | Z or Tab | A or BACK |
 | Hand cursor (Kinect-only menus) | I J K L | Right stick |
+| Achievements page (open / close) | F1 | L3 + R3 (click both sticks) |
 
 Xbox and PlayStation controllers both work. On Android, translucent touch
 buttons cover the same actions when no controller is connected (punches on
@@ -406,6 +411,13 @@ hand cursor: touch anywhere away from the buttons and the cursor goes there
 (rest on an item to choose it, as with a hand); on the title screen a touch is
 START. On a PC the mouse moves the hand cursor the same way. Details: [docs/race-controls.md](docs/race-controls.md),
 [docs/pad-menus.md](docs/pad-menus.md).
+
+The **achievements page** lists all 50 achievements in the game with their
+progress (pausing a race the way the console's Guide did); D-pad or arrows
+choose, LB / RB or Page Up / Down turn a page, B or Esc closes it. On a touch
+screen, tap the "Achievement unlocked" notification or tap with three fingers
+to open it, drag to scroll and tap outside it to close. See
+[docs/achievements.md](docs/achievements.md).
 
 ## Kinect and Kinect v2
 

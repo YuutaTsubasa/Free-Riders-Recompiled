@@ -411,6 +411,14 @@ void title_stats_settings() {
     require(fps.fps_overlay && value_of(fps, "SFR_FPS_OVERLAY") == "1" &&
                 sfr::format_launcher_settings(fps).find("fps_overlay=1\n") != std::string::npos,
             "turned on, the counter is exported and stays on");
+    // The achievement notification (Issue #288): on unless turned off.
+    require(defaults.achievement_notifications && value_of(defaults, "SFR_ACHIEVEMENT_NOTIFICATIONS") == "1" &&
+                sfr::format_launcher_settings(defaults).find("achievement_notifications=1\n") != std::string::npos,
+            "the achievement notification is on by default");
+    const auto quiet = sfr::parse_launcher_settings("achievement_notifications=0\n");
+    require(!quiet.achievement_notifications && value_of(quiet, "SFR_ACHIEVEMENT_NOTIFICATIONS") == "0" &&
+                sfr::format_launcher_settings(quiet).find("achievement_notifications=0\n") != std::string::npos,
+            "turned off, the notification stays off and the game is told");
 }
 
 void race_frameskip_settings() {
