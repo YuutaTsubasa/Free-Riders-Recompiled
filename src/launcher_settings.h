@@ -60,6 +60,9 @@ struct LauncherSettings {
     std::string race_frameskip = "auto";
     bool title_stats = true;         // SFR_TITLE_STATS: frame rate and more in the game window's title
     bool fps_overlay = false;        // SFR_FPS_OVERLAY: a frame-rate counter drawn in the game (fps_readout.h)
+    // SFR_ACHIEVEMENT_NOTIFICATIONS: the "Achievement unlocked" notification
+    // in the game (achievement_overlay.h, Issue #288).
+    bool achievement_notifications = true;
     // SFR_FPS_OVERLAY_INSET: how far in from the corner the counter sits, in
     // percent of the picture's height; a phone's rounded corners cut it off
     // in the corner itself (Issue #236).

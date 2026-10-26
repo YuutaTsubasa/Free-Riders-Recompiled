@@ -19,6 +19,8 @@
 #include "race_frame_clock.h"
 #include "race_hud_owners.h"
 #include "title_stats.h"
+#include "screen_overlay.h"
+#include "achievement_overlay.h"
 #include <map>
 #include <plume_render_interface.h>
 #include <algorithm>
@@ -93,6 +95,12 @@ void write_framebuffer(const char* path) {
                 std::memcpy(stretched.data()+(uint64_t(y)*width+left+x)*4,
                             pixels.data()+(source+uint64_t(x)*area.first/shown)*4,4);
         }
+        rows=stretched.data();
+    }
+    // The achievement notification or page over it (screen_overlay.h).
+    if(pixels.size()>=size && sfr::screen_layers_shown()) {
+        if(rows!=stretched.data()) stretched.assign(pixels.begin(),pixels.begin()+size);
+        sfr::blend_screen_layers(stretched,width,height,left,shown);
         rows=stretched.data();
     }
     std::ofstream out(path,std::ios::binary);
@@ -547,6 +555,9 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
         previous=present_start;
     }
     sfr::note_frame_presented();  // for the window's title
+    // The achievement notification and page (Issue #288): input, timing.
+    sfr::AchievementOverlay::instance().poll(
+        std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(), sfr::present_count.load());
     const bool frame_drawn=rendering_this_frame();
     if(frame_drawn) {
         graphics().present_front_buffer(ctx.r3.u32);

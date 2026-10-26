@@ -39,6 +39,7 @@
 #include "touch_scroll.h"
 #include "voice_commands.h"
 #include "achievements.h"
+#include "achievement_progress.h"
 #include "image_decode.h"
 #include "launcher_settings.h"
 #include "launcher_fonts.h"
@@ -149,6 +150,7 @@ enum Text {
     FpsOverlay, FpsOverlayHint, FpsInset, FpsInsetHint, TouchNames, TouchNamesHint,
     TabAchievements, AchievementsSummary, AchievementsScore, AchievementsHint, AchievementsNoGame, AchievementsUnreadable,
     AchievementUnlocked, AchievementLocked, AchievementSecret, AchievementSecretHint, AchievementsPlayer,
+    AchievementToasts, AchievementToastsHint, AchievementProgressText,
     SectionUnlocked, SectionLocked,
     HideKinectUi, HideKinectUiHint,
     TextCount
@@ -556,6 +558,10 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Secret achievement", "隱藏成就"},
     {"Keep playing to reveal it.", "繼續遊玩來揭曉。"},
     {"Player: %s", "玩家：%s"},
+    {"Achievement notifications", "成就通知"},
+    {"Show a notification in the game when an achievement unlocks. The achievements page opens in the game at any time: click both sticks in (L3 + R3), press F1 on the keyboard, or tap with three fingers.",
+     "解鎖成就時在遊戲中顯示通知。遊戲中隨時可以打開成就頁面：同時按下兩個類比搖桿（L3 + R3）、按鍵盤 F1，或用三指輕點。"},
+    {"Progress: %u / %u", "進度：%u / %u"},
     {"Unlocked", "已解鎖"},
     {"Locked", "未解鎖"},
     {"Hide Kinect icons", "隱藏 Kinect 圖示"},
@@ -2780,6 +2786,8 @@ struct Launcher {
         ImTextureID atlas = 0;              // every icon, in a grid
         std::map<uint32_t, ImVec4> icons;   // image id -> uv min, uv max
         sfr::UnlockedAchievements unlocked;
+        // How far the player is (achievement_progress.h), from their save.
+        std::vector<sfr::AchievementProgress> progress;
     } achievements;
 
     // The achievements' texts follow the game's language (the disc has
@@ -2820,7 +2828,10 @@ struct Launcher {
     }
     void refresh_achievements() {
         achievements.stale = false;
-        achievements.unlocked = sfr::read_unlocked(sfr::newest_achievement_file(sfr::resolved_save_directory(settings, directory)));
+        const fs::path unlocked_file = sfr::newest_achievement_file(sfr::resolved_save_directory(settings, directory));
+        achievements.unlocked = sfr::read_unlocked(unlocked_file);
+        achievements.progress = unlocked_file.empty() ? std::vector<sfr::AchievementProgress>{}
+                                                      : sfr::read_player_progress(unlocked_file.parent_path());
         const fs::path before = achievements.source;
         read_achievement_resource();
         if (achievements.title && achievements.source == before && achievements.locale == achievement_locale()) return;
@@ -2892,7 +2903,10 @@ struct Launcher {
         const std::string name = hidden ? tr(AchievementSecret) : a.name;
         const std::string text = wrapped(hidden ? tr(AchievementSecretHint) : unlocked ? a.description.c_str() : a.locked_description.c_str(), text_width);
         char status[96];
+        // A locked one that needs a number of things says how far the player is.
+        const sfr::AchievementProgress* progress = unlocked ? nullptr : sfr::find_progress(achievements.progress, a.id);
         if (unlocked) std::snprintf(status, sizeof status, tr(AchievementUnlocked), local_time_text(unlocked->unlocked).c_str());
+        else if (progress) std::snprintf(status, sizeof status, tr(AchievementProgressText), unsigned(progress->value), unsigned(progress->target));
         else std::snprintf(status, sizeof status, "%s", tr(AchievementLocked));
         const float line = ImGui::GetTextLineHeight();
         const float text_height = heading->FontSize + 4 * scale + body->CalcTextSizeA(body->FontSize, FLT_MAX, 0.0f, text.c_str()).y + 4 * scale + line;
@@ -2931,7 +2945,20 @@ struct Launcher {
         y += heading->FontSize + 4 * scale;
         draw->AddText(body, body->FontSize, ImVec2(x, y), color(dim_text, unlocked ? 1.0f : 0.8f), text.c_str());
         y += body->CalcTextSizeA(body->FontSize, FLT_MAX, 0.0f, text.c_str()).y + 4 * scale;
-        draw->AddText(body, body->FontSize, ImVec2(x, y), unlocked ? color(cyan, 1.0f) : color(dim_text, 0.6f), status);
+        draw->AddText(body, body->FontSize, ImVec2(x, y), unlocked ? color(cyan, 1.0f) : color(dim_text, progress ? 0.9f : 0.6f), status);
+        if (progress && progress->target) {
+            // And a bar filling with it, after the text.
+            const float status_width = body->CalcTextSizeA(body->FontSize, FLT_MAX, 0.0f, status).x;
+            const float bar_x = x + status_width + 12 * scale, bar_w = (std::min)(160 * scale, at.x + width - bar_x);
+            const float bar_h = 6 * scale, bar_y = y + (line - bar_h) * 0.5f;
+            if (bar_w > 20 * scale) {
+                draw->AddRectFilled(ImVec2(bar_x, bar_y), ImVec2(bar_x + bar_w, bar_y + bar_h), IM_COL32(255, 255, 255, 24), bar_h * 0.5f);
+                const float fill = float(progress->value) / float(progress->target);
+                if (fill > 0)
+                    draw->AddRectFilled(ImVec2(bar_x, bar_y), ImVec2(bar_x + (std::max)(bar_h, bar_w * fill), bar_y + bar_h),
+                                        color(cyan, 0.9f), bar_h * 0.5f);
+            }
+        }
         ImGui::Dummy(ImVec2(0, 10 * scale));
         ImGui::PopID();
     }
@@ -2942,6 +2969,9 @@ struct Launcher {
         // Nothing here to change: the page opens at its top (the totals)
         // rather than scrolled to a first row; Down steps into the list.
         focus_first_control = false;
+        // The in-game notification (Issue #288).
+        setting_row(tr(AchievementToasts), tr(AchievementToastsHint), ImGui::GetFrameHeight() * 1.9f, scale,
+                    [&] { toggle("##achievement_toasts", &settings.achievement_notifications); });
         const auto hint = [this] {
             ImGui::PushStyleColor(ImGuiCol_Text, dim_text);
             ImGui::TextUnformatted(wrapped(tr(AchievementsHint), room()).c_str());
