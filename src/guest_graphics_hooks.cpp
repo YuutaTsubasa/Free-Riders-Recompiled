@@ -1640,11 +1640,14 @@ static bool native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
         // then the view's place in the frame.
         const auto& view=presentation.raster_state().viewport();
         const float share=draw.shared.screen_space_offset[1]>0.0f ? draw.shared.screen_space_offset[1] : 1.0f;
+        // Copies: a lambda can't capture structured bindings before C++20
+        // (Linux's Clang refuses it).
+        const float frame_width=float(logical_width), frame_height=float(logical_height);
         const auto frame_x=[&](float x) {
             const float clip=(x/(layout_width*0.5f)-1.0f)*share+draw.shared.screen_space_offset[0];
-            return (view.x+(clip+1.0f)*0.5f*view.width)/float(logical_width);
+            return (view.x+(clip+1.0f)*0.5f*view.width)/frame_width;
         };
-        const auto frame_y=[&](float y) { return (view.y+y/layout_height*view.height)/float(logical_height); };
+        const auto frame_y=[&](float y) { return (view.y+y/layout_height*view.height)/frame_height; };
         const float centre=(frame_x(lo[0])+frame_x(hi[0]))*0.5f;
         // A two-player split: the figure of the half it is in.
         const uint32_t player=graphics().split_frame() && centre>=0.5f ? 1 : 0;
