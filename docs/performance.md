@@ -2986,31 +2986,62 @@ shows only the main thread's spare time): baseline drawn 15.65 / 15.89 ms,
 profile run and two all-core runs) lost the harness to an adb timeout and
 were replaced by new runs.
 
-**How to build with a profile.** `SFR_PGO` (CMake; `scripts/build_android.sh
---pgo`):
+**The committed profile (2026-10-26).** Android builds now use
+`data/pgo/android-arm64.profdata.gz` by default (`SFR_PGO=auto`; how it was
+made and how to collect it again: data/pgo/README.md). It merges three runs
+of the instrumented game (all cores, boot and menus each time): Dolphin
+Resort and Metropolis Speedway races to present 21,000 and the title idle to
+present 9,000 with movies on; sparse, 2.6 MB, 0.5 MB gzipped. Thor A/B, the
+same settings as above (frames 13,200-21,000), A = `SFR_PGO=off`, B = the
+profile, runs interleaved A B A B:
 
-1. Build an instrumented game: `scripts/build_android.sh --abi arm64-v8a
-   --pgo generate` (`-fprofile-generate`; the stripped libmain.so is 75 MB
-   instead of 47, and the race runs slower, but it still held 60 fps on the
-   Thor).
-2. Play a race to the end of the run (the benchmark's `SFR_PRESENT_LIMIT`
-   works): when the game exits, `android_main.cpp` writes the counters as
-   `default_<id>_0.profraw` into the app's files directory
-   (`/sdcard/Android/data/com.freeriders.recompiled/files`); pull it with adb.
-   One Thor race gives a 9 MB `.profraw`.
-3. Merge: `llvm-profdata merge --sparse -o race.profdata *.profraw` (the
-   NDK's `llvm-profdata`; several runs or courses can be merged together).
-4. Build with it: `scripts/build_android.sh --pgo race.profdata`. Functions
-   the profile does not match (changed generated code or sources) are
-   compiled as without a profile; a new profile at the same path needs a
-   clean build.
+Little cores (`SFR_TEST_WORKER_CPUS=7 SFR_TEST_RENDER_CPUS=7`), on main
+a64f2da with the committed profile:
 
-The Dolphin Resort profile is 10.4 MB (1.4 MB gzip); `--sparse`, which leaves
-out functions that never ran so that they are compiled normally rather than
-as cold code, is 2.6 MB (0.5 MB gzip); the same for the locals build. No
-profile is in the repository yet. The full profile makes libmain.so 1.4 MB
-smaller (code that never ran is optimised for size), the sparse one 0.2 MB
-larger. A profile goes stale as the generated code or the runtime changes
-(functions it no longer matches simply lose it), so it should be collected
-again from the release's own source.
+| Course | Build | drawn_ms | undrawn_ms | skipped | race speed |
+| --- | --- | --- | --- | --- | --- |
+| Dolphin Resort | off | 21.12 / 21.56 | 10.29 / 10.52 | 33% / 35% | 0.995 / 0.996 |
+| Dolphin Resort | profile | 19.90 / 19.06 | 10.00 / 9.45 | 23% / 20% | 0.982 / 0.999 |
+| Metropolis | off | 24.30 (one run; the other lost to an adb timeout) | 11.92 | 40% | 0.918 |
+| Metropolis | profile | 23.33 | 11.20 | 39% | 0.954 |
 
+The same profile collected on v0.10.34 code (cd79350), against its own
+baseline:
+
+| Case | off | profile |
+| --- | --- | --- |
+| Dolphin, little cores: drawn / undrawn ms, skipped | 21.62 / 10.47, 35%; 20.65 / 10.15, 31% | 19.48 / 9.45, 22%; 20.80 / 9.63, 28% |
+| Metropolis, little cores: drawn / undrawn ms, speed | 25.18 / 13.32, 0.877; 25.27 / 12.79, 0.858 | 22.15 / 10.60, 0.958; 23.89 / 11.91, 0.932 |
+| Dolphin, all cores: cpu_ms | 12.30 / 12.28 | 11.13 / 11.22 |
+| Metropolis, all cores: cpu_ms | 12.07 / 12.18 | 11.54 / 11.43 |
+
+So: a drawn frame about 5-9% cheaper and an undrawn one 5-14%, a quarter to
+a third fewer skipped frames on Dolphin Resort, Metropolis closer to full
+speed (0.87 -> 0.95), and on all cores (60 fps either way) the main thread
+uses 5-9% less CPU. Less than the Dolphin-only full profile above
+(-12%/-15%): the sparse profile and the mix of courses spread its weight.
+Races ran normally (lap 2 at ~1:56 by present 19,200, the big jump cleared),
+and the title's attract movie decodes cleanly with the profile (presents
+6,160-6,195 of an idle title on the Thor).
+
+**Staleness.** Moving the branch from v0.10.34 to main a64f2da (runtime
+changes only: achievements, button prompts) made 12 functions in 4 files
+stale, among them `native_draw`, the present hook and
+`dispatch_import_owned`: the hot paths change often, so the profile should
+be collected again for each release whose runtime or generated code
+changed. The build counts them (`scripts/pgo_compile.py`, a compiler
+launcher used only with a profile) and prints `SFR_PGO: N function(s) in M
+file(s) changed since the profile was collected` after libmain.so links.
+Static functions are named by file name, not full path
+(`-mllvm -static-func-full-module-prefix=false`), so a profile from one
+checkout matches another; `android_main.cpp` calls
+`__llvm_profile_write_file` through a weak reference in every build so that
+`SDL_main` matches too.
+
+**Release builds.** A build directory configured before this change gets
+`SFR_PGO=auto` when CMake reruns (`cmake --build` reconfigures because
+CMakeLists.txt changed), so it uses the profile without anything else; check
+the configure output for `SFR_PGO: optimising with .../android-arm64.profdata.gz`.
+`-DSFR_PGO=off` builds without it. The profile is unpacked into
+`<build>/pgo/profile-<hash>.profdata`; a new profile changes every compile
+command, so Ninja rebuilds what it affects without a clean build.
