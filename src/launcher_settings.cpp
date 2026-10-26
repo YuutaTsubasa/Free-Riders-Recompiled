@@ -156,6 +156,7 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         else if (key == "kinect_v2_deadband") read_number(value, 0, 100, settings.kinect_v2_deadband);
         else if (key == "voice") read_flag(value, settings.voice);
         else if (key == "hide_kinect_ui") read_flag(value, settings.hide_kinect_ui);
+        else if (key == "button_prompts") read_flag(value, settings.button_prompts);
         else if (key == "camera_debug") read_flag(value, settings.camera_debug);
         else if (key == "motion_trace") read_flag(value, settings.motion_trace);
         else if (key == "avatar_model") settings.avatar_model = utf8_path(value);
@@ -247,6 +248,7 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "kinect_v2_deadband=" << s.kinect_v2_deadband << '\n'
         << "voice=" << s.voice << '\n'
         << "hide_kinect_ui=" << s.hide_kinect_ui << '\n'
+        << "button_prompts=" << s.button_prompts << '\n'
         << "camera_debug=" << s.camera_debug << '\n'
         << "motion_trace=" << s.motion_trace << '\n'
         << "avatar_model=" << path_utf8(s.avatar_model) << '\n'
@@ -443,6 +445,8 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         // The Kinect's indicators, hidden without a camera (Issue #274): all
         // of them, or with voice commands on all but the microphone bar.
         {"SFR_HIDE_KINECT_UI", s.hide_kinect_ui && s.camera == "off" ? (s.voice ? "player" : "1") : ""},
+        // Issue #284: the button under the game's pose pictures (control_prompts.h).
+        {"SFR_BUTTON_PROMPTS", s.button_prompts ? "1" : "0"},
         {"SFR_CAMERA_RACE_TRACE", s.motion_trace && (s.camera == "kinect" || s.camera == "motion") ? "1" : ""},
         {"SFR_AVATAR", s.avatar_model.empty() ? "0" : "1"},
         {"SFR_AVATAR_MODEL", path_utf8(resolved_avatar_model(s, directory))},

@@ -126,6 +126,11 @@ struct LauncherSettings {
     // camera: with one they are shown whatever this says. The microphone bar
     // stays with voice commands on.
     bool hide_kinect_ui = true;
+    // Button prompts (Issue #284, SFR_BUTTON_PROMPTS, control_prompts.h): the
+    // button to press drawn under the game's pose pictures, for a player on
+    // a controller, the keyboard or the touch controls (never a Kinect or
+    // camera player).
+    bool button_prompts = true;
     // Windows motion mode: show the skeleton submitted to the game in a
     // separate window, without a camera image (SFR_CAMERA_DEBUG).
     bool camera_debug = false;

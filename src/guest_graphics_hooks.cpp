@@ -18,6 +18,8 @@
 #include "wait_trace.h"
 #include "race_frame_clock.h"
 #include "race_hud_owners.h"
+#include "control_prompts.h"
+#include "camera_input.h"
 #include "title_stats.h"
 #include <map>
 #include <plume_render_interface.h>
@@ -182,13 +184,29 @@ void trace_flat_frames() {
 
 // SFR_SCREENSHOT=<file.bmp>: write every 60th presented frame (a GPU readback
 // each frame would dominate the frame time); the last one written remains.
+static uint32_t screenshot_presents=0;
+// SFR_SCREENSHOT_EVERY=N changes the interval (default 60 presents).
+static uint32_t screenshot_every() {
+    static const uint32_t every=[]{ const char* t=std::getenv("SFR_SCREENSHOT_EVERY"); const long n=t?std::strtol(t,nullptr,10):60; return uint32_t(n>0?n:60); }();
+    return every;
+}
+static uint32_t screenshot_skip() {
+    static const uint32_t skip=[]{ const char* t=std::getenv("SFR_SCREENSHOT_SKIP"); return t?uint32_t(std::strtoul(t,nullptr,10)):0u; }();
+    return skip;
+}
+// The number save_screenshot will give the frame being drawn, or 0 when it
+// writes none (SFR_ASPECT_TRACE_SHOTS).
+static uint32_t screenshot_due() {
+    static const bool on=std::getenv("SFR_SCREENSHOT")!=nullptr;
+    if(!on) return 0;
+    const uint32_t next=screenshot_presents+1;
+    return screenshot_presents>=screenshot_skip() && next%screenshot_every()==0 ? next : 0;
+}
 void save_screenshot() {
     const char* path=std::getenv("SFR_SCREENSHOT");
     if(!path) return;
-    static uint32_t presents=0;
-    // SFR_SCREENSHOT_EVERY=N changes the interval (default 60 presents).
-    static const uint32_t every=[]{ const char* t=std::getenv("SFR_SCREENSHOT_EVERY"); const long n=t?std::strtol(t,nullptr,10):60; return uint32_t(n>0?n:60); }();
-    static const uint32_t skip=[]{ const char* t=std::getenv("SFR_SCREENSHOT_SKIP"); return t?uint32_t(std::strtoul(t,nullptr,10)):0u; }();
+    uint32_t& presents=screenshot_presents;
+    const uint32_t every=screenshot_every(), skip=screenshot_skip();
     if(presents++<skip || presents%every) return;
     // A "%d" in the path numbers the files by present index.
     char numbered[1024];
@@ -1560,6 +1578,95 @@ static bool native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
         if(menu_bg && sfr::aspect::title_16x9_view(note_view) && wide_frame)
             graphics().note_menu_bg_draw(raster_swapped,raster_swapped && raster_backdrop);
     }
+    // The title's pose figure (Issue #284): a sprite from one of its pose
+    // flip-books (1024x1024, format 20; recognised by content,
+    // control_prompts.h), wherever it is drawn (the tutorial's guide,
+    // drawn from 0x82403D58, and any other). Which pose the frame shows,
+    // and where it is, for the button prompt drawn under it at present.
+    const bool guide_candidate=uint32_t(ctx.lr)==0x824C08A4 && sfr::prompts::enabled() && !presentation.target_is_surface() &&
+        draw.vertex_count>=3 && draw.stride>=16 && draw.stride<=32 && draw.vertices.size()>=size_t(draw.vertex_count)*draw.stride;
+    const auto guide_words=guide_candidate ? graphics().texture_fetch(0) : sfr::FetchWords{};
+    const auto guide_fetch=guide_candidate ? sfr::decode_texture_fetch(guide_words) : sfr::TextureFetch{};
+    if(guide_candidate && guide_fetch.width==1024 && guide_fetch.height==1024 && guide_fetch.format==20) {
+        const auto& words=guide_words;
+        const uint32_t texture=words[1]&~0xFFFu;
+        // The texture's content, read through one of the physical views (as
+        // the renderer reads textures). Hashed again when the texture
+        // changes, and once a second while it stays, in case the title loaded
+        // another one where it was.
+        const auto picture=[&](uint32_t physical) -> uint64_t {
+            for(const uint64_t view:{uint64_t(physical)+0xE0000000u-0x1000u,uint64_t(physical)|0xA0000000u,uint64_t(physical)|0xC0000000u})
+                if(view+sfr::prompts::picture_bytes<=0x100000000ull && memory.fast_read(view,sfr::prompts::picture_sample))
+                    return sfr::prompts::picture_hash([&](uint32_t offset) {
+                        return memory.fast_read(view+offset,sfr::prompts::picture_sample);
+                    });
+            return 0;
+        };
+        struct Hashed { uint32_t texture=0, at=0; uint64_t hash=0; };
+        static std::array<Hashed,32> hashes{};  // more than the HUD's atlases of this size, so none is hashed twice a second
+        static size_t next_hash=0;
+        const uint32_t present_now=sfr::present_count;
+        auto known=std::find_if(hashes.begin(),hashes.end(),[&](const Hashed& h){ return h.texture==texture; });
+        if(known==hashes.end()) { known=hashes.begin()+next_hash; next_hash=(next_hash+1)%hashes.size(); known->texture=texture; known->at=present_now-60; }
+        if(present_now-known->at>=60) {
+            known->at=present_now;
+            known->hash=picture(texture);
+        }
+        const uint64_t hashed=known->hash;
+        // Position, then texture coordinates last in each vertex.
+        float lo[2]={1e30f,1e30f},hi[2]={-1e30f,-1e30f},uv_lo[2]={1e30f,1e30f},uv_hi[2]={-1e30f,-1e30f};
+        for(uint32_t v=0;v<draw.vertex_count;++v) {
+            float xy[2],uv[2];
+            std::memcpy(xy,draw.vertices.data()+size_t(v)*draw.stride,8);
+            std::memcpy(uv,draw.vertices.data()+size_t(v)*draw.stride+draw.stride-8,8);
+            for(int a=0;a<2;++a) {
+                lo[a]=(std::min)(lo[a],xy[a]); hi[a]=(std::max)(hi[a],xy[a]);
+                uv_lo[a]=(std::min)(uv_lo[a],uv[a]); uv_hi[a]=(std::max)(uv_hi[a],uv[a]);
+            }
+        }
+        // The layout's x as the shader places it (screen_space_offset above:
+        // [1] the share of the view the 16:9 layout keeps, [0] its shift),
+        // then the view's place in the frame.
+        const auto& view=presentation.raster_state().viewport();
+        const float share=draw.shared.screen_space_offset[1]>0.0f ? draw.shared.screen_space_offset[1] : 1.0f;
+        const auto frame_x=[&](float x) {
+            const float clip=(x/(layout_width*0.5f)-1.0f)*share+draw.shared.screen_space_offset[0];
+            return (view.x+(clip+1.0f)*0.5f*view.width)/float(logical_width);
+        };
+        const auto frame_y=[&](float y) { return (view.y+y/layout_height*view.height)/float(logical_height); };
+        const float centre=(frame_x(lo[0])+frame_x(hi[0]))*0.5f;
+        // A two-player split: the figure of the half it is in.
+        const uint32_t player=graphics().split_frame() && centre>=0.5f ? 1 : 0;
+        const float u=(uv_lo[0]+uv_hi[0])*0.5f, v=(uv_lo[1]+uv_hi[1])*0.5f;
+        // A frame between poses (standing, turning) keeps the pose the
+        // figure showed last while it stays on screen, so the prompt does
+        // not blink as the move loops.
+        static std::optional<sfr::prompts::Action> last_action[2];
+        static uint32_t last_seen[2]={0,0};
+        auto action=sfr::prompts::guide_action(hashed,u,v);
+        const bool pose_picture=sfr::prompts::pose_picture(hashed);
+        if(pose_picture) {
+            if(present_now-last_seen[player]>30) last_action[player].reset();
+            last_seen[player]=present_now;
+            if(action) last_action[player]=action;
+            else action=last_action[player];
+        }
+        // Not for a player a Kinect or a camera drives: they do the pose.
+        const bool shown=action && *action!=sfr::prompts::Action::count && !sfr::nui_body_from_sensor() && !sfr::camera_controls_player(player,sfr::camera_motion_active());
+        if(shown) sfr::prompts::note_sighting({frame_x(lo[0]),frame_y(lo[1]),frame_x(hi[0]),frame_y(hi[1]),player,*action});
+        // SFR_GUIDE_TRACE=1: each frame of a pose figure the title shows; =2 also
+        // sprites from other textures of that size and format.
+        static const int trace=[]{ const char* t=std::getenv("SFR_GUIDE_TRACE"); return t ? std::atoi(t) : 0; }();
+        static uint64_t traced_hash=0;
+        static float traced_u=-1,traced_v=-1;
+        if((trace>=2 || (trace==1 && pose_picture)) && (hashed!=traced_hash || u!=traced_u || v!=traced_v)) {
+            traced_hash=hashed; traced_u=u; traced_v=v;
+            std::cerr << "GUIDE_PICTURE present=" << present_now << " texture=0x" << std::hex << texture
+                      << " hash=0x" << hashed << std::dec << " uv=" << u << ',' << v << " action=" << (action ? int(*action) : -1)
+                      << " shown=" << shown << " player=" << player
+                      << " box=" << frame_x(lo[0]) << ',' << frame_y(lo[1]) << ',' << frame_x(hi[0]) << ',' << frame_y(hi[1]) << '\n';
+        }
+    }
     // SFR_ASPECT_TRACE=<present>[,<present>...]: every back-buffer draw of
     // those frames on a frame wider than 16:9, with its view, its 2D extent and
     // the placement chosen above (aspect_settings.h).
@@ -1572,7 +1679,10 @@ static bool native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     // SFR_ASPECT_TRACE_EVERY=<n>: every n-th frame instead (with SFR_SCREENSHOT_EVERY).
     static const uint32_t aspect_every=[]{ const char* t=std::getenv("SFR_ASPECT_TRACE_EVERY"); return t?uint32_t(std::strtoul(t,nullptr,10)):0u; }();
     const uint32_t present_now=sfr::present_count;
-    const bool traced=(aspect_every && present_now%aspect_every==0) ||
+    // SFR_ASPECT_TRACE_SHOTS=1: the frames SFR_SCREENSHOT writes (shot= is the file's number).
+    static const bool aspect_shots=[]{ const char* t=std::getenv("SFR_ASPECT_TRACE_SHOTS"); return t && *t=='1'; }();
+    const uint32_t shot=aspect_shots ? screenshot_due() : 0;
+    const bool traced=(aspect_every && present_now%aspect_every==0) || shot ||
         std::find(aspect_trace.begin(),aspect_trace.end(),present_now)!=aspect_trace.end();
     if(traced && wide_frame && !presentation.target_is_surface()) {
         float lo[2]={0,0},hi[2]={0,0};
@@ -1586,7 +1696,7 @@ static bool native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
         }
         const auto& v=presentation.raster_state().viewport();
         const auto& s=presentation.raster_state().scissor();
-        std::cerr << "ASPECT_TRACE present=" << present_now << " racing=" << memory.load<uint32_t>(0x83E52F8C) << " draw=" << frame_draws << " lr=0x" << std::hex << uint32_t(ctx.lr) << std::dec
+        std::cerr << "ASPECT_TRACE present=" << present_now << " shot=" << shot << " racing=" << memory.load<uint32_t>(0x83E52F8C) << " draw=" << frame_draws << " lr=0x" << std::hex << uint32_t(ctx.lr) << std::dec
                   << " vte=" << (memory.load<uint32_t>(uint64_t(device)+10572)&0x3F)
                   << " view=" << v.x << ',' << v.y << ',' << v.width << ',' << v.height
                   << " scissor=" << s.left << ',' << s.top << ',' << s.right << ',' << s.bottom
@@ -1595,8 +1705,21 @@ static bool native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
                   << " n=" << draw.vertex_count
                   << " scale=" << draw.shared.screen_space_scale[0] << ',' << draw.shared.screen_space_scale[1]
                   << " offset=" << draw.shared.screen_space_offset[0] << ',' << draw.shared.screen_space_offset[1]
-                  << " proj_x=" << draw.shared.projection_x_scale << " swapped=" << raster_swapped;
-        if(uint32_t(ctx.lr)==0x824C08A4) {
+                  << " proj_x=" << draw.shared.projection_x_scale << " swapped=" << raster_swapped
+                  << " tex0=0x" << std::hex << (graphics().texture_fetch(0)[1]&~0xFFFu) << std::dec;
+        // The first and third vertex as floats (a sprite's position and texture coordinates).
+        if(draw.vertex_count>=3 && draw.stride>=8 && draw.stride<=32 &&
+           draw.vertices.size()>=size_t(draw.vertex_count)*draw.stride) {
+            for(const uint32_t v:{0u,2u}) {
+                std::cerr << " v" << v << '=';
+                for(uint32_t k=0;k<draw.stride/4;++k) {
+                    float f;
+                    std::memcpy(&f,draw.vertices.data()+size_t(v)*draw.stride+4*k,4);
+                    std::cerr << f << (k+1<draw.stride/4?",":"");
+                }
+            }
+        }
+        {
             std::cerr << " chain=" << std::hex;
             uint32_t frame=ctx.r1.u32;
             for(int depth=0;depth<12 && frame && memory.readable(frame,4);++depth) {

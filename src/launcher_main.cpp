@@ -41,6 +41,7 @@
 #include "achievements.h"
 #include "image_decode.h"
 #include "launcher_settings.h"
+#include "control_prompts.h"
 #include "launcher_fonts.h"
 #include "launcher_screen_fit.h"
 #include "test_options.h"
@@ -151,6 +152,8 @@ enum Text {
     AchievementUnlocked, AchievementLocked, AchievementSecret, AchievementSecretHint, AchievementsPlayer,
     SectionUnlocked, SectionLocked,
     HideKinectUi, HideKinectUiHint,
+    SectionGestures, GesturesHint, ButtonPrompts, ButtonPromptsHint,
+    GestureMove, GestureController, GestureKeyboard, GestureTouch, GesturesOf,
     TextCount
 };
 
@@ -561,6 +564,17 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Hide Kinect icons", "隱藏 Kinect 圖示"},
     {"Without a camera, hides the Kinect's player figure, its sensor icon and the microphone bar at the top of the menus, races and story scenes: they only show what a Kinect sees and hears. With Voice commands on, the microphone bar stays. Always shown with a camera.",
      "未使用攝影機時，隱藏選單、比賽與劇情畫面上方的 Kinect 玩家人形、感應器圖示與麥克風列；它們只表示 Kinect 看到與聽到的狀態。開啟語音指令時保留麥克風列。使用攝影機時一律顯示。"},
+    {"What each button does", "各按鍵的功能"},
+    {"The game was made for Kinect. These are its body moves as this port maps them, with the buttons set below. When the game shows a figure doing a pose (spread your arms to fly, lean, ...), the prompt under it names the same button.",
+     "原版遊戲是用 Kinect 體感操作的。下表是這個移植版把各種身體動作對應到的按鍵（依照下方的按鍵設定）。遊戲顯示示範姿勢的小人時（張開雙臂飛行、身體傾斜等），下方的提示也會顯示同一個按鍵。"},
+    {"Button prompts", "按鍵提示"},
+    {"Under the game's pose figures, shows the button to press for a player on a controller, the keyboard or the touch controls. Never shown for a Kinect or camera player.",
+     "在遊戲的示範姿勢小人下方，顯示用手把、鍵盤或觸控的玩家要按的按鍵。使用 Kinect 或攝影機的玩家不會顯示。"},
+    {"Move", "動作"},
+    {"Controller", "手把"},
+    {"Keyboard", "鍵盤"},
+    {"Touch", "觸控"},
+    {"Show the buttons of", "顯示誰的按鍵"},
 }};
 
 int language = 0;
@@ -577,6 +591,19 @@ void for_each_text(Visit visit) {
     for (const auto& text : texts) { visit(text[0]); visit(text[1]); }
     for (const auto& text : font_extra_text) visit(text.c_str());
     for (const auto& group : sfr::test_group_names) { visit(group[0]); visit(group[1]); }
+    // The Controls page's list of moves (control_prompts.h).
+    const sfr::InputBindings bindings = sfr::default_bindings(0);
+    for (size_t index = 0; index < sfr::prompts::action_count; ++index) {
+        const auto action = sfr::prompts::Action(index);
+        for (int language = 0; language < 2; ++language) {
+            visit(sfr::prompts::action_name(action, language));
+            for (const auto glyphs : {sfr::prompts::Glyphs::xbox, sfr::prompts::Glyphs::playstation,
+                                      sfr::prompts::Glyphs::keyboard, sfr::prompts::Glyphs::touch}) {
+                const std::string text = sfr::prompts::prompt_text(action, glyphs, bindings, language);
+                visit(text.c_str());
+            }
+        }
+    }
     for (const auto& option : sfr::test_options()) {
         for (int i = 0; i < 2; ++i) { visit(option.label[i]); visit(option.hint[i]); }
         for (const auto& choice : option.choices) { visit(choice.label[0]); visit(choice.label[1]); }
@@ -2572,6 +2599,97 @@ struct Launcher {
         });
     }
 
+    // What each of the game's Kinect moves is on the player's controller and
+    // keyboard (or, on a phone, the touch controls), with their bindings
+    // (Issue #284; control_prompts.h), and the switch for the prompts drawn
+    // under the game's pose figures.
+    bool gestures_open = true;
+    int gestures_player = 0;
+    void gesture_list(const std::vector<sfr::PadDevice>& pads) {
+        collapsible_section(SectionGestures, gestures_open);
+        if (!gestures_open) return;
+        ImGui::PushStyleColor(ImGuiCol_Text, dim_text);
+        ImGui::PushTextWrapPos(content_width);
+        ImGui::TextUnformatted(wrapped(tr(GesturesHint), room_to(content_width)).c_str());
+        ImGui::PopTextWrapPos();
+        ImGui::PopStyleColor();
+        ImGui::Dummy(ImVec2(0, 4 * scale));
+        const float switch_width = ImGui::GetFrameHeight() * 1.9f;
+        setting_row(tr(ButtonPrompts), tr(ButtonPromptsHint), switch_width, scale,
+                    [&] { toggle("##button_prompts", &settings.button_prompts); });
+#if defined(__ANDROID__) || defined(SFR_IOS)
+        // One phone, one pair of hands: the touch controls are the first player's.
+        const bool touch = settings.touch_controls;
+        gestures_player = 0;
+#else
+        const bool touch = false;
+        if (settings.player2_device != "off") {
+            const float combo_width = 300 * scale;
+            setting_row(tr(GesturesOf), nullptr, combo_width, scale, [&] {
+                const Text names[2] = {PlayerOneDevice, PlayerTwoDevice};
+                ImGui::SetNextItemWidth(combo_width);
+                if (ImGui::BeginCombo("##gestures_player", tr(names[gestures_player]))) {
+                    for (int player = 0; player < 2; ++player)
+                        if (ImGui::Selectable(tr(names[player]), player == gestures_player)) {
+                            gestures_player = player;
+                            ::play(sfr::UiSound::confirm);
+                        }
+                    ImGui::EndCombo();
+                }
+            });
+        } else {
+            gestures_player = 0;
+        }
+#endif
+        const sfr::InputBindings& player = bindings[gestures_player];
+        // A PlayStation pad's shapes when that is the player's controller.
+        const std::string& chosen = gestures_player ? settings.player2_gamepad : settings.player1_gamepad;
+        const uint64_t selected = sfr::pad_with_name(chosen, pads);
+        const sfr::PadDevice* pad = nullptr;
+        for (const sfr::PadDevice& device : pads)
+            if (device.id == selected) pad = &device;
+        if (!pad && chosen.empty() && pads.size() > size_t(gestures_player)) pad = &pads[size_t(gestures_player)];
+        const auto sony = [](const std::string& name) {
+            for (const char* word : {"PlayStation", "DualSense", "DualShock", "DUALSHOCK", "PS3", "PS4", "PS5"})
+                if (name.find(word) != std::string::npos) return true;
+            return false;
+        };
+        const auto pad_glyphs = pad && sony(pad->name) ? sfr::prompts::Glyphs::playstation : sfr::prompts::Glyphs::xbox;
+        const auto other_glyphs = touch ? sfr::prompts::Glyphs::touch : sfr::prompts::Glyphs::keyboard;
+        const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp;
+        if (ImGui::BeginTable("##gestures", 3, flags, ImVec2(content_width, 0))) {
+            ImGui::TableSetupColumn(tr(GestureMove), ImGuiTableColumnFlags_WidthStretch, 0.46f);
+            ImGui::TableSetupColumn(tr(touch ? GestureTouch : GestureController), ImGuiTableColumnFlags_WidthStretch, 0.27f);
+            ImGui::TableSetupColumn(tr(touch ? GestureController : GestureKeyboard), ImGuiTableColumnFlags_WidthStretch, 0.27f);
+            ImGui::PushStyleColor(ImGuiCol_Text, cyan);
+            ImGui::TableHeadersRow();
+            ImGui::PopStyleColor();
+            const auto cell = [&](const std::string& text) {
+                ImGui::TableNextColumn();
+                if (text.empty()) {
+                    ImGui::PushStyleColor(ImGuiCol_Text, dim_text);
+                    ImGui::TextUnformatted("-");
+                    ImGui::PopStyleColor();
+                    return;
+                }
+                ImGui::PushTextWrapPos(0.0f);
+                ImGui::TextUnformatted(wrapped(text.c_str(), room()).c_str());
+                ImGui::PopTextWrapPos();
+            };
+            for (size_t index = 0; index < sfr::prompts::action_count; ++index) {
+                const auto action = sfr::prompts::Action(index);
+                ImGui::TableNextRow();
+                cell(sfr::prompts::action_name(action, language));
+                const std::string first = sfr::prompts::prompt_text(action, touch ? other_glyphs : pad_glyphs, player, language);
+                const std::string second = sfr::prompts::prompt_text(action, touch ? pad_glyphs : other_glyphs, player, language);
+                cell(first);
+                cell(second);
+            }
+            ImGui::EndTable();
+        }
+        ImGui::Dummy(ImVec2(0, 6 * scale));
+    }
+
     void controls_settings() {
 #if defined(__ANDROID__) || defined(SFR_IOS)
         settings_section(SectionTouch);
@@ -2647,6 +2765,7 @@ struct Launcher {
         choice("##p2device", PlayerTwoDevice, PlayerTwoDeviceHint, settings.player2_device,
                {{"gamepad", DeviceGamepad}, {"keyboard", DeviceKeyboard}, {"off", DeviceOff}});
         gamepad_row("##p2gamepad", PlayerTwoGamepad, settings.player2_gamepad, settings.player2_device == "gamepad");
+        gesture_list(pads);
         settings_section(SectionBindings);
 
         // Which set the list below changes.

@@ -13,6 +13,7 @@
 #include "gltf_model.h"
 #include "touch_controls.h"
 #include "fps_readout.h"
+#include "control_prompts.h"
 #include <chrono>
 #include "title_stats.h"
 #ifdef _WIN32
@@ -2218,8 +2219,11 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
     // While the Avatar's model loads, the frame is drawn (not copied) so a
     // line can be written over it.
     const uint32_t model_loading = impl_->model_overlay.load(std::memory_order_relaxed);
+    // The button prompts under the game's pose figures (Issue #284,
+    // control_prompts.h), drawn after the blit.
+    const std::vector<prompts::Sighting> sightings = prompts::enabled() ? prompts::take_sightings() : std::vector<prompts::Sighting>{};
     const bool stretch = !can_copy || part || out_width != impl_->render_width || out_height != impl_->render_height ||
-                         pause > 0.0f || touch_shown || fps_shown || model_loading != ~0u;
+                         pause > 0.0f || touch_shown || fps_shown || model_loading != ~0u || !sightings.empty();
     // The copy to the swap-chain texture follows the frame's draws in their
     // own list; pipelined, the frame is submitted without waiting for it.
     const bool pipelined = Impl::pipelined();
@@ -2284,6 +2288,39 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
         set_pointer_view(viewport.x, viewport.y, viewport.width, viewport.height, float(out_width), float(out_height));
         impl_->command_list->setGraphicsPushConstants(0, constants.data());
         impl_->command_list->drawInstanced(3, 1, 0, 0);
+        if (!sightings.empty()) {
+            // Pixel art of solid rectangles (control_prompts.h), cleared a
+            // colour at a time in small batches like the line below.
+            const float view[4] = {viewport.x, viewport.y, viewport.width, viewport.height};
+            const int w = int(out_width), h = int(out_height);
+            std::vector<plume::RenderRect> batch;
+            for (const prompts::Sighting& sighting : sightings) {
+                const auto bindings = prompts::bindings(sighting.player);
+                const auto pieces = prompts::prompt_pieces(sighting.action, prompts::device(sighting.player, touch_shown),
+                                                           bindings ? *bindings : default_bindings(sighting.player));
+                if (pieces.empty()) continue;
+                const auto at = prompts::place_prompt(sighting, prompts::prompt_size(pieces), view, area, w, h);
+                auto rects = prompts::prompt_rectangles(pieces, at.x, at.y, at.unit);
+                std::stable_sort(rects.begin(), rects.end(),
+                                 [](const prompts::Rect& a, const prompts::Rect& b) { return a.colour < b.colour; });
+                for (size_t begin = 0; begin < rects.size();) {
+                    const uint32_t colour = rects[begin].colour;
+                    batch.clear();
+                    size_t end = begin;
+                    for (; end < rects.size() && rects[end].colour == colour; ++end) {
+                        const plume::RenderRect r{std::clamp(rects[end].left, 0, w), std::clamp(rects[end].top, 0, h),
+                                                  std::clamp(rects[end].right, 0, w), std::clamp(rects[end].bottom, 0, h)};
+                        if (r.left < r.right && r.top < r.bottom) batch.push_back(r);
+                    }
+                    begin = end;
+                    const plume::RenderColor value(float((colour >> 16) & 0xFF) / 255.0f, float((colour >> 8) & 0xFF) / 255.0f,
+                                                   float(colour & 0xFF) / 255.0f, 1.0f);
+                    for (size_t offset = 0; offset < batch.size(); offset += 16)
+                        impl_->command_list->clearColor(0, value, batch.data() + offset,
+                                                        uint32_t((std::min)(size_t(16), batch.size() - offset)));
+                }
+            }
+        }
         if (model_loading != ~0u) {
             // "LOADING AVATAR MODEL 45%" in the frame's lower left corner, on a
             // dark band, so a model that takes seconds does not look like a hang.
