@@ -507,9 +507,13 @@ namespace {
 std::vector<std::vector<uint64_t>> number_groups(const char* text) {
     std::vector<std::vector<uint64_t>> groups;
     if (!text) return groups;
-    std::stringstream all(text);
+    // Groups split at ',' or ';', numbers at ':' or '@' (the second pair for
+    // test runners that use the first as their own separators).
+    std::string all(text);
+    for (char& c : all) c = c == ';' ? ',' : c == '@' ? ':' : c;
+    std::stringstream items(all);
     std::string item;
-    while (std::getline(all, item, ',')) {
+    while (std::getline(items, item, ',')) {
         std::vector<uint64_t> numbers;
         std::stringstream parts(item);
         std::string part;

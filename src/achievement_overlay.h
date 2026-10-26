@@ -83,6 +83,7 @@ public:
     //   SFR_TEST_ACHIEVEMENT_AWARD=present:id,...  award as the game would
     //   SFR_TEST_ACHIEVEMENT_PAGE=open:close[:rows]  open the page, move
     //                                    the selection down, close it
+    //   (';' and '@' may stand for ',' and ':')
     //   SFR_ACHIEVEMENT_TRACE=<file>     every 1200 presents: the progress
     //                                    on stderr, the player record's bytes
     //                                    written to the file
