@@ -390,7 +390,7 @@ int text_width(const std::string& text) { return text.empty() ? 0 : int(text.siz
 
 constexpr int row = 11;          // a button's height, in units
 constexpr int gap = 3;           // between pieces
-constexpr int pad_x = 4, pad_y = 2;
+constexpr int pad_x = 1, pad_y = 1;  // room for the outline
 constexpr uint32_t panel = 0x0C1218, light = 0xEEF3F8, dark = 0x141A22, rim = 0xB8C4D0;
 constexpr uint32_t none = 0xFF000000;
 
@@ -514,12 +514,24 @@ std::vector<Rect> prompt_rectangles(const std::vector<Piece>& pieces, int x, int
     const Size size = prompt_size(pieces);
     if (!size.width || unit <= 0) return {};
     Canvas canvas(size.width, size.height);
-    canvas.box(0, 0, size.width, size.height, panel);
     int at = pad_x;
     for (const Piece& piece : pieces) {
         canvas.piece(at, pad_y, piece);
         at += piece_width(piece) + gap;
     }
+    // No panel under the prompt, which would hide the game: a one-unit dark
+    // outline around what is drawn keeps it readable on any background.
+    const std::vector<uint32_t> drawn = canvas.pixels;
+    const auto drawn_at = [&](int i, int j) {
+        return i >= 0 && j >= 0 && i < canvas.width && j < canvas.height &&
+               drawn[size_t(j) * size_t(canvas.width) + size_t(i)] != none;
+    };
+    for (int j = 0; j < canvas.height; ++j)
+        for (int i = 0; i < canvas.width; ++i)
+            if (!drawn_at(i, j))
+                for (int dj = -1; dj <= 1; ++dj)
+                    for (int di = -1; di <= 1; ++di)
+                        if (drawn_at(i + di, j + dj)) canvas.set(i, j, panel);
     std::vector<Rect> out;
     for (int j = 0; j < canvas.height; ++j)
         for (int i = 0; i < canvas.width;) {

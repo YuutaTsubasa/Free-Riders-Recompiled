@@ -106,13 +106,13 @@ std::vector<Piece> prompt_pieces(Action action, Glyphs glyphs, const InputBindin
 
 // A drawn prompt is pixel art: rectangles of solid colour, in units of one
 // font pixel (`unit` screen pixels), the 5x7 letters and 11-unit-high
-// buttons on a dark panel. 0xRRGGBB colours.
+// buttons outlined in dark, with no panel under them. 0xRRGGBB colours.
 struct Rect {
     int left, top, right, bottom;
     uint32_t colour;
     bool operator==(const Rect&) const = default;
 };
-// Its size in units (panel included).
+// Its size in units (outline included).
 struct Size { int width, height; };
 Size prompt_size(const std::vector<Piece>& pieces);
 // The rectangles with the panel's top-left corner at (x, y), each unit

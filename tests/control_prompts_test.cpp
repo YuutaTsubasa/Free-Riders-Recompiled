@@ -111,8 +111,8 @@ void drawing() {
     const sfr::InputBindings pad = sfr::default_bindings(0);
     const auto fly = p::prompt_pieces(Action::fly, Glyphs::xbox, pad);
     const p::Size size = p::prompt_size(fly);
-    // HOLD (4 letters, 23 units), a gap of 3, the 11-unit button, 4 units of panel each side.
-    require(size.width == 4 + 23 + 3 + 11 + 4 && size.height == 15, "the panel's size");
+    // HOLD (4 letters, 23 units), a gap of 3, the 11-unit button, 1 unit of outline each side.
+    require(size.width == 1 + 23 + 3 + 11 + 1 && size.height == 13, "the prompt's size");
     const auto rects = p::prompt_rectangles(fly, 100, 50, 2);
     require(!rects.empty(), "something drawn");
     int left = 1 << 30, top = 1 << 30, right = 0, bottom = 0;
@@ -124,9 +124,13 @@ void drawing() {
         green = green || r.colour == 0x3CB043;
     }
     require(left == 100 && top == 50 && right == 100 + 2 * size.width && bottom == 50 + 2 * size.height,
-            "the rectangles fill the panel at its place and scale");
+            "the outline reaches the prompt's edges at its place and scale");
     require(green, "the A is green");
-    // The panel's middle row is one dark run where nothing is drawn on it.
+    // No panel: the gap between HOLD and the button shows the game.
+    bool gap_open = true;
+    for (const auto& r : rects)
+        if (r.top <= 50 + 2 * 6 && r.bottom > 50 + 2 * 6 && r.left < 100 + 2 * 26 && r.right > 100 + 2 * 25) gap_open = false;
+    require(gap_open, "nothing drawn in the gap between the word and the button");
     require(p::prompt_rectangles({}, 0, 0, 2).empty(), "no pieces, nothing drawn");
 }
 
