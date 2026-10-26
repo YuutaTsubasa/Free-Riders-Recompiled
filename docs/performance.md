@@ -3003,7 +3003,7 @@ a64f2da with the committed profile:
 | Dolphin Resort | off | 21.12 / 21.56 | 10.29 / 10.52 | 33% / 35% | 0.995 / 0.996 |
 | Dolphin Resort | profile | 19.90 / 19.06 | 10.00 / 9.45 | 23% / 20% | 0.982 / 0.999 |
 | Metropolis | off | 24.30 (one run; the other lost to an adb timeout) | 11.92 | 40% | 0.918 |
-| Metropolis | profile | 23.33 | 11.20 | 39% | 0.954 |
+| Metropolis | profile | 23.33 / 23.74 | 11.20 / 11.28 | 39% / 40% | 0.954 / 0.947 |
 
 The same profile collected on v0.10.34 code (cd79350), against its own
 baseline:
