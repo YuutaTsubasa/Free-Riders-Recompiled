@@ -3548,12 +3548,12 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
                         sfr::achievement_file(saves && *saves ? saves : "save", profile.xuid), profile.name);
                 }();
                 store->award(awarded, sfr::unix_now());
-                // The notification for those new to this player (achievement_overlay.h).
-                sfr::AchievementOverlay::instance().awarded(awarded, sfr::unix_now());
                 const auto file = store->file().u8string();
                 std::cerr << " stored=" << awarded.size() << " file=" << std::string(file.begin(), file.end());
             }
             std::cerr << " backend=local\n";
+            // The notification for those new to this player (achievement_overlay.h).
+            if (!awarded.empty()) sfr::AchievementOverlay::instance().awarded(awarded, sfr::unix_now());
             ctx.r3.u64 = overlapped ? complete_overlapped(overlapped, 0) : 0;
             return;
         }

@@ -2966,10 +2966,8 @@ struct Launcher {
     void achievements_settings() {
         if (achievements.stale || ImGui::GetFrameCount() - achievements.last_frame > 1) refresh_achievements();
         achievements.last_frame = ImGui::GetFrameCount();
-        // Nothing here to change: the page opens at its top (the totals)
-        // rather than scrolled to a first row; Down steps into the list.
-        focus_first_control = false;
-        // The in-game notification (Issue #288).
+        // The in-game notification (Issue #288): the page opens on its
+        // switch, and Down steps into the list.
         setting_row(tr(AchievementToasts), tr(AchievementToastsHint), ImGui::GetFrameHeight() * 1.9f, scale,
                     [&] { toggle("##achievement_toasts", &settings.achievement_notifications); });
         const auto hint = [this] {
