@@ -324,6 +324,16 @@ add_executable(sfr_achievements_test tests/achievements_test.cpp src/achievement
 target_include_directories(sfr_achievements_test PRIVATE src)
 target_link_libraries(sfr_achievements_test PRIVATE Threads::Threads)
 add_test(NAME achievements COMMAND sfr_achievements_test)
+# The achievement notification and page (Issue #288): progress, timing,
+# page order and the software drawing they use.
+add_executable(sfr_achievement_ui_test tests/achievement_ui_test.cpp src/achievement_overlay.cpp src/achievement_progress.cpp
+    src/achievement_toast.cpp src/overlay_canvas.cpp src/screen_overlay.cpp src/achievements.cpp src/image_decode.cpp)
+target_include_directories(sfr_achievement_ui_test PRIVATE src)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui/imstb_truetype.h")
+    target_include_directories(sfr_achievement_ui_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui")
+endif()
+target_link_libraries(sfr_achievement_ui_test PRIVATE Threads::Threads)
+add_test(NAME achievement_ui COMMAND sfr_achievement_ui_test)
 add_executable(sfr_multibyte_unicode_test tests/multibyte_unicode_test.cpp src/multibyte_unicode.cpp src/guest_memory.cpp)
 target_include_directories(sfr_multibyte_unicode_test PRIVATE src)
 add_test(NAME multibyte_unicode COMMAND sfr_multibyte_unicode_test)
@@ -736,7 +746,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui/imgui.cpp")
     set(SFR_IMGUI "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui")
     # The launcher lists the host cameras and controllers.
     set(SFR_LAUNCHER_SOURCES src/launcher_main.cpp src/launcher_settings.cpp src/mod_loader.cpp src/input_bindings.cpp src/control_prompts.cpp src/pad_devices.cpp src/pad_assignment.cpp src/launcher_sound.cpp src/launcher_art.cpp src/sony_gamepad.cpp
-        src/achievements.cpp src/image_decode.cpp
+        src/achievements.cpp src/achievement_progress.cpp src/image_decode.cpp
         ${SFR_CAMERA_CAPTURE} src/kinect_sensor.cpp ${SFR_KINECT_SENSOR} ${SFR_VOICE}
         src/kinect_preview.cpp src/kinect_preview_window.cpp src/kinect_preview_layout.cpp src/camera_preview_window.cpp src/camera_debug.cpp src/text_wrap.cpp src/touch_scroll.cpp
         src/live_connect.cpp
@@ -1049,10 +1059,12 @@ if(WIN32 OR UNIX)
     sfr_embed_shader(src/shaders/blit.hlsl pixelMain ps_6_0 blit_ps)
     sfr_embed_shader(src/shaders/model.hlsl vertexMain vs_6_0 model_vs)
     sfr_embed_shader(src/shaders/model.hlsl pixelMain ps_6_0 model_ps)
+    sfr_embed_shader(src/shaders/overlay.hlsl vertexMain vs_6_0 overlay_vs)
+    sfr_embed_shader(src/shaders/overlay.hlsl pixelMain ps_6_0 overlay_ps)
     sfr_embed_shader(src/shaders/depth_flip.hlsl pointMain gs_6_0 depth_flip_point_gs)
     sfr_embed_shader(src/shaders/depth_flip.hlsl lineMain gs_6_0 depth_flip_line_gs)
     sfr_embed_shader(src/shaders/depth_flip.hlsl triangleMain gs_6_0 depth_flip_triangle_gs)
-    add_library(sfr_native_presentation STATIC src/native_presentation.cpp src/title_stats.cpp src/touch_controls.cpp src/fps_readout.cpp src/gltf_model.cpp src/image_decode.cpp ${SFR_EMBEDDED_SHADER_HEADERS})
+    add_library(sfr_native_presentation STATIC src/native_presentation.cpp src/title_stats.cpp src/touch_controls.cpp src/fps_readout.cpp src/gltf_model.cpp src/image_decode.cpp src/screen_overlay.cpp src/screen_overlay_renderer.cpp ${SFR_EMBEDDED_SHADER_HEADERS})
     target_include_directories(sfr_native_presentation PRIVATE "${SFR_EMBEDDED_SHADERS}")
     add_executable(sfr_native_presentation_test tests/native_presentation_test.cpp)
     if(WIN32)
@@ -1337,6 +1349,12 @@ if(SFR_BUILD_DIAGNOSTIC)
     target_sources(sfr_cpu_diagnostic PRIVATE src/nui_device_status.cpp)
     target_sources(sfr_cpu_diagnostic PRIVATE src/unselected_users.cpp src/local_profile.cpp src/content_files.cpp)
     target_sources(sfr_cpu_diagnostic PRIVATE src/achievements.cpp)
+    # The achievement notification and page (Issue #288); text through
+    # Dear ImGui's copy of stb_truetype when it is there.
+    target_sources(sfr_cpu_diagnostic PRIVATE src/achievement_overlay.cpp src/achievement_progress.cpp src/achievement_toast.cpp src/overlay_canvas.cpp)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui/imstb_truetype.h")
+        set_source_files_properties(src/overlay_canvas.cpp PROPERTIES INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui")
+    endif()
     target_sources(sfr_cpu_diagnostic PRIVATE src/multibyte_unicode.cpp)
     target_sources(sfr_cpu_diagnostic PRIVATE src/guest_critical_sections.cpp)
     target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_guest_execution)

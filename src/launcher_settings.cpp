@@ -132,6 +132,7 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
             settings.race_frameskip = value;
         else if (key == "title_stats") read_flag(value, settings.title_stats);
         else if (key == "fps_overlay") read_flag(value, settings.fps_overlay);
+        else if (key == "achievement_notifications") read_flag(value, settings.achievement_notifications);
         else if (key == "fps_inset") read_number(value, 0, 20, settings.fps_inset);
         else if (key == "ui_sounds") read_flag(value, settings.ui_sounds);
         else if (key == "vulkan") read_flag(value, settings.vulkan);
@@ -229,6 +230,7 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "race_frameskip=" << race_frameskip_value(s) << '\n'
         << "title_stats=" << s.title_stats << '\n'
         << "fps_overlay=" << s.fps_overlay << '\n'
+        << "achievement_notifications=" << s.achievement_notifications << '\n'
         << "fps_inset=" << s.fps_inset << '\n'
         << "ui_sounds=" << s.ui_sounds << '\n'
         << "vulkan=" << s.vulkan << '\n'
@@ -392,6 +394,7 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         {"SFR_GPU_PIPELINE", s.gpu_pipeline ? "1" : "0"},
         {"SFR_TITLE_STATS", s.title_stats ? "1" : "0"},
         {"SFR_FPS_OVERLAY", s.fps_overlay ? "1" : "0"},
+        {"SFR_ACHIEVEMENT_NOTIFICATIONS", s.achievement_notifications ? "1" : "0"},
         {"SFR_FPS_OVERLAY_INSET", std::to_string(s.fps_inset)},
         {"SFR_AUDIO", s.audio ? "1" : "0"},
         // The player is signed in, so the game keeps records (docs/saves.md).

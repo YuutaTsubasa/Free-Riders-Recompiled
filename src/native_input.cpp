@@ -372,6 +372,10 @@ NativeInput NativeInput::windows(std::function<void*()> focus_window, std::funct
     input.vibrate_ = [pads](uint32_t user, uint16_t left, uint16_t right) {
         return pads->vibrate(user, left, right);
     };
+    input.key_down_ = [focus](int key) {
+        void* window = *focus ? (*focus)() : nullptr;
+        return window && GetForegroundWindow() == static_cast<HWND>(window) && (GetAsyncKeyState(key) & 0x8000) != 0;
+    };
     return input;
 }
 
@@ -582,6 +586,14 @@ NativeInput NativeInput::sdl(std::function<void*()> focus_window, std::function<
         // XInput motors keep their speed until changed: SDL's longest rumble.
         if (controller) SDL_GameControllerRumble(controller, left, right, 0xFFFF);
         return controller != nullptr;
+    };
+    input.key_down_ = [focus](int key) {
+        void* window = *focus ? (*focus)() : nullptr;
+        if (!window || SDL_GetKeyboardFocus() != static_cast<SDL_Window*>(window)) return false;
+        const SDL_Scancode code = scancode(key);
+        const Uint8* keys = SDL_GetKeyboardState(nullptr);
+        if (key == 0x1B && keys[SDL_SCANCODE_AC_BACK]) return true;
+        return code != SDL_SCANCODE_UNKNOWN && keys[code] != 0;
     };
     return input;
 }

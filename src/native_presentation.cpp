@@ -13,6 +13,7 @@
 #include "gltf_model.h"
 #include "touch_controls.h"
 #include "fps_readout.h"
+#include "screen_overlay_renderer.h"
 #include "control_prompts.h"
 #include <chrono>
 #include "title_stats.h"
@@ -510,6 +511,8 @@ struct NativePresentation::Impl {
     std::unique_ptr<plume::RenderSampler> blit_sampler_object;
     std::unique_ptr<plume::RenderTextureView> blit_view;
     std::vector<std::unique_ptr<plume::RenderFramebuffer>> blit_targets;
+    // The port's own pictures over the frame (screen_overlay.h, Issue #288).
+    std::unique_ptr<sfr::ScreenOverlayRenderer> overlay_renderer;
     std::pair<uint32_t, uint32_t> presented_area{0, 0};
     float presented_aspect = 0.0f;
     void build_blit();
@@ -537,6 +540,7 @@ struct NativePresentation::Impl {
         spare_fence.reset();
         spare_list.reset();
         blit_targets.clear();
+        overlay_renderer.reset();
         blit_pipeline.reset();
         blit_layout.reset();
         blit_texture.reset();
@@ -2219,11 +2223,13 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
     // While the Avatar's model loads, the frame is drawn (not copied) so a
     // line can be written over it.
     const uint32_t model_loading = impl_->model_overlay.load(std::memory_order_relaxed);
+    // The achievement notification or page (screen_overlay.h) is drawn too.
+    const bool layers_shown = screen_layers_shown();
     // The button prompts under the game's pose figures (Issue #284,
     // control_prompts.h), drawn after the blit.
     const std::vector<prompts::Sighting> sightings = prompts::enabled() ? prompts::take_sightings() : std::vector<prompts::Sighting>{};
     const bool stretch = !can_copy || part || out_width != impl_->render_width || out_height != impl_->render_height ||
-                         pause > 0.0f || touch_shown || fps_shown || model_loading != ~0u || !sightings.empty();
+                         pause > 0.0f || touch_shown || fps_shown || model_loading != ~0u || layers_shown || !sightings.empty();
     // The copy to the swap-chain texture follows the frame's draws in their
     // own list; pipelined, the frame is submitted without waiting for it.
     const bool pipelined = Impl::pipelined();
@@ -2320,6 +2326,15 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
                                                         uint32_t((std::min)(size_t(16), batch.size() - offset)));
                 }
             }
+        }
+        if (layers_shown) {
+            const auto layers = screen_layers(view_width, view_height);
+            if (!impl_->overlay_renderer)
+                impl_->overlay_renderer = std::make_unique<ScreenOverlayRenderer>(
+                    impl_->graphics->device(), impl_->graphics->queue(), impl_->graphics->backend(), swap_chain_format);
+            if (impl_->overlay_renderer->prepare(layers))
+                impl_->overlay_renderer->draw(*impl_->command_list, layers, viewport.x, viewport.y, view_width, view_height,
+                                              float(out_width), float(out_height));
         }
         if (model_loading != ~0u) {
             // "LOADING AVATAR MODEL 45%" in the frame's lower left corner, on a
@@ -2626,6 +2641,13 @@ void NativePresentation::Impl::read_touch_controls() {
         kick = tilt_kick.update(lean, seconds);
         if (tilt_lean.calibrated() && !was_calibrated)
             std::fprintf(stderr, "TILT lean neutral=%.1f deg\n", tilt_lean.neutral());
+    }
+    {
+        // The achievement notification and page take taps too (screen_overlay.h).
+        std::vector<ScreenTouch> shared;
+        shared.reserve(touches.size());
+        for (const TouchPoint& touch : touches) shared.push_back({touch.id, touch.x, touch.y});
+        screen_touches(shared);
     }
     if (!touches.empty()) note_touch();
     touch_controls.update(touches, tilt, touch_scene(), kick);

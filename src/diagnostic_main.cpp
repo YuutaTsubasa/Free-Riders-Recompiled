@@ -36,6 +36,8 @@
 #include "local_profile.h"
 #include "content_files.h"
 #include "achievements.h"
+#include "achievement_overlay.h"
+#include "screen_overlay.h"
 #include "multibyte_unicode.h"
 #include "render_state_entries.h"
 #include "image_protection.h"
@@ -3550,6 +3552,8 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
                 std::cerr << " stored=" << awarded.size() << " file=" << std::string(file.begin(), file.end());
             }
             std::cerr << " backend=local\n";
+            // The notification for those new to this player (achievement_overlay.h).
+            if (!awarded.empty()) sfr::AchievementOverlay::instance().awarded(awarded, sfr::unix_now());
             ctx.r3.u64 = overlapped ? complete_overlapped(overlapped, 0) : 0;
             return;
         }
@@ -4994,6 +4998,44 @@ int main(int argc, char** argv) {
         sfr::NativeSyncObjects sync_objects;
         sfr::NativeNotifications notifications(memory, sync_objects);
         sfr::native_notifications = &notifications;
+        {
+            // The achievement notification and page (achievement_overlay.h,
+            // Issue #288). SFR_ACHIEVEMENT_NOTIFICATIONS=0 (the launcher's
+            // switch) keeps the notification away; the page stays.
+            std::string error;
+            auto xdbf = sfr::read_title_resource(dump, &error);
+            const char* saves = std::getenv("SFR_SAVE_DIRECTORY");
+            const char* notify = std::getenv("SFR_ACHIEVEMENT_NOTIFICATIONS");
+            sfr::AchievementOverlay::Host host;
+            host.pad_buttons = [] { return sfr::nui_pad_buttons_through_hold(); };
+            host.key_down = [](int key) { return sfr::input().key_down(key); };
+            host.read = [](uint32_t address, std::span<uint8_t> out) {
+                if (!sfr::active_memory || !sfr::active_memory->readable(address, out.size())) return false;
+                for (size_t i = 0; i < out.size(); ++i) out[i] = sfr::active_memory->load<uint8_t>(uint64_t(address) + i);
+                return true;
+            };
+            host.page_shown = [](bool shown) {
+                // As the console's Guide: the system UI shows (the game pauses a
+                // race itself) and the game reads no input until it closes.
+                constexpr uint32_t xn_sys_ui = 0x00000009;
+                sfr::set_input_held(shown);
+                if (sfr::native_notifications) {
+                    if (shown) sfr::native_notifications->publish(xn_sys_ui, 1);
+                    else sfr::native_notifications->publish_when_drained(xn_sys_ui, 0);
+                }
+            };
+            if (!xdbf.empty())
+                sfr::AchievementOverlay::instance().configure(
+                    std::move(xdbf), sfr::achievement_file(saves && *saves ? saves : "save", sfr::local_profile().xuid),
+                    language.xbox_language, !(notify && *notify == '0'), std::move(host));
+            else std::cerr << "ACHIEVEMENT_OVERLAY configured=0 error=" << error << '\n';
+            sfr::set_screen_touch_sink([](const std::vector<sfr::ScreenTouch>& touches) {
+                std::vector<sfr::AchievementOverlay::Touch> list;
+                for (const auto& t : touches) list.push_back({t.id, t.x, t.y});
+                sfr::AchievementOverlay::instance().touches(list,
+                    std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count());
+            });
+        }
         // Before `notifications` goes, the system guide's watcher stops
         // without telling it anything (a window may still be open at exit).
         struct GuideWatchStop {
