@@ -16,6 +16,11 @@
 
 int sfr_game_main(int argc, char** argv);
 int sfr_graphics_selftest();
+// The instrumented build (SFR_PGO=generate) writes its counters here: _exit
+// below skips the profile runtime's own atexit writer. Weak and tested rather
+// than compiled in for that build only, so SDL_main's code is the same in
+// every build and the committed profile matches it.
+extern "C" __attribute__((weak)) int __llvm_profile_write_file(void);
 
 extern "C" int SDL_main(int, char**) {
     const char* root = SDL_AndroidGetExternalStoragePath();
@@ -40,6 +45,8 @@ extern "C" int SDL_main(int, char**) {
     const char* selftest = std::getenv("SFR_GRAPHICS_SELFTEST");
     const int code = selftest && *selftest == '1' ? sfr_graphics_selftest() : sfr_game_main(4, arguments);
     std::fflush(stderr);
+    if (__llvm_profile_write_file)
+        __android_log_print(ANDROID_LOG_INFO, "FreeRiders", "profile written: %d", __llvm_profile_write_file());
     __android_log_print(ANDROID_LOG_INFO, "FreeRiders", "game exited with %d (see game.log)", code);
     // End the game's process (android:process=":game"): the next run needs
     // fresh static state, and the launcher shows again once this is gone.

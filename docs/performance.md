@@ -2910,3 +2910,138 @@ locals build had also cut off from their callers' later reads. The movie then
 matches 0.10.33 (the two showings at presents ~5800 and ~7650 of an idle
 title, the same frames ~30 presents apart).
 
+## 2026-10-26: Compiler options for the Android game library (Issue #176)
+
+What the compiler can still take off the main thread, measured on the AYN
+Thor. First pass on main before registers-as-locals (all APKs built from the
+same source on the shipped generated code, `SFR_REGISTER_LOCALS` not yet
+there, NDK 29 clang, versionCode 81; Dolphin Resort moving race
+`CLAUDE_INPUT=kicks`, the job workers and the render thread held to CPU 7 with
+`SFR_TEST_WORKER_CPUS=7 SFR_TEST_RENDER_CPUS=7` so the main thread cannot
+hold 60 fps and the race skips frames; `HOST_THREADS` averaged over frames
+13,200-21,000; runs interleaved). In this setting the main thread is always
+busy, so a cheaper frame shows as fewer skipped frames and lower
+`drawn_ms`/`undrawn_ms`.
+
+| Build | runs | drawn_ms | undrawn_ms | skipped |
+| --- | --- | --- | --- | --- |
+| baseline (`-O3`, the release flags) | 7 | 24.90-25.79 (mean 25.43) | 9.20-10.34 (9.78) | 43-46% |
+| `-march=armv8.2-a+rcpc` | 2 | 25.32 / 24.86 | 9.17 / 10.28 | 45% / 44% |
+| ThinLTO (`-flto=thin`) | 2 | 25.25 / 25.50 | 10.52 / 9.74 | 44% / 46% |
+| full LTO (`-flto`) | 1 | 25.21 | 9.35 | 44% |
+| `-fomit-frame-pointer -fno-plt -mtune=cortex-x1` | 2 | 25.39 / 25.29 | 9.78 / 9.65 | 46% / 44% |
+| PGO, full profile | 2 | 23.04 / 24.50 | 8.43 / 8.08 | 35% / 38% |
+| PGO, sparse profile | 2 | 24.00 / 23.46 | 8.62 / 8.96 | 38% / 37% |
+
+Race speed stayed 0.97-1.00 in every run.
+
+- **Atomics.** The NDK's default target is armv8-a with
+  `-moutline-atomics`: each atomic is a call to a libgcc-style helper
+  (`__aarch64_ldadd4_acq_rel` ...) that tests `__aarch64_have_lse_atomics`
+  and then runs the LSE instruction, so LSE is already used on every phone
+  that has it. The library has ~1,900 such call sites, mostly in the runtime;
+  the generated code has none (its text is the same size with armv8.2-a).
+  Inlining them with armv8.2-a changed nothing measurable, so the baseline
+  stays armv8-a and no runtime dispatch is worth it.
+- **Floating point.** The generated code is built with `-ffp-model=strict`
+  because it changes FPCR (flush-to-zero, rounding) with inline assembly.
+  `-ffp-exception-behavior=ignore` or `-ffp-model=precise -frounding-math
+  -ffp-contract=off` produce the same code to within 0.1% of a generated
+  file's text: nothing to gain there.
+- **LTO.** ThinLTO (build 6 min instead of 3.5) and full LTO (11 min, one
+  link of the whole library) gave nothing, as on 2026-10-23.
+- **PGO** is the one that pays: an undrawn frame 9.78 -> 8.3-8.8 ms
+  (-10 to -16%), a drawn one 25.4 -> 23.0-24.5 ms (-4 to -9%), and ~8
+  percentage points fewer skipped frames. The profile changes code layout,
+  inlining and branch weights only; the program's behaviour is the same.
+  One Metropolis Speedway pair with the Dolphin Resort profile (a course the
+  profile never saw): undrawn 13.74 -> 11.77 ms, drawn 28.20 -> 27.05 ms,
+  race speed 0.81 -> 0.90.
+
+**On registers-as-locals main** (7bc76aa, `SFR_REGISTER_LOCALS` default,
+versionCode 82, same race and settings, a new profile from that build):
+
+| Build | runs | drawn_ms | undrawn_ms | skipped | race speed |
+| --- | --- | --- | --- | --- | --- |
+| baseline | 3 | 20.72 / 19.81 / 20.08 | 9.97 / 9.28 / 9.93 | 29% / 24% / 26% | 0.999 |
+| PGO, full profile | 3 | 17.56 / 17.98 / 17.63 | 7.92 / 8.64 / 8.23 | 13% / 15% / 13% | 0.999 |
+| PGO, sparse profile | 2 | 18.10 / 18.28 | 8.09 / 8.82 | 14% / 15% | 0.999 |
+
+With the full profile a drawn frame takes 12% less (20.20 -> 17.72 ms), an
+undrawn one 15% less (9.73 -> 8.26 ms), and half as many frames are skipped;
+the sparse profile gets most of it (-10% / -13%). The gain is larger than
+before locals: with registers in host registers the generated code is a
+larger share of the frame, and its branches and inlining are what the profile
+steers.
+
+Metropolis Speedway, same settings, with the Dolphin Resort profile:
+baseline drawn 23.95 / 23.92 ms, undrawn 11.75 / 11.64 ms, race speed 0.95 /
+0.94; full profile 22.85 / 22.03 ms (-6%), 10.65 / 10.34 ms (-10%), speed
+0.985 / 0.970. So a course the profile never saw gains too, less.
+
+All cores (no CPU restriction; the Thor holds 60 fps either way, so this
+shows only the main thread's spare time): baseline drawn 15.65 / 15.89 ms,
+`cpu_ms` 12.37 / 11.68; full profile 14.71 / 15.64 ms, `cpu_ms` 11.66 /
+11.29 (about -4%, within the run-to-run spread). Three runs (a Metropolis
+profile run and two all-core runs) lost the harness to an adb timeout and
+were replaced by new runs.
+
+**The committed profile (2026-10-26).** Android builds now use
+`data/pgo/android-arm64.profdata.gz` by default (`SFR_PGO=auto`; how it was
+made and how to collect it again: data/pgo/README.md). It merges three runs
+of the instrumented game (all cores, boot and menus each time): Dolphin
+Resort and Metropolis Speedway races to present 21,000 and the title idle to
+present 9,000 with movies on; sparse, 2.6 MB, 0.5 MB gzipped. Thor A/B, the
+same settings as above (frames 13,200-21,000), A = `SFR_PGO=off`, B = the
+profile, runs interleaved A B A B:
+
+Little cores (`SFR_TEST_WORKER_CPUS=7 SFR_TEST_RENDER_CPUS=7`), on main
+a64f2da with the committed profile:
+
+| Course | Build | drawn_ms | undrawn_ms | skipped | race speed |
+| --- | --- | --- | --- | --- | --- |
+| Dolphin Resort | off | 21.12 / 21.56 | 10.29 / 10.52 | 33% / 35% | 0.995 / 0.996 |
+| Dolphin Resort | profile | 19.90 / 19.06 | 10.00 / 9.45 | 23% / 20% | 0.982 / 0.999 |
+| Metropolis | off | 24.30 (one run; the other lost to an adb timeout) | 11.92 | 40% | 0.918 |
+| Metropolis | profile | 23.33 / 23.74 | 11.20 / 11.28 | 39% / 40% | 0.954 / 0.947 |
+
+The same profile collected on v0.10.34 code (cd79350), against its own
+baseline:
+
+| Case | off | profile |
+| --- | --- | --- |
+| Dolphin, little cores: drawn / undrawn ms, skipped | 21.62 / 10.47, 35%; 20.65 / 10.15, 31% | 19.48 / 9.45, 22%; 20.80 / 9.63, 28% |
+| Metropolis, little cores: drawn / undrawn ms, speed | 25.18 / 13.32, 0.877; 25.27 / 12.79, 0.858 | 22.15 / 10.60, 0.958; 23.89 / 11.91, 0.932 |
+| Dolphin, all cores: cpu_ms | 12.30 / 12.28 | 11.13 / 11.22 |
+| Metropolis, all cores: cpu_ms | 12.07 / 12.18 | 11.54 / 11.43 |
+
+So: a drawn frame about 5-9% cheaper and an undrawn one 5-14%, a quarter to
+a third fewer skipped frames on Dolphin Resort, Metropolis closer to full
+speed (0.87 -> 0.95), and on all cores (60 fps either way) the main thread
+uses 5-9% less CPU. Less than the Dolphin-only full profile above
+(-12%/-15%): the sparse profile and the mix of courses spread its weight.
+Races ran normally (lap 2 at ~1:56 by present 19,200, the big jump cleared),
+and the title's attract movie decodes cleanly with the profile (presents
+6,160-6,195 of an idle title on the Thor).
+
+**Staleness.** Moving the branch from v0.10.34 to main a64f2da (runtime
+changes only: achievements, button prompts) made 12 functions in 4 files
+stale, among them `native_draw`, the present hook and
+`dispatch_import_owned`: the hot paths change often, so the profile should
+be collected again for each release whose runtime or generated code
+changed. The build counts them (`scripts/pgo_compile.py`, a compiler
+launcher used only with a profile) and prints `SFR_PGO: N function(s) in M
+file(s) changed since the profile was collected` after libmain.so links.
+Static functions are named by file name, not full path
+(`-mllvm -static-func-full-module-prefix=false`), so a profile from one
+checkout matches another; `android_main.cpp` calls
+`__llvm_profile_write_file` through a weak reference in every build so that
+`SDL_main` matches too.
+
+**Release builds.** A build directory configured before this change gets
+`SFR_PGO=auto` when CMake reruns (`cmake --build` reconfigures because
+CMakeLists.txt changed), so it uses the profile without anything else; check
+the configure output for `SFR_PGO: optimising with .../android-arm64.profdata.gz`.
+`-DSFR_PGO=off` builds without it. The profile is unpacked into
+`<build>/pgo/profile-<hash>.profdata`; a new profile changes every compile
+command, so Ninja rebuilds what it affects without a clean build.
