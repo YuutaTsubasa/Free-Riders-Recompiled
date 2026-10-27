@@ -40,6 +40,13 @@ scripts/build_android.sh --diagnostic out/recomp/diagnostic --abi arm64-v8a --pa
 The APK is signed with the local debug key (`~/.android/debug.keystore`).
 Keep that key: Android only installs an update signed with the same one.
 
+A release carries two arm64 APKs: build once with `SFR_ANDROID_API=28` for
+`android-arm64` (Android 9) and once with `SFR_ANDROID_API=29` for
+`android10-arm64`, and upload each one's `.idsig` beside it. The game's
+library goes in without its symbol table (`--strip-unneeded`; the build
+directory keeps the full one), and the pose models only go in when ONNX
+Runtime for Android was fetched too.
+
 ## 2. Package
 
 ```bash
@@ -58,7 +65,8 @@ Verify the pinned downloads with `python scripts/fetch_pose_model.py --verify-on
 Linux and Android prebuilt releases currently omit camera motion inference;
 state this in the release notes. (`fetch_pose_model.py --platform linux` and
 `--android` fetch their runtimes, and `build_android.sh` puts the MediaPipe
-models in the APK when they are there, but neither is packaged for release yet.) Update `VERSION_NAME` and monotonically
+models in the APK when they and the Android runtime are there, but neither is
+packaged for release yet.) Update `VERSION_NAME` and monotonically
 increase `VERSION_CODE` in `scripts/package_android.py` before packaging.
 
 Desktop archives and the Android licences ZIP include `VRM-Avatar.md`.

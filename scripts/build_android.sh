@@ -54,6 +54,7 @@ else
     libraries=(liblauncher.so tools/SDL/libSDL2.so)
 fi
 jni="$root/android/app/src/main/jniLibs"
+onnx_everywhere=1
 for abi in "${abis[@]}"; do
     build="$root/out/build/android-$abi"
     cmake -S "$root" -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
@@ -63,23 +64,35 @@ for abi in "${abis[@]}"; do
     cmake --build "$build" --target "${targets[@]}"
     mkdir -p "$jni/$abi"
     # Debug information stays in the build directory (the game's is ~800 MB).
+    # The game also loses its symbol table (~5 MB in the APK): nothing on the
+    # phone reads it, and profilers and symbolizers use the build directory's
+    # copy. Its exported symbols stay.
     strip="$(ls -d "$ndk"/toolchains/llvm/prebuilt/*/bin/llvm-strip* | head -1)"
     for library in "${libraries[@]}"; do
-        "$strip" --strip-debug -o "$jni/$abi/$(basename "$library")" "$build/$library"
+        how=--strip-debug
+        [ "$(basename "$library")" != libmain.so ] || how=--strip-unneeded
+        "$strip" "$how" -o "$jni/$abi/$(basename "$library")" "$build/$library"
     done
     triple=$([ "$abi" = arm64-v8a ] && echo aarch64-linux-android || echo x86_64-linux-android)
     cp "$(ls -d "$ndk"/toolchains/llvm/prebuilt/*/sysroot/usr/lib/$triple/libc++_shared.so | head -1)" "$jni/$abi/"
     # ONNX Runtime for the camera's motion input (fetch_pose_model.py --android).
     onnx="$root/tools/onnx/onnxruntime-android/lib/$abi/libonnxruntime.so"
-    if [ -f "$onnx" ]; then cp "$onnx" "$jni/$abi/"; else rm -f "$jni/$abi/libonnxruntime.so"; fi
+    if [ -f "$onnx" ]; then cp "$onnx" "$jni/$abi/"; else rm -f "$jni/$abi/libonnxruntime.so"; onnx_everywhere=0; fi
 done
 if [ "$apk" = 1 ]; then
     # Only the ABIs built now (jniLibs may hold older ones).
     abi_options=()
     for abi in "${abis[@]}"; do abi_options+=(--abi "$abi"); done
     [ -z "$pack" ] || abi_options+=(--pack "$pack")
-    # The MediaPipe models for the camera's motion input (fetch_pose_model.py).
+    # The MediaPipe models for the camera's motion input (fetch_pose_model.py),
+    # only with ONNX Runtime for every ABI in the APK: without it the camera
+    # cannot run them, and they would add ~17 MB for nothing (the Windows
+    # bundle's fetch puts them in tools/onnx too).
     pose="$root/tools/onnx/mediapipe"
-    [ ! -f "$pose/pose_estimation_mediapipe_2023mar.onnx" ] || abi_options+=(--pose "$(native "$pose")")
+    if [ "$onnx_everywhere" = 1 ] && [ -f "$pose/pose_estimation_mediapipe_2023mar.onnx" ]; then
+        abi_options+=(--pose "$(native "$pose")")
+    elif [ -f "$pose/pose_estimation_mediapipe_2023mar.onnx" ]; then
+        echo "Pose models left out: no Android ONNX Runtime (python scripts/fetch_pose_model.py --android)"
+    fi
     ANDROID_HOME="$ANDROID_HOME" python "$root/scripts/package_android.py" --min-sdk "$api" "${abi_options[@]}"
 fi
