@@ -254,6 +254,8 @@ with [docs/progress.md](docs/progress.md).
   The game's translated code keeps the console's registers in the processor's own registers, about 13-18% less CPU time per race frame. On slow devices, where frames are skipped, racers no longer fall short of Dolphin Resort's big jump (#176).
 - [v0.10.35 — Achievements in the game, button prompts](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.35)
   An earned achievement now pops up in the game as on the console, and L3 + R3 (or F1) opens a page of all achievements with progress counters (#288). The game's pose hints get the matching button underneath, and the launcher's Controls page lists what each button does (#284).
+- [v0.10.36 — Faster Android races](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.36)
+  The Android game is now built with profile-guided optimisation: the compiler arranges the game's code by how it actually runs on a phone, so slow phones skip fewer frames in races (#176).
 
 ## System Requirements
 
