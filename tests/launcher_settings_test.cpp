@@ -36,6 +36,7 @@ void settings_round_trip() {
     settings.window_height = 1080;
     settings.fullscreen = true;
     settings.vsync = true;
+    settings.sharp_scaling = true;
     settings.audio = false;
     settings.volume = 35;
     settings.skip_movies = true;
@@ -63,6 +64,8 @@ void settings_round_trip() {
     const auto read = sfr::parse_launcher_settings(sfr::format_launcher_settings(settings));
     require(read.window_width == 1920 && read.window_height == 1080, "window size survives a round trip");
     require(read.fullscreen && read.vsync && !read.audio && read.volume == 35, "display and sound survive a round trip");
+    require(read.sharp_scaling && !sfr::LauncherSettings{}.sharp_scaling,
+            "sharp scaling survives a round trip and is off by default");
     require(read.skip_movies && !read.vertex_cache && !read.gpu_pipeline && read.race_render_every == 2 && !read.ui_sounds && read.vulkan,
             "advanced settings survive a round trip");
     require(read.camera == "motion" && read.camera_device == "e2eSoft iVCam #2" && read.camera_mirror,

@@ -46,6 +46,9 @@ struct LauncherSettings {
 #endif
     std::string ui_align = "edge";      // "edge" or "center"
     bool vsync = false;
+    // SFR_PRESENT_FILTER: scale the rendered picture to the window with the
+    // nearest pixel instead of smoothing it (Issue #301).
+    bool sharp_scaling = false;
     bool audio = true;
     uint32_t volume = 100;           // percent
     bool skip_movies = false;

@@ -1109,7 +1109,13 @@ void NativePresentation::Impl::build_blit() {
 
     plume::RenderSamplerDesc sampler_desc;
     sampler_desc.minFilter = plume::RenderFilter::LINEAR;
-    sampler_desc.magFilter = plume::RenderFilter::LINEAR;
+    // SFR_PRESENT_FILTER=nearest (the launcher's Sharp scaling, Issue #301):
+    // a picture smaller than the window is enlarged by repeating pixels. A
+    // larger one (supersampling) is still averaged down.
+    const char* present_filter = std::getenv("SFR_PRESENT_FILTER");
+    const bool nearest = present_filter && std::strcmp(present_filter, "nearest") == 0;
+    sampler_desc.magFilter = nearest ? plume::RenderFilter::NEAREST : plume::RenderFilter::LINEAR;
+    std::cerr << "NATIVE_PRESENT_FILTER magnify=" << (nearest ? "nearest" : "linear") << '\n';
     sampler_desc.addressU = plume::RenderTextureAddressMode::CLAMP;
     sampler_desc.addressV = plume::RenderTextureAddressMode::CLAMP;
     sampler_desc.addressW = plume::RenderTextureAddressMode::CLAMP;

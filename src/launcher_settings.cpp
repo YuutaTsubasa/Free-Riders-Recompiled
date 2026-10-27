@@ -121,6 +121,7 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         else if (key == "ui_align" && (value == "edge" || value == "center")) settings.ui_align = value;
         else if (key == "fullscreen") read_flag(value, settings.fullscreen);
         else if (key == "vsync") read_flag(value, settings.vsync);
+        else if (key == "sharp_scaling") read_flag(value, settings.sharp_scaling);
         else if (key == "audio") read_flag(value, settings.audio);
         else if (key == "volume") read_number(value, 0, 100, settings.volume);
         else if (key == "skip_movies") read_flag(value, settings.skip_movies);
@@ -220,6 +221,7 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "ui_align=" << (s.ui_align == "center" ? "center" : "edge") << '\n'
         << "fullscreen=" << s.fullscreen << '\n'
         << "vsync=" << s.vsync << '\n'
+        << "sharp_scaling=" << s.sharp_scaling << '\n'
         << "audio=" << s.audio << '\n'
         << "volume=" << s.volume << '\n'
         << "skip_movies=" << s.skip_movies << '\n'
@@ -420,6 +422,7 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         {"SFR_FULLSCREEN", s.fullscreen ? "1" : "0"},
 #endif
         {"SFR_VSYNC", s.vsync ? "1" : "0"},
+        {"SFR_PRESENT_FILTER", s.sharp_scaling ? "nearest" : "linear"},
         {"SFR_GRAPHICS", s.vulkan ? "vulkan" : "d3d12"},
         // "off" leaves the camera alone; "picture" opens it for the image the
         // title shows; "motion" also drives the Kinect player's body with it;

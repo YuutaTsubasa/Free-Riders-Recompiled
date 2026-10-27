@@ -91,7 +91,7 @@ namespace fs = std::filesystem;
 enum Text {
     TitleLine, Subtitle,
     TabDisplay, TabSound, TabGeneral, TabMotion, TabFiles,
-    WindowSize, DesktopSize, DisplayMode, DisplayModeHint, DisplayBorderless, DisplayWindowed, VSync, VSyncHint, RenderResolution, RenderResolutionHint, OriginalScale,
+    WindowSize, DesktopSize, DisplayMode, DisplayModeHint, DisplayBorderless, DisplayWindowed, VSync, VSyncHint, RenderResolution, RenderResolutionHint, OriginalScale, SharpScaling, SharpScalingHint,
     Sound, SoundHint, Volume,
     SkipMovies, SkipMoviesHint, SkipLogos, SkipLogosHint,
     VertexCache, VertexCacheHint, GpuPipeline, GpuPipelineHint, RaceEvery, RaceEveryHint, TitleStats, TitleStatsHint,
@@ -182,6 +182,9 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Lower values reduce GPU load; higher values supersample for a sharper picture.",
      "較低值可減輕 GPU 負擔，較高值以超取樣讓畫面更銳利。"},
     {"Original (1280 x 720)", "原始（1280 x 720）"},
+    {"Sharp scaling", "銳利縮放"},
+    {"Enlarges the picture to the window by repeating pixels instead of smoothing them. Crisper at a low Render Size, blockier otherwise.",
+     "把畫面放大到視窗時直接重複像素，不做平滑處理。渲染尺寸較低時較清楚，其他時候會比較有鋸齒感。"},
     {"Sound", "聲音"},
     {"Plays the game's sound on the default output device.", "在預設的輸出裝置播放遊戲聲音。"},
     {"Volume", "音量"},
@@ -2388,6 +2391,9 @@ struct Launcher {
             bool moved = ImGui::SliderInt("##resolution_scale", &step, 0, last, shown.c_str(), ImGuiSliderFlags_AlwaysClamp);
             moved |= slider_steps(&step, 0, last, 1);
             if (moved) settings.resolution_scale = choices[size_t(std::clamp(step, 0, last))];
+        });
+        setting_row(tr(SharpScaling), tr(SharpScalingHint), switch_width, scale, [&] {
+            toggle("##sharp_scaling", &settings.sharp_scaling);
         });
         ImGui::Dummy(ImVec2(0, 10 * scale));
         if (ImGui::CollapsingHeader(tr(SectionPerformance))) performance_settings();
