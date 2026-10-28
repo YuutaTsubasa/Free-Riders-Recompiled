@@ -15,7 +15,11 @@ class NativeBootTests(unittest.TestCase):
             command.append(os.environ['SFR_ASSET_DIRECTORY'])
         if game_region:
             command.append('--game-region=ntsc-us')
-        return subprocess.run(command,
+        # The title's own allocators (SFR_HOST_HEAP=0, SFR_PHYSICAL_HEAP=0): the
+        # addresses below are where they put things; the host and physical
+        # heaps (the defaults since 2026-10-04) hand out other ones.
+        env = dict(os.environ, SFR_HOST_HEAP='0', SFR_PHYSICAL_HEAP='0')
+        return subprocess.run(command, env=env,
                               capture_output=True, text=True, timeout=15)
 
     def test_rejects_same_size_unknown_image_before_guest_execution(self):
@@ -73,7 +77,7 @@ class NativeBootTests(unittest.TestCase):
         self.assertIn('GRAPHICS_ENTRY name=sub_824F4CF0 address=0x824f4cf0 lr=0x8249b414 sp=0x70131440 r3=0x0 r4=0x1 r5=0x0 r6=0x0 r7=0xffffffff83e53ca8 r8=0xffffffff83e53ca4', result.stderr)
         self.assertRegex(result.stderr, r'NATIVE_GRAPHICS backend=D3D12 adapter=\S[^\n]*\n')
         self.assertIn('NATIVE_CREATE_DEVICE device=0x71600000 width=1280 height=720 result=0', result.stderr)
-        self.assertIn('NATIVE_CLEAR source=0x824f6dc8 device=0x71600000 flags=0x3f argb=0x0 target=0x71700000 depth=0 stencil=0 submitted=1', result.stderr)
+        self.assertIn('NATIVE_CLEAR source=0x824f6dc8 device=0x71600000 flags=0x3f argb=0x0 target=0x71700000 depth_target=0x71701000 depth=0 stencil=0 submitted=1', result.stderr)
         self.assertIn('NATIVE_VIEWPORT_REQUEST address=0x70131500 words=0,0,500,2d0,3f800000,0', result.stderr)
         self.assertIn('NATIVE_VIEWPORT source=0x824e96c8 x=0 y=0 width=1280 height=720 min_depth=1 max_depth=0 updated=1', result.stderr)
         self.assertIn('IMPORT RtlInitAnsiString destination=0x70131318 source=0x821a8fe4 length=37 maximum_length=38', result.stderr)
@@ -513,7 +517,7 @@ class NativeBootTests(unittest.TestCase):
         self.assertEqual(result.returncode, 3, result.stderr)
         self.assertIn('NATIVE_GAME_REGION source=unconfigured', result.stderr)
         self.assertNotIn('IMPORT XGetGameRegion source=configured-profile', result.stderr)
-        language = re.search(r'xbox_language=(\d+)\n', result.stderr)
+        language = re.search(r'xbox_language=(\d+)\b', result.stderr)
         self.assertIsNotNone(language)
         if int(language[1]) >= 7:
             self.assertIn('STOP game-region @0x82acb24c:', result.stderr)
