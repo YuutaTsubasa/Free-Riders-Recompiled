@@ -256,6 +256,8 @@ with [docs/progress.md](docs/progress.md).
   An earned achievement now pops up in the game as on the console, and L3 + R3 (or F1) opens a page of all achievements with progress counters (#288). The game's pose hints get the matching button underneath, and the launcher's Controls page lists what each button does (#284).
 - [v0.10.36 — Faster Android races](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.36)
   The Android game is now built with profile-guided optimisation: the compiler arranges the game's code by how it actually runs on a phone, so slow phones skip fewer frames in races (#176).
+- [v0.10.37 — Sharp scaling](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.37)
+  The launcher's new **Sharp scaling** switch (Graphics, under Render Size) enlarges the picture by repeating its pixels instead of blurring them, so 540 or 720 lines on a bigger screen stay crisp (#301).
 
 ## System Requirements
 
@@ -317,7 +319,9 @@ as every earlier version did, whatever the window or display. The other stops
 are a **resolution scale** of the output size (the display's in Borderless mode)
 from 0.25x to 3.0x in steps of 0.25x: 1.0x renders at exactly the window or
 desktop resolution, lower values reduce GPU load, higher values supersample.
-Changes to game settings apply on the next game launch.
+**Sharp scaling** (off by default) enlarges a picture smaller than the window
+by repeating its pixels instead of smoothing them; a supersampled picture is
+still averaged down. Changes to game settings apply on the next game launch.
 
 **Achievements** lists every achievement with its icon, name, description and
 gamerscore, and the date each was unlocked, plus the totals (for example
