@@ -264,7 +264,7 @@ v2 的彩色畫面從 #305 起才帶時間（`IColorFrame::get_RelativeTime`）�
 錄一段比對用的資料（兩台都接上時用 `--both`，一台時用 `--v1` 或 `--v2`）：
 
 ```powershell
-outuild\host\sfr_kinect_probe.exe 180 --both --record D:ec\mac1 --depth --colour
+out\build\host\sfr_kinect_probe.exe 180 --both --record D:\rec\mac1 --depth --colour
 ```
 
 180 秒內依序：站著不動 10 秒、舉右手在畫面上移動（選單游標）、左右傾身、蹲下、跳、側移、走出畫面再走回來。
