@@ -550,6 +550,40 @@ else()
         src/kinect_record_raw.cpp)
     set(SFR_VOICE src/voice_commands.cpp src/voice_commands_none.cpp)
 endif()
+# A Kinect v1 on macOS, where the Kinect for Windows runtime does not exist
+# (#305): libfreenect over libusb (tools/, scripts/bootstrap.py), both
+# compiled here. libfreenect's firmware fetcher and its build are not used:
+# the cameras need no firmware. fakenect is the same interface playing a
+# recording back (FAKENECT_PATH), for testing without a sensor.
+set(SFR_FREENECT_AVAILABLE OFF)
+if(APPLE AND NOT IOS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/libfreenect/src/core.c"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/libusb/libusb/core.c")
+    set(SFR_FREENECT_AVAILABLE ON)
+    set(SFR_LIBUSB "${CMAKE_CURRENT_SOURCE_DIR}/tools/libusb/libusb")
+    add_library(sfr_libusb STATIC ${SFR_LIBUSB}/core.c ${SFR_LIBUSB}/descriptor.c ${SFR_LIBUSB}/hotplug.c
+        ${SFR_LIBUSB}/io.c ${SFR_LIBUSB}/strerror.c ${SFR_LIBUSB}/sync.c ${SFR_LIBUSB}/os/darwin_usb.c
+        ${SFR_LIBUSB}/os/events_posix.c ${SFR_LIBUSB}/os/threads_posix.c)
+    target_include_directories(sfr_libusb PUBLIC ${SFR_LIBUSB} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tools/libusb/Xcode")
+    target_link_libraries(sfr_libusb PUBLIC "-framework IOKit" "-framework CoreFoundation" "-framework Security")
+    set_target_properties(sfr_libusb PROPERTIES C_STANDARD 11 COMPILE_OPTIONS -w)
+    set(SFR_FREENECT "${CMAKE_CURRENT_SOURCE_DIR}/tools/libfreenect")
+    add_library(sfr_freenect STATIC ${SFR_FREENECT}/src/core.c ${SFR_FREENECT}/src/tilt.c ${SFR_FREENECT}/src/cameras.c
+        ${SFR_FREENECT}/src/flags.c ${SFR_FREENECT}/src/usb_libusb10.c ${SFR_FREENECT}/src/registration.c
+        ${SFR_FREENECT}/src/audio.c ${SFR_FREENECT}/src/loader.c)
+    target_include_directories(sfr_freenect PUBLIC ${SFR_FREENECT}/include PRIVATE ${SFR_FREENECT}/src)
+    target_link_libraries(sfr_freenect PUBLIC sfr_libusb)
+    set_target_properties(sfr_freenect PROPERTIES COMPILE_OPTIONS -w)
+    add_library(sfr_fakenect STATIC ${SFR_FREENECT}/fakenect/fakenect.c ${SFR_FREENECT}/fakenect/parson.c
+        ${SFR_FREENECT}/src/registration.c)
+    # libusb's header only: libfreenect's internal header names its types.
+    target_include_directories(sfr_fakenect PUBLIC ${SFR_FREENECT}/include PRIVATE ${SFR_FREENECT}/src ${SFR_LIBUSB})
+    set_target_properties(sfr_fakenect PROPERTIES COMPILE_OPTIONS -w)
+    # Checking a Mac's Kinect, or a recording, without the game.
+    add_executable(sfr_freenect_probe tests/freenect_probe.cpp)
+    target_link_libraries(sfr_freenect_probe PRIVATE sfr_freenect)
+    add_executable(sfr_fakenect_probe tests/freenect_probe.cpp)
+    target_link_libraries(sfr_fakenect_probe PRIVATE sfr_fakenect)
+endif()
 # The Kinect's voice commands, through the host's speech recognizer.
 add_executable(sfr_voice_commands_test tests/voice_commands_test.cpp src/voice_commands.cpp src/voice_commands_none.cpp)
 target_include_directories(sfr_voice_commands_test PRIVATE src)
