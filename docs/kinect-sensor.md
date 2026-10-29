@@ -36,6 +36,26 @@
 5. 站在感測器前約 1.5～3 公尺、全身入鏡，開始遊戲。log 會有 `NATIVE_KINECT started=1`，
    之後每五秒一行 `NATIVE_KINECT frames=… with_body=… bodies=…`。
 
+## macOS（Kinect v1，開發中，#305）
+
+Mac 上沒有微軟的 Kinect runtime，改用 [libfreenect](https://github.com/OpenKinect/libfreenect)（經 libusb，
+兩者都由本專案的 CMake 在 macOS 上編譯，[`scripts/bootstrap.py`](../scripts/bootstrap.py) 取得）。libfreenect 只給
+深度（公釐，深度鏡頭的視角，640x480 縮成遊戲的 320x240）與彩色（RGB 640x480），runtime 會算的兩樣在這裡自己做
+（[`kinect_depth_body`](../src/kinect_depth_body.h)）：
+
+- **骨架**：彩色畫面跑攝影機體感的姿勢模型（模型自己分得出身體的左右；runtime 的畫面是鏡像的，所以左右要對調），
+  用軀幹的深度把臀部放到公尺座標上，每個關節在深度和模型的 3D 形狀一致時用自己的深度，否則用形狀的位置
+  （手臂細，深度常常量到後面的牆）。
+- **玩家編號**：從骨架的像素出發，往深度差不到 5 公分的鄰點擴展，限制在骨架外 30 公分內、腳踝下 7 公分以上（地板之上）。
+- **一位玩家**：姿勢模型只找一個人，2P 還沒做。Kinect v2（libfreenect2）也還沒做，launcher 在 Mac 上只列 Kinect（Xbox 360）；
+  Kinect 預覽視窗是 Windows 才有。
+- libfreenect 給的畫面是否跟 runtime 一樣是鏡像的，還沒在實機上確認：`SFR_FREENECT_MIRROR=1` 把兩張畫面左右翻過來。
+- 馬達與加速度計：Kinect 1414 可以；1473 要上傳韌體才開得到（沒有做），那時只開鏡頭。重力與地板平面先不給（全 0，「看不出來」）。
+
+檢查工具：`sfr_freenect_probe [秒數]`（實機）、`sfr_fakenect_probe`（播放 `FAKENECT_PATH` 的錄影）、
+`sfr_kinect_probe`（經遊戲用的介面，含骨架）。單元測試 `kinect_depth_body` 用畫出來的場景（牆、地板、手臂伸出身體範圍的玩家）
+檢查骨架與玩家編號。
+
 ## 感應器位置
 
 感應器放在電視旁、玩家正前方，就是主機上的擺法；遊戲收到的骨架不做任何轉換。
