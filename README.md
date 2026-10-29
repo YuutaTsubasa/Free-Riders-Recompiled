@@ -490,14 +490,17 @@ and [person detector](https://github.com/opencv/opencv_zoo/tree/47534e27c9851bb1
 their ONNX exports, without requiring the MediaPipe or OpenCV runtime.
 Model downloads are pinned by SHA-256 in
 [scripts/fetch_pose_model.py](scripts/fetch_pose_model.py). Licences and
-third-party notices are included in the `licenses/` folder of the Windows and
-Linux archives and in the Android APK's licence archive.
+third-party notices are included in the `licenses/` folder of the Windows,
+Linux, macOS and iOS packages and in the Android APK's licence archive.
 
 A webcam estimates relative 3D pose; it does not measure depth like Kinect.
 The Android APK carries the same models and runtime and can use the phone's
 own camera (asked for the camera permission the first time; a device without
 a camera is never asked). The Linux tarball carries them too and reads a
-webcam through V4L2.
+webcam through V4L2. The macOS app uses the Mac's camera, a USB webcam or an
+iPhone as Continuity Camera, and the iOS app the device's own cameras; both
+ask for the camera permission the first time, and only when there is a
+camera.
 Setup, gestures, source builds and limitations:
 [Camera input](docs/camera-input.md).
 

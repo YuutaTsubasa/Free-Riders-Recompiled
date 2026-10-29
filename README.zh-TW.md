@@ -221,7 +221,7 @@ Windows 發行包已內附體感模型與執行庫。在啟動器選擇 **體感
 
 單眼攝影機估算的是相對 3D 姿勢，並非 Kinect 的深度量測。Android APK 也附上同樣的
 模型與執行庫，可以用手機自己的鏡頭（第一次開鏡頭時詢問相機權限；沒有鏡頭的裝置不會被
-問），授權附在 APK 旁的授權壓縮檔。Linux 的 tar.gz 也附上，透過 V4L2 讀取 webcam。設定、動作說明與自行建置方式見[攝影機體感輸入](docs/camera-input.md)。
+問），授權附在 APK 旁的授權壓縮檔。Linux 的 tar.gz 也附上，透過 V4L2 讀取 webcam。macOS 版可用 Mac 的鏡頭、USB webcam 或當作接續互通相機的 iPhone，iOS 版用裝置自己的鏡頭；兩者都是第一次開鏡頭、而且真的有鏡頭時才詢問相機權限。設定、動作說明與自行建置方式見[攝影機體感輸入](docs/camera-input.md)。
 
 ## VRM Avatar 模型
 
