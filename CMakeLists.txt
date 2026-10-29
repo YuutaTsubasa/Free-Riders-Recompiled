@@ -522,7 +522,7 @@ elseif(APPLE)
     enable_language(OBJCXX)
     set(SFR_CAMERA_CAPTURE src/camera_capture.cpp src/camera_capture_apple.mm)
     set(SFR_CAMERA_LIBRARIES "-framework AVFoundation" "-framework CoreMedia" "-framework CoreVideo"
-        "-framework CoreFoundation" "-framework Foundation" objc)
+        "-framework CoreFoundation" "-framework Foundation")
     set_source_files_properties(src/camera_capture_apple.mm PROPERTIES COMPILE_OPTIONS -fobjc-arc)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(SFR_CAMERA_CAPTURE src/camera_capture.cpp src/camera_capture_v4l2.cpp)
@@ -574,10 +574,21 @@ endfunction()
 # Finding a body in a camera picture: ONNX Runtime and the pinned MediaPipe
 # models (tools/onnx, fetched by scripts/fetch_pose_model.py). Without them
 # the camera can still give the title a picture, but not drive the player.
-# Android takes the runtime fetched for each ABI (--android).
+# Android takes the runtime fetched for each ABI (--android), macOS and iOS
+# theirs (--apple): iOS links it statically, as its pod is built to be.
 if(ANDROID)
     set(SFR_ONNX_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/tools/onnx/onnxruntime-android")
     set(SFR_ONNX_LIBRARY "${SFR_ONNX_ROOT}/lib/${ANDROID_ABI}/libonnxruntime.so")
+elseif(IOS)
+    set(SFR_ONNX_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/tools/onnx/onnxruntime-ios")
+    if(CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
+        set(SFR_ONNX_LIBRARY "${SFR_ONNX_ROOT}/lib/simulator/libonnxruntime.a")
+    else()
+        set(SFR_ONNX_LIBRARY "${SFR_ONNX_ROOT}/lib/libonnxruntime.a")
+    endif()
+elseif(APPLE)
+    set(SFR_ONNX_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/tools/onnx/onnxruntime-macos" CACHE PATH "macOS ONNX Runtime installation")
+    set(SFR_ONNX_LIBRARY "${SFR_ONNX_ROOT}/lib/libonnxruntime.1.30.0.dylib")
 else()
     set(SFR_ONNX_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/tools/onnx/onnxruntime" CACHE PATH "Host ONNX Runtime installation")
     if(WIN32)
@@ -591,7 +602,15 @@ if(EXISTS "${SFR_ONNX_ROOT}/include/onnxruntime_cxx_api.h" AND EXISTS "${SFR_ONN
     add_library(sfr_onnxruntime INTERFACE)
     target_include_directories(sfr_onnxruntime INTERFACE "${SFR_ONNX_ROOT}/include")
     target_link_libraries(sfr_onnxruntime INTERFACE "${SFR_ONNX_LIBRARY}")
-    if(NOT WIN32 AND NOT ANDROID)
+    if(IOS)
+        # What the static library needs of the system (its podspec's list).
+        target_link_libraries(sfr_onnxruntime INTERFACE "-framework CoreFoundation" "-framework Foundation"
+            "-framework Network" "-framework Security" "-framework SystemConfiguration" "-framework UIKit"
+            "-weak_framework CoreML" c++)
+    elseif(APPLE)
+        # The app keeps the dylib in Contents/Frameworks, beside MoltenVK.
+        set(CMAKE_BUILD_RPATH "@executable_path/../Frameworks")
+    elseif(NOT WIN32 AND NOT ANDROID)
         # A release keeps libonnxruntime.so.1 beside the program. Through the
         # RPATH property, not a -rpath link option: Ninja read that one's
         # $ORIGIN as a variable and left "$" (#305). Targets made after this

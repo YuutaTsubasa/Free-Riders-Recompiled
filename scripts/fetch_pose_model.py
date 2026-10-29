@@ -7,11 +7,13 @@ tools/onnx (git-ignored). Windows, Linux and Android camera releases bundle
 these dependencies with their licences and notices (see docs/camera-input.md).
 
   python scripts/fetch_pose_model.py [--model mediapipe|rtmpose] [--platform windows|linux]
-                                     [--android] [--verify-only]
+                                     [--android] [--apple] [--verify-only]
 
 The runtime is Windows x64's unless --platform linux asks for Linux x64's
 (both unpack to tools/onnx/onnxruntime); --android also fetches the runtime
-for Android's ABIs into tools/onnx/onnxruntime-android.
+for Android's ABIs into tools/onnx/onnxruntime-android, and --apple the
+macOS (arm64) and iOS runtimes into tools/onnx/onnxruntime-macos and
+tools/onnx/onnxruntime-ios.
 """
 import argparse
 import hashlib
@@ -60,11 +62,25 @@ DOWNLOADS = {
                'onnxruntime-android-1.30.0.aar',
         'sha256': 'e7fb945e402205f6db858d65bb78d2bdb0812317b383976c9e3bceb4862c73f1',
     },
+    'onnxruntime-osx-arm64.tgz': {
+        'url': 'https://github.com/microsoft/onnxruntime/releases/download/v1.30.0/onnxruntime-osx-arm64-1.30.0.tgz',
+        'sha256': '6ebb5062a934537c352937821f9fe9718e7de1a2db1122a93dd363ffd53a7012',
+    },
+    # The archive the onnxruntime-c CocoaPod points at (its podspec gives no
+    # digest; this is the one fetched for #305): onnxruntime.xcframework,
+    # with a static framework for iOS devices and one for the simulator.
+    'onnxruntime-ios.zip': {
+        'url': 'https://download.onnxruntime.ai/pod-archive-onnxruntime-c-1.30.0.zip',
+        'sha256': 'e6f1670c14406fd9f082bb400ab197a9b0a9646058ca6366e440642e2b54a2ea',
+    },
 }
 RUNTIME_ROOT = 'onnxruntime-win-x64-1.30.0/'
 LINUX_ROOT = 'onnxruntime-linux-x64-1.30.0/'
 NOTICES = ('LICENSE', 'README.md', 'ThirdPartyNotices.txt', 'Privacy.md', 'VERSION_NUMBER', 'GIT_COMMIT_ID')
 ANDROID_ABIS = ('arm64-v8a', 'x86_64')
+MACOS_ROOT = './onnxruntime-osx-arm64-1.30.0/'
+IOS_FRAMEWORKS = {'lib': 'onnxruntime.xcframework/ios-arm64/onnxruntime.framework/',
+                  'lib/simulator': 'onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/'}
 MODEL_ROOT = '20230831/rtmpose_onnx/rtmpose-t_simcc-body7_pt-body7_420e-256x192-026a1439_20230504/'
 MODEL_FILES = ('end2end.onnx', 'pipeline.json', 'deploy.json', 'detail.json')
 
@@ -158,6 +174,48 @@ def unpack_android(archive, linux_archive):
     return destination
 
 
+def unpack_macos(archive):
+    # The dylib under its versioned name (its install name), the headers and
+    # the notices; not the debug symbols or the test library.
+    destination = TOOLS / 'onnxruntime-macos'
+    with tarfile.open(archive) as packed:
+        for member in packed.getmembers():
+            if not member.name.startswith(MACOS_ROOT) or not member.isfile():
+                continue
+            relative = member.name[len(MACOS_ROOT):]
+            if not (relative in NOTICES or relative.startswith('include/') or relative == 'lib/libonnxruntime.1.30.0.dylib'):
+                continue
+            target = destination / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with packed.extractfile(member) as source, target.open('wb') as out:
+                shutil.copyfileobj(source, out)
+    return destination
+
+
+def unpack_ios(archive, macos_archive):
+    # Each static framework's library as libonnxruntime.a, the headers once.
+    destination = TOOLS / 'onnxruntime-ios'
+    with zipfile.ZipFile(archive) as zipped:
+        for name in zipped.namelist():
+            if name.startswith('Headers/') and not name.endswith('/'):
+                target = destination / 'include' / name[len('Headers/'):]
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with zipped.open(name) as source, target.open('wb') as out:
+                    shutil.copyfileobj(source, out)
+        for folder, framework in IOS_FRAMEWORKS.items():
+            target = destination / folder / 'libonnxruntime.a'
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with zipped.open(framework + 'onnxruntime') as source, target.open('wb') as out:
+                shutil.copyfileobj(source, out)
+    # The pod carries the licence but not the notices; the macOS package of
+    # the same release has both.
+    with tarfile.open(macos_archive) as packed:
+        for name in ('LICENSE', 'ThirdPartyNotices.txt'):
+            with packed.extractfile(MACOS_ROOT + name) as source, (destination / name).open('wb') as out:
+                shutil.copyfileobj(source, out)
+    return destination
+
+
 def unpack_model(archive):
     destination = TOOLS / 'rtmpose'
     destination.mkdir(parents=True, exist_ok=True)
@@ -176,6 +234,7 @@ def main():
     parser.add_argument('--platform', choices=('windows', 'linux'), default='windows',
                         help='the runtime for this machine (default: windows)')
     parser.add_argument('--android', action='store_true', help="also fetch the runtime for Android's ABIs")
+    parser.add_argument('--apple', action='store_true', help='also fetch the macOS (arm64) and iOS runtimes')
     arguments = parser.parse_args()
     desktop = 'onnxruntime-linux-x64.tgz' if arguments.platform == 'linux' else 'onnxruntime-win-x64.zip'
     names = [desktop]
@@ -183,6 +242,8 @@ def main():
         names.append('onnxruntime-linux-x64.tgz')  # for the Android runtime's licence
     if arguments.android:
         names.append('onnxruntime-android.aar')
+    if arguments.apple:
+        names += ['onnxruntime-osx-arm64.tgz', 'onnxruntime-ios.zip']
     if arguments.model == 'mediapipe':
         names.extend(name for name in DOWNLOADS if name.startswith('mediapipe/'))
     else:
@@ -199,6 +260,10 @@ def main():
     if arguments.android:
         android = unpack_android(archives['onnxruntime-android.aar'], archives['onnxruntime-linux-x64.tgz'])
         print(f'ONNX Runtime for Android in {android}')
+    if arguments.apple:
+        print(f'ONNX Runtime for macOS in {unpack_macos(archives["onnxruntime-osx-arm64.tgz"])}')
+        ios = unpack_ios(archives['onnxruntime-ios.zip'], archives['onnxruntime-osx-arm64.tgz'])
+        print(f'ONNX Runtime for iOS in {ios}')
     if arguments.model == 'rtmpose':
         model = unpack_model(archives['rtmpose-t.zip'])
         print(f'Legacy RTMPose model in {model}')

@@ -15,6 +15,9 @@
 #define NOMINMAX
 #include <windows.h>
 #endif
+#ifdef __APPLE__
+#include <CoreFoundation/CoreFoundation.h>
+#endif
 
 namespace sfr {
 std::unique_ptr<PoseEstimator> open_mediapipe_pose(Ort::Env,Ort::Session,const std::filesystem::path&);
@@ -118,6 +121,21 @@ std::filesystem::path PoseEstimator::default_model() {
         const auto bundled=program.parent_path()/relative;
         if(fs::is_regular_file(bundled,error)) return bundled;
     }
+#ifdef __APPLE__
+    // The app's resources: Contents/Resources on macOS, the app itself on
+    // iOS (where the game is a framework, so its own path says nothing).
+    if(CFBundleRef bundle=CFBundleGetMainBundle()) {
+        if(CFURLRef url=CFBundleCopyResourcesDirectoryURL(bundle)) {
+            char path[4096];
+            const bool converted=CFURLGetFileSystemRepresentation(url,true,reinterpret_cast<UInt8*>(path),sizeof path);
+            CFRelease(url);
+            if(converted) {
+                const auto bundled=fs::path(path)/relative;
+                if(fs::is_regular_file(bundled,error)) return bundled;
+            }
+        }
+    }
+#endif
     for (const fs::path candidate : {relative,fs::path("tools/onnx/mediapipe/pose_estimation_mediapipe_2023mar.onnx")})
         if (fs::is_regular_file(candidate, error)) return candidate;
     // A flat legacy model is opt-in via SFR_POSE_MODEL, never a silent fallback.
