@@ -345,6 +345,11 @@ target_include_directories(sfr_kinect_record_summary PRIVATE src)
 # v1's compared with a Kinect v2's (docs/kinect-sensor.md).
 set(SFR_KINECT_DEPTH_TOOLS src/kinect_record_depth.cpp src/kinect_depth_features.cpp src/kinect_depth_compare.cpp
     src/kinect_record.cpp src/kinect_race_record.cpp)
+# The skeleton and player index made from a Kinect v1's cameras where the
+# Kinect runtime is missing (macOS, #305).
+add_executable(sfr_kinect_depth_body_test tests/kinect_depth_body_test.cpp src/kinect_depth_body.cpp src/kinect_preview.cpp)
+target_include_directories(sfr_kinect_depth_body_test PRIVATE src)
+add_test(NAME kinect_depth_body COMMAND sfr_kinect_depth_body_test)
 # Its colour pictures beside them (SFR_KINECT_RECORD_COLOUR), for the Kinect
 # on hosts without its runtime (#305).
 add_executable(sfr_kinect_colour_record_test tests/kinect_colour_record_test.cpp src/kinect_record_colour.cpp
@@ -583,6 +588,11 @@ if(APPLE AND NOT IOS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/libfreenect/s
     target_link_libraries(sfr_freenect_probe PRIVATE sfr_freenect)
     add_executable(sfr_fakenect_probe tests/freenect_probe.cpp)
     target_link_libraries(sfr_fakenect_probe PRIVATE sfr_fakenect)
+    # The Kinect v1 itself, in place of no sensor: what the runtime would
+    # make of its cameras is made from them (kinect_depth_body.h), with the
+    # camera's pose model (linked below, once it is known whether it is here).
+    list(REMOVE_ITEM SFR_KINECT_SENSOR src/kinect_sensor_none.cpp)
+    list(APPEND SFR_KINECT_SENSOR src/kinect_sensor_freenect.cpp src/kinect_depth_body.cpp)
 endif()
 # The Kinect's voice commands, through the host's speech recognizer.
 add_executable(sfr_voice_commands_test tests/voice_commands_test.cpp src/voice_commands.cpp src/voice_commands_none.cpp)
@@ -687,6 +697,18 @@ else()
     set(SFR_POSE_AVAILABLE OFF)
     set(SFR_POSE_SOURCES src/pose_estimator.cpp src/pose_estimator_none.cpp)
 endif()
+# What links the libfreenect sensor needs the pose model too (the game has it
+# already).
+function(sfr_link_freenect_sensor target)
+    if(SFR_FREENECT_AVAILABLE)
+        target_sources(${target} PRIVATE ${SFR_POSE_SOURCES})
+        target_link_libraries(${target} PRIVATE sfr_freenect)
+        if(SFR_POSE_AVAILABLE)
+            target_link_libraries(${target} PRIVATE sfr_onnxruntime)
+        endif()
+    endif()
+endfunction()
+sfr_link_freenect_sensor(sfr_kinect_probe)
 add_executable(sfr_pose_estimator_test tests/pose_estimator_test.cpp src/pose_estimator.cpp)
 target_include_directories(sfr_pose_estimator_test PRIVATE src)
 add_test(NAME pose_estimator COMMAND sfr_pose_estimator_test)
@@ -950,6 +972,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui/imgui.cpp")
         target_link_libraries(sfr_launcher PRIVATE sfr_installer SDL2::SDL2 ${CMAKE_DL_LIBS})
         if(APPLE)
             target_link_libraries(sfr_launcher PRIVATE ${SFR_CAMERA_LIBRARIES})
+            sfr_link_freenect_sensor(sfr_launcher)
         endif()
     endif()
     target_include_directories(sfr_launcher PRIVATE src ${SFR_IMGUI} ${SFR_IMGUI}/backends)
@@ -1502,6 +1525,9 @@ if(SFR_BUILD_DIAGNOSTIC)
     endif()
     if(APPLE)
         target_link_libraries(sfr_cpu_diagnostic PRIVATE ${SFR_CAMERA_LIBRARIES})
+        if(SFR_FREENECT_AVAILABLE)
+            target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_freenect)
+        endif()
     endif()
     target_sources(sfr_cpu_diagnostic PRIVATE src/memory_update_forms.cpp)
     target_sources(sfr_cpu_diagnostic PRIVATE src/native_input.cpp src/input_bindings.cpp src/pad_assignment.cpp src/pad_devices.cpp src/sony_gamepad.cpp src/native_audio.cpp src/nui_skeleton.cpp src/nui_speech.cpp src/nui_race.cpp)
