@@ -305,5 +305,6 @@ APK 裡有 ONNX Runtime 時，授權壓縮檔會附上 ONNX Runtime 與 MediaPip
 **實機驗證**（AYN Thor，Snapdragon 8 Gen 2，沒有鏡頭）：`SFR_CAMERA=motion` 跑完整場
 Dolphin Resort，記 `android=no-camera`、速度 0.999，和沒開攝影機時一樣；
 `sfr_pose_probe`（arm64）在 Thor 上載入兩個模型，偵測器每張約 27 ms（i9-14900KF 約 11 ms），
-三張比賽畫面的結果與 Windows 相同。還沒在有鏡頭的手機上玩過，也還沒用真人照片量
-Android 上整個姿勢推論的時間。
+三張比賽畫面的結果與 Windows 相同。四張有真人的畫面（從 OpenCV Zoo 同一個版本的
+`mpposeest_demo.webp` 裁出）都找到人，17 個關節與 Windows 差不到 0.1 像素；`--check-3d`
+通過，追蹤時每張約 19 ms（Windows 約 10 ms），跟得上 30 fps 的鏡頭。還沒在有鏡頭的手機上玩過。
