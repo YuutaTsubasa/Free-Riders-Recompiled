@@ -575,7 +575,8 @@ if(APPLE AND NOT IOS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/libfreenect/s
     set_target_properties(sfr_freenect PROPERTIES COMPILE_OPTIONS -w)
     add_library(sfr_fakenect STATIC ${SFR_FREENECT}/fakenect/fakenect.c ${SFR_FREENECT}/fakenect/parson.c
         ${SFR_FREENECT}/src/registration.c)
-    target_include_directories(sfr_fakenect PUBLIC ${SFR_FREENECT}/include PRIVATE ${SFR_FREENECT}/src)
+    # libusb's header only: libfreenect's internal header names its types.
+    target_include_directories(sfr_fakenect PUBLIC ${SFR_FREENECT}/include PRIVATE ${SFR_FREENECT}/src ${SFR_LIBUSB})
     set_target_properties(sfr_fakenect PROPERTIES COMPILE_OPTIONS -w)
     # Checking a Mac's Kinect, or a recording, without the game.
     add_executable(sfr_freenect_probe tests/freenect_probe.cpp)
