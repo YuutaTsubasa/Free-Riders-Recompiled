@@ -437,7 +437,8 @@ def main():
         files.append(('Pipeline-preparation.md', need(ROOT / 'docs/pipeline-preparation.md')))
         if args.camera:
             exe = '.exe' if args.platform == 'windows' else ''
-            files += camera_files(ROOT / 'tools/onnx', args.platform, build / ('FreeRidersRecompiled' + exe))
+            # sfr_cpu_diagnostic is the game; FreeRidersRecompiled is the launcher.
+            files += camera_files(ROOT / 'tools/onnx', args.platform, build / ('sfr_cpu_diagnostic' + exe))
             files.append(('Camera-input.md', need(ROOT / 'docs/camera-input.md')))
             readme += b'\nCamera motion: enable Camera > Motion in the launcher. Models and runtime are included.\nSkeleton debug window is optional. Camera controls 1P; controller input takes priority.\n'
         if args.platform == 'windows':

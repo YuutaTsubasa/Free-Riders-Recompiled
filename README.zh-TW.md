@@ -216,12 +216,12 @@ Windows 發行包已內附體感模型與執行庫。在啟動器選擇 **體感
 與[人物偵測模型](https://github.com/opencv/opencv_zoo/tree/47534e27c9851bb1128ccc0102f1145e27f23f98/models/person_detection_mediapipe)
 （Apache 2.0）。模型源自 Google MediaPipe，本專案使用其 ONNX 轉換版本，
 不需要安裝 MediaPipe 或 OpenCV 執行庫。下載檔的 SHA-256 固定於
-[scripts/fetch_pose_model.py](scripts/fetch_pose_model.py)，Windows 發行包的 `licenses/`
+[scripts/fetch_pose_model.py](scripts/fetch_pose_model.py)，Windows 與 Linux 發行包的 `licenses/`
 資料夾內附授權與第三方通知。
 
 單眼攝影機估算的是相對 3D 姿勢，並非 Kinect 的深度量測。Android APK 也附上同樣的
 模型與執行庫，可以用手機自己的鏡頭（第一次開鏡頭時詢問相機權限；沒有鏡頭的裝置不會被
-問），授權附在 APK 旁的授權壓縮檔。Linux 預建包目前仍未啟用 Camera 體感。設定、動作說明與自行建置方式見[攝影機體感輸入](docs/camera-input.md)。
+問），授權附在 APK 旁的授權壓縮檔。Linux 的 tar.gz 也附上，透過 V4L2 讀取 webcam。設定、動作說明與自行建置方式見[攝影機體感輸入](docs/camera-input.md)。
 
 ## VRM Avatar 模型
 

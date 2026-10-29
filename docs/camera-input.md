@@ -192,7 +192,8 @@ RTMPose 仍使用 17 點 COCO、192x256 輸入與 SimCC XY 解碼，沒有相對
 從 v0.2.0 起，Windows 發行包包含 MediaPipe 模型與 ONNX Runtime，並附上授權及
 第三方通知；不需要另外下載。`scripts/package_release.py windows --camera` 會檢查
 模型、執行庫與授權檔是否齊全。Android 的 APK 從 #305 起也附上模型與 ONNX Runtime（見下方）；
-Linux 的預建包目前未啟用 Camera 體感；
+Linux 的 tar.gz 從 #305 起也附上（`package_release.py linux --camera`：`libonnxruntime.so.1`
+放在遊戲旁、模型在 `pose/`；遊戲建置時沒連上 ONNX Runtime 就拒絕打包）。
 Linux 自行建置可用 `SFR_ONNX_ROOT` 指定 Linux ONNX Runtime 安裝目錄。
 
 依賴授權：
