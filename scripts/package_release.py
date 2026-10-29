@@ -297,6 +297,8 @@ def ios_app(app, version, build, pack, moltenvk, licenses, readme):
             'LSSupportsOpeningDocumentsInPlace': True,
             'UIApplicationSupportsIndirectInputEvents': True,  # a mouse or trackpad
             'GCSupportsControllerUserInteraction': True,
+            # iOS ends an app that opens the camera without saying why.
+            'NSCameraUsageDescription': 'Camera input lets you ride with your body, as with Kinect.',
             'GCSupportedGameControllers': [{'ProfileName': 'ExtendedGamepad'}],
         }, stream)
     # The build directory's own library paths (CMake's build rpaths) have no
