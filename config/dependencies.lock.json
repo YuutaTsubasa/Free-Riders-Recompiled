@@ -76,6 +76,24 @@
       "license": "Zlib",
       "submodules": [],
       "rationale": "SDL 2.32.8 (release-2.32.8), built from source for Android: its Java activity, window, input and audio. Desktop Linux uses the system SDL2."
+    },
+    {
+      "name": "libusb",
+      "url": "https://github.com/libusb/libusb.git",
+      "commit": "87a55632db62c9bdc58cd31d3ccfa673f1bb017f",
+      "path": "tools/libusb",
+      "license": "LGPL-2.1",
+      "submodules": [],
+      "rationale": "v1.0.30. The USB library libfreenect drives a Kinect v1 through on macOS (#305); its sources are compiled by this project's CMake there, nowhere else."
+    },
+    {
+      "name": "libfreenect",
+      "url": "https://github.com/OpenKinect/libfreenect.git",
+      "commit": "09a1f098040d00e6070c18174904547ec31d2774",
+      "path": "tools/libfreenect",
+      "license": "Apache-2.0 OR GPL-2.0 (used under Apache-2.0)",
+      "submodules": [],
+      "rationale": "master after v0.6.4 (its CMake works with current CMake). The Kinect v1 on macOS, where the Kinect for Windows runtime does not exist (#305), and fakenect, which plays a recording back as a sensor; compiled on macOS only."
     }
   ],
   "references": [
