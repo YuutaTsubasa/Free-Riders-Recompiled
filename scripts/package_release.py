@@ -172,8 +172,8 @@ def macos_app(app, version, build, pack, moltenvk, licenses, readme):
     # Camera motion (#305) when the game was built with ONNX Runtime: the
     # dylib beside MoltenVK, where the game's rpath looks, and the models.
     if b'libonnxruntime' in (contents / 'MacOS/sfr_cpu_diagnostic').read_bytes():
-        shutil.copy2(need(ROOT / 'tools/onnx/onnxruntime-macos/lib/libonnxruntime.1.30.0.dylib'),
-                     contents / 'Frameworks/libonnxruntime.1.30.0.dylib')
+        shutil.copy2(need(ROOT / 'tools/onnx/onnxruntime-macos/lib/libonnxruntime.1.dylib'),
+                     contents / 'Frameworks/libonnxruntime.1.dylib')
         licenses = licenses + apple_camera_files(ROOT / 'tools/onnx', 'onnxruntime-macos')
         print('camera motion: included')
     else:

@@ -587,8 +587,12 @@ elseif(IOS)
         set(SFR_ONNX_LIBRARY "${SFR_ONNX_ROOT}/lib/libonnxruntime.a")
     endif()
 elseif(APPLE)
-    set(SFR_ONNX_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/tools/onnx/onnxruntime-macos" CACHE PATH "macOS ONNX Runtime installation")
-    set(SFR_ONNX_LIBRARY "${SFR_ONNX_ROOT}/lib/libonnxruntime.1.30.0.dylib")
+    # A cache entry of its own: a build directory configured before #305
+    # keeps the desktop SFR_ONNX_ROOT, which on a Mac points at nothing.
+    set(SFR_MACOS_ONNX_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/tools/onnx/onnxruntime-macos" CACHE PATH "macOS ONNX Runtime installation")
+    set(SFR_ONNX_ROOT "${SFR_MACOS_ONNX_ROOT}")
+    # Its install name, @rpath/libonnxruntime.1.dylib.
+    set(SFR_ONNX_LIBRARY "${SFR_ONNX_ROOT}/lib/libonnxruntime.1.dylib")
 else()
     set(SFR_ONNX_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/tools/onnx/onnxruntime" CACHE PATH "Host ONNX Runtime installation")
     if(WIN32)

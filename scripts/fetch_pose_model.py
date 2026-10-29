@@ -175,8 +175,8 @@ def unpack_android(archive, linux_archive):
 
 
 def unpack_macos(archive):
-    # The dylib under its versioned name (its install name), the headers and
-    # the notices; not the debug symbols or the test library.
+    # The dylib under its install name (@rpath/libonnxruntime.1.dylib), the
+    # headers and the notices; not the debug symbols or the test library.
     destination = TOOLS / 'onnxruntime-macos'
     with tarfile.open(archive) as packed:
         for member in packed.getmembers():
@@ -185,6 +185,8 @@ def unpack_macos(archive):
             relative = member.name[len(MACOS_ROOT):]
             if not (relative in NOTICES or relative.startswith('include/') or relative == 'lib/libonnxruntime.1.30.0.dylib'):
                 continue
+            if relative.startswith('lib/'):
+                relative = 'lib/libonnxruntime.1.dylib'
             target = destination / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             with packed.extractfile(member) as source, target.open('wb') as out:
