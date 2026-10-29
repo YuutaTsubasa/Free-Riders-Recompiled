@@ -51,7 +51,7 @@ Runtime for Android was fetched too.
 
 ```bash
 python scripts/package_release.py windows --version 0.3.0 --camera
-python scripts/package_release.py linux --version 0.3.0 --build ~/sfr-build
+python scripts/package_release.py linux --version 0.3.0 --build ~/sfr-build --camera
 python scripts/package_release.py android --version 0.3.0
 ```
 
@@ -59,15 +59,16 @@ Each prints the SHA-256 of what it wrote to `out/release/`. The script stops
 when a licence file is missing; the DirectX Shader Compiler's texts are kept in
 `packaging/licenses/` because dxc-bin ships none.
 
-The Windows `--camera` bundle also requires both MediaPipe models, ONNX
-Runtime DLLs, the model licence and the runtime's licence/third-party notices.
+The `--camera` bundle also requires both MediaPipe models, ONNX Runtime (the
+DLLs on Windows; `libonnxruntime.so.1` on Linux, which the game finds beside
+itself), the model licence and the runtime's licence/third-party notices.
 Verify the pinned downloads with `python scripts/fetch_pose_model.py --verify-only`.
-Linux and Android prebuilt releases currently omit camera motion inference;
-state this in the release notes. (`fetch_pose_model.py --platform linux` and
-`--android` fetch their runtimes, and `build_android.sh` puts the MediaPipe
-models in the APK when they and the Android runtime are there, but neither is
-packaged for release yet.) Update `VERSION_NAME` and monotonically
-increase `VERSION_CODE` in `scripts/package_android.py` before packaging.
+On Linux, fetch the Linux runtime (`fetch_pose_model.py --platform linux`)
+before configuring: a Linux `--camera` package stops when the game was built
+without it. `build_android.sh` puts the MediaPipe models and the Android
+runtime (`--android`) in the APK when both are there. Update `VERSION_NAME`
+and monotonically increase `VERSION_CODE` in `scripts/package_android.py`
+before packaging.
 
 Desktop archives and the Android licences ZIP include `VRM-Avatar.md`.
 Use the maintained `docs/vrm-avatar.md` for that guide. Never copy a personal

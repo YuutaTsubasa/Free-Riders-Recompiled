@@ -32,7 +32,7 @@ class CameraPackageTests(unittest.TestCase):
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(name)
-            self.assertEqual(dict(package.camera_files(root)),
+            self.assertEqual(dict(package.camera_files(root, 'windows', root / 'game.exe')),
                              {target: root / source for source, target in sources.items()})
             # A partially installed camera dependency must stop packaging.
             for missing in ('mediapipe/LICENSE', 'mediapipe/person_detection_mediapipe_2023mar.onnx',
@@ -41,8 +41,33 @@ class CameraPackageTests(unittest.TestCase):
                     path = root / missing
                     path.unlink()
                     with self.assertRaises(SystemExit):
-                        package.camera_files(root)
+                        package.camera_files(root, 'windows', root / 'game.exe')
                     path.write_text(missing)
+
+    def test_linux_camera_bundle_needs_a_game_linked_with_the_runtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sources = {
+                'onnxruntime/lib/libonnxruntime.so.1.30.0': 'libonnxruntime.so.1',
+                'onnxruntime/lib/libonnxruntime_providers_shared.so': 'libonnxruntime_providers_shared.so',
+                'onnxruntime/LICENSE': 'licenses/ONNXRuntime-MIT.txt',
+                'onnxruntime/ThirdPartyNotices.txt': 'licenses/ONNXRuntime-ThirdPartyNotices.txt',
+                'mediapipe/pose_estimation_mediapipe_2023mar.onnx': 'pose/pose_estimation_mediapipe_2023mar.onnx',
+                'mediapipe/person_detection_mediapipe_2023mar.onnx': 'pose/person_detection_mediapipe_2023mar.onnx',
+                'mediapipe/LICENSE': 'licenses/MediaPipe-Apache-2.0.txt',
+            }
+            for name in sources:
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(name)
+            game = root / 'sfr_cpu_diagnostic'
+            game.write_bytes(b'ELF ... libonnxruntime.so.1 ...')
+            self.assertEqual(dict(package.camera_files(root, 'linux', game)),
+                             {target: root / source for source, target in sources.items()})
+            # Built without the runtime: the models would do nothing.
+            game.write_bytes(b'ELF ... libSDL2-2.0.so.0 ...')
+            with self.assertRaises(SystemExit):
+                package.camera_files(root, 'linux', game)
 
 
 class ShaderPackageTests(unittest.TestCase):

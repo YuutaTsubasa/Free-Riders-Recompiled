@@ -3,8 +3,8 @@
 
 These are binary artefacts rather than repositories, so they are pinned by
 SHA-256 here instead of in config/dependencies.lock.json, and unpacked into
-tools/onnx (git-ignored). Windows camera releases bundle these dependencies
-with their licences and notices (see docs/camera-input.md).
+tools/onnx (git-ignored). Windows, Linux and Android camera releases bundle
+these dependencies with their licences and notices (see docs/camera-input.md).
 
   python scripts/fetch_pose_model.py [--model mediapipe|rtmpose] [--platform windows|linux]
                                      [--android] [--verify-only]
@@ -70,8 +70,12 @@ MODEL_FILES = ('end2end.onnx', 'pipeline.json', 'deploy.json', 'detail.json')
 
 
 def digest(path):
+    # Not hashlib.file_digest: Ubuntu 22.04, where Linux releases are built, has Python 3.10.
+    sha = hashlib.sha256()
     with path.open('rb') as stream:
-        return hashlib.file_digest(stream, 'sha256').hexdigest()
+        for block in iter(lambda: stream.read(1 << 20), b''):
+            sha.update(block)
+    return sha.hexdigest()
 
 
 def fetch(name, entry, verify_only):
