@@ -328,8 +328,10 @@ std::unique_ptr<KinectSensor> KinectSensor::open(std::string* why) { return open
 
 std::unique_ptr<KinectSensor> KinectSensor::open_model(int model, std::string* why) {
     if (model == 1) return open_freenect(why);
-    // A Kinect v2 through libfreenect2 is not here yet.
-    if (why) *why = "unsupported-model";
+    // A Kinect v2 through libfreenect2 is not here yet: as a host without
+    // its runtime, so that a v1's own reason (no-sensor, ...) is the one told
+    // (kinect_open_failure).
+    if (why) *why = "no-runtime";
     return nullptr;
 }
 
