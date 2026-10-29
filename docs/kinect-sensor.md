@@ -247,6 +247,27 @@ v1 與 v2 用同一種欄位格式。
 | `<前綴>-depth.bin` | 遊戲 | 遊戲經 `NuiImageStreamGetNextFrame`（`82767148`）**實際拿到**的每張深度影像（v1 原樣，或 v2 合成） |
 | `<前綴>-v1-depth.bin`、`<前綴>-v2-depth.bin` | 探針 `--record <前綴> --depth` | 各感測器交給遊戲時會是的影像：v1 原始深度、v2 以 `fit` 合成（`game_image()`）；一台一個檔，`--v1`／`--v2`／`--both` 都一樣 |
 | `<前綴>-v2raw.bin` | 探針 `--record <前綴> --raw`，或遊戲用 v2 時 `SFR_KINECT_RECORD_RAW=1` | v2 合成每一張影像時**用到的原始資料**（格式 `SFRKRAW1`，見下方「原始 v2 錄製」），可離線用任何視角重做 |
+| `<前綴>-v1-colour.bin`、`<前綴>-v2-colour.bin` | 探針 `--record <前綴> --colour` | 各感測器的**彩色畫面**（格式 `SFRKCOL1`，見下方「彩色錄製」），跟深度、骨架用同一個時鐘 |
+
+### 彩色錄製
+
+給 Mac 的 Kinect 用（#305）：Mac 上沒有微軟的 Kinect runtime，驅動（libfreenect、libfreenect2）只給彩色與深度，
+沒有骨架和玩家編號，要自己從這兩樣做出來。同時錄下彩色、深度與 runtime 算的骨架，就能離線比對自己做的結果。
+
+開關：`SFR_KINECT_RECORD=<前綴>` 加 `SFR_KINECT_RECORD_COLOUR=1`（探針的 `--colour` 等於後者）。v1 是 640x480，
+v2 是預覽用的 v1 大小（[`kinect_v2_image`](../src/kinect_v2_image.h)，畫面外補黑邊）。每張存成藍、綠、紅三個位元組
+（約 900 KB），所以預設只留每第 2 張（`SFR_KINECT_RECORD_COLOUR_EVERY`，每秒 15 張），每個檔最多
+`SFR_KINECT_RECORD_COLOUR_MB` MB（預設 4096，約 4.5 分鐘；滿了停止並 log 一次 `NATIVE_KINECT_RECORD colour full …`）。
+格式見 [`kinect_record_colour.h`](../src/kinect_record_colour.h)；`steady_us` 跟深度檔、骨架 CSV 是同一個時鐘，用來對齊。
+v2 的彩色畫面從 #305 起才帶時間（`IColorFrame::get_RelativeTime`）。
+
+錄一段比對用的資料（兩台都接上時用 `--both`，一台時用 `--v1` 或 `--v2`）：
+
+```powershell
+out\build\host\sfr_kinect_probe.exe 180 --both --record D:\rec\mac1 --depth --colour
+```
+
+180 秒內依序：站著不動 10 秒、舉右手在畫面上移動（選單游標）、左右傾身、蹲下、跳、側移、走出畫面再走回來。
 
 開關：`SFR_KINECT_RECORD=<前綴>` 加 `SFR_KINECT_RECORD_DEPTH=1`（探針的 `--depth` 等於後者）。每個深度檔最多
 `SFR_KINECT_RECORD_DEPTH_MB` MB（預設 4096，滿了停止並在 log 寫一次 `NATIVE_KINECT_RECORD depth full <檔名> after … bytes (… images): stopped`）；

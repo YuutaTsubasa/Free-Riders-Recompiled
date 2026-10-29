@@ -166,6 +166,7 @@ $targets += 'sfr_kinect_record_test'
 $targets += 'sfr_kinect_record_summary'
 # Depth recordings: their format, the title's depth view features again, v1 against v2.
 $targets += 'sfr_kinect_depth_test'
+$targets += 'sfr_kinect_colour_record_test'  # Kinect colour recordings (#305)
 $targets += 'sfr_kinect_depth_features'
 $targets += 'sfr_kinect_depth_compare'
 # A Kinect v2's raw recording made into the game's depth again, through any view.

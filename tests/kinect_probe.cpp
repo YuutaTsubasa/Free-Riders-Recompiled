@@ -2,7 +2,7 @@
 // through the Kinect for Windows runtime and prints what it tracks for ten
 // seconds.
 //
-//   sfr_kinect_probe [seconds] [--v1 | --v2 | --both] [--record prefix [--depth] [--raw]] [--images [prefix]] [--game-depth]
+//   sfr_kinect_probe [seconds] [--v1 | --v2 | --both] [--record prefix [--depth] [--raw] [--colour]] [--images [prefix]] [--game-depth]
 //                    [--smooth]
 //
 // --v1 or --v2 opens that kind only, --both opens a Kinect v1 and a Kinect
@@ -20,6 +20,10 @@
 // depth for the game can be made again offline through any view
 // (sfr_kinect_depth_resynth); the sensor writes it from the frames it makes the
 // image from.
+// --colour (or SFR_KINECT_RECORD_COLOUR=1) also writes each sensor's colour
+// pictures, every second one by default, to <prefix>-v1-colour.bin and
+// <prefix>-v2-colour.bin (kinect_record_colour.h), on the clock the depth and
+// skeleton share: what a host without the Kinect runtime has (#305).
 // With --images it also saves the first colour and depth image each sensor
 // gives, as the launcher's preview shows them, to <prefix>colour.bmp and
 // <prefix>depth.bmp (prefix "kinect_" by default, with "v1_"/"v2_" added
@@ -33,6 +37,7 @@
 // the players' pixels, and with --images the first one as
 // <prefix>game_depth.bmp.
 #include "kinect_record.h"
+#include "kinect_record_colour.h"
 #include "kinect_record_depth.h"
 #include "kinect_record_raw.h"
 #include "kinect_sensor.h"
@@ -91,9 +96,9 @@ struct Probe {
     std::string tag;  // "v1", "v2", or empty for the first found
     std::string prefix;
     sfr::KinectFrame frame;
-    sfr::KinectImage colour, depth, game_depth, recorded_depth;
+    sfr::KinectImage colour, depth, game_depth, recorded_depth, recorded_colour;
     bool colour_saved = false, depth_saved = false, game_depth_saved = false;
-    uint64_t game_depth_frames = 0, depth_recorded = 0;
+    uint64_t game_depth_frames = 0, depth_recorded = 0, colour_recorded = 0;
     uint64_t shown = 0, frames = 0, with_body = 0;
 };
 }
@@ -121,6 +126,8 @@ int main(int argc, char** argv) {
             game_depth = true;
         } else if (arg == "--depth") {
             sfr::kinect_record_depth_enable();
+        } else if (arg == "--colour") {
+            sfr::kinect_record_colour_enable();
         } else if (arg == "--raw") {
             sfr::kinect_record_raw_enable();
         } else if (arg == "--smooth") {
@@ -184,6 +191,16 @@ int main(int argc, char** argv) {
                       << (probe.sensor->has_depth_stream() ? "" : " (this sensor has no depth for the game: none)")
                       << std::endl;
     }
+    // Each sensor's colour file, named after its kind.
+    const bool recording_colour = recording && sfr::kinect_record_colour_enabled();
+    std::vector<sfr::KinectColourRecordFile*> colour_files;
+    for (const Probe& probe : probes) {
+        const std::string tag = probe.tag.empty() ? (std::string(probe.sensor->model()) == "Kinect v2" ? "v2" : "v1")
+                                                  : probe.tag;
+        sfr::KinectColourRecordFile* file = recording_colour ? sfr::kinect_record_colour_file(tag) : nullptr;
+        colour_files.push_back(file);
+        if (file) std::cout << "recording the colour pictures to " << file->path() << std::endl;
+    }
     // A Kinect v2's raw frames: written by the sensor itself.
     const bool recording_raw = recording && sfr::kinect_record_raw_enabled();
     if (recording_raw)
@@ -214,6 +231,22 @@ int main(int argc, char** argv) {
                 record.z_scale = image.view_z_scale;
                 sfr::kinect_depth_frame_pixels(record, image.pixels.data(), image.width, image.height);
                 if (file->write(record)) ++probe.depth_recorded;
+                any = true;
+            }
+            // Its colour pictures, as they come (the file keeps every Nth).
+            if (sfr::KinectColourRecordFile* file = colour_files[index];
+                file && sensor->image(sfr::KinectImageKind::colour, probe.recorded_colour) &&
+                probe.recorded_colour.bytes_per_pixel == 4) {
+                const sfr::KinectImage& image = probe.recorded_colour;
+                sfr::KinectColourRecordFrame record;
+                record.steady_us = image.steady_us;
+                record.handed_us = sfr::kinect_record_now_us();
+                record.sdk_time = image.sdk_time;
+                record.number = image.number;
+                if (sfr::kinect_colour_frame_pixels(record, image.pixels.data(), image.width, image.height,
+                                                    image.bytes_per_pixel) &&
+                    file->write(record))
+                    ++probe.colour_recorded;
                 any = true;
             }
             // Recording keeps a v2's depth reader open (its share of pixels
@@ -296,6 +329,7 @@ int main(int argc, char** argv) {
                       << (probe.depth_saved ? "saved" : "none");
         if (game_depth) std::cout << "; depth images for the game: " << probe.game_depth_frames;
         if (recording_depth) std::cout << "; depth images recorded: " << probe.depth_recorded;
+        if (recording_colour) std::cout << "; colour pictures recorded: " << probe.colour_recorded;
         std::cout << std::endl;
     }
     if (recording_raw)
