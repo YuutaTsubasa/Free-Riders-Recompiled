@@ -5,7 +5,12 @@ cmake_policy(SET CMP0091 NEW)
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     set(CMAKE_OSX_DEPLOYMENT_TARGET "16.3" CACHE STRING "Minimum iOS version")
 else()
-    set(CMAKE_OSX_DEPLOYMENT_TARGET "13.3" CACHE STRING "Minimum macOS version")
+    # macOS 14: ONNX Runtime 1.30's dylib, for camera motion (#305). A build
+    # directory configured before then keeps 13.3 in its cache, so raise it.
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0" CACHE STRING "Minimum macOS version")
+    if(CMAKE_OSX_DEPLOYMENT_TARGET VERSION_LESS 14.0)
+        set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0" CACHE STRING "Minimum macOS version" FORCE)
+    endif()
 endif()
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 project(FreeRidersRecompiled LANGUAGES C CXX)
@@ -510,13 +515,20 @@ target_include_directories(sfr_touch_labels_test PRIVATE src)
 add_test(NAME touch_labels COMMAND sfr_touch_labels_test "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/touch_labels.hlsli")
 # The webcam standing in for the Kinect sensor: Media Foundation on Windows,
 # V4L2 on Linux, the NDK's Camera2 on Android (the phone's own cameras),
-# nothing elsewhere (the setting then has no effect).
+# AVFoundation on macOS and iOS, nothing elsewhere (the setting then has no
+# effect).
 set(SFR_CAMERA_LIBRARIES)
 if(WIN32)
     set(SFR_CAMERA_CAPTURE src/camera_capture.cpp src/camera_capture_win32.cpp)
 elseif(ANDROID)
     set(SFR_CAMERA_CAPTURE src/camera_capture.cpp src/camera_capture_android.cpp)
     set(SFR_CAMERA_LIBRARIES SDL2::SDL2 camera2ndk mediandk)
+elseif(APPLE)
+    enable_language(OBJCXX)
+    set(SFR_CAMERA_CAPTURE src/camera_capture.cpp src/camera_capture_apple.mm)
+    set(SFR_CAMERA_LIBRARIES "-framework AVFoundation" "-framework CoreMedia" "-framework CoreVideo"
+        "-framework CoreFoundation" "-framework Foundation")
+    set_source_files_properties(src/camera_capture_apple.mm PROPERTIES COMPILE_OPTIONS -fobjc-arc)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(SFR_CAMERA_CAPTURE src/camera_capture.cpp src/camera_capture_v4l2.cpp)
 else()
@@ -567,10 +579,25 @@ endfunction()
 # Finding a body in a camera picture: ONNX Runtime and the pinned MediaPipe
 # models (tools/onnx, fetched by scripts/fetch_pose_model.py). Without them
 # the camera can still give the title a picture, but not drive the player.
-# Android takes the runtime fetched for each ABI (--android).
+# Android takes the runtime fetched for each ABI (--android), macOS and iOS
+# theirs (--apple): iOS links it statically, as its pod is built to be.
 if(ANDROID)
     set(SFR_ONNX_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/tools/onnx/onnxruntime-android")
     set(SFR_ONNX_LIBRARY "${SFR_ONNX_ROOT}/lib/${ANDROID_ABI}/libonnxruntime.so")
+elseif(IOS)
+    set(SFR_ONNX_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/tools/onnx/onnxruntime-ios")
+    if(CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
+        set(SFR_ONNX_LIBRARY "${SFR_ONNX_ROOT}/lib/simulator/libonnxruntime.a")
+    else()
+        set(SFR_ONNX_LIBRARY "${SFR_ONNX_ROOT}/lib/libonnxruntime.a")
+    endif()
+elseif(APPLE)
+    # A cache entry of its own: a build directory configured before #305
+    # keeps the desktop SFR_ONNX_ROOT, which on a Mac points at nothing.
+    set(SFR_MACOS_ONNX_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/tools/onnx/onnxruntime-macos" CACHE PATH "macOS ONNX Runtime installation")
+    set(SFR_ONNX_ROOT "${SFR_MACOS_ONNX_ROOT}")
+    # Its install name, @rpath/libonnxruntime.1.dylib.
+    set(SFR_ONNX_LIBRARY "${SFR_ONNX_ROOT}/lib/libonnxruntime.1.dylib")
 else()
     set(SFR_ONNX_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/tools/onnx/onnxruntime" CACHE PATH "Host ONNX Runtime installation")
     if(WIN32)
@@ -584,7 +611,15 @@ if(EXISTS "${SFR_ONNX_ROOT}/include/onnxruntime_cxx_api.h" AND EXISTS "${SFR_ONN
     add_library(sfr_onnxruntime INTERFACE)
     target_include_directories(sfr_onnxruntime INTERFACE "${SFR_ONNX_ROOT}/include")
     target_link_libraries(sfr_onnxruntime INTERFACE "${SFR_ONNX_LIBRARY}")
-    if(NOT WIN32 AND NOT ANDROID)
+    if(IOS)
+        # What the static library needs of the system (its podspec's list).
+        target_link_libraries(sfr_onnxruntime INTERFACE "-framework CoreFoundation" "-framework Foundation"
+            "-framework Network" "-framework Security" "-framework SystemConfiguration" "-framework UIKit"
+            "-weak_framework CoreML" c++)
+    elseif(APPLE)
+        # The app keeps the dylib in Contents/Frameworks, beside MoltenVK.
+        set(CMAKE_BUILD_RPATH "@executable_path/../Frameworks")
+    elseif(NOT WIN32 AND NOT ANDROID)
         # A release keeps libonnxruntime.so.1 beside the program. Through the
         # RPATH property, not a -rpath link option: Ninja read that one's
         # $ORIGIN as a variable and left "$" (#305). Targets made after this
@@ -873,6 +908,9 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui/imgui.cpp")
         endif()
         target_compile_definitions(sfr_launcher PRIVATE SFR_UI_SOUND_SDL)
         target_link_libraries(sfr_launcher PRIVATE sfr_installer SDL2::SDL2 ${CMAKE_DL_LIBS})
+        if(APPLE)
+            target_link_libraries(sfr_launcher PRIVATE ${SFR_CAMERA_LIBRARIES})
+        endif()
     endif()
     target_include_directories(sfr_launcher PRIVATE src ${SFR_IMGUI} ${SFR_IMGUI}/backends)
 endif()
@@ -1421,6 +1459,9 @@ if(SFR_BUILD_DIAGNOSTIC)
     if(SFR_POSE_AVAILABLE)
         target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_onnxruntime)
         sfr_copy_onnx_dlls(sfr_cpu_diagnostic)
+    endif()
+    if(APPLE)
+        target_link_libraries(sfr_cpu_diagnostic PRIVATE ${SFR_CAMERA_LIBRARIES})
     endif()
     target_sources(sfr_cpu_diagnostic PRIVATE src/memory_update_forms.cpp)
     target_sources(sfr_cpu_diagnostic PRIVATE src/native_input.cpp src/input_bindings.cpp src/pad_assignment.cpp src/pad_devices.cpp src/sony_gamepad.cpp src/native_audio.cpp src/nui_skeleton.cpp src/nui_speech.cpp src/nui_race.cpp)

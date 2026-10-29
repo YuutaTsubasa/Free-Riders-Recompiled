@@ -25,7 +25,7 @@ launcher 設定檔裡這兩項分別存成 `camera=kinect` 與 `camera=kinect_v2
 ## 從畫面到骨架
 
 1. [`camera_capture`](../src/camera_capture.h)：Windows 走 Media Foundation，
-   Linux 走 V4L2，要求 640x480。相機給的很少是 BGRA，所以 YUY2 與 NV12
+   Linux 走 V4L2，macOS／iOS 走 AVFoundation，要求 640x480。相機給的很少是 BGRA，所以 YUY2 與 NV12
    在 [`convert_camera_pixels`](../src/camera_capture.cpp) 換算（BT.601）。
 2. [`pose_estimator`](../src/pose_estimator.h)：ONNX Runtime 預設跑 OpenCV Zoo 的
    MediaPipe 人物偵測與姿勢模型。先找出身體並裁切、旋轉，再估算 33 個關節的
@@ -323,3 +323,30 @@ Dolphin Resort，記 `android=no-camera`、速度 0.999，和沒開攝影機時�
 `sfr_pose_probe` 都從解壓資料夾載入 `libonnxruntime.so.1`；probe 在解壓資料夾裡跑上面那四張
 真人畫面，都找到人，17 個關節與 Windows 差不到 0.02 像素；`--check-3d` 通過，追蹤時每張約
 8.5 ms。還沒在 Linux 上用真的 webcam 玩過。
+
+## macOS／iOS：AVFoundation
+
+[`camera_capture_apple.mm`](../src/camera_capture_apple.mm) 用 AVCaptureSession 讀 BGRA（系統代為
+轉換，不需要 YUV 換算），盡量用 640x480：
+
+- **清單**：macOS 是內建鏡頭、USB webcam 與當作接續互通相機的 iPhone；iOS 每顆鏡頭分開列
+  （廣角、超廣角、望遠，iPad 另有 USB 鏡頭），名字是系統給的（例如「Back Ultra Wide Camera」）。
+- **權限**：跟 Android 一樣先列鏡頭再問，沒有鏡頭的 Mac 記 `NATIVE_CAMERA apple=no-camera`
+  就繼續，不會跳出詢問。iOS 的 Info.plist 有 `NSCameraUsageDescription`（沒有的話 iOS 一開鏡頭
+  就結束 App）。在主執行緒等回答時會讓 run loop 繼續轉，iOS 才畫得出詢問。
+- **轉正**：iOS 遊戲是橫向的，iOS 17 起用 `AVCaptureDeviceRotationCoordinator` 的水平角度，
+  更早的版本固定橫向；前鏡頭不鏡像，跟 Android 的 Camera2 一樣。
+
+**模型與執行庫**：`python scripts/fetch_pose_model.py --apple` 下載 macOS（arm64 dylib，
+解成 install name `libonnxruntime.1.dylib`）與 iOS（CocoaPods `onnxruntime-c` 的靜態
+xcframework）的 ONNX Runtime 1.30.0。macOS 版把 dylib 放在 `Contents/Frameworks`（遊戲的
+rpath 是 `@executable_path/../Frameworks`），模型在 `Contents/Resources/pose`；iOS 版把執行庫
+靜態連進遊戲的 framework，模型在 App 根目錄的 `pose/`。遊戲以 `CFBundleCopyResourcesDirectoryURL`
+找模型。打包時遊戲有連 ONNX Runtime 就一定附上模型與授權（缺檔就停），並把建置資料夾的絕對
+rpath 拿掉，避免在建置機上測試時從建置資料夾找到 App 自己沒帶的執行庫。
+
+**驗證**（Mac mini M1，沒有鏡頭）：打包好的 App 開 `SFR_CAMERA=motion` 跑完整場 Dolphin Resort，
+記 `apple=no-camera`、沒有跳出權限詢問、速度 1.000、MoltenVK 錯誤 0；App 只能從自己的
+`Frameworks` 載入 ONNX Runtime（建置資料夾的 rpath 已拿掉）。`sfr_pose_probe` 在 Mac 上跑同樣
+四張真人畫面都找到人，關節與 Windows 差不到 0.09 像素，`--check-3d` 通過（追蹤每張約 17.6 ms）。
+iOS 版只建置、打包（ipa 內有模型、授權與 `NSCameraUsageDescription`），還沒在 iPhone／iPad 上跑過。

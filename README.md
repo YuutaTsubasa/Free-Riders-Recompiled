@@ -266,7 +266,7 @@ with [docs/progress.md](docs/progress.md).
 - **Windows**: Windows 10 or 11 (x64), a CPU with AVX, a GPU with Direct3D 12
   (or Vulkan 1.2).
 - **Linux**: x86-64 with AVX and a Vulkan 1.2 driver (tested on Ubuntu 22.04).
-- **macOS**: macOS 13.3 or later on Apple Silicon (tested on an M1 Mac mini).
+- **macOS**: macOS 14 or later on Apple Silicon (tested on an M1 Mac mini); since 0.10.39, for the camera motion input's runtime.
   The Vulkan driver (MoltenVK) is inside the app. Experimental: menus run at
   full speed, but races are slow on an M1 for now.
 - **iOS**: iOS 16.3 or later, sideloaded; a game controller is needed.
@@ -490,14 +490,17 @@ and [person detector](https://github.com/opencv/opencv_zoo/tree/47534e27c9851bb1
 their ONNX exports, without requiring the MediaPipe or OpenCV runtime.
 Model downloads are pinned by SHA-256 in
 [scripts/fetch_pose_model.py](scripts/fetch_pose_model.py). Licences and
-third-party notices are included in the `licenses/` folder of the Windows and
-Linux archives and in the Android APK's licence archive.
+third-party notices are included in the `licenses/` folder of the Windows,
+Linux, macOS and iOS packages and in the Android APK's licence archive.
 
 A webcam estimates relative 3D pose; it does not measure depth like Kinect.
 The Android APK carries the same models and runtime and can use the phone's
 own camera (asked for the camera permission the first time; a device without
 a camera is never asked). The Linux tarball carries them too and reads a
-webcam through V4L2.
+webcam through V4L2. The macOS app uses the Mac's camera, a USB webcam or an
+iPhone as Continuity Camera, and the iOS app the device's own cameras; both
+ask for the camera permission the first time, and only when there is a
+camera.
 Setup, gestures, source builds and limitations:
 [Camera input](docs/camera-input.md).
 

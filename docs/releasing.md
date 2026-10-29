@@ -65,7 +65,9 @@ itself), the model licence and the runtime's licence/third-party notices.
 Verify the pinned downloads with `python scripts/fetch_pose_model.py --verify-only`.
 On Linux, fetch the Linux runtime (`fetch_pose_model.py --platform linux`)
 before configuring: a Linux `--camera` package stops when the game was built
-without it. `build_android.sh` puts the MediaPipe models and the Android
+without it. The macOS and iOS packages take camera motion whenever the game
+was built with ONNX Runtime (`fetch_pose_model.py --apple` before
+configuring; the script prints `camera motion: included` or `left out`). `build_android.sh` puts the MediaPipe models and the Android
 runtime (`--android`) in the APK when both are there. Update `VERSION_NAME`
 and monotonically increase `VERSION_CODE` in `scripts/package_android.py`
 before packaging.

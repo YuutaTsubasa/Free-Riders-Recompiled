@@ -128,6 +128,32 @@ def desktop_files(platform, build, pack):
     return files
 
 
+def apple_camera_files(root, runtime):
+    """The pose models, the licences and the guide a macOS or iOS game built
+    with ONNX Runtime needs (fetch_pose_model.py --apple), by path in the
+    app's resources. A missing one is fatal."""
+    files = [('pose/' + name, need(root / 'mediapipe' / name))
+             for name in ('pose_estimation_mediapipe_2023mar.onnx', 'person_detection_mediapipe_2023mar.onnx')]
+    files += [('licenses/' + inside, need(root / source)) for inside, source in (
+        ('ONNXRuntime-MIT.txt', runtime + '/LICENSE'),
+        ('ONNXRuntime-ThirdPartyNotices.txt', runtime + '/ThirdPartyNotices.txt'),
+        ('MediaPipe-Apache-2.0.txt', 'mediapipe/LICENSE'),
+    )]
+    files.append(('Camera-input.md', need(ROOT / 'docs/camera-input.md')))
+    return files
+
+
+def drop_build_rpaths(binary):
+    """The build directory's own library paths (CMake's build rpaths) have no
+    place in a release, would only carry the builder's folder names, and on
+    the build machine would find there what the app itself lacks."""
+    commands = subprocess.run(['otool', '-l', str(binary)], check=True, capture_output=True, text=True).stdout
+    for line in commands.splitlines():
+        words = line.split()
+        if len(words) >= 2 and words[0] == 'path' and words[1].startswith('/'):
+            subprocess.run(['install_name_tool', '-delete_rpath', words[1], str(binary)], check=True)
+
+
 def macos_app(app, version, build, pack, moltenvk, licenses, readme):
     """FreeRidersRecompiled.app: both programs in Contents/MacOS, MoltenVK in
     Frameworks (the game loads it from there: src/apple_vulkan_loader.h) and
@@ -143,6 +169,17 @@ def macos_app(app, version, build, pack, moltenvk, licenses, readme):
     resources = contents / 'Resources'
     resources.mkdir()
     licenses = licenses + [('licenses/MoltenVK-Apache-2.0.txt', need(moltenvk / 'LICENSE'))]
+    # Camera motion (#305) when the game was built with ONNX Runtime: the
+    # dylib beside MoltenVK, where the game's rpath looks, and the models.
+    if b'libonnxruntime' in (contents / 'MacOS/sfr_cpu_diagnostic').read_bytes():
+        shutil.copy2(need(ROOT / 'tools/onnx/onnxruntime-macos/lib/libonnxruntime.1.dylib'),
+                     contents / 'Frameworks/libonnxruntime.1.dylib')
+        licenses = licenses + apple_camera_files(ROOT / 'tools/onnx', 'onnxruntime-macos')
+        print('camera motion: included')
+    else:
+        print('camera motion: left out (no ONNX Runtime in the build)')
+    for name in ('FreeRidersRecompiled', 'sfr_cpu_diagnostic'):
+        drop_build_rpaths(contents / 'MacOS' / name)
     for inside, source in desktop_files('macos', build, pack)[2:] + licenses:
         (resources / inside).parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, resources / inside)
@@ -168,7 +205,7 @@ def macos_app(app, version, build, pack, moltenvk, licenses, readme):
             'CFBundleShortVersionString': version,
             'CFBundleVersion': version,
             'CFBundleInfoDictionaryVersion': '6.0',
-            'LSMinimumSystemVersion': '13.3',
+            'LSMinimumSystemVersion': '14.0',  # ONNX Runtime 1.30's dylib (#305)
             'LSApplicationCategoryType': 'public.app-category.games',
             'NSHighResolutionCapable': True,
             'NSCameraUsageDescription': 'Camera input lets you ride with your body, as with Kinect.',
@@ -263,6 +300,12 @@ def ios_app(app, version, build, pack, moltenvk, licenses, readme):
         manifest = ROOT / 'data/pipeline-manifests' / manifest.name
     if manifest.is_file():
         files.append((manifest.name, manifest))
+    # Camera motion (#305): ONNX Runtime is linked into the game itself.
+    if b'OrtGetApiBase' in (game / 'FreeRidersGame').read_bytes():
+        files += apple_camera_files(ROOT / 'tools/onnx', 'onnxruntime-ios')
+        print('camera motion: included')
+    else:
+        print('camera motion: left out (no ONNX Runtime in the build)')
     for inside, source in files + licenses:
         (app / inside).parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, app / inside)
@@ -297,16 +340,12 @@ def ios_app(app, version, build, pack, moltenvk, licenses, readme):
             'LSSupportsOpeningDocumentsInPlace': True,
             'UIApplicationSupportsIndirectInputEvents': True,  # a mouse or trackpad
             'GCSupportsControllerUserInteraction': True,
+            # iOS ends an app that opens the camera without saying why.
+            'NSCameraUsageDescription': 'Camera input lets you ride with your body, as with Kinect.',
             'GCSupportedGameControllers': [{'ProfileName': 'ExtendedGamepad'}],
         }, stream)
-    # The build directory's own library paths (CMake's build rpaths) have no
-    # place on a phone, and would only carry the builder's folder names.
     for binary in (app / 'FreeRidersRecompiled', game / 'FreeRidersGame'):
-        commands = subprocess.run(['otool', '-l', str(binary)], check=True, capture_output=True, text=True).stdout
-        for line in commands.splitlines():
-            words = line.split()
-            if len(words) >= 2 and words[0] == 'path' and words[1].startswith('/'):
-                subprocess.run(['install_name_tool', '-delete_rpath', words[1], str(binary)], check=True)
+        drop_build_rpaths(binary)
     entitlements = Path(tempfile.mkdtemp()) / 'entitlements.plist'
     with open(entitlements, 'wb') as stream:
         plistlib.dump(IOS_ENTITLEMENTS, stream)
