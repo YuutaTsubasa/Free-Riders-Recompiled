@@ -205,7 +205,7 @@ def macos_app(app, version, build, pack, moltenvk, licenses, readme):
             'CFBundleShortVersionString': version,
             'CFBundleVersion': version,
             'CFBundleInfoDictionaryVersion': '6.0',
-            'LSMinimumSystemVersion': '13.3',
+            'LSMinimumSystemVersion': '14.0',  # ONNX Runtime 1.30's dylib (#305)
             'LSApplicationCategoryType': 'public.app-category.games',
             'NSHighResolutionCapable': True,
             'NSCameraUsageDescription': 'Camera input lets you ride with your body, as with Kinect.',

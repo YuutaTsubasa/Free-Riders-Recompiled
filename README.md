@@ -266,7 +266,7 @@ with [docs/progress.md](docs/progress.md).
 - **Windows**: Windows 10 or 11 (x64), a CPU with AVX, a GPU with Direct3D 12
   (or Vulkan 1.2).
 - **Linux**: x86-64 with AVX and a Vulkan 1.2 driver (tested on Ubuntu 22.04).
-- **macOS**: macOS 13.3 or later on Apple Silicon (tested on an M1 Mac mini).
+- **macOS**: macOS 14 or later on Apple Silicon (tested on an M1 Mac mini); since 0.10.39, for the camera motion input's runtime.
   The Vulkan driver (MoltenVK) is inside the app. Experimental: menus run at
   full speed, but races are slow on an M1 for now.
 - **iOS**: iOS 16.3 or later, sideloaded; a game controller is needed.

@@ -5,7 +5,12 @@ cmake_policy(SET CMP0091 NEW)
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     set(CMAKE_OSX_DEPLOYMENT_TARGET "16.3" CACHE STRING "Minimum iOS version")
 else()
-    set(CMAKE_OSX_DEPLOYMENT_TARGET "13.3" CACHE STRING "Minimum macOS version")
+    # macOS 14: ONNX Runtime 1.30's dylib, for camera motion (#305). A build
+    # directory configured before then keeps 13.3 in its cache, so raise it.
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0" CACHE STRING "Minimum macOS version")
+    if(CMAKE_OSX_DEPLOYMENT_TARGET VERSION_LESS 14.0)
+        set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0" CACHE STRING "Minimum macOS version" FORCE)
+    endif()
 endif()
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 project(FreeRidersRecompiled LANGUAGES C CXX)

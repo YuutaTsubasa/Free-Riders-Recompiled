@@ -123,7 +123,7 @@ limits: [android.md](android.md).
 
 ### macOS
 
-Apple Silicon, macOS 13.3 or later, with Xcode or its Command Line Tools
+Apple Silicon, macOS 14 or later, with Xcode or its Command Line Tools
 (Apple clang 21 or later), CMake and Ninja. SDL is the pinned copy from
 `scripts/bootstrap.py`, linked in. The Vulkan driver is MoltenVK: unpack its
 release (`MoltenVK-macos.tar`) somewhere.
