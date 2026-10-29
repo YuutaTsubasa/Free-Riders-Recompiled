@@ -258,6 +258,8 @@ with [docs/progress.md](docs/progress.md).
   The Android game is now built with profile-guided optimisation: the compiler arranges the game's code by how it actually runs on a phone, so slow phones skip fewer frames in races (#176).
 - [v0.10.37 — Sharp scaling](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.37)
   The launcher's new **Sharp scaling** switch (Graphics, under Render Size) enlarges the picture by repeating its pixels instead of blurring them, so 540 or 720 lines on a bigger screen stay crisp (#301).
+- [v0.10.38 — Camera motion on Android and Linux](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.38)
+  The Android APK and the Linux tarball now carry the pose models and runtime, so Camera > Motion works there as on Windows: a phone's own camera on Android (a device without one is never asked for the permission), a webcam on Linux (#305).
 
 ## System Requirements
 
