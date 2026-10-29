@@ -191,7 +191,8 @@ RTMPose 仍使用 17 點 COCO、192x256 輸入與 SimCC XY 解碼，沒有相對
 
 從 v0.2.0 起，Windows 發行包包含 MediaPipe 模型與 ONNX Runtime，並附上授權及
 第三方通知；不需要另外下載。`scripts/package_release.py windows --camera` 會檢查
-模型、執行庫與授權檔是否齊全。Linux 與 Android 的預建包目前未啟用 Camera 體感；
+模型、執行庫與授權檔是否齊全。Android 的 APK 從 #305 起也附上模型與 ONNX Runtime（見下方）；
+Linux 的預建包目前未啟用 Camera 體感；
 Linux 自行建置可用 `SFR_ONNX_ROOT` 指定 Linux ONNX Runtime 安裝目錄。
 
 依賴授權：
@@ -271,7 +272,6 @@ Camera 持續動作以主機單調時鐘計時；遊戲計時欄位實際可為 
   目前只是把相機打開。
 - 真正的 Kinect 感測器見 [實體 Kinect](kinect-sensor.md)（Windows，`SFR_CAMERA=kinect`）。Kinect v2 的預覽視窗會提示身體被畫面哪一邊切到
   （只顯示與寫 log／錄製，不影響遊戲輸入），見該文件「預覽視窗」。
-- Android 的遊戲還沒把姿勢模型打包進 APK（手機鏡頭的擷取已經有了，見下方）。
 
 ## Android：手機自己的鏡頭
 
@@ -282,7 +282,10 @@ Camera 持續動作以主機單調時鐘計時；遊戲計時欄位實際可為 
   鏡頭編號、長邊的視角（由感測器寬度與最短焦距算出）。視角越大，玩家可以站得越近。
   有些手機把超廣角藏在「邏輯鏡頭」裡、不單獨列給 App，那種手機只選得到主鏡頭。
 - **權限**：第一次開鏡頭時才用 SDL 跳出系統的相機權限詢問（launcher 的「測試」
-  按鈕就會觸發），從不開攝影機的玩家不會被問。
+  按鈕就會觸發），從不開攝影機的玩家不會被問。先列鏡頭再問：沒有鏡頭的裝置（掌機、
+  電視盒）記一行 `NATIVE_CAMERA android=no-camera` 就繼續，不會跳出詢問。SDL 會等
+  玩家回答，以前先問再列，在 AYN Thor（沒有鏡頭）上遊戲就停在開機等一個沒人看得到的
+  詢問。拿到權限後再列一次，因為 Android 10 起，算視角用的鏡頭尺寸沒有權限時可能讀不到。
 - **轉正**：手機感測器是橫著裝的，依 `SENSOR_ORIENTATION`、鏡頭朝向與螢幕目前的
   轉向算出順時針要轉幾度（[`camera_upright_rotation`](../src/camera_capture.h)），
   轉換時一併轉好（`convert_camera_yuv420`）。Camera2 給的前鏡頭畫面本身不是鏡像的。
@@ -291,4 +294,16 @@ Camera 持續動作以主機單調時鐘計時；遊戲計時欄位實際可為 
 或把手機立在電視旁用前鏡頭。
 
 轉換、旋轉與轉正角度有單元測試（`camera_capture` CTest），CI 的 Android launcher
-建置會編譯它；實機還沒試過。
+建置會編譯它。
+
+**模型與執行庫**：`python scripts/fetch_pose_model.py --android` 下載 Android 的 ONNX
+Runtime 之後，`scripts/build_android.sh` 會把 `libonnxruntime.so` 和兩個 MediaPipe 模型
+放進 APK（約多 40 MB），`LauncherActivity` 第一次啟動時把模型複製到 `pose/`；沒下載時
+建置會印 `Pose models left out`，APK 不含 Camera 體感。`package_release.py android` 看到
+APK 裡有 ONNX Runtime 時，授權壓縮檔會附上 ONNX Runtime 與 MediaPipe 的授權。
+
+**實機驗證**（AYN Thor，Snapdragon 8 Gen 2，沒有鏡頭）：`SFR_CAMERA=motion` 跑完整場
+Dolphin Resort，記 `android=no-camera`、速度 0.999，和沒開攝影機時一樣；
+`sfr_pose_probe`（arm64）在 Thor 上載入兩個模型，偵測器每張約 27 ms（i9-14900KF 約 11 ms），
+三張比賽畫面的結果與 Windows 相同。還沒在有鏡頭的手機上玩過，也還沒用真人照片量
+Android 上整個姿勢推論的時間。

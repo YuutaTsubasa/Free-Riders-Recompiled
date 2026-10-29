@@ -334,6 +334,15 @@ def camera_files(root):
     return files
 
 
+def android_camera_licenses(root):
+    """The licences for the ONNX Runtime and models an APK carries."""
+    return [('licenses/' + inside, need(root / source)) for inside, source in (
+        ('ONNXRuntime-MIT.txt', 'onnxruntime-android/LICENSE'),
+        ('ONNXRuntime-ThirdPartyNotices.txt', 'onnxruntime-android/ThirdPartyNotices.txt'),
+        ('MediaPipe-Apache-2.0.txt', 'mediapipe/LICENSE'),
+    )]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('platform', choices=('windows', 'linux', 'android', 'macos', 'ios'))
@@ -389,6 +398,7 @@ def main():
     elif args.platform == 'android':
         apk = need(ROOT / 'out/android/FreeRidersRecompiled.apk')
         with zipfile.ZipFile(apk) as archive:
+            apk_names = archive.namelist()
             try:
                 validate_shader_pack(archive.read('assets/shaders.pack'))
             except (KeyError, ValueError) as error:
@@ -403,6 +413,12 @@ def main():
             archive.write(need(ROOT / 'docs/internal-resolution.md'), 'Internal-resolution.md')
             for inside, source in licenses:
                 archive.write(source, inside)
+            # build_android.sh carries the pose models and ONNX Runtime only
+            # when both were fetched (fetch_pose_model.py --android).
+            if any(n.endswith('/libonnxruntime.so') for n in apk_names):
+                for inside, source in android_camera_licenses(ROOT / 'tools/onnx'):
+                    archive.write(source, inside)
+                archive.write(need(ROOT / 'docs/camera-input.md'), 'Camera-input.md')
         outputs = [out, notes]
     else:
         build = args.build or (ROOT / 'out/build/host' if args.platform == 'windows' else Path.home() / 'sfr-build')
