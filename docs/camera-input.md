@@ -309,3 +309,17 @@ Dolphin Resort，記 `android=no-camera`、速度 0.999，和沒開攝影機時�
 三張比賽畫面的結果與 Windows 相同。四張有真人的畫面（從 OpenCV Zoo 同一個版本的
 `mpposeest_demo.webp` 裁出）都找到人，17 個關節與 Windows 差不到 0.1 像素；`--check-3d`
 通過，追蹤時每張約 19 ms（Windows 約 10 ms），跟得上 30 fps 的鏡頭。還沒在有鏡頭的手機上玩過。
+
+## Linux：V4L2 webcam
+
+[`camera_capture_v4l2.cpp`](../src/camera_capture_v4l2.cpp) 讀 `/dev/video*`。tar.gz 從 #305 起
+附上 `libonnxruntime.so.1`、`pose/` 的兩個模型與授權（`package_release.py linux --camera`），
+遊戲（`sfr_cpu_diagnostic`）的 RUNPATH 以 `$ORIGIN` 開頭，先找自己旁邊的執行庫。以前用
+`-rpath,$ORIGIN` 連結選項，Ninja 把 `$ORIGIN` 當成變數吃掉，留下 `$`，只有建置資料夾還在
+時才找得到執行庫；現在改用 `CMAKE_BUILD_RPATH`。遊戲沒連上 ONNX Runtime 時（建置前沒跑
+`fetch_pose_model.py --platform linux`）`--camera` 拒絕打包。
+
+**驗證**（WSL Ubuntu 22.04，發版用的環境；WSL 沒有攝影機）：解壓後 `ldd` 顯示遊戲與
+`sfr_pose_probe` 都從解壓資料夾載入 `libonnxruntime.so.1`；probe 在解壓資料夾裡跑上面那四張
+真人畫面，都找到人，17 個關節與 Windows 差不到 0.02 像素；`--check-3d` 通過，追蹤時每張約
+8.5 ms。還沒在 Linux 上用真的 webcam 玩過。
