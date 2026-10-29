@@ -1,4 +1,5 @@
 #include "runtime_shader_cache.h"
+#include "shader_pack_format.h"
 #include "guest_memory.h"
 #include <array>
 #include <chrono>
@@ -19,7 +20,8 @@ void environment(const char* key, const fs::path& value) {
 int main(int argc, char** argv) {
     if (argc != 2) return 1;
     const std::string kind = argv[1];
-    if (kind != "empty" && kind != "zero" && kind != "missing") return 1;
+    if (kind != "empty" && kind != "zero" && kind != "missing" &&
+        kind != "unpaired" && kind != "pixelraw" && kind != "old12") return 1;
     const auto root = fs::temp_directory_path() / ("sfr-pack-" + kind + "-" +
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     try {
@@ -28,6 +30,14 @@ int main(int argc, char** argv) {
         const auto pack = root / "shaders.pack";
         if (kind != "missing") {
             std::ofstream out(pack, std::ios::binary);
+            if (kind == "unpaired" || kind == "pixelraw" || kind == "old12") {
+                out.write("SFRSHPK2",8);
+                const auto word=[&](uint32_t value){for(unsigned b=0;b<4;++b)out.put(char(value>>(8*b)));};
+                word(kind=="old12"?12:sfr::shader_abi_version);word(1);
+                word(kind=="pixelraw"?1:0);word(0);word(4);word(1);word(0);
+                if(kind!="old12")word(kind=="pixelraw"?1:0);
+                out.write("gameD",5);if(kind=="pixelraw")out.put('R');
+            }
             if (kind == "zero") {
                 const std::array<char, 16> header{'S','F','R','S','H','P','K','2',9,0,0,0,0,0,0,0};
                 out.write(header.data(), header.size());

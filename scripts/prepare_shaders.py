@@ -31,7 +31,7 @@ TOOL_PIN = 'fb32631ee398e46f2a113d8f9103201dbaa000b4'
 TOOL_ROOT = ROOT / 'tools/XenosRecomp'
 COMMON = TOOL_ROOT / 'XenosRecomp/shader_common.h'
 UPSTREAM_NAMES = ('constant_table.h', 'shader.h', 'shader_code.h', 'shader_common.h', 'shader_recompiler.h', 'shader_recompiler.cpp', 'pch.h')
-TRANSLATOR_SOURCES = tuple('tools/XenosRecomp/XenosRecomp/' + name for name in UPSTREAM_NAMES) + ('src/shader_translate_main.cpp',)
+TRANSLATOR_SOURCES = tuple('tools/XenosRecomp/XenosRecomp/' + name for name in UPSTREAM_NAMES) + ('src/shader_translate_main.cpp', 'src/shader_inputs.h', 'src/shader_inputs.cpp')
 # XenosRecomp's pinned dxc-bin, as everywhere else: the game links these
 # libraries at run time with the same DXC (a release ships it), and DXC refuses
 # to link libraries from another version.
@@ -188,7 +188,7 @@ def compiler_profile(stage, mask):
     return ['-T', 'vs_6_0' if stage == 'vertex' else 'ps_6_0', '-E', 'shaderMain']
 
 
-def validate_dxil(data, stage, mask):
+def validate_dxil(data, stage, mask, *, dec3n=False):
     check(len(data) >= 32 and data[:4] == b'DXBC', 'invalid DXBC header')
     version, size, count = struct.unpack_from('<III', data, 20)
     check(version == 1 and size == len(data) and 0 < count <= (size - 32) // 4, 'invalid DXBC extent')
@@ -206,7 +206,8 @@ def validate_dxil(data, stage, mask):
     check(len(programs) == 1 and len(programs[0]) >= 24, 'missing DXIL program')
     program = programs[0]
     _, kind, words, magic, _, offset, bitcode_size = struct.unpack_from('<HHI4sIII', program)
-    expected = 6 if mask else (1 if stage == 'vertex' else 0)
+    check(not dec3n or stage == 'vertex', 'DEC3N library must be vertex')
+    expected = 6 if mask or dec3n else (1 if stage == 'vertex' else 0)
     check(kind == expected, 'compiled shader stage mismatch')
     check(words * 4 == len(program) and magic == b'DXIL', 'invalid DXIL program extent')
     start = 8 + offset
@@ -239,14 +240,18 @@ def run(args, log):
 def generate_cpp(records, folder):
     lines = ['// Generated from validated original containers. Keep this file private.', f'// Authoritative provenance: {folder.name}/manifest.json', '#include "shader_cache.h"', 'namespace sfr { namespace {']
     for i, record in enumerate(records):
-        for field, filename in [('source', 'original.bin'), ('dxil', 'shader.dxil')]:
+        fields = [('source', 'original.bin'), ('dxil', 'shader.dxil')]
+        if record['stage'] == 'vertex':
+            fields.append(('dec3n', 'shader.dec3n.dxil'))
+        for field, filename in fields:
             blob = (folder / record['directory'] / filename).read_bytes()
             lines.append(f'static constexpr uint8_t {field}_{i}[] = {{')
             lines.extend(','.join(f'0x{x:02x}' for x in blob[j:j + 24]) + ',' for j in range(0, len(blob), 24))
             lines.append('};')
     lines.append('static const ShaderCacheEntry entries[] = {')
     for i, record in enumerate(records):
-        lines.append(f'{{source_{i}, dxil_{i}, ShaderStage::{record["stage"]}, {record["specialization_mask"]}u}},')
+        raw = f'dec3n_{i}' if record['stage'] == 'vertex' else '{}'
+        lines.append(f'{{source_{i}, dxil_{i}, ShaderStage::{record["stage"]}, {record["specialization_mask"]}u, 0, {{}}, {raw}}},')
     lines += ['};', '} std::span<const ShaderCacheEntry> compiled_shader_cache() { return entries; }', '}']
     return '\n'.join(lines) + '\n'
 
@@ -305,7 +310,19 @@ def prepare(asset, translator, dxc, output, image=None):
         run(args, folder / 'compile.log')
         compiled = dxil.read_bytes()
         validate_dxil(compiled, record['stage'], mask)
-        results.append(dict(record, directory=name, specialization_mask=mask, translator_args=[str(x) for x in translate_args], compiler_args=[str(x) for x in args], hlsl_sha256=sha(hlsl.read_bytes()), dxil_sha256=sha(compiled), dxil_bytes=len(compiled)))
+        result = dict(record, directory=name, specialization_mask=mask, translator_args=[str(x) for x in translate_args], compiler_args=[str(x) for x in args], hlsl_sha256=sha(hlsl.read_bytes()), dxil_sha256=sha(compiled), dxil_bytes=len(compiled))
+        if record['stage'] == 'vertex':
+            raw_hlsl, raw_dxil = folder / 'shader.dec3n.hlsl', folder / 'shader.dec3n.dxil'
+            variant_args = [translator, '--dec3n-variant', hlsl, raw_hlsl]
+            run(variant_args, folder / 'dec3n_variant.log')
+            check(raw_hlsl.is_file() and raw_hlsl.stat().st_size > 0, 'DEC3N adapter output is missing')
+            raw_args = [dxc, '-T', 'lib_6_3', '-HV', '2021', '-all-resources-bound', '-Wno-ignored-attributes', '-Qstrip_reflect', '-Qstrip_debug', '-Fo', raw_dxil, raw_hlsl]
+            run(raw_args, folder / 'compile_dec3n.log')
+            raw = raw_dxil.read_bytes()
+            validate_dxil(raw, 'vertex', mask, dec3n=True)
+            result.update(dec3n_variant_args=[str(x) for x in variant_args], dec3n_compiler_args=[str(x) for x in raw_args],
+                          dec3n_hlsl_sha256=sha(raw_hlsl.read_bytes()), dec3n_dxil_sha256=sha(raw), dec3n_dxil_bytes=len(raw))
+        results.append(result)
     manifest = dict(schema_version=2, sources=sources, asset_sha256=sha(data), tool_pin=TOOL_PIN, translator=provenance, compiler_path=str(dxc), compiler_version=version, compiler_sha256=sha(dxc.read_bytes()), generation=generation.name, records=results)
     cpp = generation / 'shader_cache_data.cpp'
     cpp.write_text(generate_cpp(results, generation), encoding='utf-8')

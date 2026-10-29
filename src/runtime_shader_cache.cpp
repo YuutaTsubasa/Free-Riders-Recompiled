@@ -28,7 +28,7 @@ namespace {
 namespace fs = std::filesystem;
 
 struct OwnedShader {
-    std::vector<uint8_t> source, dxil, spirv;
+    std::vector<uint8_t> source, dxil, spirv, dec3n;
     std::string failure;
     ShaderCacheEntry entry;
 };
@@ -202,11 +202,11 @@ uint64_t fnv1a(std::span<const uint8_t> data) {
 }
 
 // The shader pack (scripts/pack_shaders.py): versioned ABI header, then per
-// entry u32 stage, mask, source, DXIL and SPIR-V sizes and those bytes.
+// entry u32 stage, mask, source, DXIL, SPIR-V and DEC3N DXIL sizes, then those bytes.
 struct PackedShader {
     ShaderStage stage;
     uint32_t mask;
-    std::vector<uint8_t> source, dxil, spirv;
+    std::vector<uint8_t> source, dxil, spirv, dec3n;
 };
 
 std::unordered_multimap<uint64_t, PackedShader> load_shader_pack() {
@@ -243,10 +243,15 @@ std::unordered_multimap<uint64_t, PackedShader> load_shader_pack() {
         if (stage > 1) throw RuntimeStop("shader-pack", stage, "unknown shader stage in the pack");
         shader.stage = ShaderStage(stage);
         shader.mask = u32();
-        const uint32_t source = u32(), dxil = u32(), spirv = u32();
+        const uint32_t source = u32(), dxil = u32(), spirv = u32(), dec3n = u32();
+        if (!source || (!dxil && !spirv))
+            throw RuntimeStop("shader-pack", 0, "invalid empty shader entry in the pack");
+        if ((stage == 1 && dec3n) || (stage == 0 && bool(dxil) != bool(dec3n)))
+            throw RuntimeStop("shader-pack", 0, "vertex DXIL requires its paired DEC3N library; pixel DEC3N payload is forbidden");
         shader.source = take(source);
         shader.dxil = take(dxil);
         shader.spirv = take(spirv);
+        shader.dec3n = take(dec3n);
         pack.emplace(fnv1a(shader.source), std::move(shader));
     }
     if (at != bytes.size()) throw RuntimeStop("shader-pack", 0, "the shader pack has trailing data");
@@ -305,9 +310,10 @@ const ShaderCacheEntry& runtime_shader(ShaderStage stage, std::span<const uint8_
             owned.source.assign(source.begin(), source.end());
             by_hash[hash].push_back(shaders.size() - 1);
             (vulkan_backend ? owned.spirv : owned.dxil) = code;
+            if (!vulkan_backend) owned.dec3n = packed->dec3n;
             const auto palette = vertex_palette(rename_high_texcoords(source));
             owned.entry = ShaderCacheEntry{owned.source, owned.dxil, stage, packed->mask,
-                                           palette ? palette->entry_float4s : 0, owned.spirv};
+                                           palette ? palette->entry_float4s : 0, owned.spirv, owned.dec3n};
             return owned.entry;
         }
     }
@@ -331,7 +337,7 @@ const ShaderCacheEntry& runtime_shader(ShaderStage stage, std::span<const uint8_
     const fs::path folder = setting("SFR_RUNTIME_SHADER_CACHE", "out/shaders/runtime") / name;
     const fs::path original = folder / "original.bin", hlsl = folder / "shader.hlsl",
                    dxil = folder / "shader.dxil", mask_file = folder / "specialization_mask.txt",
-                   spirv = folder / "shader.spv";
+                   spirv = folder / "shader.spv", dec3n = folder / "shader.dec3n.dxil";
     // Vulkan builds its SPIR-V from the translated HLSL; D3D12 needs the DXIL.
     const bool vulkan = selected_graphics_backend() == GraphicsBackend::vulkan;
     std::error_code error;
@@ -340,7 +346,8 @@ const ShaderCacheEntry& runtime_shader(ShaderStage stage, std::span<const uint8_
 
     const fs::path failure_file = folder / "untranslatable.txt";
     const bool same_source = read_file(original) == std::vector<uint8_t>(source.begin(), source.end());
-    const bool cached = same_source && fs::exists(vulkan ? hlsl : dxil) && fs::exists(mask_file);
+    const bool cached = same_source && fs::exists(vulkan ? hlsl : dxil) && fs::exists(mask_file) &&
+        (vulkan || stage != ShaderStage::vertex || (fs::exists(hlsl) && fs::exists(dec3n)));
     auto& owned = shaders.emplace_back();
     owned.source.assign(source.begin(), source.end());
     by_hash[hash].push_back(shaders.size() - 1);
@@ -400,6 +407,16 @@ const ShaderCacheEntry& runtime_shader(ShaderStage stage, std::span<const uint8_
         compile.insert(compile.end(), {"-HV", "2021", "-all-resources-bound", "-Wno-ignored-attributes",
                                        "-Qstrip_reflect", "-Qstrip_debug", "-Fo", dxil, hlsl});
         run(compile, folder / "compile.log", "shader compilation");
+        if (stage == ShaderStage::vertex) {
+            const auto legacy = read_file(hlsl);
+            const auto variant = dec3n_vertex_shader_source(std::string(legacy.begin(), legacy.end()));
+            if (!variant) failed("translated vertex shader lacks the DEC3N adapter structure");
+            const fs::path raw_hlsl = folder / "shader.dec3n.hlsl";
+            write_file(raw_hlsl, std::span(reinterpret_cast<const uint8_t*>(variant->data()), variant->size()));
+            run({setting("SFR_DXC", default_dxc), "-T", "lib_6_3", "-HV", "2021", "-all-resources-bound",
+                 "-Wno-ignored-attributes", "-Qstrip_reflect", "-Qstrip_debug", "-Fo", dec3n, raw_hlsl},
+                folder / "compile_dec3n.log", "DEC3N vertex library compilation");
+        }
         }
         std::ofstream(mask_file) << mask;
     } catch (const RuntimeStop& error) {
@@ -440,11 +457,15 @@ const ShaderCacheEntry& runtime_shader(ShaderStage stage, std::span<const uint8_
     } else {
         owned.dxil = read_file(dxil);
         if (owned.dxil.size() < 32) failed("compiled shader is missing: " + dxil.string());
+        if (stage == ShaderStage::vertex) {
+            owned.dec3n = read_file(dec3n);
+            if (owned.dec3n.size() < 32) failed("compiled DEC3N vertex library is missing: " + dec3n.string());
+        }
     }
-    owned.entry = ShaderCacheEntry{owned.source, owned.dxil, stage, mask, palette_float4s, owned.spirv};
+    owned.entry = ShaderCacheEntry{owned.source, owned.dxil, stage, mask, palette_float4s, owned.spirv, owned.dec3n};
     std::cerr << "RUNTIME_SHADER stage=" << (stage == ShaderStage::vertex ? "vertex" : "pixel")
               << " source_bytes=" << source.size() << " dxil_bytes=" << owned.dxil.size()
-              << " spirv_bytes=" << owned.spirv.size()
+              << " spirv_bytes=" << owned.spirv.size() << " dec3n_bytes=" << owned.dec3n.size()
               << " specialization_mask=" << mask << " palette_float4s=" << palette_float4s
               << " cache=" << (cached ? "disk" : "translated")
               << " key=" << name << '\n';
