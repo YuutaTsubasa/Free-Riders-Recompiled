@@ -182,14 +182,18 @@ struct IColorFrameReader : IUnknown {
 
 // IColorFrame: get_RawColorImageFormat, get_FrameDescription,
 // CopyRawFrameDataToArray, AccessRawUnderlyingBuffer,
-// CopyConvertedFrameDataToArray (then CreateFrameDescription,
-// get_ColorCameraSettings, get_RelativeTime, get_ColorFrameSource, unused).
+// CopyConvertedFrameDataToArray, CreateFrameDescription and
+// get_ColorCameraSettings (unused), get_RelativeTime (then
+// get_ColorFrameSource, unused).
 struct IColorFrame : IUnknown {
     virtual HRESULT STDMETHODCALLTYPE get_RawColorImageFormat(ColorImageFormat*) = 0;
     virtual HRESULT STDMETHODCALLTYPE get_FrameDescription(IUnknown**) = 0;
     virtual HRESULT STDMETHODCALLTYPE CopyRawFrameDataToArray(UINT capacity, BYTE* data) = 0;
     virtual HRESULT STDMETHODCALLTYPE AccessRawUnderlyingBuffer(UINT* capacity, BYTE** buffer) = 0;
     virtual HRESULT STDMETHODCALLTYPE CopyConvertedFrameDataToArray(UINT capacity, BYTE* data, ColorImageFormat) = 0;
+    virtual HRESULT STDMETHODCALLTYPE CreateFrameDescription(ColorImageFormat, IUnknown**) = 0;
+    virtual HRESULT STDMETHODCALLTYPE get_ColorCameraSettings(IUnknown**) = 0;
+    virtual HRESULT STDMETHODCALLTYPE get_RelativeTime(INT64*) = 0;  // TIMESPAN, 100 ns units
 };
 
 // IDepthFrameSource: FrameCaptured events, get_IsActive, OpenReader (then
@@ -553,6 +557,10 @@ private:
         HRESULT result = E_FAIL;
         KinectImage& made = images_[size_t(KinectImageKind::colour)];
         const KinectV2View view = preview_view();
+        // Its clocks, for a colour recording (kinect_record_colour.h).
+        INT64 relative_time = 0;
+        if (FAILED(frame->get_RelativeTime(&relative_time))) relative_time = 0;
+        const int64_t received_us = kinect_record_now_us();
         if (format == ColorImageFormat_Yuy2) {
             // The camera's own format: copied as it is and converted only
             // where the preview's smaller image samples it.
@@ -570,6 +578,8 @@ private:
         }
         release(frame);
         if (SUCCEEDED(result)) {
+            made.steady_us = received_us;
+            made.sdk_time = relative_time;
             ++made.number;
             image_frames_[size_t(KinectImageKind::colour)].fetch_add(1, std::memory_order_relaxed);
         } else if (!colour_failure_logged_) {

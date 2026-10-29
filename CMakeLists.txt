@@ -345,6 +345,12 @@ target_include_directories(sfr_kinect_record_summary PRIVATE src)
 # v1's compared with a Kinect v2's (docs/kinect-sensor.md).
 set(SFR_KINECT_DEPTH_TOOLS src/kinect_record_depth.cpp src/kinect_depth_features.cpp src/kinect_depth_compare.cpp
     src/kinect_record.cpp src/kinect_race_record.cpp)
+# Its colour pictures beside them (SFR_KINECT_RECORD_COLOUR), for the Kinect
+# on hosts without its runtime (#305).
+add_executable(sfr_kinect_colour_record_test tests/kinect_colour_record_test.cpp src/kinect_record_colour.cpp
+    src/kinect_record.cpp src/kinect_race_record.cpp)
+target_include_directories(sfr_kinect_colour_record_test PRIVATE src)
+add_test(NAME kinect_colour_record COMMAND sfr_kinect_colour_record_test)
 add_executable(sfr_kinect_depth_test tests/kinect_depth_test.cpp ${SFR_KINECT_DEPTH_TOOLS})
 target_include_directories(sfr_kinect_depth_test PRIVATE src)
 add_test(NAME kinect_depth COMMAND sfr_kinect_depth_test)
@@ -536,11 +542,11 @@ else()
 endif()
 if(WIN32)
     set(SFR_KINECT_SENSOR src/kinect_sensor_win32.cpp src/kinect_v2_win32.cpp src/kinect_v2_image.cpp src/kinect_v2_depth.cpp src/kinect_ideal_diagram.cpp src/kinect_smoothing.cpp
-        src/nui_transform_smooth.cpp src/kinect_record.cpp src/kinect_race_record.cpp src/kinect_nui_record.cpp src/kinect_record_depth.cpp src/kinect_record_raw.cpp
+        src/nui_transform_smooth.cpp src/kinect_record.cpp src/kinect_race_record.cpp src/kinect_nui_record.cpp src/kinect_record_depth.cpp src/kinect_record_colour.cpp src/kinect_record_raw.cpp
         src/kinect_v2_resynth.cpp)
     set(SFR_VOICE src/voice_commands.cpp src/voice_commands_win32.cpp)
 else()
-    set(SFR_KINECT_SENSOR src/kinect_sensor_none.cpp src/kinect_ideal_diagram.cpp src/nui_transform_smooth.cpp src/kinect_record.cpp src/kinect_race_record.cpp src/kinect_nui_record.cpp src/kinect_record_depth.cpp
+    set(SFR_KINECT_SENSOR src/kinect_sensor_none.cpp src/kinect_ideal_diagram.cpp src/nui_transform_smooth.cpp src/kinect_record.cpp src/kinect_race_record.cpp src/kinect_nui_record.cpp src/kinect_record_depth.cpp src/kinect_record_colour.cpp
         src/kinect_record_raw.cpp)
     set(SFR_VOICE src/voice_commands.cpp src/voice_commands_none.cpp)
 endif()
