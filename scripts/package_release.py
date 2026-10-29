@@ -318,11 +318,20 @@ def ios_app(app, version, build, pack, moltenvk, licenses, readme):
     subprocess.run(['codesign', '--force', '--sign', '-', '--entitlements', str(entitlements), str(app)], check=True)
 
 
-def camera_files(root):
-    """Windows MediaPipe bundle. Missing runtime, model or licence is fatal."""
+def camera_files(root, platform, game):
+    """Windows or Linux MediaPipe bundle. Missing runtime, model or licence is fatal."""
     files = []
-    for name in ('onnxruntime.dll', 'onnxruntime_providers_shared.dll'):
-        files.append((name, need(root / 'onnxruntime/lib' / name)))
+    if platform == 'windows':
+        for name in ('onnxruntime.dll', 'onnxruntime_providers_shared.dll'):
+            files.append((name, need(root / 'onnxruntime/lib' / name)))
+    else:
+        # A game built without the runtime would carry the models for nothing.
+        if b'libonnxruntime.so.1' not in game.read_bytes():
+            sys.exit('%s was built without ONNX Runtime (fetch_pose_model.py --platform linux, then configure again)' % game)
+        # The game's RUNPATH is $ORIGIN and it asks for the .so.1 name; the
+        # tarball holds the file itself under that name, not the links.
+        files.append(('libonnxruntime.so.1', need(root / 'onnxruntime/lib/libonnxruntime.so.1.30.0')))
+        files.append(('libonnxruntime_providers_shared.so', need(root / 'onnxruntime/lib/libonnxruntime_providers_shared.so')))
     for name in ('pose_estimation_mediapipe_2023mar.onnx', 'person_detection_mediapipe_2023mar.onnx'):
         files.append(('pose/' + name, need(root / 'mediapipe' / name)))
     for inside, source in (
@@ -352,10 +361,10 @@ def main():
                         help='shaders.pack to include (pass "" for none)')
     parser.add_argument('--output', type=Path, default=ROOT / 'out/release')
     parser.add_argument('--moltenvk', type=Path, help='macOS: the unpacked MoltenVK release directory')
-    parser.add_argument('--camera', action='store_true', help='bundle Windows MediaPipe models and ONNX Runtime')
+    parser.add_argument('--camera', action='store_true', help='bundle the MediaPipe models and ONNX Runtime (Windows, Linux)')
     args = parser.parse_args()
-    if args.camera and args.platform != 'windows':
-        parser.error('--camera currently packages the Windows runtime only')
+    if args.camera and args.platform not in ('windows', 'linux'):
+        parser.error('--camera packages the Windows and Linux runtimes (an APK carries its own)')
     pack = args.pack if args.pack and str(args.pack) else None
 
     licenses = [('licenses/' + name, need(source))
@@ -427,7 +436,8 @@ def main():
         files.append(('Internal-resolution.md', need(ROOT / 'docs/internal-resolution.md')))
         files.append(('Pipeline-preparation.md', need(ROOT / 'docs/pipeline-preparation.md')))
         if args.camera:
-            files += camera_files(ROOT / 'tools/onnx')
+            exe = '.exe' if args.platform == 'windows' else ''
+            files += camera_files(ROOT / 'tools/onnx', args.platform, build / ('FreeRidersRecompiled' + exe))
             files.append(('Camera-input.md', need(ROOT / 'docs/camera-input.md')))
             readme += b'\nCamera motion: enable Camera > Motion in the launcher. Models and runtime are included.\nSkeleton debug window is optional. Camera controls 1P; controller input takes priority.\n'
         if args.platform == 'windows':
@@ -444,7 +454,7 @@ def main():
                 archive.addfile(info, io.BytesIO(readme))
                 for inside, source in files:
                     member = archive.gettarinfo(str(source), name + '/' + inside)
-                    executable = inside.endswith(('FreeRidersRecompiled', 'sfr_cpu_diagnostic'))
+                    executable = inside.endswith(('FreeRidersRecompiled', 'sfr_cpu_diagnostic', '.so', '.so.1'))
                     member.mode = 0o755 if executable else 0o644
                     with open(source, 'rb') as stream:
                         archive.addfile(member, stream)
