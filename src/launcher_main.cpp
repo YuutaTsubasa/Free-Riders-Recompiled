@@ -3330,6 +3330,12 @@ struct Launcher {
         }
         const float preview_button = (std::max)(ImGui::CalcTextSize(tr(KinectPreviewOpen)).x,
                                                 ImGui::CalcTextSize(tr(KinectPreviewClose)).x) + ImGui::GetStyle().FramePadding.x * 4;
+        // The Kinect's preview window is Windows' only (kinect_preview_window.cpp).
+#ifdef _WIN32
+        constexpr bool kinect_preview_available = true;
+#else
+        constexpr bool kinect_preview_available = false;
+#endif
         // A webcam's picture window sits in the same place (Windows only).
         bool webcam_preview = false;
 #ifdef _WIN32
@@ -3348,12 +3354,18 @@ struct Launcher {
         const char* current = settings.camera_device.empty()
                                   ? (cameras.empty() ? tr(CameraNone) : cameras.front().c_str())
                                   : settings.camera_device.c_str();
-        const float row_width = kinect_chosen || webcam_preview ? camera_width + ImGui::GetStyle().ItemSpacing.x + preview_button
-                                                                : camera_width;
+        const float row_width = (kinect_chosen && kinect_preview_available) || webcam_preview
+                                    ? camera_width + ImGui::GetStyle().ItemSpacing.x + preview_button
+                                    : camera_width;
         setting_row(tr(CameraLabel), tr(camera_hints[camera_described]), row_width, scale, [&] {
             const Text labels[] = {CameraOff, CameraMotion, CameraKinect, CameraKinectV2};
-            // A real sensor only where there is a runtime to reach it.
+            // A real sensor only where there is a runtime to reach it; a Mac
+            // reaches a Kinect v1 only (libfreenect, #305).
+#ifdef __APPLE__
+            const int choices = sfr::KinectSensor::supported() ? 3 : 2;
+#else
             const int choices = sfr::KinectSensor::supported() ? 4 : 2;
+#endif
             const int chosen = (std::min)(camera_chosen, choices - 1);
             camera_hovered = -1;
             const float control_x = ImGui::GetCursorPosX();
@@ -3365,7 +3377,7 @@ struct Launcher {
                 }
                 ImGui::EndCombo();
             }
-            if (kinect_chosen) {
+            if (kinect_chosen && kinect_preview_available) {
                 ImGui::SameLine();
                 if (ImGui::Button(tr(kinect_preview ? KinectPreviewClose : KinectPreviewOpen), ImVec2(preview_button, 0))) {
                     if (kinect_preview) kinect_preview.reset();
