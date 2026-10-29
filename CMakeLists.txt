@@ -585,8 +585,11 @@ if(EXISTS "${SFR_ONNX_ROOT}/include/onnxruntime_cxx_api.h" AND EXISTS "${SFR_ONN
     target_include_directories(sfr_onnxruntime INTERFACE "${SFR_ONNX_ROOT}/include")
     target_link_libraries(sfr_onnxruntime INTERFACE "${SFR_ONNX_LIBRARY}")
     if(NOT WIN32 AND NOT ANDROID)
-        # A release keeps libonnxruntime.so.1 beside the program.
-        target_link_options(sfr_onnxruntime INTERFACE "LINKER:-rpath,$ORIGIN")
+        # A release keeps libonnxruntime.so.1 beside the program. Through the
+        # RPATH property, not a -rpath link option: Ninja read that one's
+        # $ORIGIN as a variable and left "$" (#305). Targets made after this
+        # get it, the game and the pose probe among them.
+        set(CMAKE_BUILD_RPATH "$ORIGIN")
     endif()
     # Windows finds a DLL beside the program before System32, which has an
     # older onnxruntime.dll of its own (Windows ML's): without the fetched
