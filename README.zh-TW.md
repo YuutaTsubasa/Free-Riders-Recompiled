@@ -219,8 +219,9 @@ Windows 發行包已內附體感模型與執行庫。在啟動器選擇 **體感
 [scripts/fetch_pose_model.py](scripts/fetch_pose_model.py)，Windows 發行包的 `licenses/`
 資料夾內附授權與第三方通知。
 
-單眼攝影機估算的是相對 3D 姿勢，並非 Kinect 的深度量測。Linux 與 Android 預建包
-目前未啟用 Camera 體感。設定、動作說明與自行建置方式見[攝影機體感輸入](docs/camera-input.md)。
+單眼攝影機估算的是相對 3D 姿勢，並非 Kinect 的深度量測。Android APK 也附上同樣的
+模型與執行庫，可以用手機自己的鏡頭（第一次開鏡頭時詢問相機權限；沒有鏡頭的裝置不會被
+問），授權附在 APK 旁的授權壓縮檔。Linux 預建包目前仍未啟用 Camera 體感。設定、動作說明與自行建置方式見[攝影機體感輸入](docs/camera-input.md)。
 
 ## VRM Avatar 模型
 

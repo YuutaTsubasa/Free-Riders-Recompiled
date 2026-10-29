@@ -290,16 +290,28 @@ std::vector<std::string> CameraCapture::devices() {
 }
 
 std::unique_ptr<CameraCapture> CameraCapture::open(uint32_t width, uint32_t height, const std::string& wanted) {
-    // Asked once per run; SDL waits for the player's answer.
+    // Listing the cameras needs no permission, so a device without one (a
+    // handheld or TV box) is never asked: SDL waits for the player's answer,
+    // which would hold the game's start with nobody to give it.
+    ACameraManager* manager = ACameraManager_create();
+    if (!manager) return nullptr;
+    auto cameras = list_cameras(manager);
+    if (cameras.empty()) {
+        ACameraManager_delete(manager);
+        std::cerr << "NATIVE_CAMERA android=no-camera\n";
+        return nullptr;
+    }
+    // Asked once per run.
     static std::atomic<int> allowed{-1};
     if (allowed.load() < 0) allowed.store(SDL_AndroidRequestPermission("android.permission.CAMERA") ? 1 : 0);
     if (!allowed.load()) {
+        ACameraManager_delete(manager);
         std::cerr << "NATIVE_CAMERA android=not-allowed\n";
         return nullptr;
     }
-    ACameraManager* manager = ACameraManager_create();
-    if (!manager) return nullptr;
-    const auto cameras = list_cameras(manager);
+    // Again with the permission: the lens sizes behind each name's angle of
+    // view may be withheld without it (Android 10's restricted keys).
+    cameras = list_cameras(manager);
     if (cameras.empty()) {
         ACameraManager_delete(manager);
         std::cerr << "NATIVE_CAMERA android=no-camera\n";
