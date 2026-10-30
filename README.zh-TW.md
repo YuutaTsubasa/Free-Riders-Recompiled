@@ -12,6 +12,10 @@ Kinect v2 目前屬實驗性支援，仍待實機驗證。
 [XenosRecomp](https://github.com/sonicnext-dev/XenosRecomp) 轉換，再由原生執行期代替主機的
 核心、繪圖、音效、輸入與 Kinect。
 
+它是怎麼一步一步做出來的、每一步背後的數字：見
+[Recompiled Handbook](https://yuuta-tsubasa.studio/Free-Riders-Recompiled/)
+（繁體中文與英文；原始檔在 [site/index.html](site/index.html)）。
+
 **本專案不包含任何遊戲素材。遊玩需要你自己合法取得的遊戲（美版／歐版光碟）：**啟動器會從
 你的光碟映像檔安裝遊戲資料。預先建置的版本在
 [Releases](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases) 頁面；想自己建置，

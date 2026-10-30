@@ -3557,6 +3557,28 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
             ctx.r3.u64 = overlapped ? complete_overlapped(overlapped, 0) : 0;
             return;
         }
+        // 0x000B0071 is XUserAwardAvatarAssets: {count, assets*} with (user,
+        // award id) pairs like the achievements above, sent from the title's
+        // award queue (82231228, filled by 822310A0 with a nonzero kind; its
+        // one caller is event 8, award 8). Avatar items have nowhere to go
+        // without a dashboard, so the request is logged and completes; the
+        // title only waits for the overlapped (Issue #317: finishing a race
+        // stopped the game here).
+        if (app == 0xFB && message == 0x000B0071) {
+            const uint32_t buffer = ctx.r6.u32;
+            std::cerr << "RESULT XUserAwardAvatarAssets";
+            if (active_memory->readable(buffer, 8)) {
+                const uint32_t count = active_memory->load<uint32_t>(buffer);
+                const uint32_t list = active_memory->load<uint32_t>(uint64_t(buffer) + 4);
+                std::cerr << " count=" << count;
+                for (uint32_t i = 0; i < count && i < 64 && active_memory->readable(uint64_t(list) + 8 * i, 8); ++i)
+                    std::cerr << " user=" << active_memory->load<uint32_t>(uint64_t(list) + 8 * i)
+                              << " id=" << active_memory->load<uint32_t>(uint64_t(list) + 8 * i + 4);
+            }
+            std::cerr << " backend=none\n";
+            ctx.r3.u64 = overlapped ? complete_overlapped(overlapped, 0) : 0;
+            return;
+        }
         if ((app != 0xFB || (message != 0x000B0006 && message != 0x000B0007)) && live_probe()) {
             std::cerr << "LIVE_PROBE XMsgStartIORequest app=0x" << std::hex << app << " message=0x" << message
                       << " overlapped=0x" << overlapped << " length=" << std::dec << ctx.r7.u32
