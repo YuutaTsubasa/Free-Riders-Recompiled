@@ -1,4 +1,5 @@
 #include "kinect_depth_body.h"
+#include "pose_nui_joints.h"
 
 #include <algorithm>
 #include <cmath>
@@ -16,9 +17,6 @@ constexpr float depth_focal = 285.63f, colour_focal = 531.15f;
 constexpr float torso_surface_to_joint = 0.07f, limb_surface_to_joint = 0.04f;
 
 Point middle(const Point& a, const Point& b) { return {(a[0] + b[0]) * 0.5f, (a[1] + b[1]) * 0.5f, (a[2] + b[2]) * 0.5f}; }
-Point between(const Point& from, const Point& to, float part) {
-    return {from[0] + (to[0] - from[0]) * part, from[1] + (to[1] - from[1]) * part, from[2] + (to[2] - from[2]) * part};
-}
 
 // The sampling radii were chosen on the v1's 320 pixels across: as many
 // pixels' worth of the view on another camera.
@@ -214,45 +212,10 @@ bool kinect_depth_body(const PoseLandmarks& given, const KinectDepthMillimetres&
         states[point] = 2;
     }
 
-    // The twenty NUI joints, as pose_to_joints names them from the model's.
-    namespace joint = nui_joint;
-    const auto set = [&](uint32_t to, uint32_t from) {
-        joints[to] = points[from];
-        joint_states[to] = states[from];
-    };
-    set(joint::shoulder_right, shoulder_right);
-    set(joint::shoulder_left, shoulder_left);
-    set(joint::elbow_right, elbow_right);
-    set(joint::elbow_left, elbow_left);
-    set(joint::hand_right, wrist_right);
-    set(joint::hand_left, wrist_left);
-    set(joint::hip_right, hip_right);
-    set(joint::hip_left, hip_left);
-    set(joint::knee_right, knee_right);
-    set(joint::knee_left, knee_left);
-    set(joint::ankle_right, ankle_right);
-    set(joint::ankle_left, ankle_left);
-    set(joint::head, nose);
-    joints[joint::head][2] += 0.07f;  // the head's centre is behind the nose
-    const auto derived = [&](uint32_t to, const Point& at, uint32_t a, uint32_t b) {
-        joints[to] = at;
-        joint_states[to] = (std::min)(joint_states[a], joint_states[b]);
-    };
-    derived(joint::wrist_right, between(joints[joint::elbow_right], joints[joint::hand_right], 0.9f), joint::elbow_right,
-            joint::hand_right);
-    derived(joint::wrist_left, between(joints[joint::elbow_left], joints[joint::hand_left], 0.9f), joint::elbow_left,
-            joint::hand_left);
-    derived(joint::foot_right,
-            {joints[joint::ankle_right][0], joints[joint::ankle_right][1] - 0.05f, joints[joint::ankle_right][2] - 0.08f},
-            joint::ankle_right, joint::ankle_right);
-    derived(joint::foot_left,
-            {joints[joint::ankle_left][0], joints[joint::ankle_left][1] - 0.05f, joints[joint::ankle_left][2] - 0.08f},
-            joint::ankle_left, joint::ankle_left);
-    derived(joint::hip_center, middle(joints[joint::hip_left], joints[joint::hip_right]), joint::hip_left, joint::hip_right);
-    derived(joint::shoulder_center, middle(joints[joint::shoulder_left], joints[joint::shoulder_right]),
-            joint::shoulder_left, joint::shoulder_right);
-    derived(joint::spine, between(joints[joint::hip_center], joints[joint::shoulder_center], 0.5f), joint::hip_center,
-            joint::shoulder_center);
+    // The twenty NUI joints, named as a camera's are (pose_nui_joints.h).
+    // The head's centre is behind the nose, which is all the model sees of it.
+    pose_nui_joints(points, states, joints, joint_states);
+    joints[nui_joint::head][2] += 0.07f;
     return true;
 }
 
