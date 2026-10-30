@@ -264,6 +264,8 @@ with [docs/progress.md](docs/progress.md).
   The launcher's new **Sharp scaling** switch (Graphics, under Render Size) enlarges the picture by repeating its pixels instead of blurring them, so 540 or 720 lines on a bigger screen stay crisp (#301).
 - [v0.10.38 — Camera motion on Android and Linux](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.38)
   The Android APK and the Linux tarball now carry the pose models and runtime, so Camera > Motion works there as on Windows: a phone's own camera on Android (a device without one is never asked for the permission), a webcam on Linux (#305).
+- [v0.10.39 — Avatar award crash fixed; camera motion on macOS and iOS](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.39)
+  Winning a race that earns one of the game's Avatar awards (seen after Tag and Relay races) no longer stops the game (#317). The macOS and iOS apps now carry the pose models, so Camera > Motion works there too, and a Kinect for Xbox 360 can be used on a Mac; macOS 14 or later is now needed (#305).
 
 ## System Requirements
 
