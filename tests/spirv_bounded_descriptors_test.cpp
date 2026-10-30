@@ -316,7 +316,7 @@ void refuses_what_it_does_not_know() {
 void rewrites_a_shader_pack() {
     const char* path = std::getenv("SFR_SHADER_PACK");
     if (!path || !*path) return;
-    std::ifstream file(std::filesystem::u8path(path), std::ios::binary);
+    std::ifstream file(std::filesystem::path(reinterpret_cast<const char8_t*>(path)), std::ios::binary);
     const std::vector<uint8_t> data((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
     require(data.size() >= 16, "the pack is readable");
     uint32_t count;
@@ -342,7 +342,7 @@ void rewrites_a_shader_pack() {
         // SFR_BOUNDED_SPIRV_DUMP=<directory>: each module before and after,
         // for spirv-val.
         if (const char* dump = std::getenv("SFR_BOUNDED_SPIRV_DUMP"); dump && *dump) {
-            const auto base = (std::filesystem::u8path(dump) / std::to_string(i)).string();
+            const auto base = (std::filesystem::path(reinterpret_cast<const char8_t*>(dump)) / std::to_string(i)).string();
             std::ofstream(base + ".in.spv", std::ios::binary)
                 .write(reinterpret_cast<const char*>(data.data() + spirv_at), header[4]);
             std::ofstream(base + ".out.spv", std::ios::binary)

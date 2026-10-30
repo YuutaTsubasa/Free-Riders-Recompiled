@@ -161,10 +161,10 @@ void takes_the_loop_out() {
     same_results(before, *after, "the hand-made shader", &compared);
     require(compared == 12, "the hand-made shader did not finish");
     if (const char* dump = std::getenv("SFR_DISPATCH_LOOP_DUMP"); dump && *dump) {
-        std::filesystem::create_directories(std::filesystem::u8path(dump));
-        std::ofstream(std::filesystem::u8path(dump) / "hand-before.spv", std::ios::binary)
+        std::filesystem::create_directories(std::filesystem::path(reinterpret_cast<const char8_t*>(dump)));
+        std::ofstream(std::filesystem::path(reinterpret_cast<const char8_t*>(dump)) / "hand-before.spv", std::ios::binary)
             .write(reinterpret_cast<const char*>(before.data()), std::streamsize(before.size()));
-        std::ofstream(std::filesystem::u8path(dump) / "hand-after.spv", std::ios::binary)
+        std::ofstream(std::filesystem::path(reinterpret_cast<const char8_t*>(dump)) / "hand-after.spv", std::ios::binary)
             .write(reinterpret_cast<const char*>(after->data()), std::streamsize(after->size()));
     }
 }
@@ -193,8 +193,8 @@ void rewrites_a_shader_pack() {
     const char* path = std::getenv("SFR_SHADER_PACK");
     if (!path || !*path) return;
     const char* dump = std::getenv("SFR_DISPATCH_LOOP_DUMP");
-    if (dump && *dump) std::filesystem::create_directories(std::filesystem::u8path(dump));
-    std::ifstream file(std::filesystem::u8path(path), std::ios::binary);
+    if (dump && *dump) std::filesystem::create_directories(std::filesystem::path(reinterpret_cast<const char8_t*>(dump)));
+    std::ifstream file(std::filesystem::path(reinterpret_cast<const char8_t*>(path)), std::ios::binary);
     const std::vector<uint8_t> data((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
     require(data.size() >= 16, "the pack is readable");
     uint32_t shaders;
@@ -221,7 +221,7 @@ void rewrites_a_shader_pack() {
         same_results(before, *after, "pack shader " + std::to_string(i), &finished, 4);
         compared += finished != 0, runs += finished;
         if (dump && *dump) {
-            std::ofstream out(std::filesystem::u8path(dump) / ("shader" + std::to_string(i) + ".spv"), std::ios::binary);
+            std::ofstream out(std::filesystem::path(reinterpret_cast<const char8_t*>(dump)) / ("shader" + std::to_string(i) + ".spv"), std::ios::binary);
             out.write(reinterpret_cast<const char*>(after->data()), std::streamsize(after->size()));
         }
     }
