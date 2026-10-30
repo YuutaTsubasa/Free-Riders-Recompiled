@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <utility>
 
 namespace sfr {
@@ -19,15 +20,19 @@ Point between(const Point& from, const Point& to, float part) {
     return {from[0] + (to[0] - from[0]) * part, from[1] + (to[1] - from[1]) * part, from[2] + (to[2] - from[2]) * part};
 }
 
-// A colour pixel at a depth, in camera space (the runtime's mirrored
-// picture: +x, the player's right, is the picture's right).
-Point colour_pixel_point(float x, float y, float metres) {
-    return {(x - 320.0f) * metres / colour_focal, (240.0f - y) * metres / colour_focal, metres};
+// The sampling radii were chosen on the v1's 320 pixels across: as many
+// pixels' worth of the view on another camera.
+int scaled_radius(const KinectDepthCamera& camera, int radius_at_320) {
+    return (std::max)(1, int(std::lround(float(radius_at_320) * float(camera.width) / float(kinect_depth_width))));
 }
 }
 
 std::array<float, 3> kinect_depth_pixel_point(float x, float y, float metres) {
-    return {(x - 160.0f) * metres / depth_focal, (120.0f - y) * metres / depth_focal, metres};
+    return kinect_depth_pixel_point(KinectDepthCamera{}, x, y, metres);
+}
+
+std::array<float, 3> kinect_depth_pixel_point(const KinectDepthCamera& camera, float x, float y, float metres) {
+    return {(x - camera.centre_x) * metres / camera.focal_x, (camera.centre_y - y) * metres / camera.focal_y, metres};
 }
 
 std::array<float, 2> kinect_colour_to_depth_pixel(float x, float y) {
@@ -36,13 +41,18 @@ std::array<float, 2> kinect_colour_to_depth_pixel(float x, float y) {
 
 float kinect_depth_at(const KinectDepthMillimetres& depth, float depth_x, float depth_y, int radius, float near,
                       float far) {
-    if (depth.size() != size_t(kinect_depth_width) * kinect_depth_height) return 0;
+    return kinect_depth_at(depth, KinectDepthCamera{}, depth_x, depth_y, radius, near, far);
+}
+
+float kinect_depth_at(const KinectDepthMillimetres& depth, const KinectDepthCamera& camera, float depth_x,
+                      float depth_y, int radius, float near, float far) {
+    if (depth.size() != camera.pixels()) return 0;
     const int cx = int(std::lround(depth_x)), cy = int(std::lround(depth_y));
     std::vector<uint16_t> found;
     for (int y = cy - radius; y <= cy + radius; ++y)
         for (int x = cx - radius; x <= cx + radius; ++x) {
-            if (x < 0 || y < 0 || x >= int(kinect_depth_width) || y >= int(kinect_depth_height)) continue;
-            const uint16_t mm = depth[size_t(y) * kinect_depth_width + size_t(x)];
+            if (x < 0 || y < 0 || x >= int(camera.width) || y >= int(camera.height)) continue;
+            const uint16_t mm = depth[size_t(y) * camera.width + size_t(x)];
             if (mm && mm >= near * 1000.0f && mm <= far * 1000.0f) found.push_back(mm);
         }
     if (found.empty()) return 0;
@@ -50,11 +60,97 @@ float kinect_depth_at(const KinectDepthMillimetres& depth, float depth_x, float 
     return found[found.size() / 2] / 1000.0f;
 }
 
+void KinectColourDepthGrid::build(const int* colour_of_depth, const KinectDepthMillimetres& depth,
+                                  const KinectDepthCamera& camera, uint32_t colour_width, uint32_t colour_height,
+                                  uint32_t cell, bool flip) {
+    cell_ = (std::max)(cell, 1u);
+    columns_ = (colour_width + cell_ - 1) / cell_;
+    rows_ = (colour_height + cell_ - 1) / cell_;
+    depth_width_ = camera.width;
+    nearest_.assign(size_t(columns_) * rows_, -1);
+    millimetres_.assign(nearest_.size(), 0);
+    if (!colour_of_depth || depth.size() != camera.pixels()) return;
+    const int colour_pixels = int(colour_width * colour_height);
+    for (size_t i = 0; i < camera.pixels(); ++i) {
+        const int colour = colour_of_depth[i];
+        if (colour < 0 || colour >= colour_pixels) continue;
+        uint32_t depth_x = uint32_t(i % camera.width);
+        const uint32_t depth_y = uint32_t(i / camera.width);
+        uint32_t colour_x = uint32_t(colour) % colour_width;
+        const uint32_t colour_y = uint32_t(colour) / colour_width;
+        if (flip) {
+            depth_x = camera.width - 1 - depth_x;
+            colour_x = colour_width - 1 - colour_x;
+        }
+        const size_t at = size_t(depth_y) * camera.width + depth_x;
+        const uint16_t mm = depth[at];
+        if (!mm) continue;
+        const size_t into = size_t(colour_y / cell_) * columns_ + colour_x / cell_;
+        if (nearest_[into] < 0 || mm < millimetres_[into]) {
+            nearest_[into] = int32_t(at);
+            millimetres_[into] = mm;
+        }
+    }
+}
+
+bool KinectColourDepthGrid::find(float x, float y, float& depth_x, float& depth_y) const {
+    if (!(x >= 0) || !(y >= 0) || !depth_width_) return false;
+    const int column = int(x) / int(cell_), row = int(y) / int(cell_);
+    if (column >= int(columns_) || row >= int(rows_)) return false;
+    for (int ring = 0; ring <= 3; ++ring) {
+        int32_t best = -1;
+        uint16_t best_mm = 0;
+        for (int r = row - ring; r <= row + ring; ++r)
+            for (int c = column - ring; c <= column + ring; ++c) {
+                if ((std::max)(std::abs(r - row), std::abs(c - column)) != ring) continue;
+                if (r < 0 || c < 0 || r >= int(rows_) || c >= int(columns_)) continue;
+                const size_t at = size_t(r) * columns_ + size_t(c);
+                if (nearest_[at] >= 0 && (best < 0 || millimetres_[at] < best_mm)) {
+                    best = nearest_[at];
+                    best_mm = millimetres_[at];
+                }
+            }
+        if (best >= 0) {
+            depth_x = float(uint32_t(best) % depth_width_);
+            depth_y = float(uint32_t(best) / depth_width_);
+            return true;
+        }
+    }
+    return false;
+}
+
+void kinect_depth_camera_points(const KinectDepthMillimetres& depth, const KinectDepthCamera& camera,
+                                std::vector<float>& points) {
+    points.assign(camera.pixels() * 3, 0.0f);
+    if (depth.size() != camera.pixels()) return;
+    for (size_t i = 0; i < camera.pixels(); ++i) {
+        if (!depth[i]) continue;
+        const Point at = kinect_depth_pixel_point(camera, float(i % camera.width), float(i / camera.width),
+                                                  depth[i] / 1000.0f);
+        points[3 * i] = at[0];
+        points[3 * i + 1] = at[1];
+        points[3 * i + 2] = at[2];
+    }
+}
+
 bool kinect_depth_body(const PoseLandmarks& given, const KinectDepthMillimetres& depth,
                        const KinectDepthBodySettings& settings, SkeletonJoints& joints,
                        std::array<uint32_t, nui_joint_count>& joint_states) {
+    const auto to_depth = [](float x, float y, float& depth_x, float& depth_y) {
+        const auto place = kinect_colour_to_depth_pixel(x, y);
+        depth_x = place[0];
+        depth_y = place[1];
+        return true;
+    };
+    return kinect_depth_body(given, depth, KinectDepthCamera{}, to_depth, settings, joints, joint_states);
+}
+
+bool kinect_depth_body(const PoseLandmarks& given, const KinectDepthMillimetres& depth,
+                       const KinectDepthCamera& camera, const KinectColourToDepth& to_depth,
+                       const KinectDepthBodySettings& settings, SkeletonJoints& joints,
+                       std::array<uint32_t, nui_joint_count>& joint_states) {
     using namespace pose_point;
-    if (depth.size() != size_t(kinect_depth_width) * kinect_depth_height) return false;
+    if (depth.size() != camera.pixels() || !to_depth) return false;
     // The model names the sides from the body it sees, and in a mirrored
     // picture it sees a mirrored body: its right hand is the player's left.
     PoseLandmarks landmarks = given;
@@ -79,11 +175,13 @@ bool kinect_depth_body(const PoseLandmarks& given, const KinectDepthMillimetres&
     const auto hips = pixel_middle(pixel(hip_left), pixel(hip_right));
     std::vector<float> torso_depths;
     for (const auto& at : {shoulders, pixel_middle(shoulders, hips), hips}) {
-        const auto place = kinect_colour_to_depth_pixel(at[0], at[1]);
-        if (const float metres = kinect_depth_at(depth, place[0], place[1], 4, 0.5f, 4.5f); metres > 0)
+        float x = 0, y = 0;
+        if (!to_depth(at[0], at[1], x, y)) continue;
+        if (const float metres = kinect_depth_at(depth, camera, x, y, scaled_radius(camera, 4), 0.5f, 4.5f); metres > 0)
             torso_depths.push_back(metres);
     }
-    if (torso_depths.empty()) return false;
+    float hips_x = 0, hips_y = 0;
+    if (torso_depths.empty() || !to_depth(hips[0], hips[1], hips_x, hips_y)) return false;
     std::sort(torso_depths.begin(), torso_depths.end());
     const float torso_depth = torso_depths[torso_depths.size() / 2] + torso_surface_to_joint;
 
@@ -91,7 +189,7 @@ bool kinect_depth_body(const PoseLandmarks& given, const KinectDepthMillimetres&
     // the picture's way round (x the picture's right, y down, z away), and
     // the picture is the runtime's mirrored one, so x carries straight
     // across to camera space.
-    const Point anchor = colour_pixel_point(hips[0], hips[1], torso_depth);
+    const Point anchor = kinect_depth_pixel_point(camera, hips_x, hips_y, torso_depth);
     const Point world_centre = middle(landmarks[hip_left].world, landmarks[hip_right].world);
     const auto shape = [&](uint32_t point) -> Point {
         const auto& world = landmarks[point].world;
@@ -106,12 +204,13 @@ bool kinect_depth_body(const PoseLandmarks& given, const KinectDepthMillimetres&
         points[point] = shape(point);
         states[point] = 1;
         if (landmarks[point].score < settings.min_score) continue;
-        const auto place = kinect_colour_to_depth_pixel(landmarks[point].x, landmarks[point].y);
+        float x = 0, y = 0;
+        if (!to_depth(landmarks[point].x, landmarks[point].y, x, y)) continue;
         const float expected = points[point][2] - limb_surface_to_joint;
-        const float metres = kinect_depth_at(depth, place[0], place[1], 2, expected - settings.joint_agreement,
-                                             expected + settings.joint_agreement);
+        const float metres = kinect_depth_at(depth, camera, x, y, scaled_radius(camera, 2),
+                                             expected - settings.joint_agreement, expected + settings.joint_agreement);
         if (metres <= 0) continue;
-        points[point] = colour_pixel_point(landmarks[point].x, landmarks[point].y, metres + limb_surface_to_joint);
+        points[point] = kinect_depth_pixel_point(camera, x, y, metres + limb_surface_to_joint);
         states[point] = 2;
     }
 
@@ -159,7 +258,14 @@ bool kinect_depth_body(const PoseLandmarks& given, const KinectDepthMillimetres&
 
 uint32_t kinect_cut_player(const KinectDepthMillimetres& depth, const SkeletonJoints& joints, uint8_t player,
                            const KinectPlayerCutSettings& settings, std::vector<uint8_t>& index) {
-    constexpr size_t count = size_t(kinect_depth_width) * kinect_depth_height;
+    return kinect_cut_player(depth, KinectDepthCamera{}, joints, player, settings, index);
+}
+
+uint32_t kinect_cut_player(const KinectDepthMillimetres& depth, const KinectDepthCamera& camera,
+                           const SkeletonJoints& joints, uint8_t player, const KinectPlayerCutSettings& settings,
+                           std::vector<uint8_t>& index) {
+    const size_t count = camera.pixels();
+    const uint32_t width = camera.width, height = camera.height;
     if (depth.size() != count || !player || player > 6) return 0;
     if (index.size() != count) index.assign(count, 0);
     // The space the player may fill: the skeleton's box with a margin, down
@@ -178,17 +284,17 @@ uint32_t kinect_cut_player(const KinectDepthMillimetres& depth, const SkeletonJo
                at[2] >= low[2] - settings.margin_metres && at[2] <= high[2] + settings.margin_metres;
     };
     const auto point_at = [&](size_t i) {
-        return kinect_depth_pixel_point(float(i % kinect_depth_width), float(i / kinect_depth_width), depth[i] / 1000.0f);
+        return kinect_depth_pixel_point(camera, float(i % width), float(i / width), depth[i] / 1000.0f);
     };
     // Seeds: each joint's pixel, where the depth there is near the joint.
     std::vector<size_t> queue;
     std::vector<uint8_t> seen(count, 0);
     for (const auto& at : joints) {
         if (!(at[2] > 0.1f)) continue;
-        const int x = int(std::lround(160.0f + at[0] * depth_focal / at[2]));
-        const int y = int(std::lround(120.0f - at[1] * depth_focal / at[2]));
-        if (x < 0 || y < 0 || x >= int(kinect_depth_width) || y >= int(kinect_depth_height)) continue;
-        const size_t i = size_t(y) * kinect_depth_width + size_t(x);
+        const int x = int(std::lround(camera.centre_x + at[0] * camera.focal_x / at[2]));
+        const int y = int(std::lround(camera.centre_y - at[1] * camera.focal_y / at[2]));
+        if (x < 0 || y < 0 || x >= int(width) || y >= int(height)) continue;
+        const size_t i = size_t(y) * width + size_t(x);
         if (seen[i] || !depth[i] || std::fabs(depth[i] / 1000.0f - at[2]) > 0.3f || !inside(point_at(i))) continue;
         seen[i] = 1;
         queue.push_back(i);
@@ -200,9 +306,9 @@ uint32_t kinect_cut_player(const KinectDepthMillimetres& depth, const SkeletonJo
         const size_t i = queue[next];
         index[i] = player;
         ++marked;
-        const size_t x = i % kinect_depth_width, y = i / kinect_depth_width;
-        const size_t neighbours[4] = {x > 0 ? i - 1 : i, x + 1 < kinect_depth_width ? i + 1 : i,
-                                      y > 0 ? i - kinect_depth_width : i, y + 1 < kinect_depth_height ? i + kinect_depth_width : i};
+        const size_t x = i % width, y = i / width;
+        const size_t neighbours[4] = {x > 0 ? i - 1 : i, x + 1 < width ? i + 1 : i, y > 0 ? i - width : i,
+                                      y + 1 < height ? i + width : i};
         for (const size_t n : neighbours) {
             if (n == i || seen[n] || !depth[n]) continue;
             if (std::fabs(float(depth[n]) - float(depth[i])) > step_mm) continue;
