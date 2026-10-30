@@ -14,6 +14,7 @@ __pycache__/
 /tools/SDL/
 /tools/libusb/
 /tools/libfreenect/
+/tools/libfreenect2/
 # ONNX Runtime and the RTMPose model, fetched by scripts/fetch_pose_model.py
 /tools/onnx/
 # The D3D12 Agility SDK runtime, fetched by scripts/fetch_d3d12_agility.py

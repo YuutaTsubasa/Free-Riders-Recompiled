@@ -322,16 +322,24 @@ std::unique_ptr<KinectSensor> open_freenect(std::string* why) {
 }
 }
 
+// A Kinect v2 through libfreenect2 (kinect_sensor_freenect2.cpp).
+std::unique_ptr<KinectSensor> open_freenect2(std::string* why);
+
 bool KinectSensor::supported() { return true; }
 
-std::unique_ptr<KinectSensor> KinectSensor::open(std::string* why) { return open_freenect(why); }
+std::unique_ptr<KinectSensor> KinectSensor::open(std::string* why) {
+    // The Xbox 360 kind first, as on Windows.
+    std::string v1_why, v2_why;
+    if (auto sensor = open_freenect(&v1_why)) return sensor;
+    if (auto sensor = open_freenect2(&v2_why)) return sensor;
+    if (why) *why = kinect_open_failure(v1_why, v2_why);
+    return nullptr;
+}
 
 std::unique_ptr<KinectSensor> KinectSensor::open_model(int model, std::string* why) {
     if (model == 1) return open_freenect(why);
-    // A Kinect v2 through libfreenect2 is not here yet: as a host without
-    // its runtime, so that a v1's own reason (no-sensor, ...) is the one told
-    // (kinect_open_failure).
-    if (why) *why = "no-runtime";
+    if (model == 2) return open_freenect2(why);
+    if (why) *why = "unknown-model";
     return nullptr;
 }
 

@@ -94,6 +94,15 @@
       "license": "Apache-2.0 OR GPL-2.0 (used under Apache-2.0)",
       "submodules": [],
       "rationale": "master after v0.6.4 (its CMake works with current CMake). The Kinect v1 on macOS, where the Kinect for Windows runtime does not exist (#305), and fakenect, which plays a recording back as a sensor; compiled on macOS only."
+    },
+    {
+      "name": "libfreenect2",
+      "url": "https://github.com/OpenKinect/libfreenect2.git",
+      "commit": "fd64c5d9b214df6f6a55b4419357e51083f15d93",
+      "path": "tools/libfreenect2",
+      "license": "Apache-2.0 OR GPL-2.0 (used under Apache-2.0)",
+      "submodules": [],
+      "rationale": "v0.2.1, its newest. The Kinect v2 on macOS (#305): depth decoded on the CPU, colour through VideoToolbox; its sources are compiled by this project's CMake on macOS only."
     }
   ],
   "references": [
