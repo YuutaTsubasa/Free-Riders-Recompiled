@@ -1,0 +1,744 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta property="og:title" content="Recompiled Handbook: how Free Riders Recompiled was made">
+<meta property="og:description" content="How an Xbox 360 Kinect game became a native program for Windows, Linux, Android, macOS and iOS, step by step, in Traditional Chinese and English.">
+<meta property="og:type" content="article">
+<title>Free Riders Handbook</title>
+<meta name="description" content="How Sonic Free Riders Recompiled was made, step by step: translating an Xbox 360 Kinect game into a native program, with the real numbers.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;700&family=JetBrains+Mono:wght@400;600&family=Noto+Sans+TC:wght@400;500;700;900&display=swap">
+<style>
+/* Layout: a single reading column with full-width illustration bands; a sticky top bar carries the language switch and a step index. */
+:root{
+  --bg:#f1f4fa; --panel:#ffffff; --ink:#121a2e; --muted:#56617a; --line:#d5dcea;
+  --violet:#1d5fd1; --magenta:#d9580b; --lime:#2f8f17; --gold:#a87700; --cyan:#0a7f9c;
+  --chip:#e6ecf8; --code:#eaf0fa;
+  --display:"Chakra Petch","Noto Sans TC",system-ui,sans-serif;
+  --body:"Noto Sans TC","Segoe UI",system-ui,-apple-system,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Consolas,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0b1020; --panel:#141b30; --ink:#e8eefc; --muted:#a0abc6; --line:#27314d;
+  --violet:#6aa8ff; --magenta:#ff9a4d; --lime:#8be04e; --gold:#ffc83d; --cyan:#4fd2f2;
+  --chip:#1d2643; --code:#18213b; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0b1020; --panel:#141b30; --ink:#e8eefc; --muted:#a0abc6; --line:#27314d;
+  --violet:#6aa8ff; --magenta:#ff9a4d; --lime:#8be04e; --gold:#ffc83d; --cyan:#4fd2f2;
+  --chip:#1d2643; --code:#18213b; color-scheme:dark}
+
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--body);font-size:17px;line-height:1.75;margin:0}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:10;background:var(--panel)}
+a{color:var(--violet)}
+code,.mono{font-family:var(--mono);font-size:.88em}
+code{background:var(--code);padding:.1em .35em;border-radius:4px;overflow-wrap:anywhere}
+.wrap{max-width:860px;margin:0 auto;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+
+/* language switch */
+html[data-lang="en"] .zh{display:none!important}
+html:not([data-lang="en"]) .en{display:none!important}
+
+.bar{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:color-mix(in srgb,var(--panel) 92%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+.bar .wrap{display:flex;align-items:center;gap:12px;padding-block:10px;max-width:1100px}
+.brand{font-family:var(--display);font-weight:700;letter-spacing:.04em;font-size:15px;white-space:nowrap}
+.brand b{color:var(--magenta)}
+.steps-nav{display:flex;gap:4px;overflow-x:auto;flex:1;min-width:0;scrollbar-width:none}
+.steps-nav a{font-family:var(--mono);font-size:12px;text-decoration:none;color:var(--muted);padding:3px 7px;border-radius:5px;white-space:nowrap}
+.steps-nav a:hover,.steps-nav a:focus-visible{background:var(--chip);color:var(--ink)}
+.lang{display:flex;border:1px solid var(--line);border-radius:999px;overflow:hidden;flex:none;margin-left:auto}
+.lang button{font:600 13px var(--body);background:none;border:0;color:var(--muted);padding:5px 12px;cursor:pointer}
+.lang button[aria-pressed="true"]{background:var(--violet);color:#fff}
+button:focus-visible,a:focus-visible{outline:2px solid var(--magenta);outline-offset:2px}
+
+/* hero */
+.hero{padding-block:56px 32px}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--magenta)}
+h1{font-family:var(--display);font-weight:700;font-size:clamp(32px,6vw,56px);line-height:1.14;margin:.3em 0 .35em;text-wrap:balance}
+h1 .zh{font-family:"Noto Sans TC",var(--display);font-weight:900}
+.lede{font-size:19px;color:var(--muted);max-width:40em}
+.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:28px}
+.fact{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.fact b{display:block;font-family:var(--display);font-size:26px;line-height:1.2;font-variant-numeric:tabular-nums}
+.fact span{font-size:13px;color:var(--muted)}
+
+/* bytes -> code hero animation */
+.morph{margin-top:34px;display:grid;grid-template-columns:1fr auto 1fr auto 1fr;align-items:center;gap:10px}
+.morph .col{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-family:var(--mono);font-size:12px;line-height:1.6;height:150px;overflow:hidden;position:relative;min-width:0}
+.morph .col h4{margin:0 0 6px;font:600 11px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.morph .scroll{animation:scrollup 9s linear infinite;white-space:nowrap}
+.morph .arrow{font-family:var(--display);font-size:22px;color:var(--magenta);animation:nudge 1.6s ease-in-out infinite}
+.hex{color:var(--violet)} .asm{color:var(--cyan)} .cpp{color:var(--lime)}
+@keyframes scrollup{from{transform:translateY(0)}to{transform:translateY(-50%)}}
+@keyframes nudge{0%,100%{transform:translateX(0)}50%{transform:translateX(4px)}}
+
+/* sections */
+section.step{padding-block:44px;border-top:1px solid var(--line)}
+.num{font-family:var(--display);font-weight:700;font-size:14px;color:var(--magenta);letter-spacing:.08em}
+h2{font-family:var(--display);font-size:clamp(25px,3.6vw,34px);line-height:1.25;margin:.15em 0 .5em;text-wrap:balance}
+h2 .zh{font-family:"Noto Sans TC",var(--display);font-weight:900}
+h3{font-size:16px;margin:1.4em 0 .3em;color:var(--violet);letter-spacing:.02em}
+p{margin:.55em 0}
+ul,ol{padding-left:1.25em;margin:.4em 0} li{margin:.25em 0}
+.why{background:var(--panel);border-left:4px solid var(--gold);border-radius:0 8px 8px 0;padding:10px 16px;margin:16px 0}
+.check{background:var(--panel);border-left:4px solid var(--lime);border-radius:0 8px 8px 0;padding:10px 16px;margin:16px 0}
+.check b,.why b,.trap b{font-family:var(--display);letter-spacing:.04em}
+.trap{background:var(--panel);border-left:4px solid var(--magenta);border-radius:0 8px 8px 0;padding:10px 16px;margin:16px 0}
+.fig{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;margin:22px 0;overflow-x:auto}
+.fig svg{display:block;width:100%;height:auto;min-width:520px}
+.fig figcaption{font-size:13px;color:var(--muted);margin-top:8px}
+.fig img{display:block;width:100%;height:auto;border-radius:8px}
+.tbl{overflow-x:auto;margin:14px 0}
+table{border-collapse:collapse;width:100%;font-size:15px;min-width:460px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:13px;color:var(--muted);font-weight:600}
+td.n{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+
+/* svg shared */
+.s-ink{fill:var(--ink)} .s-muted{fill:var(--muted)} .s-panel{fill:var(--panel)} .s-bg{fill:var(--bg)} .s-chip{fill:var(--chip)}
+.s-line{stroke:var(--line)} .s-violet{fill:var(--violet)} .s-magenta{fill:var(--magenta)} .s-lime{fill:var(--lime)} .s-gold{fill:var(--gold)} .s-cyan{fill:var(--cyan)}
+.st-violet{stroke:var(--violet)} .st-magenta{stroke:var(--magenta)} .st-lime{stroke:var(--lime)} .st-gold{stroke:var(--gold)} .st-cyan{stroke:var(--cyan)} .st-muted{stroke:var(--muted)} .st-ink{stroke:var(--ink)}
+svg text{font-family:var(--mono);font-size:12px}
+svg .lbl{font-family:var(--body);font-size:13px}
+.flow{stroke-dasharray:6 8;animation:dash 1.2s linear infinite}
+@keyframes dash{to{stroke-dashoffset:-28}}
+.pulse{animation:pulse 2.4s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
+.lean{transform-origin:200px 250px;animation:lean 4s ease-in-out infinite}
+@keyframes lean{0%,100%{transform:rotate(-9deg)}50%{transform:rotate(9deg)}}
+
+/* bar chart */
+.bars{display:grid;gap:10px;margin:8px 0}
+.bars .b{display:grid;grid-template-columns:150px 1fr 74px;align-items:center;gap:10px;font-size:14px}
+.bars .track{height:16px;background:var(--chip);border-radius:4px;overflow:hidden}
+.bars .fill{height:100%;background:linear-gradient(90deg,var(--violet),var(--magenta));border-radius:4px;transform-origin:left;animation:grow 1.4s cubic-bezier(.2,.8,.2,1) both}
+.bars .fill.ref{background:var(--gold)}
+.bars .v{font-family:var(--mono);font-variant-numeric:tabular-nums;text-align:right}
+@keyframes grow{from{transform:scaleX(.08)}to{transform:scaleX(1)}}
+
+.ai{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px 24px;margin-top:10px}
+.split{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.split>div{min-width:0}
+.tag{display:inline-block;font:600 11px var(--mono);letter-spacing:.08em;padding:2px 8px;border-radius:999px;background:var(--chip);color:var(--violet);text-transform:uppercase}
+
+.code{margin:22px 0 4px;border:1px solid var(--line);border-radius:10px;background:var(--panel);overflow:hidden}
+.code-h{font:600 12px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--cyan);padding:8px 14px;border-bottom:1px solid var(--line);background:var(--code)}
+.code-h.sub{border-top:1px solid var(--line)}
+.code ul{list-style:none;margin:0;padding:6px 0}
+.code li{display:grid;grid-template-columns:minmax(0,auto) 1fr;gap:4px 14px;padding:6px 14px;margin:0;font-size:14.5px;align-items:baseline}
+.code li a{text-decoration:none;min-width:0;overflow-wrap:anywhere}
+.code li a code{background:none;padding:0;color:var(--violet)}
+.code li a:hover code{text-decoration:underline}
+.code li>span{color:var(--muted);min-width:0}
+.code .date{font-family:var(--mono);font-size:12.5px;color:var(--gold);margin-right:4px}
+@media (max-width:640px){.code li{grid-template-columns:1fr}}
+footer{padding-block:40px 70px;border-top:1px solid var(--line);color:var(--muted);font-size:14px}
+
+@media (max-width:640px){
+  body{font-size:16px}
+  .morph{grid-template-columns:1fr;}
+  .morph .arrow{transform:rotate(90deg);justify-self:center;animation:none}
+  .split{grid-template-columns:1fr}
+  .bars .b{grid-template-columns:104px 1fr 60px;font-size:13px}
+  .steps-nav{display:none}
+}
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation:none!important}
+}
+</style>
+</head>
+<body>
+
+
+<div class="bar">
+  <div class="wrap">
+    <div class="brand">FREE RIDERS <b>HANDBOOK</b></div>
+    <nav class="steps-nav" aria-label="Steps">
+      <a href="#s0">00</a><a href="#s1">01</a><a href="#s2">02</a><a href="#s3">03</a><a href="#s4">04</a><a href="#s5">05</a><a href="#s6">06</a><a href="#s7">07</a><a href="#s8">08</a><a href="#s9">09</a><a href="#s10">10</a><a href="#s11">11</a><a href="#s12">12</a><a href="#s13">13</a><a href="#ai">AI</a><a href="#code">CODE</a>
+    </nav>
+    <div class="lang" role="group" aria-label="Language">
+      <button type="button" id="btn-zh" data-set="zh" aria-pressed="true">繁中</button>
+      <button type="button" id="btn-en" data-set="en" aria-pressed="false">EN</button>
+    </div>
+  </div>
+</div>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="eyebrow">Sonic Free Riders Recompiled · 2026-09-22 → 2026-10-30</div>
+    <h1><span class="zh">把一款 Xbox 360 的 Kinect 遊戲翻成原生程式：製作流程</span><span class="en">Turning an Xbox 360 Kinect game into a native program, step by step</span></h1>
+    <p class="lede zh">《Sonic Free Riders》是一款只能用 Kinect 體感玩的 Xbox 360 遊戲。這份文件照這個專案實際走過的路，一步一步說明它怎麼變成能在電腦、手機上執行的程式：每一步在做什麼、遇到什麼坑、怎麼知道做對了。裡面的數字都來自專案的 git 紀錄、文件、測試和發版說明，可以自己去查。</p>
+    <p class="lede en"><i>Sonic Free Riders</i> is an Xbox 360 game you can only play with a Kinect, the camera that reads your body. This page follows the path this project actually took to turn it into a program that runs on computers and phones: what each step is, what went wrong, and how you know a step is right. Every number comes from the project's git history, docs, tests and release notes, and you can check them yourself.</p>
+    <div class="facts">
+      <div class="fact"><b>86</b><span class="zh">個版本（0.1.0 → 0.10.38）</span><span class="en">releases (0.1.0 → 0.10.38)</span></div>
+      <div class="fact"><b>183</b><span class="zh">項單元測試，0.10.38 在 Windows 全過</span><span class="en">unit tests, all passing on Windows for 0.10.38</span></div>
+      <div class="fact"><b>24 → 60</b><span class="zh">AYN Thor 手機上比賽的 fps（0.4.4 → 0.10.38）</span><span class="en">race fps on an AYN Thor handheld (0.4.4 → 0.10.38)</span></div>
+      <div class="fact"><b>6</b><span class="zh">種安裝包：Windows、Linux、Android ×2、macOS、iOS</span><span class="en">packages: Windows, Linux, Android ×2, macOS, iOS</span></div>
+    </div>
+    <div class="morph" aria-hidden="true">
+      <div class="col"><h4>PowerPC bytes</h4><div class="scroll hex">
+        7D 88 02 A6<br>91 81 FF F8<br>94 21 FF A0<br>80 64 00 00<br>2B 03 00 00<br>38 63 00 01<br>4E 80 00 20<br>7D 88 02 A6<br>91 81 FF F8<br>94 21 FF A0<br>80 64 00 00<br>2B 03 00 00<br>38 63 00 01<br>4E 80 00 20
+      </div></div>
+      <div class="arrow">→</div>
+      <div class="col"><h4>Instructions</h4><div class="scroll asm">
+        mflr r12<br>stw r12,-8(r1)<br>stwu r1,-96(r1)<br>lwz r3,0(r4)<br>cmplwi cr6,r3,0<br>addi r3,r3,1<br>blr<br>mflr r12<br>stw r12,-8(r1)<br>stwu r1,-96(r1)<br>lwz r3,0(r4)<br>cmplwi cr6,r3,0<br>addi r3,r3,1<br>blr
+      </div></div>
+      <div class="arrow">→</div>
+      <div class="col"><h4>C++</h4><div class="scroll cpp">
+        ctx.r12.u64 = ctx.lr;<br>PPC_STORE_U32(ctx.r1.u32 - 8, ...);<br>ctx.r1.u32 -= 96;<br>ctx.r3.u64 = PPC_LOAD_U32(ctx.r4.u32);<br>ctx.cr6.compare&lt;uint32_t&gt;(...);<br>ctx.r3.s64 = ctx.r3.s64 + 1;<br>return;<br>ctx.r12.u64 = ctx.lr;<br>PPC_STORE_U32(ctx.r1.u32 - 8, ...);<br>ctx.r1.u32 -= 96;<br>ctx.r3.u64 = PPC_LOAD_U32(ctx.r4.u32);<br>ctx.cr6.compare&lt;uint32_t&gt;(...);<br>ctx.r3.s64 = ctx.r3.s64 + 1;<br>return;
+      </div></div>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<!-- 00 -->
+<section class="step" id="s0"><div class="wrap">
+  <div class="num">STEP 00</div>
+  <h2><span class="zh">先搞懂：「Recompiled」和模擬器差在哪</span><span class="en">First: how a recompilation differs from an emulator</span></h2>
+  <div class="zh">
+    <p>模擬器（例如 Xbox 360 的 Xenia）像<b>同步口譯</b>：遊戲每執行一條機器指令，模擬器當下才去讀懂它、照做一次，一條接一條。</p>
+    <p>Recompiled 像<b>事先把整本書翻好</b>：在玩之前，就把遊戲的機器碼（Xbox 360 用的是 PowerPC 處理器的指令）翻成 C++ 程式碼，再用電腦自己的編譯器編成一般的程式。玩的時候不用再讀懂指令，直接跑翻好的版本。</p>
+    <p>但遊戲不只是程式。它還會呼叫主機的系統（開執行緒、讀檔、要記憶體）、叫顯示晶片畫圖、讀 Kinect 看到的身體。這些<b>不是翻譯能處理的</b>，要另外寫一層程式來「扮演」Xbox 360。所以這個專案其實是兩半：翻好的遊戲程式，加上一層代替主機的執行環境（runtime）。</p>
+    <p>翻譯工具用的是現成的開源專案：CPU 程式用 <b>XenonRecomp</b>，畫面用的著色器（shader，跑在顯示卡上的小程式）用 <b>XenosRecomp</b>。它們原本是為《Sonic Unleashed Recompiled》等專案做的。</p>
+  </div>
+  <div class="en">
+    <p>An emulator (Xenia, for the Xbox 360) is like a <b>live interpreter</b>: each time the game runs a machine instruction, the emulator reads it and carries it out, one after another.</p>
+    <p>A recompilation is like <b>translating the whole book in advance</b>: before you play, the game's machine code (the Xbox 360 runs PowerPC instructions) is translated into C++, which your computer's own compiler turns into an ordinary program. While you play, nothing has to be read and understood again.</p>
+    <p>But a game is more than code. It calls on the console's system (to start threads, read files, get memory), asks the graphics chip to draw, and reads the body the Kinect sees. <b>None of that can be translated</b>; it needs a separate layer that plays the part of the Xbox 360. So this project is two halves: the translated game code, and a runtime that stands in for the console.</p>
+    <p>The translators are existing open-source projects: <b>XenonRecomp</b> for the CPU code and <b>XenosRecomp</b> for the shaders (the small programs that run on the graphics card). They were made for projects like <i>Sonic Unleashed Recompiled</i>.</p>
+  </div>
+  <figure class="fig">
+    <svg viewBox="0 0 720 210" role="img" aria-label="Emulator versus recompilation">
+      <rect x="10" y="10" width="340" height="190" rx="10" class="s-bg"/>
+      <text x="26" y="36" class="s-muted">EMULATOR</text>
+      <rect x="26" y="52" width="88" height="40" rx="6" class="s-chip"/><text x="38" y="77" class="s-ink">XEX</text>
+      <rect x="140" y="52" width="110" height="40" rx="6" class="s-chip"/><text x="150" y="77" class="s-ink">decode</text>
+      <rect x="140" y="112" width="110" height="40" rx="6" class="s-chip"/><text x="150" y="137" class="s-ink">execute</text>
+      <path d="M114 72 H140" class="st-violet flow" stroke-width="3" fill="none"/>
+      <path d="M195 92 V112" class="st-violet flow" stroke-width="3" fill="none"/>
+      <path d="M250 132 Q300 132 300 72 Q300 52 250 66" class="st-magenta flow" stroke-width="3" fill="none"/>
+      <text x="200" y="180" class="s-magenta">every instruction, every time</text>
+      <rect x="370" y="10" width="340" height="190" rx="10" class="s-bg"/>
+      <text x="386" y="36" class="s-muted">RECOMPILED</text>
+      <rect x="386" y="52" width="70" height="40" rx="6" class="s-chip"/><text x="396" y="77" class="s-ink">XEX</text>
+      <rect x="476" y="52" width="92" height="40" rx="6" class="s-chip"/><text x="486" y="77" class="s-ink">C++ ×1</text>
+      <rect x="588" y="52" width="106" height="40" rx="6" class="s-chip"/><text x="598" y="77" class="s-ink">native game</text>
+      <path d="M456 72 H476" class="st-lime" stroke-width="3" fill="none"/>
+      <path d="M568 72 H588" class="st-lime" stroke-width="3" fill="none"/>
+      <rect x="476" y="122" width="218" height="40" rx="6" class="s-chip"/><text x="486" y="147" class="s-ink">runtime: system, GPU, Kinect</text>
+      <path d="M641 92 V122" class="st-cyan flow" stroke-width="3" fill="none"/>
+      <text x="386" y="186" class="s-lime">translated once, before play</text>
+    </svg>
+    <figcaption><span class="zh">左：模擬器每條指令都要當場解讀。右：事先翻好一次，執行時只剩「扮演主機」的那一層要做事。XEX 是 Xbox 360 的執行檔格式。</span><span class="en">Left: an emulator decodes each instruction as it runs. Right: the code is translated once, and only the layer that plays the console works at run time. XEX is the Xbox 360's program file format.</span></figcaption>
+  </figure>
+  <div class="code"><div class="code-h"><span class="zh">在專案裡的位置</span><span class="en">Where it is in the code</span></div><ul><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/README.md" target="_blank" rel="noopener"><code>README.md</code></a><span class="zh">專案說明：它是什麼、怎麼安裝</span><span class="en">What it is and how to install it</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/docs/progress.md" target="_blank" rel="noopener"><code>docs/progress.md</code></a><span class="zh">從零開始的實作紀錄（繁中，2026-09-10 起）</span><span class="en">The build-up from nothing (in Traditional Chinese, from 2026-09-10)</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/config/dependencies.lock.json" target="_blank" rel="noopener"><code>config/dependencies.lock.json</code></a><span class="zh">XenonRecomp、XenosRecomp 等工具固定在哪個版本</span><span class="en">Which versions of XenonRecomp, XenosRecomp and the rest are pinned</span></li></ul><div class="code-h sub"><span class="zh">相關 commit</span><span class="en">Commits</span></div><ul class="commits"><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/9d2ba1cee13a0ea521d4f9fb9c9940bb6cda9801" target="_blank" rel="noopener"><code>9d2ba1c</code></a><span><span class="date">2026-09-22</span> Free Riders Recompiled</span></li></ul></div>
+</div></section>
+
+<!-- 01 -->
+<section class="step" id="s1"><div class="wrap">
+  <div class="num">STEP 01</div>
+  <h2><span class="zh">劃清法律界線，再寫第一行程式</span><span class="en">Draw the legal line before the first line of code</span></h2>
+  <div class="zh">
+    <p>這種專案能公開，前提是<b>不散布任何遊戲本身的東西</b>。這件事會決定之後所有工具怎麼設計，所以一開始就要定好。</p>
+    <ul>
+      <li><b>玩家用自己的光碟</b>：安裝程式（launcher）讀玩家自己的光碟映像檔（ISO），把遊戲資料裝到自己的電腦上。它會先檢查裡面的 <code>default.xex</code> 是不是支援的版本（目前只支援美版／歐版光碟），不是就不裝。</li>
+      <li><b>翻出來的 C++ 永遠只在本機</b>：光碟映像、遊戲檔、從遊戲翻出來的程式碼，全部列在 <code>.gitignore</code>，不進 git、不上傳任何雲端。</li>
+      <li><b>CI（GitHub 上的自動測試）拿不到遊戲</b>：所以 CI 只測不需要遊戲的部分。需要遊戲的建置和測試，都在開發者自己的電腦上跑。</li>
+      <li>發布的安裝包照 Unleashed Recompiled 的模式：開發者用自己的光碟建好程式再發布；遊戲的資料（圖、聲音、影片）一個 byte 都不附。</li>
+    </ul>
+  </div>
+  <div class="en">
+    <p>A project like this can be public only if it <b>ships nothing from the game itself</b>. That decides how every tool is designed, so settle it on day one.</p>
+    <ul>
+      <li><b>Players use their own disc</b>: the launcher reads the player's own disc image (ISO) and installs the game's data on their machine. It first checks that the disc's <code>default.xex</code> is the supported version (only the USA/Europe disc for now), and won't install anything else.</li>
+      <li><b>The translated C++ stays local</b>: disc images, game files and the code generated from the game are all in <code>.gitignore</code>. They never go into git or any cloud service.</li>
+      <li><b>CI (the automatic tests on GitHub) never has the game</b>, so it tests only what doesn't need it. Builds and tests that need the game run on the developer's own machine.</li>
+      <li>Releases follow the Unleashed Recompiled model: the developer builds the program from their own disc and publishes it; not one byte of the game's data (pictures, sound, movies) goes with it.</li>
+    </ul>
+  </div>
+  <figure class="fig"><img src="https://raw.githubusercontent.com/YuutaTsubasa/Free-Riders-Recompiled/eb16749f01087ba4269e462279374c3ad3df21f6/docs/images/launcher.png" alt="The Free Riders Recompiled launcher" loading="lazy" width="1120" height="700">
+    <figcaption><span class="zh">Launcher：選自己的光碟映像檔安裝，之後的設定也在這裡改。</span><span class="en">The launcher: pick your own disc image to install, and change settings here later.</span></figcaption></figure>
+  <div class="check"><b>✓</b> <span class="zh">怎麼確認：CI 有一項叫「No game data」的檢查，只要 repo 裡出現光碟映像、遊戲的檔案類型（<code>.xex</code>、<code>.cpk</code>、<code>.wmv</code>…）、翻出來的 <code>ppc_recomp.*.cpp</code>，或任何超過 4 MB 的檔案，就直接失敗。</span><span class="en">How you know: CI has a "No game data" job. It fails if the repo holds a disc image, any of the game's file types (<code>.xex</code>, <code>.cpk</code>, <code>.wmv</code>…), a generated <code>ppc_recomp.*.cpp</code>, or any file over 4 MB.</span></div>
+  <div class="code"><div class="code-h"><span class="zh">在專案裡的位置</span><span class="en">Where it is in the code</span></div><ul><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/.gitignore#L1" target="_blank" rel="noopener"><code>.gitignore</code></a><span class="zh">光碟、遊戲檔、翻出來的程式碼永遠不進 git</span><span class="en">Discs, game files and generated code never go into git</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/.github/workflows/build.yml#L131" target="_blank" rel="noopener"><code>.github/workflows/build.yml</code></a><span class="zh">CI 的 No game data 檢查</span><span class="en">CI's No game data job</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/src/installer.cpp#L277" target="_blank" rel="noopener"><code>src/installer.cpp</code></a><span class="zh">安裝前檢查光碟上的 default.xex 是支援的版本</span><span class="en">The install checks the disc's default.xex is the supported one</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/scripts/prepare_recomp.py#L53-L56" target="_blank" rel="noopener"><code>scripts/prepare_recomp.py</code></a><span class="zh">翻譯前再用 SHA-256 確認是同一個執行檔</span><span class="en">Before translating, SHA-256 confirms it's the same program</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/docs/releasing.md" target="_blank" rel="noopener"><code>docs/releasing.md</code></a><span class="zh">發布包含什麼、絕不包含什麼</span><span class="en">What a release holds, and what it never holds</span></li></ul><div class="code-h sub"><span class="zh">相關 commit</span><span class="en">Commits</span></div><ul class="commits"><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/280483591a0a55e2bcdcf73407bdcb19f1210b84" target="_blank" rel="noopener"><code>2804835</code></a><span><span class="date">2026-09-22</span> Package releases, and carry the shader pack in the APK</span></li></ul></div>
+</div></section>
+
+<!-- 02 -->
+<section class="step" id="s2"><div class="wrap">
+  <div class="num">STEP 02</div>
+  <h2><span class="zh">把光碟拆開：遊戲到底由什麼組成</span><span class="en">Take the disc apart: what the game is made of</span></h2>
+  <div class="zh">
+    <p>Xbox 360 光碟用自己的檔案系統（XDVDFS）。拆開之後，這片光碟的遊戲分割區有 <b>685 個檔案</b>。大部分是圖、聲音、影片，真正的程式只有一個：<code>default.xex</code>。</p>
+    <p>XEX 是加密又壓縮過的執行檔。<code>default.xex</code> 有 14,241,792 bytes，解開後的程式映像是 34,209,792 bytes。裡面記著遊戲要向主機系統借用的 <b>299 個系統函式</b>（例如「開一個執行緒」「讀一個檔」），以及 13 個系統變數。這張清單就是第 4 步「扮演主機」的工作範圍。</p>
+  </div>
+  <div class="en">
+    <p>An Xbox 360 disc has its own file system (XDVDFS). Taken apart, this disc's game partition holds <b>685 files</b>. Most are pictures, sound and movies; the actual program is a single file, <code>default.xex</code>.</p>
+    <p>XEX is an encrypted, compressed program file. <code>default.xex</code> is 14,241,792 bytes, and the decoded program image is 34,209,792 bytes. It lists the <b>299 system functions</b> the game borrows from the console (like "start a thread" or "read a file") and 13 system variables. That list is the job description for step 04, playing the console.</p>
+  </div>
+  <figure class="fig">
+    <svg viewBox="0 0 720 190" role="img" aria-label="From disc image to the program image">
+      <g font-size="12">
+      <rect x="10" y="60" width="120" height="62" rx="8" class="s-chip"/><text x="22" y="86" class="s-ink">your disc .iso</text><text x="22" y="106" class="s-muted">XDVDFS</text>
+      <rect x="160" y="60" width="120" height="62" rx="8" class="s-chip"/><text x="172" y="86" class="s-ink">685 files</text><text x="172" y="106" class="s-muted">art, sound, movies</text>
+      <rect x="310" y="60" width="120" height="62" rx="8" class="s-panel st-violet" stroke-width="2"/><text x="322" y="86" class="s-violet" font-weight="600">default.xex</text><text x="322" y="106" class="s-muted">14.2 MB</text>
+      <rect x="460" y="60" width="120" height="62" rx="8" class="s-chip"/><text x="472" y="86" class="s-ink">image</text><text x="472" y="106" class="s-muted">34.2 MB decoded</text>
+      <rect x="610" y="30" width="100" height="44" rx="8" class="s-chip"/><text x="620" y="57" class="s-ink">code</text>
+      <rect x="610" y="108" width="100" height="44" rx="8" class="s-panel st-magenta" stroke-width="2"/><text x="620" y="128" class="s-magenta">299 imports</text><text x="620" y="144" class="s-muted">+13 vars</text>
+      </g>
+      <path d="M130 91 H160 M280 91 H310 M430 91 H460 M580 80 L610 54 M580 102 L610 128" class="st-violet flow" stroke-width="3" fill="none"/>
+      <text x="10" y="176" class="s-muted">only the program is translated; the data is read by the game as it was</text>
+    </svg>
+    <figcaption><span class="zh">翻譯的只有程式本身。其他 684 個檔案，遊戲照原樣自己去讀。</span><span class="en">Only the program is translated. The other 684 files the game reads itself, as they are.</span></figcaption>
+  </figure>
+  <div class="check"><b>✓</b> <span class="zh">怎麼確認：每一步的輸入輸出都有固定的雜湊值（SHA-256／SHA-1）。光碟、解開的執行檔、解碼後的映像只要有一個 byte 不同，工具就拒絕往下做，不會拿錯的東西去翻。</span><span class="en">How you know: each stage's input and output has a fixed hash (SHA-256/SHA-1). If the disc, the program file or the decoded image differs by a byte, the tools refuse to go on, so nothing wrong gets translated.</span></div>
+  <div class="code"><div class="code-h"><span class="zh">在專案裡的位置</span><span class="en">Where it is in the code</span></div><ul><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/src/xex_image.cpp" target="_blank" rel="noopener"><code>src/xex_image.cpp</code></a><span class="zh">解開 XEX：解密、解壓、讀出系統函式清單</span><span class="en">Decoding the XEX: decrypt, decompress, read the import list</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/config/source.json" target="_blank" rel="noopener"><code>config/source.json</code></a><span class="zh">支援版本的雜湊值</span><span class="en">The supported version's hashes</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/docs/xex-loader.md" target="_blank" rel="noopener"><code>docs/xex-loader.md</code></a><span class="zh">執行檔標頭怎麼交給遊戲</span><span class="en">How the program header is handed to the game</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/scripts/rom_tool.py" target="_blank" rel="noopener"><code>scripts/rom_tool.py</code></a><span class="zh">讀光碟映像的工具</span><span class="en">The disc image tool</span></li></ul><div class="code-h sub"><span class="zh">相關 commit</span><span class="en">Commits</span></div><ul class="commits"><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/9d2ba1cee13a0ea521d4f9fb9c9940bb6cda9801" target="_blank" rel="noopener"><code>9d2ba1c</code></a><span><span class="date">2026-09-22</span> Free Riders Recompiled</span></li></ul></div>
+</div></section>
+
+<!-- 03 -->
+<section class="step" id="s3"><div class="wrap">
+  <div class="num">STEP 03</div>
+  <h2><span class="zh">翻譯程式：把 PowerPC 翻成 C++</span><span class="en">Translate the code: PowerPC into C++</span></h2>
+  <div class="zh">
+    <p>XenonRecomp 把程式映像裡的每個函式翻成一段 C++。翻出來的程式不是一次就能用：工具第一次跑完，有 <b>14,475 個函式</b>被標成「翻不出來，先停用」。之後的工作就是一個一個找出原因、把這個數字壓下來。</p>
+    <p>這個專案的原則跟模擬器不一樣：<b>不認得的東西不猜</b>。翻不了的函式會變成一個有名字的「停止點」，遊戲一跑到那裡就停下來、說出是哪個函式。這樣錯誤會立刻被看見，而不是畫面怪怪的、找不到原因。</p>
+  </div>
+  <div class="en">
+    <p>XenonRecomp turns each function in the program image into a piece of C++. The output isn't usable in one go: after the first run, <b>14,475 functions</b> were marked "can't translate, disabled". The work that follows is finding out why, one cause at a time, and bringing that number down.</p>
+    <p>The rule here differs from an emulator's: <b>never guess at what you don't recognise</b>. A function that can't be translated becomes a named stop; when the game reaches it, it stops and says which function. Mistakes show up at once, instead of as a strange picture nobody can explain.</p>
+  </div>
+  <figure class="fig">
+    <div class="bars">
+      <div class="b"><span class="zh">第一次</span><span class="en">first run</span><div class="track"><div class="fill" style="width:100%"></div></div><span class="v">14,475</span></div>
+      <div class="b"><span class="zh">修正函式邊界</span><span class="en">boundaries</span><div class="track"><div class="fill" style="width:4.34%;animation-delay:.15s"></div></div><span class="v">628</span></div>
+      <div class="b"><span class="zh">自己的跳轉表分析</span><span class="en">jump tables</span><div class="track"><div class="fill" style="width:3.31%;animation-delay:.3s"></div></div><span class="v">479</span></div>
+      <div class="b"><span class="zh">補上缺的指令</span><span class="en">instructions</span><div class="track"><div class="fill" style="width:1%;animation-delay:.45s"></div></div><span class="v">143</span></div>
+    </div>
+    <figcaption><span class="zh">被停用的函式數（越少越好），來自 <code>docs/progress.md</code> 的紀錄。</span><span class="en">Functions left disabled (fewer is better), from the record in <code>docs/progress.md</code>.</span></figcaption>
+  </figure>
+  <h3><span class="zh">三個壓下數字的發現</span><span class="en">Three findings that brought it down</span></h3>
+  <div class="tbl"><table>
+    <thead><tr><th><span class="zh">問題</span><span class="en">Problem</span></th><th><span class="zh">原因</span><span class="en">Cause</span></th><th><span class="zh">結果</span><span class="en">Result</span></th></tr></thead>
+    <tbody>
+      <tr><td><span class="zh">函式被切成碎片</span><span class="en">Functions cut into fragments</span></td><td><span class="zh">工具把函式之間的填充（全是 0）和例外處理用的兩個字，當成指令來讀，從此對不上</span><span class="en">The tool read the padding between functions (all zeros) and two exception-handler words as instructions, and lost its place</span></td><td class="n">14,475 → 628</td></tr>
+      <tr><td><span class="zh">看不懂 switch</span><span class="en">Switches not recognised</span></td><td><span class="zh">現成的分析器只認一種指令順序，這款遊戲的編譯器排成另一種，所以一張「跳轉表」都沒找到；改寫一個不看順序的分析器，找到 309 張</span><span class="en">The stock analyser expects one instruction order and this game's compiler used another, so it found no jump tables at all; a new analyser that doesn't depend on the order found 309</span></td><td class="n">628 → 479</td></tr>
+      <tr><td><span class="zh">缺指令</span><span class="en">Missing instructions</span></td><td><span class="zh">14 種「讀寫後順便更新位址」和 24 種向量運算，補上有測試的版本，改寫 4,042 處</span><span class="en">14 load/store-with-update forms and 24 vector operations, added with tests, rewriting 4,042 places</span></td><td class="n">479 → 143</td></tr>
+    </tbody>
+  </table></div>
+  <div class="why"><b>?</b> <span class="zh">注意第一行：「14,475 個翻不出來」聽起來很嚴重，但查下去，大多是工具讀錯位置造成的假問題。先查清楚數字的意思，再決定要修什麼。</span><span class="en">Look at the first row: "14,475 can't be translated" sounds dire, but most were false alarms from the tool reading at the wrong place. Find out what a number means before deciding what to fix.</span></div>
+  <div class="code"><div class="code-h"><span class="zh">在專案裡的位置</span><span class="en">Where it is in the code</span></div><ul><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/scripts/prepare_recomp.py" target="_blank" rel="noopener"><code>scripts/prepare_recomp.py</code></a><span class="zh">整條翻譯流程：檢查輸入、跑 XenonRecomp、寫出報告</span><span class="en">The whole translation run: check the input, run XenonRecomp, write a report</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/scripts/generate_diagnostic.py" target="_blank" rel="noopener"><code>scripts/generate_diagnostic.py</code></a><span class="zh">把翻好的 C++ 加上檢查與改寫</span><span class="en">Adds checks and rewrites to the generated C++</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/scripts/analyse_switches.py" target="_blank" rel="noopener"><code>scripts/analyse_switches.py</code></a><span class="zh">自己寫的跳轉表分析器</span><span class="en">Our own jump-table analyser</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/config/freeriders.toml" target="_blank" rel="noopener"><code>config/freeriders.toml</code></a><span class="zh">給翻譯器的設定（含翻譯時插入的修補點）</span><span class="en">The translator's settings (including patch points added at translation time)</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/docs/function-boundaries.md" target="_blank" rel="noopener"><code>docs/function-boundaries.md</code></a><span class="zh">函式邊界：為什麼 14,475 大多是假的</span><span class="en">Function boundaries: why most of the 14,475 weren't real</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/docs/jump-tables.md" target="_blank" rel="noopener"><code>docs/jump-tables.md</code></a><span class="zh">跳轉表分析</span><span class="en">The jump-table analysis</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/docs/supplemental-instructions.md" target="_blank" rel="noopener"><code>docs/supplemental-instructions.md</code></a><span class="zh">補上的指令</span><span class="en">The added instructions</span></li></ul><div class="code-h sub"><span class="zh">相關 commit</span><span class="en">Commits</span></div><ul class="commits"><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/9d2ba1cee13a0ea521d4f9fb9c9940bb6cda9801" target="_blank" rel="noopener"><code>9d2ba1c</code></a><span><span class="date">2026-09-22</span> Free Riders Recompiled</span></li></ul></div>
+</div></section>
+
+<!-- 04 -->
+<section class="step" id="s4"><div class="wrap">
+  <div class="num">STEP 04</div>
+  <h2><span class="zh">扮演主機：一個系統函式接一個</span><span class="en">Play the console: one system function at a time</span></h2>
+  <div class="zh">
+    <p>翻好的遊戲一開始跑，就會向「主機」要東西：要記憶體、開執行緒、等事件、讀檔、問現在幾點、問系統語言是什麼、問 Kinect 在不在。這些都要由我們的執行環境（runtime）回答，而且要回答得跟真的 Xbox 360 一樣。</p>
+    <p>做法很樸實：<b>跑到哪裡、停在哪裡，就補哪裡</b>。<code>docs/progress.md</code> 從 2026-09-10 開始，記了一長串「現在停在哪個函式、補了什麼、下一個停在哪」。例如遊戲問兩次 Kinect 狀態，就回答「沒有接」，看遊戲自己怎麼處理；它問國家，就去查 Windows 的設定再換成主機的代碼。</p>
+    <p>遊戲本來在主機的三個 CPU 核心上開了很多條執行緒。在電腦上，每一條都變成一條真的執行緒。要讓它們安全地同時跑，就要把事件、號誌、臨界區（同時只能一個人進去的區段）都做得跟主機一樣。</p>
+  </div>
+  <div class="en">
+    <p>As soon as the translated game runs, it asks the "console" for things: memory, threads, events to wait on, files, the time, the system language, whether a Kinect is there. Our runtime has to answer all of it, and answer the way a real Xbox 360 would.</p>
+    <p>The method is plain: <b>run until it stops, fill in what it stopped on</b>. <code>docs/progress.md</code>, from 2026-09-10 on, is a long chain of "it now stops at this function, this was added, next it stops here". For example, the game asks twice whether a Kinect is connected; the runtime says no, and the game's own code handles that. It asks for the country; the runtime reads Windows' setting and turns it into the console's code.</p>
+    <p>On the console the game spreads many threads across three CPU cores. On a computer each becomes a real thread. For them to run safely at the same time, events, semaphores and critical sections (sections only one thread may be in at once) have to behave exactly as the console's do.</p>
+  </div>
+  <div class="trap"><b>!</b> <span class="zh">真實的坑：遊戲有一種「無鎖」的資料結構，靠 CPU 的一組特殊指令（lwarx／stwcx.）保證不會兩條執行緒同時改到。最簡單的做法只比對數值，結果讀到一個「數值一樣、但其實已經被釋放」的節點，World Grand Prix 一載入就當掉（錯誤 R6025）。改成每次寫入都帶版本號之後才穩定，這個做法到現在都保留著。</span><span class="en">A real trap: the game has a "lock-free" structure that relies on a pair of special CPU instructions (lwarx/stwcx.) to stop two threads changing it at once. The simplest way to stand in for them compares values only, and it let a thread pick up a node that had the same value but had already been freed: Grand Prix crashed while loading (error R6025). Giving every write a version number fixed it, and that is still how it works.</span></div>
+  <div class="check"><b>✓</b> <span class="zh">怎麼確認：每個補上的系統函式都有自己的單元測試（執行緒、等待、記憶體、檔案、時鐘…，見 <code>tests/</code>），而且一定要用真的遊戲跑過那一段，才算數。</span><span class="en">How you know: every system function added has its own unit tests (threads, waits, memory, files, clocks…, see <code>tests/</code>), and it only counts once the real game has run through that part.</span></div>
+  <div class="code"><div class="code-h"><span class="zh">在專案裡的位置</span><span class="en">Where it is in the code</span></div><ul><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/src/diagnostic_main.cpp" target="_blank" rel="noopener"><code>src/diagnostic_main.cpp</code></a><span class="zh">遊戲本體：每個系統函式在這裡接到 runtime</span><span class="en">The game itself: where each system function is connected to the runtime</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/src/guest_threads.cpp" target="_blank" rel="noopener"><code>src/guest_threads.cpp</code></a><span class="zh">遊戲的執行緒</span><span class="en">The game's threads</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/src/guest_sync_objects.cpp" target="_blank" rel="noopener"><code>src/guest_sync_objects.cpp</code></a><span class="zh">事件、號誌與等待</span><span class="en">Events, semaphores and waits</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/src/guest_memory.cpp" target="_blank" rel="noopener"><code>src/guest_memory.cpp</code></a><span class="zh">遊戲看到的 4 GB 記憶體</span><span class="en">The 4 GB of memory the game sees</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/src/guest_files.cpp" target="_blank" rel="noopener"><code>src/guest_files.cpp</code></a><span class="zh">檔案讀取</span><span class="en">File reads</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/docs/reservations.md" target="_blank" rel="noopener"><code>docs/reservations.md</code></a><span class="zh">lwarx／stwcx. 為什麼要帶版本號</span><span class="en">Why lwarx/stwcx. needs version numbers</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/tree/eb16749f01087ba4269e462279374c3ad3df21f6/tests/" target="_blank" rel="noopener"><code>tests/</code></a><span class="zh">單元測試</span><span class="en">The unit tests</span></li></ul><div class="code-h sub"><span class="zh">相關 commit</span><span class="en">Commits</span></div><ul class="commits"><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/9d2ba1cee13a0ea521d4f9fb9c9940bb6cda9801" target="_blank" rel="noopener"><code>9d2ba1c</code></a><span><span class="date">2026-09-22</span> Free Riders Recompiled</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/e7ff85abe9bc6183a06dc58496bce83a04a08c7b" target="_blank" rel="noopener"><code>e7ff85a</code></a><span><span class="date">2026-09-22</span> Delay new guest threads&#x27; start; versioned reservations; pack compiles missing DXIL</span></li></ul></div>
+</div></section>
+
+<!-- 05 -->
+<section class="step" id="s5"><div class="wrap">
+  <div class="num">STEP 05</div>
+  <h2><span class="zh">畫面：把主機的顯示晶片換成電腦的</span><span class="en">Graphics: swap the console's GPU for the computer's</span></h2>
+  <div class="zh">
+    <p>Xbox 360 的顯示晶片叫 Xenos。遊戲畫圖時，會把指令和著色器（shader）交給它。在電腦上，這些要換成 Direct3D 12 或 Vulkan（電腦和手機的繪圖介面），著色器也要先翻譯。</p>
+    <p>遊戲在比賽中用到 1,182 個著色器。一開始有 <b>735 個翻不出來</b>，原因是這款遊戲有兩種用法翻譯器沒料到（骨骼動畫的頂點資料、畫圖時才設定的迴圈次數）。在翻譯前後各補一段處理之後，只剩 3 個。</p>
+    <p>翻譯著色器的工具只能在 Windows 上跑，所以 Linux 和手機版用的是在 Windows 上事先翻好、打包成 <code>shaders.pack</code> 的版本。另外，顯卡第一次用到一種畫法時要先「編譯」，會卡一下；所以按下開始後，遊戲會先把已知的組合（<b>455 個繪圖管線</b>）準備好，比賽中就不會因為這個停頓。</p>
+  </div>
+  <div class="en">
+    <p>The Xbox 360's graphics chip is called Xenos. To draw, the game hands it commands and shaders. On a computer those become Direct3D 12 or Vulkan (the drawing interfaces of PCs and phones), and the shaders have to be translated first.</p>
+    <p>In races the game uses 1,182 shaders. At first <b>735 couldn't be translated</b>, because this game does two things the translator didn't expect (vertex data for skeletal animation, and loop counts set only when drawing). With a step added before and after translation, 3 were left.</p>
+    <p>The shader translator only runs on Windows, so Linux and phones use shaders translated ahead of time on Windows and packed into <code>shaders.pack</code>. And because a graphics card has to compile each way of drawing the first time it meets it, which causes a hitch, the game prepares the known combinations (<b>455 graphics pipelines</b>) after you press Play, so races don't stall on it.</p>
+  </div>
+  <figure class="fig">
+    <div class="bars">
+      <div class="b"><span class="zh">翻不出來（前）</span><span class="en">untranslatable, before</span><div class="track"><div class="fill" style="width:62.2%"></div></div><span class="v">735</span></div>
+      <div class="b"><span class="zh">翻不出來（後）</span><span class="en">untranslatable, after</span><div class="track"><div class="fill" style="width:1%;animation-delay:.2s"></div></div><span class="v">3</span></div>
+      <div class="b"><span class="zh">比賽用到的全部</span><span class="en">all used in races</span><div class="track"><div class="fill ref" style="width:100%;animation-delay:.4s"></div></div><span class="v">1,182</span></div>
+    </div>
+    <figcaption><span class="zh">比賽中執行時建立的著色器。數字來自 <code>docs/shader-vertex-palette.md</code>。</span><span class="en">Shaders created at run time in races. Numbers from <code>docs/shader-vertex-palette.md</code>.</span></figcaption>
+  </figure>
+  <div class="trap"><b>!</b> <span class="zh">真實的坑（v0.2.0）：發出去的 <code>shaders.pack</code> 跟程式不是同一代，著色器以為有 3 個資料位址、程式卻給了 5 個，玩家看到全白的畫面，或顯卡直接當掉。之後 pack 檔頭多了一個「版本號」（shader ABI），版本不合的 pack 在打包和載入時都會被拒絕。</span><span class="en">A real trap (v0.2.0): the shipped <code>shaders.pack</code> came from a different build than the program. The shaders expected 3 buffer addresses and the program supplied 5; players got a white screen or a lost graphics device. Since then the pack carries a version (the shader ABI), and a pack that doesn't match is refused both when packaging and when loading.</span></div>
+  <div class="code"><div class="code-h"><span class="zh">在專案裡的位置</span><span class="en">Where it is in the code</span></div><ul><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/src/native_renderer.cpp" target="_blank" rel="noopener"><code>src/native_renderer.cpp</code></a><span class="zh">把遊戲的繪圖指令交給 D3D12／Vulkan</span><span class="en">Hands the game's drawing to D3D12/Vulkan</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/src/native_shaders.cpp" target="_blank" rel="noopener"><code>src/native_shaders.cpp</code></a><span class="zh">遊戲建立著色器時，換成翻好的版本</span><span class="en">When the game creates a shader, swap in the translated one</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/scripts/pack_shaders.py" target="_blank" rel="noopener"><code>scripts/pack_shaders.py</code></a><span class="zh">打包 shaders.pack</span><span class="en">Builds shaders.pack</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/src/pipeline_manifest.cpp" target="_blank" rel="noopener"><code>src/pipeline_manifest.cpp</code></a><span class="zh">開始前先準備好的繪圖管線清單</span><span class="en">The list of pipelines prepared before play</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/docs/shader-vertex-palette.md" target="_blank" rel="noopener"><code>docs/shader-vertex-palette.md</code></a><span class="zh">735 → 3 的經過</span><span class="en">How 735 became 3</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/docs/pipeline-preparation.md" target="_blank" rel="noopener"><code>docs/pipeline-preparation.md</code></a><span class="zh">開始前的管線準備</span><span class="en">Preparing pipelines before play</span></li></ul><div class="code-h sub"><span class="zh">相關 commit</span><span class="en">Commits</span></div><ul class="commits"><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/bfdec47d07c81949ffbdd84c026cd4fd6f6ca6dd" target="_blank" rel="noopener"><code>bfdec47</code></a><span><span class="date">2026-09-22</span> The shader pack is complete: the game creates every shader while it boots</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/36547e82b1330d01ea0f30837c43eea1703861ca" target="_blank" rel="noopener"><code>36547e8</code></a><span><span class="date">2026-09-28</span> Validate shader ABI when building and loading release packs</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/cd43f0582561aedbe0ca03da4d96a20dd1adf32a" target="_blank" rel="noopener"><code>cd43f05</code></a><span><span class="date">2026-10-01</span> Prepare recorded graphics pipelines before game startup</span></li></ul></div>
+</div></section>
+
+<!-- 06 -->
+<section class="step" id="s6"><div class="wrap">
+  <div class="num">STEP 06</div>
+  <h2><span class="zh">沒有 Kinect 也能玩：假裝有一副身體</span><span class="en">Play without a Kinect: pretend there's a body</span></h2>
+  <div class="zh">
+    <p>這是這款遊戲和一般移植最不一樣的地方：<b>它沒有手把操作</b>。選單用手的游標和語音指令，比賽用整個身體：往前傾加速、蹲下再站起來跳、一隻腳往後踢地加速。</p>
+    <p>Kinect 在主機上由一套叫 NUI 的函式庫回報「玩家的骨架」：每個人 20 個關節的位置。遊戲自己有大約 25 個「手勢判斷器」（跳、蹲、踢、傾斜…）讀這副骨架。所以最省事、也最不會改壞遊戲的做法，是在 NUI 這一層<b>用手把假裝出一副骨架</b>：</p>
+    <ul>
+      <li>選單：手把移動游標當成手；按鍵對應遊戲原本就聽得懂的語音指令（START、A＝ok、B＝back）。</li>
+      <li>比賽：按住 A 蹲下蓄力、放開跳；按 X 踢地加速；左類比傾斜轉彎、空中旋轉做特技；B 抓欄杆。</li>
+    </ul>
+  </div>
+  <div class="en">
+    <p>This is where this game differs most from other ports: <b>it has no controller controls</b>. Menus use a hand cursor and voice commands; races use your whole body: lean forward to speed up, crouch and stand to jump, kick back with one foot to dash.</p>
+    <p>On the console a Kinect reports "the player's skeleton" through a library called NUI: 20 joint positions per person. The game has about 25 gesture detectors of its own (jump, crouch, kick, lean…) that read that skeleton. So the simplest way, and the least likely to break the game, is to <b>pretend there's a skeleton at the NUI layer, driven by a controller</b>:</p>
+    <ul>
+      <li>Menus: the stick moves the cursor as a hand; buttons stand for voice commands the game already understands (START, A = ok, B = back).</li>
+      <li>Races: hold A to crouch and charge, release to jump; X to kick dash; the left stick to lean, and to spin for tricks in the air; B to grab rails.</li>
+    </ul>
+  </div>
+  <figure class="fig">
+    <svg viewBox="0 0 720 200" role="img" aria-label="A controller standing in for a skeleton">
+      <rect x="10" y="64" width="120" height="60" rx="10" class="s-chip"/><text x="24" y="90" class="s-ink">controller</text><text x="24" y="110" class="s-muted">A · X · stick</text>
+      <rect x="170" y="64" width="150" height="60" rx="10" class="s-panel st-magenta" stroke-width="2"/><text x="184" y="90" class="s-magenta" font-weight="600">pretend skeleton</text><text x="184" y="110" class="s-muted">20 joints</text>
+      <rect x="360" y="64" width="150" height="60" rx="10" class="s-chip"/><text x="374" y="90" class="s-ink">NUI library</text><text x="374" y="110" class="s-muted">as on the console</text>
+      <rect x="550" y="64" width="160" height="60" rx="10" class="s-panel st-lime" stroke-width="2"/><text x="564" y="90" class="s-lime" font-weight="600">game's detectors</text><text x="564" y="110" class="s-muted">jump, crouch, lean…</text>
+      <path d="M130 94 H170 M320 94 H360 M510 94 H550" class="st-violet flow" stroke-width="3" fill="none"/>
+      <text x="170" y="160" class="s-muted">real Kinect / webcam (step 07) replace only this box →</text>
+      <path d="M245 150 V124" class="st-gold" stroke-width="2" stroke-dasharray="3 3" fill="none"/>
+    </svg>
+    <figcaption><span class="zh">遊戲自己的判斷邏輯完全不動；換的只是「骨架從哪裡來」。</span><span class="en">The game's own detection logic stays untouched; only where the skeleton comes from changes.</span></figcaption>
+  </figure>
+  <div class="trap"><b>!</b> <span class="zh">真實的坑：手把一度能從標題一路走到角色選擇，卻卡在裝備零件的畫面。換頁要等一個「淡出」動作結束，但遊戲在那一頁不再更新選單，所以那個動作永遠等不到。像這樣，每個畫面都要查清楚遊戲到底在等什麼，不能只看按鍵有沒有送到。</span><span class="en">A real trap: the controller could get from the title to character select, then stuck on the gear parts screen. Turning the page waited for a fade-out to finish, but on that page the game no longer updated the menu, so the fade never came. Screen by screen, you have to find out what the game is really waiting for, not just whether the button got through.</span></div>
+  <div class="code"><div class="code-h"><span class="zh">在專案裡的位置</span><span class="en">Where it is in the code</span></div><ul><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/src/nui_skeleton.cpp" target="_blank" rel="noopener"><code>src/nui_skeleton.cpp</code></a><span class="zh">假的骨架怎麼產生</span><span class="en">How the pretend skeleton is made</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/src/nui_race.cpp" target="_blank" rel="noopener"><code>src/nui_race.cpp</code></a><span class="zh">比賽中手把怎麼變成身體的動作</span><span class="en">How a controller becomes body moves in a race</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/src/nui_speech.cpp" target="_blank" rel="noopener"><code>src/nui_speech.cpp</code></a><span class="zh">按鍵對應遊戲的語音指令</span><span class="en">Buttons as the game's voice commands</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/docs/main-menu.md" target="_blank" rel="noopener"><code>docs/main-menu.md</code></a><span class="zh">第一次用假的 Kinect 進到主選單</span><span class="en">Reaching the main menu with a pretend Kinect</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/docs/race-controls.md" target="_blank" rel="noopener"><code>docs/race-controls.md</code></a><span class="zh">比賽的按鍵對應</span><span class="en">Race controls</span></li></ul><div class="code-h sub"><span class="zh">相關 commit</span><span class="en">Commits</span></div><ul class="commits"><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/9d2ba1cee13a0ea521d4f9fb9c9940bb6cda9801" target="_blank" rel="noopener"><code>9d2ba1c</code></a><span><span class="date">2026-09-22</span> Free Riders Recompiled</span></li></ul></div>
+</div></section>
+
+<!-- 07 -->
+<section class="step" id="s7"><div class="wrap">
+  <div class="num">STEP 07</div>
+  <h2><span class="zh">真的身體：Webcam、Kinect、Kinect v2，現在加上 Mac</span><span class="en">A real body: webcam, Kinect, Kinect v2, and now the Mac</span></h2>
+  <div class="zh">
+    <p>既然遊戲只在乎「骨架從哪裡來」，換成真的身體就只是換掉上一步那一格：</p>
+    <ul>
+      <li><b>Webcam（v0.2.0）</b>：一般的網路攝影機沒有深度，所以用 MediaPipe 的姿勢模型從畫面「估計」身體的 3D 姿勢。它量不出你離鏡頭多遠，但夠讓遊戲看懂傾身、蹲、跳。</li>
+      <li><b>Kinect for Xbox 360（v0.4.0）</b>：微軟給 Windows 的 Kinect SDK 1.8，其實就是同一套 NUI 函式庫搬到電腦上，骨架一樣是 20 個關節、同樣的座標。所以感測器看到的身體幾乎原封不動交給遊戲，比賽也改回由遊戲自己讀真實的身體和深度影像。這部分有很大一部分是協作者 KnucklesLee 做的。</li>
+      <li><b>Kinect v2（Xbox One 版）</b>：它回報 25 個關節，要換算成遊戲認得的第一代 20 個關節。專案裡沒有人有 Kinect v2，改進全靠一位玩家附上的記錄檔，所以仍是實驗性的，相關回報還開著（issue #165）。</li>
+      <li><b>Mac（開發中，2026-10-30 合併）</b>：Mac 沒有微軟的 Kinect 執行環境，只能透過開源的 libfreenect 拿到彩色和深度畫面，骨架要自己算：用姿勢模型在彩色畫面找關節，再用深度把位置放到公尺座標。<b>老實說：這部分還沒接過真的 Kinect 測試</b>，只確認了沒接 Kinect 時會正常改用手把、整場比賽速度 1.000。</li>
+    </ul>
+  </div>
+  <div class="en">
+    <p>Since the game only cares where the skeleton comes from, a real body just replaces that one box from the last step:</p>
+    <ul>
+      <li><b>Webcam (v0.2.0)</b>: an ordinary webcam has no depth, so MediaPipe's pose model <i>estimates</i> the body's 3D pose from the picture. It can't measure how far you are from the camera, but it's enough for the game to read leaning, crouching and jumping.</li>
+      <li><b>Kinect for Xbox 360 (v0.4.0)</b>: Microsoft's Kinect SDK 1.8 for Windows is the same NUI library brought to the PC: 20 joints, the same coordinates. So the body the sensor sees goes to the game almost untouched, and races go back to the game's own detectors reading the real body and depth image. Much of this was built by collaborator KnucklesLee.</li>
+      <li><b>Kinect v2 (the Xbox One one)</b>: it reports 25 joints, which are turned into the first Kinect's 20 that the game knows. Nobody on the project has a Kinect v2; the work relies on logs one player attached, so it's still experimental and the reports about it are open (issue #165).</li>
+      <li><b>Mac (in development, merged 2026-10-30)</b>: the Mac has no Microsoft Kinect runtime. The open-source libfreenect gives only the colour and depth pictures, so the skeleton is made here: the pose model finds the joints in the colour picture, and depth places them in metres. <b>To be plain: this hasn't been tried with a real Kinect yet.</b> What has been checked is that without one it falls back to the controller and races at full speed (1.000).</li>
+    </ul>
+  </div>
+  <figure class="fig"><img src="https://raw.githubusercontent.com/YuutaTsubasa/Free-Riders-Recompiled/eb16749f01087ba4269e462279374c3ad3df21f6/docs/images/camera-input-skeleton.png" alt="A race played with a webcam, beside the skeleton debug window" loading="lazy" width="1908" height="720">
+    <figcaption><span class="zh">用 webcam 比賽，右邊是除錯視窗：正面與側面看到的 20 個關節。</span><span class="en">A race with a webcam; on the right, the debug window shows the 20 joints from the front and the side.</span></figcaption></figure>
+  <div class="check"><b>✓</b> <span class="zh">怎麼確認：把同樣的四張人物照片丟給 Windows、Android（AYN Thor）、Linux 三個版本的姿勢模型，三邊都找到人，關節位置跟 Windows 差不到 0.1 像素（0.10.38 的驗證）。Kinect 本身則錄下真實的感測器資料，離線重播比對。</span><span class="en">How you know: the same four pictures of a person went through the pose model on Windows, Android (AYN Thor) and Linux; all three found the person, with joints within 0.1 pixel of Windows (0.10.38's validation). For the Kinect itself, real sensor data is recorded and replayed offline for comparison.</span></div>
+  <div class="code"><div class="code-h"><span class="zh">在專案裡的位置</span><span class="en">Where it is in the code</span></div><ul><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/src/camera_player.cpp" target="_blank" rel="noopener"><code>src/camera_player.cpp</code></a><span class="zh">Webcam 的玩家：從畫面到骨架</span><span class="en">The webcam player: from picture to skeleton</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/src/pose_mediapipe.cpp" target="_blank" rel="noopener"><code>src/pose_mediapipe.cpp</code></a><span class="zh">MediaPipe 姿勢模型</span><span class="en">The MediaPipe pose model</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/src/kinect_sensor_win32.cpp" target="_blank" rel="noopener"><code>src/kinect_sensor_win32.cpp</code></a><span class="zh">Windows 上的 Kinect（SDK 1.8）</span><span class="en">The Kinect on Windows (SDK 1.8)</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/src/kinect_v2_win32.cpp" target="_blank" rel="noopener"><code>src/kinect_v2_win32.cpp</code></a><span class="zh">Windows 上的 Kinect v2</span><span class="en">Kinect v2 on Windows</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/src/kinect_sensor_freenect.cpp" target="_blank" rel="noopener"><code>src/kinect_sensor_freenect.cpp</code></a><span class="zh">Mac 上透過 libfreenect 的 Kinect（未用實機驗證）</span><span class="en">The Kinect on the Mac through libfreenect (not yet tried with real hardware)</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/src/kinect_depth_body.cpp" target="_blank" rel="noopener"><code>src/kinect_depth_body.cpp</code></a><span class="zh">只有彩色和深度畫面時，自己算骨架</span><span class="en">Making a skeleton from just the colour and depth pictures</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/docs/kinect-sensor.md" target="_blank" rel="noopener"><code>docs/kinect-sensor.md</code></a><span class="zh">Kinect 的設定與原理</span><span class="en">Kinect setup and how it works</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/docs/camera-input.md" target="_blank" rel="noopener"><code>docs/camera-input.md</code></a><span class="zh">Webcam 體感</span><span class="en">Webcam motion input</span></li></ul><div class="code-h sub"><span class="zh">相關 commit</span><span class="en">Commits</span></div><ul class="commits"><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/7906975c7a2ca77cd966ea4eb3b23ee32d458e34" target="_blank" rel="noopener"><code>7906975</code></a><span><span class="date">2026-09-23</span> Find a body in a camera picture</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/9fb4196d8080285994dc213d440cb6fe88f6de56" target="_blank" rel="noopener"><code>9fb4196</code></a><span><span class="date">2026-09-27</span> Let a real Kinect play, and a webcam race with the body</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/3358342dca48dbbf89e10ee5fb7cf3c9c1e0e96e" target="_blank" rel="noopener"><code>3358342</code></a><span><span class="date">2026-09-27</span> Let a Kinect v2 play as well</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/0a5673995cd337e68bc33ad410f3d6ea842e91ff" target="_blank" rel="noopener"><code>0a56739</code></a><span><span class="date">2026-10-30</span> Kinect v1 on macOS through libfreenect: skeleton and player index from its cameras (#305)</span></li></ul></div>
+</div></section>
+
+<!-- 08 -->
+<section class="step" id="s8"><div class="wrap">
+  <div class="num">STEP 08</div>
+  <h2><span class="zh">打掉重練一半：改用 Unleashed／Marathon 的做法（v0.5.0）</span><span class="en">Rebuild half of it: the Unleashed/Marathon model (v0.5.0)</span></h2>
+  <div class="zh">
+    <p>到 v0.4.x，遊戲能玩了，但在手機上只有大約 24 fps。原因是早期為了「安全、好除錯」，runtime 做得很保守：每次讀寫記憶體都要檢查、所有執行緒輪流拿同一張「通行證」才能跑、所有畫面都畫在同一張 720p 的畫布上。</p>
+    <p>2026-10-04 先把這個專案跟另外兩個成熟的 Recompiled 專案（Unleashed、Marathon）逐項對照，列出差異，再分五個階段改過去。每一階段都在同一支手機上、用同一個安裝包開關新功能，交替量 A/B/A/B，確定變快而且畫面正確才往下：</p>
+  </div>
+  <div class="en">
+    <p>By v0.4.x the game was playable, but only about 24 fps on a phone. Early on the runtime had been built cautiously, for safety and easy debugging: every memory access was checked, all threads took turns holding a single "permit" to run, and everything was drawn on one 720p canvas.</p>
+    <p>On 2026-10-04 the project was compared, item by item, with two mature recompilations (Unleashed and Marathon), and the differences were moved over in five stages. Each stage was measured on the same phone with the same package, switching the change on and off in turn (A/B/A/B), and only went ahead once it was faster and the picture was right:</p>
+  </div>
+  <figure class="fig">
+    <div class="bars">
+      <div class="b"><span class="zh">改之前</span><span class="en">before</span><div class="track"><div class="fill" style="width:50%"></div></div><span class="v">25.0</span></div>
+      <div class="b"><span class="zh">每個畫面一張畫布</span><span class="en">one target per surface</span><div class="track"><div class="fill" style="width:59.2%;animation-delay:.15s"></div></div><span class="v">29.6</span></div>
+      <div class="b"><span class="zh">記憶體直接讀寫</span><span class="en">direct memory</span><div class="track"><div class="fill" style="width:81.2%;animation-delay:.3s"></div></div><span class="v">40.6</span></div>
+      <div class="b"><span class="zh">執行緒全部並行</span><span class="en">all threads parallel</span><div class="track"><div class="fill" style="width:92.8%;animation-delay:.45s"></div></div><span class="v">46.4</span></div>
+      <div class="b"><span class="zh">v0.5.0 發布</span><span class="en">v0.5.0 release</span><div class="track"><div class="fill" style="width:99%;animation-delay:.6s"></div></div><span class="v">49–50</span></div>
+    </div>
+    <figcaption><span class="zh">AYN Thor 手機，同一段比賽的 fps（越長越好）。數字來自 <code>docs/architecture-migration.md</code> 和 v0.5.0 的發版說明。</span><span class="en">AYN Thor handheld, fps over the same stretch of a race (longer is better). From <code>docs/architecture-migration.md</code> and the v0.5.0 release notes.</span></figcaption>
+  </figure>
+  <div class="zh"><p>順帶的好處：每個畫面有了自己的畫布之後，遊戲畫的<b>影子第一次出現了</b>，之前影子讀到的是記憶體裡的舊資料。</p></div>
+  <div class="en"><p>A bonus: once each surface had its own target, <b>race shadows appeared for the first time</b>. Before, the shadow map read stale bytes from memory.</p></div>
+  <div class="trap"><b>!</b> <span class="zh">不能照抄的地方：第 4 步那個「帶版本號」的做法，Unleashed 沒有，照抄就會讓這款遊戲當掉，所以保留。另外 v0.5.0 讓電腦版的比賽改成「照真實經過的時間前進」，結果 Rocky Ridge 兩旁集氣起跳會飛出場外；v0.5.3 改回「每次前進固定 1/60 秒」才正常。學別人的做法，也要用自己的遊戲驗證。</span><span class="en">What couldn't be copied: the "version number" from step 04. Unleashed doesn't need it, and copying Unleashed crashes this game, so it stayed. And v0.5.0 made desktop races step by real elapsed time; charged jumps off the sides of Rocky Ridge then flew out of the course, until v0.5.3 went back to a fixed 1/60-second step. Borrow other projects' methods, but check them on your own game.</span></div>
+  <div class="code"><div class="code-h"><span class="zh">在專案裡的位置</span><span class="en">Where it is in the code</span></div><ul><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/docs/architecture-migration.md" target="_blank" rel="noopener"><code>docs/architecture-migration.md</code></a><span class="zh">和 Unleashed／Marathon 逐項對照、五個階段與每一步的數字</span><span class="en">The item-by-item comparison, the five stages and each stage's numbers</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/src/guest_heap.cpp" target="_blank" rel="noopener"><code>src/guest_heap.cpp</code></a><span class="zh">用 o1heap 取代遊戲自己的記憶體配置</span><span class="en">o1heap in place of the game's own allocator</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/src/physical_memory.cpp" target="_blank" rel="noopener"><code>src/physical_memory.cpp</code></a><span class="zh">顯示晶片用的記憶體</span><span class="en">Memory the graphics chip uses</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/src/native_presentation.cpp" target="_blank" rel="noopener"><code>src/native_presentation.cpp</code></a><span class="zh">每個畫面一張畫布、延後複製</span><span class="en">One target per surface, deferred copies</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/src/race_frame_clock.h" target="_blank" rel="noopener"><code>src/race_frame_clock.h</code></a><span class="zh">比賽每格前進的時間</span><span class="en">How far a race steps each frame</span></li></ul><div class="code-h sub"><span class="zh">相關 commit</span><span class="en">Commits</span></div><ul class="commits"><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/0263ac4d4818390f9c00f90a411671ad4c372e27" target="_blank" rel="noopener"><code>0263ac4</code></a><span><span class="date">2026-10-04</span> Plan the move toward the Unleashed/Marathon runtime model</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/3826e389281846d6036e87c6728eafaca98ba6ad" target="_blank" rel="noopener"><code>3826e38</code></a><span><span class="date">2026-10-04</span> Make the Unleashed/Marathon runtime model the default</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/e6d7cd2dd0cdbd27d134ed5703906b1d2c5e70b1" target="_blank" rel="noopener"><code>e6d7cd2</code></a><span><span class="date">2026-10-05</span> Step desktop races one frame at a time again, and whole frames near 60 fps</span></li></ul></div>
+</div></section>
+
+<!-- 09 -->
+<section class="step" id="s9"><div class="wrap">
+  <div class="num">STEP 09</div>
+  <h2><span class="zh">比原版多一點，但不改壞原版</span><span class="en">More than the original, without breaking it</span></h2>
+  <div class="zh">
+    <p>移植的價值常在原版做不到的事。這個專案陸續加了：</p>
+    <ul>
+      <li><b>雙人</b>：兩支手把各自是一位 Kinect 玩家（v0.1.5，之後 v0.6.1 讓 Relay Race 也能用手把）。</li>
+      <li><b>網路對戰</b>：原版的 Xbox LIVE 早就關了。v0.7.0 起，改連這個專案自己的伺服器，Windows、Linux、Android 可以一起比賽；伺服器可以由其中一台玩家的遊戲自己開。</li>
+      <li><b>Mod</b>：讀取 HedgeModManager 格式的替換檔（Unleashed、Marathon 用的同一種），launcher 裡可以開關、排順序。繁體中文化 mod 就是用這個做的。</li>
+      <li><b>自己的 VRM 模型</b>：遊戲裡的 AVATAR 角色可以換成你自己的 3D 模型，動作仍由遊戲控制。</li>
+      <li>成就（不需要 Xbox Live）、可調的內部解析度、超寬螢幕、觸控與傾斜轉彎。</li>
+    </ul>
+    <p>原則是<b>不偷改遊戲本身的行為</b>。例如手機跑不到 60 fps 時，不是讓比賽每格多走一點（那會改變物理），而是照樣每格固定前進、少畫幾格來追上時間（第 11 步）。</p>
+  </div>
+  <div class="en">
+    <p>A port earns its keep with things the original can't do. Over time this one added:</p>
+    <ul>
+      <li><b>Two players</b>: each controller is a Kinect player of its own (v0.1.5; v0.6.1 made Relay Race work with controllers too).</li>
+      <li><b>Online races</b>: the original Xbox LIVE service closed long ago. From v0.7.0 the game connects to this project's own server instead, and Windows, Linux and Android players race together; one player's game can host the server itself.</li>
+      <li><b>Mods</b>: file-replacement mods in HedgeModManager's format (the one Unleashed and Marathon use), switched on and ordered in the launcher. The Traditional Chinese translation is such a mod.</li>
+      <li><b>Your own VRM model</b>: the in-game AVATAR rider can be your own 3D model, still animated by the game.</li>
+      <li>Achievements (no Xbox Live needed), adjustable internal resolution, ultrawide, touch controls and tilt steering.</li>
+    </ul>
+    <p>The rule: <b>don't quietly change how the game itself behaves</b>. When a phone can't reach 60 fps, for example, the race doesn't take bigger steps (that would change the physics); it keeps its fixed step and leaves some frames undrawn to keep up with real time (step 11).</p>
+  </div>
+  <figure class="fig"><img src="https://raw.githubusercontent.com/YuutaTsubasa/Free-Riders-Recompiled/eb16749f01087ba4269e462279374c3ad3df21f6/docs/images/online-3-devices.png" alt="The same online race on a PC, a ROG Xbox Ally X and an AYN Thor" loading="lazy" width="1920" height="410">
+    <figcaption><span class="zh">同一場網路比賽：電腦（主機）、ROG Xbox Ally X 和 AYN Thor。</span><span class="en">One online race on a PC (the host), a ROG Xbox Ally X and an AYN Thor.</span></figcaption></figure>
+  <div class="code"><div class="code-h"><span class="zh">在專案裡的位置</span><span class="en">Where it is in the code</span></div><ul><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/docs/two-players.md" target="_blank" rel="noopener"><code>docs/two-players.md</code></a><span class="zh">雙人</span><span class="en">Two players</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/tree/eb16749f01087ba4269e462279374c3ad3df21f6/server/" target="_blank" rel="noopener"><code>server/</code></a><span class="zh">網路對戰的伺服器（也可以用 Docker 跑）</span><span class="en">The online server (also runs in Docker)</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/src/mod_loader.cpp" target="_blank" rel="noopener"><code>src/mod_loader.cpp</code></a><span class="zh">讀取 mod</span><span class="en">Loading mods</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/docs/mods.md" target="_blank" rel="noopener"><code>docs/mods.md</code></a><span class="zh">Mod 的格式與用法</span><span class="en">Mod format and use</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/docs/vrm-avatar.md" target="_blank" rel="noopener"><code>docs/vrm-avatar.md</code></a><span class="zh">換上自己的 VRM 模型</span><span class="en">Using your own VRM model</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/docs/translation.md" target="_blank" rel="noopener"><code>docs/translation.md</code></a><span class="zh">遊戲文字在哪裡、怎麼做翻譯 mod</span><span class="en">Where the game's text is, and how translation mods work</span></li></ul><div class="code-h sub"><span class="zh">相關 commit</span><span class="en">Commits</span></div><ul class="commits"><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/012a9f272b64a971ab460b530b076b0dc0766e86" target="_blank" rel="noopener"><code>012a9f2</code></a><span><span class="date">2026-09-27</span> 2P support</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/6fac24a499ead5bb21babece40b9aebae778c060" target="_blank" rel="noopener"><code>6fac24a</code></a><span><span class="date">2026-09-28</span> Integrate experimental VRM rendering for single-player Avatar</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/482c45fc7972b0327ca8a9a34026beb3d2f46f29" target="_blank" rel="noopener"><code>482c45f</code></a><span><span class="date">2026-10-06</span> Load file-replacement mods in HedgeModManager&#x27;s format, and manage them in the launcher</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/d92ac784eba9c3db0e4e0fa7bae27a0e89ff1c8c" target="_blank" rel="noopener"><code>d92ac78</code></a><span><span class="date">2026-10-06</span> Play the title&#x27;s Xbox LIVE mode on this project&#x27;s own server (work in progress)</span></li></ul></div>
+</div></section>
+
+<!-- 10 -->
+<section class="step" id="s10"><div class="wrap">
+  <div class="num">STEP 10</div>
+  <h2><span class="zh">搬到每個平台</span><span class="en">Bring it to every platform</span></h2>
+  <div class="zh"><p>翻出來的是 C++，所以每個平台用自己的編譯器就能編。但每個平台都有自己的坑，要實際在那裡跑過才算數：</p></div>
+  <div class="en"><p>The output is C++, so each platform builds it with its own compiler. Each still has its own traps, and a platform only counts once it has really run there:</p></div>
+  <div class="tbl"><table>
+    <thead><tr><th><span class="zh">平台</span><span class="en">Platform</span></th><th><span class="zh">在哪裡驗證</span><span class="en">Verified on</span></th><th><span class="zh">遇過的真實狀況</span><span class="en">A real thing that happened</span></th></tr></thead>
+    <tbody>
+      <tr><td>Windows</td><td><span class="zh">桌機，D3D12 與 Vulkan 都跑整場比賽</span><span class="en">Desktop; a whole race on both D3D12 and Vulkan</span></td><td><span class="zh">安裝在有非英文字母的資料夾就開不起來（v0.6.3 修好）；Windows 10 需要另附 D3D12 執行檔</span><span class="en">It wouldn't start from a folder with non-Latin letters (fixed in v0.6.3); Windows 10 needs the D3D12 runtime shipped alongside</span></td></tr>
+      <tr><td>Linux</td><td><span class="zh">WSL 的 Ubuntu 22.04（Vulkan）</span><span class="en">Ubuntu 22.04 under WSL (Vulkan)</span></td><td><span class="zh">沒有著色器翻譯器，只能用 Windows 翻好的 pack；pack 裡沒有的東西就畫不出來</span><span class="en">No shader translator there, so it relies on the pack from Windows; whatever the pack lacks can't be drawn</span></td></tr>
+      <tr><td>Android</td><td><span class="zh">實體掌機 AYN Thor</span><span class="en">A real AYN Thor handheld</span></td><td><span class="zh">兩個 APK（Android 9／10 以上）；Mali 顯示晶片的手機開不起來（第 12 步的案例）</span><span class="en">Two APKs (Android 9 / 10 and later); phones with Mali GPUs wouldn't start (the case in step 12)</span></td></tr>
+      <tr><td>macOS</td><td><span class="zh">Mac mini M1，整場比賽</span><span class="en">Mac mini M1, whole races</span></td><td><span class="zh">第一次在 Mac 上跑就找到三個當機；按下 Start 後顯示晶片出錯，要改成只在需要時重新綁定貼圖</span><span class="en">The first runs on a Mac found three crashes; a GPU fault after Start needed textures rebound only when a stage needs them</span></td></tr>
+      <tr><td>iOS</td><td><span class="zh">只建置和打包</span><span class="en">Built and packaged only</span></td><td><span class="zh">還沒在 iPhone 上實際測過，發版說明照實寫「未測試」</span><span class="en">Not yet tried on an iPhone; the release notes say "not tested", plainly</span></td></tr>
+    </tbody>
+  </table></div>
+  <div class="code"><div class="code-h"><span class="zh">在專案裡的位置</span><span class="en">Where it is in the code</span></div><ul><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/docs/building.md" target="_blank" rel="noopener"><code>docs/building.md</code></a><span class="zh">各平台怎麼建置</span><span class="en">How to build on each platform</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/scripts/build_linux.sh" target="_blank" rel="noopener"><code>scripts/build_linux.sh</code></a><span class="zh">Linux 建置</span><span class="en">The Linux build</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/scripts/build_android.sh" target="_blank" rel="noopener"><code>scripts/build_android.sh</code></a><span class="zh">Android 建置</span><span class="en">The Android build</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/tree/eb16749f01087ba4269e462279374c3ad3df21f6/android/" target="_blank" rel="noopener"><code>android/</code></a><span class="zh">Android 專案</span><span class="en">The Android project</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/scripts/package_release.py" target="_blank" rel="noopener"><code>scripts/package_release.py</code></a><span class="zh">各平台打包</span><span class="en">Packaging for each platform</span></li></ul><div class="code-h sub"><span class="zh">相關 commit</span><span class="en">Commits</span></div><ul class="commits"><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/3e21d34629f538f0af20cc89df2d74d99f7b1055" target="_blank" rel="noopener"><code>3e21d34</code></a><span><span class="date">2026-09-22</span> macOS: Metal-layer window for MoltenVK, affinity shim; CI checks the build</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/fb5a7b0364458b9d900194c96f6f6a573977cdd5" target="_blank" rel="noopener"><code>fb5a7b0</code></a><span><span class="date">2026-10-08</span> Read folders with letters outside the system code page on Windows</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/436bcf6093bd9caa1f7c097062cc0fc6ae2c581e" target="_blank" rel="noopener"><code>436bcf6</code></a><span><span class="date">2026-10-16</span> Fix three crashes found running on macOS</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/33b39a0c6a305402461a0bde05f2e8c849366ad6" target="_blank" rel="noopener"><code>33b39a0</code></a><span><span class="date">2026-10-16</span> Build and package the game for macOS</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/c0dc0eee012d7ca31abd2fde5c54b0a0041dd9fb" target="_blank" rel="noopener"><code>c0dc0ee</code></a><span><span class="date">2026-10-16</span> Build and package the game for iOS</span></li></ul></div>
+</div></section>
+
+<!-- 11 -->
+<section class="step" id="s11"><div class="wrap">
+  <div class="num">STEP 11</div>
+  <h2><span class="zh">跑得更快：先量，再改，再證明</span><span class="en">Make it faster: measure, change, prove</span></h2>
+  <div class="zh">
+    <p>第一次在電腦上跑完整場 Free Race（2026-09-21）時，只有 <b>1.6 fps</b>，一格要 620 毫秒。先量出時間花在哪裡：遊戲自己的計算只佔 53 毫秒，<b>我們的繪圖部分吃掉九成</b>。一項一項改完之後，同一天就到了大約 60 fps、幾乎跟真實時間一樣快。</p>
+    <p>手機是更大的挑戰。每次都用同一套方法：在實體掌機 AYN Thor 上跑同一段比賽，找出最花時間的部分，改它，再交替開關比對（A/B/A/B），確定真的變快、畫面也沒變。</p>
+  </div>
+  <div class="en">
+    <p>The first whole Free Race on a PC (2026-09-21) ran at <b>1.6 fps</b>, 620 milliseconds a frame. Measuring where the time went: the game's own work was 53 ms, and <b>our drawing code took nine tenths</b>. After fixing it piece by piece, the same day it reached about 60 fps, close to real time.</p>
+    <p>Phones were the bigger challenge. The method was the same each time: run the same stretch of a race on a real AYN Thor handheld, find the biggest cost, change it, then switch it on and off in turn (A/B/A/B) to make sure it really got faster and the picture didn't change.</p>
+  </div>
+  <figure class="fig">
+    <div class="bars">
+      <div class="b"><span>v0.4.4</span><div class="track"><div class="fill" style="width:39%"></div></div><span class="v">23–24</span></div>
+      <div class="b"><span>v0.5.0</span><div class="track"><div class="fill" style="width:82%;animation-delay:.15s"></div></div><span class="v">49–50</span></div>
+      <div class="b"><span>v0.6.9</span><div class="track"><div class="fill" style="width:93%;animation-delay:.3s"></div></div><span class="v">55–57</span></div>
+      <div class="b"><span>v0.10.38</span><div class="track"><div class="fill" style="width:100%;animation-delay:.45s"></div></div><span class="v">60</span></div>
+    </div>
+    <figcaption><span class="zh">AYN Thor（Snapdragon 8 Gen 2），比賽中的 fps（越長越好）。來自各版本的發版說明與 PR #90；量的路段不完全相同，看趨勢就好。</span><span class="en">AYN Thor (Snapdragon 8 Gen 2), fps in a race (longer is better). From each release's notes and PR #90; the stretches measured aren't identical, so read it as a trend.</span></figcaption>
+  </figure>
+  <div class="zh">
+    <p>其中一個改法的故事（v0.6.9）：Android 把只是在「等」的繪圖執行緒放在唯一一顆最快的核心上，真正決定 fps 的主執行緒反而在較慢的核心。讓繪圖執行緒離開最快的核心之後，起跑線從 52 fps 變成 60 fps。</p>
+    <p>另一個（v0.9.0）：手機跑不到 60 fps 時，原本讓比賽「每格多走一點時間」來保持速度，但這款遊戲的碰撞是照 1/60 秒設計的，步伐一大，跑得快的角色會從坡道側面穿出場外（issue #123）。改成每格固定前進、少畫幾格來追上時間之後，速度和物理都對了。</p>
+  </div>
+  <div class="en">
+    <p>One change in detail (v0.6.9): Android put the render thread, which mostly waits, on the one fastest core, while the main thread, which sets the frame rate, ran on slower ones. Moving the render thread off the fastest core took the start line from 52 to 60 fps.</p>
+    <p>Another (v0.9.0): when a phone couldn't reach 60 fps, races used to take longer steps to keep their speed. But this game's collisions are made for 1/60-second steps; with longer steps a fast racer could pass out through the side of a ramp (issue #123). Keeping the fixed step and leaving some frames undrawn to catch up got both the speed and the physics right.</p>
+  </div>
+  <div class="code"><div class="code-h"><span class="zh">在專案裡的位置</span><span class="en">Where it is in the code</span></div><ul><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/docs/performance.md" target="_blank" rel="noopener"><code>docs/performance.md</code></a><span class="zh">電腦上的量測：從 1.6 fps 開始</span><span class="en">Desktop measurements, starting at 1.6 fps</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/docs/android-performance.md" target="_blank" rel="noopener"><code>docs/android-performance.md</code></a><span class="zh">手機上的量測與「少畫幾格」的做法</span><span class="en">Phone measurements and the undrawn-frame approach</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/src/host_core_plan.h" target="_blank" rel="noopener"><code>src/host_core_plan.h</code></a><span class="zh">哪條執行緒放在哪顆核心</span><span class="en">Which thread goes on which core</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/docs/benchmarking.md" target="_blank" rel="noopener"><code>docs/benchmarking.md</code></a><span class="zh">怎麼跑可比較的量測</span><span class="en">How to run comparable measurements</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/pull/90" target="_blank" rel="noopener"><code>PR 90</code></a><span class="zh">v0.6.9 的 Thor 52 → 60 fps</span><span class="en">The v0.6.9 Thor change, 52 → 60 fps</span></li></ul><div class="code-h sub"><span class="zh">相關 commit</span><span class="en">Commits</span></div><ul class="commits"><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/d62fb2b7167af0c796578acf642deedd3c5c00f8" target="_blank" rel="noopener"><code>d62fb2b</code></a><span><span class="date">2026-10-09</span> Merge pull request #90 from YuutaTsubasa/claude/thor-60fps</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/594d47a7b5db2eb88a8a189bedebd1d482782418" target="_blank" rel="noopener"><code>594d47a</code></a><span><span class="date">2026-10-15</span> Keep the race&#x27;s fixed step on Android and skip drawing to keep its speed</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/404dc4d723955a7d0474b42c872c8246417ebac3" target="_blank" rel="noopener"><code>404dc4d</code></a><span><span class="date">2026-10-16</span> Leave most of the game&#x27;s drawing out of frames that are not drawn</span></li></ul></div>
+</div></section>
+
+<!-- 12 -->
+<section class="step" id="s12"><div class="wrap">
+  <div class="num">STEP 12</div>
+  <h2><span class="zh">接玩家回報：先重現，再修，再用同一招驗證</span><span class="en">Handle reports: reproduce, fix, verify the same way</span></h2>
+  <figure class="fig loop">
+    <svg viewBox="0 0 720 250" role="img" aria-label="Issue handling loop">
+      <g>
+        <rect x="20" y="30" width="150" height="50" rx="10" class="s-chip"/><text x="34" y="60" class="lbl s-ink"><tspan class="zh">① 用自己的遊戲檔重現</tspan><tspan class="en">① Reproduce locally</tspan></text>
+        <rect x="210" y="30" width="130" height="50" rx="10" class="s-chip"/><text x="224" y="60" class="lbl s-ink"><tspan class="zh">② 找到真正原因</tspan><tspan class="en">② Find the cause</tspan></text>
+        <rect x="380" y="30" width="130" height="50" rx="10" class="s-chip"/><text x="394" y="60" class="lbl s-ink"><tspan class="zh">③ 真的修，不繞過</tspan><tspan class="en">③ Real fix</tspan></text>
+        <rect x="550" y="30" width="150" height="50" rx="10" class="s-chip"/><text x="564" y="60" class="lbl s-ink"><tspan class="zh">④ 同樣方法驗證</tspan><tspan class="en">④ Verify same way</tspan></text>
+        <rect x="550" y="170" width="150" height="50" rx="10" class="s-chip"/><text x="564" y="200" class="lbl s-ink"><tspan class="zh">⑤ PR＋CI 全綠</tspan><tspan class="en">⑤ PR, CI green</tspan></text>
+        <rect x="380" y="170" width="130" height="50" rx="10" class="s-chip"/><text x="394" y="200" class="lbl s-ink"><tspan class="zh">⑥ 發版</tspan><tspan class="en">⑥ Release</tspan></text>
+        <rect x="190" y="170" width="150" height="50" rx="10" class="s-chip"/><text x="204" y="200" class="lbl s-ink"><tspan class="zh">⑦ 用人話回覆</tspan><tspan class="en">⑦ Reply in plain words</tspan></text>
+        <rect x="20" y="170" width="130" height="50" rx="10" class="s-panel st-gold" stroke-width="1.5" stroke-dasharray="4 3"/><text x="32" y="192" class="lbl s-gold"><tspan class="zh">重現不了？</tspan><tspan class="en">Can't reproduce?</tspan></text><text x="32" y="210" class="lbl s-muted"><tspan class="zh">說明試過什麼再問</tspan><tspan class="en">say what was tried</tspan></text>
+      </g>
+      <path d="M170 55 H210 M340 55 H380 M510 55 H550 M625 80 V170 M550 195 H510 M380 195 H340" class="st-violet flow" stroke-width="3" fill="none"/>
+      <path d="M95 80 V170" class="st-gold" stroke-width="2" fill="none" stroke-dasharray="3 4"/>
+      <circle r="6" class="s-magenta"><animateMotion dur="6s" repeatCount="indefinite" path="M95 55 H625 V195 H265"/></circle>
+    </svg>
+  </figure>
+  <div class="zh"><p>這個流程是專案擁有者訂的規則。手機的問題沒辦法每台都買來測，所以會用 Google 的 Firebase Test Lab（雲端上的實體手機），或在電腦上故意套用那種手機的限制來重現。下面是一個完整的真實例子。</p></div>
+  <div class="en"><p>This loop is a rule set by the project owner. Nobody can buy every phone, so phone problems are reproduced on Google's Firebase Test Lab (real phones in the cloud), or on a PC with that phone's limits forced on. Here is a complete real case.</p></div>
+
+  <h3><span class="zh">案例：「Mali 顯示晶片的手機開不起來」（issue #169）</span><span class="en">Case: "the game crashes on Mali-based phones" (issue #169)</span></h3>
+  <div class="zh">
+    <ol>
+      <li><b>回報</b>（2026-10-17）：一位玩家的兩支手機都開不起來：Pixel 10a（Mali-G715）出現載入畫面就關掉，P30 Pro（Mali-G76）連載入畫面都沒有。他附上了兩支手機的診斷檔。</li>
+      <li><b>Pixel 10a 的原因</b>：記錄顯示，顯示卡驅動在編譯第一個繪圖管線時就當掉。著色器裡寫了一個這款晶片自己說不支援的東西（clip distance）。在 Firebase 的 Pixel 10a 上，舊版當得一模一樣；拿掉之後 455 個管線全部編好、畫面正確。<b>v0.10.2</b> 修好。</li>
+      <li><b>P30 Pro 的第一層</b>：它的 Vulkan 少了兩個程式要求的擴充功能。查下去發現其實根本沒用到，就不再要求；後面又接連補上三件舊款 Mali 需要的事。<b>v0.10.3</b>。</li>
+      <li><b>玩家回報還是不行</b>：管線準備到最後 5 個就整台手機卡住。他附的記錄顯示第一次畫圖時顯示卡就掛了（device lost）。</li>
+      <li><b>真正的原因</b>：每次畫圖都宣告 20 個頂點輸入，但這代 Mali 最多只支援 16 個。改成只宣告著色器真正用到的（最多 14 個）。在 Firebase 上最接近的舊款 Mali（Galaxy S9，Mali-G72）加一個新測試：455 個管線每個都畫一次。修正打開全部正確，關掉就跟玩家一樣卡死。<b>v0.10.4</b>，同一天發出。</li>
+      <li><b>玩家確認</b>：P30 Pro 終於進得了遊戲。之後他用新版跑了一場 Magma Rift：畫面 20 fps，但比賽時間跟真實時間一致（0.998），瓶頸在顯示晶片，調低 launcher 的 Render size 最有效。問題關閉，速度另外在 issue #176 追。</li>
+    </ol>
+  </div>
+  <div class="en">
+    <ol>
+      <li><b>The report</b> (2026-10-17): a player's two phones wouldn't start the game. The Pixel 10a (Mali-G715) closed at the loading screen; the P30 Pro (Mali-G76) didn't even get that far. They attached diagnostics from both.</li>
+      <li><b>The Pixel 10a</b>: the log showed the graphics driver crashing while compiling the first pipeline. The shaders wrote something (a clip distance) this chip itself says it doesn't support. On Firebase's Pixel 10a the old build crashed the same way; without it, all 455 pipelines compiled and frames drew correctly. Fixed in <b>v0.10.2</b>.</li>
+      <li><b>The P30 Pro, first layer</b>: its Vulkan lacked two extensions the renderer required. They turned out to be unused, so they're no longer required; three more things old Mali GPUs need came after. <b>v0.10.3</b>.</li>
+      <li><b>The player said it still failed</b>: preparing pipelines, the whole phone froze on the last 5. Their log showed the GPU lost on the very first draw.</li>
+      <li><b>The real cause</b>: every draw declared 20 vertex inputs, but these Mali GPUs support 16. Now each shader declares only the inputs it reads (14 at most). On Firebase's closest old Mali (a Galaxy S9, Mali-G72), a new test draws once with each of the 455 pipelines: all correct with the fix, and a hang like the player's without it. <b>v0.10.4</b>, the same day.</li>
+      <li><b>The player confirmed</b>: the P30 Pro got into the game. Later they ran a Magma Rift race on a newer build: 20 fps shown, but the race kept real time (0.998); the bottleneck is the GPU, so a lower Render size in the launcher helps most. Closed, with speed followed in issue #176.</li>
+    </ol>
+  </div>
+  <div class="why"><b>?</b> <span class="zh">注意第 4 點：修好一層，不代表修好了。玩家再試、再附記錄，才找到第二層真正的原因。每一層都要「舊版重現、新版正確」兩邊都看到，才算數。</span><span class="en">Note point 4: fixing one layer isn't the finish line. Only the player's next try and next log revealed the real cause underneath. Each layer counts only when the old build reproduces it and the new one doesn't.</span></div>
+  <div class="code"><div class="code-h"><span class="zh">在專案裡的位置</span><span class="en">Where it is in the code</span></div><ul><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues/169" target="_blank" rel="noopener"><code>issue 169</code></a><span class="zh">整個過程與玩家的回覆</span><span class="en">The whole exchange with the player</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/src/spirv_clip_distance.h" target="_blank" rel="noopener"><code>src/spirv_clip_distance.h</code></a><span class="zh">Pixel 10a：拿掉 clip distance</span><span class="en">Pixel 10a: leaving out the clip distance</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/src/spirv_vertex_inputs.h" target="_blank" rel="noopener"><code>src/spirv_vertex_inputs.h</code></a><span class="zh">舊款 Mali：只宣告用到的頂點輸入</span><span class="en">Old Mali: declaring only the vertex inputs used</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/src/graphics_selftest.cpp" target="_blank" rel="noopener"><code>src/graphics_selftest.cpp</code></a><span class="zh">每個管線都畫一次的自我測試</span><span class="en">The self-test that draws with every pipeline</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/pull/182" target="_blank" rel="noopener"><code>PR 182</code></a><span class="zh">v0.10.4 的修正</span><span class="en">The v0.10.4 fix</span></li></ul><div class="code-h sub"><span class="zh">相關 commit</span><span class="en">Commits</span></div><ul class="commits"><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/5335c49ed48416993b1e4ba3bfb3b5ec737c18e5" target="_blank" rel="noopener"><code>5335c49</code></a><span><span class="date">2026-10-18</span> Compile the vertex shaders without their clip distance on Mali</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/8956494f70e2135711f19e9cfca5dddda8c851b8" target="_blank" rel="noopener"><code>8956494</code></a><span><span class="date">2026-10-18</span> Run Vulkan without scalar block layout and buffer device addresses</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/9d6fcfe77de34dcb1dca68342b204644912ed8fb" target="_blank" rel="noopener"><code>9d6fcfe</code></a><span><span class="date">2026-10-18</span> Fall back to a D24S8 depth format where D32S8 is missing</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commit/28f5c0dc4a98e3cf2ac008e95f9b757267ba79bc" target="_blank" rel="noopener"><code>28f5c0d</code></a><span><span class="date">2026-10-18</span> Declare only the vertex inputs a shader reads where a GPU has 16</span></li></ul></div>
+</div></section>
+
+<!-- 13 -->
+<section class="step" id="s13"><div class="wrap">
+  <div class="num">STEP 13</div>
+  <h2><span class="zh">發版前的檢查清單</span><span class="en">The release checklist</span></h2>
+  <div class="zh"><p>每個版本都照這張清單走，任何一項沒過就不發（以 0.10.38 為例）：</p></div>
+  <div class="en"><p>Every release goes through this list; if any item fails, it doesn't ship (0.10.38 as the example):</p></div>
+  <div class="tbl"><table>
+    <tbody>
+      <tr><td class="n">1</td><td><span class="zh">改版號的 PR，GitHub 上 5 項 CI 全綠（Windows、Linux、macOS、Android、No game data）</span><span class="en">A version PR with all 5 CI jobs green (Windows, Linux, macOS, Android, No game data)</span></td></tr>
+      <tr><td class="n">2</td><td><span class="zh">單元測試：Windows 183 項、Linux 175 項全過</span><span class="en">Unit tests: 183 on Windows and 175 on Linux, all passing</span></td></tr>
+      <tr><td class="n">3</td><td><span class="zh">Windows 包解壓到乾淨的資料夾，用 Vulkan 加上驗證層跑完整場比賽：沒有任何錯誤，455 個管線全部準備好</span><span class="en">The Windows package, unpacked into a clean folder, runs a whole race on Vulkan with the validation layer: no errors, all 455 pipelines prepared</span></td></tr>
+      <tr><td class="n">4</td><td><span class="zh">Mac（M1）的包跑完整場比賽，速度 1.000</span><span class="en">The Mac (M1) package runs a whole race at full speed (1.000)</span></td></tr>
+      <tr><td class="n">5</td><td><span class="zh">AYN Thor 實機：預設設定、觸控加傾斜、執行緒擠在一顆核心，三種情況都跑比賽並記下速度</span><span class="en">A real AYN Thor: default settings, touch plus tilt, and threads squeezed onto one core, each racing with its speed recorded</span></td></tr>
+      <tr><td class="n">6</td><td><span class="zh">APK 用同一把金鑰簽章，能直接覆蓋安裝舊版</span><span class="en">APKs signed with the same key, so they install over the previous version</span></td></tr>
+      <tr><td class="n">7</td><td><span class="zh">發版說明寫清楚驗證了什麼，<b>也寫清楚沒測到什麼</b></span><span class="en">Release notes that say what was verified, <b>and what wasn't</b></span></td></tr>
+      <tr><td class="n">8</td><td><span class="zh">發版之後才回覆 issue：先用一般人聽得懂的話說明，再附開發細節</span><span class="en">Only after the release, reply on the issues: plain words first, developer detail after</span></td></tr>
+    </tbody>
+  </table></div>
+  <div class="code"><div class="code-h"><span class="zh">在專案裡的位置</span><span class="en">Where it is in the code</span></div><ul><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/.github/workflows/build.yml" target="_blank" rel="noopener"><code>.github/workflows/build.yml</code></a><span class="zh">5 項 CI 檢查</span><span class="en">The 5 CI jobs</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/blob/eb16749f01087ba4269e462279374c3ad3df21f6/docs/releasing.md" target="_blank" rel="noopener"><code>docs/releasing.md</code></a><span class="zh">建置、打包、檢查、發布</span><span class="en">Build, package, check, publish</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases" target="_blank" rel="noopener"><code>Releases</code></a><span class="zh">每個版本的說明與驗證結果</span><span class="en">Every release with its validation</span></li></ul></div>
+</div></section>
+
+<!-- AI -->
+<section class="step" id="ai"><div class="wrap">
+  <div class="num">ABOUT AI</div>
+  <h2><span class="zh">AI 在這裡做了什麼，人做了什麼</span><span class="en">What AI did here, and what people did</span></h2>
+  <div class="ai">
+    <div class="zh">
+      <p>直接說清楚：這個專案大部分的程式碼由 AI 撰寫，主要是 Anthropic 的 Claude，也有一部分是 OpenAI 的 Codex。879 個 commit 裡有 508 個標註 Claude 為共同作者；合併的 235 個 PR 裡，205 個來自 Claude 的分支、18 個來自 Codex 的分支。紀錄都在 git 裡。</p>
+      <p>「AI 寫的」不等於「垃圾」，也不等於「好」。決定品質的是<b>能不能證明它是對的</b>。這份文件每一步都有「怎麼確認」，那才是重點。</p>
+    </div>
+    <div class="en">
+      <p>To be plain about it: most of this project's code was written by AI, mainly Anthropic's Claude, with some by OpenAI's Codex. 508 of its 879 commits name Claude as co-author; of the 235 merged PRs, 205 came from Claude's branches and 18 from Codex's. The record is in git for anyone to read.</p>
+      <p>"Written by AI" doesn't mean "slop", and it doesn't mean "good" either. What decides quality is <b>whether you can prove it's right</b>. Every step on this page has a "how you know"; that is the point.</p>
+    </div>
+    <div class="split" style="margin-top:14px">
+      <div>
+        <span class="tag zh">人</span><span class="tag en">People</span>
+        <ul class="zh">
+          <li>定方向和規則：先重現再修、不准繞過問題、截圖必須是真的、發版說明要寫沒測到什麼</li>
+          <li>擁有光碟、測試用的電腦、Mac 和掌機，實際玩、實際測</li>
+          <li>決定什麼時候合併、什麼時候發版</li>
+          <li>協作者 KnucklesLee：95 個 commit，實體 Kinect 與 Kinect v2 的支援，以及好幾份詳細的效能量測報告</li>
+          <li>玩家回報問題：71 個 issue，65 個來自兩位開發者以外的人，已關閉 52 個</li>
+        </ul>
+        <ul class="en">
+          <li>Set the direction and the rules: reproduce before fixing, no workarounds, real screenshots only, release notes that say what wasn't tested</li>
+          <li>Own the disc, the test PCs, the Mac and the handheld; actually play and test</li>
+          <li>Decide when to merge and when to release</li>
+          <li>Collaborator KnucklesLee: 95 commits, the real Kinect and Kinect v2 support, and several detailed performance reports</li>
+          <li>Players report problems: 71 issues, 65 of them from people other than the two developers, 52 closed</li>
+        </ul>
+      </div>
+      <div>
+        <span class="tag">AI</span>
+        <ul class="zh">
+          <li>寫翻譯流程的工具、runtime、繪圖、Kinect 與攝影機、launcher</li>
+          <li>寫測試，並在每次修改後跑完整驗證</li>
+          <li>重現問題、量測、查原因、寫說明文件（docs/ 裡 133 份）</li>
+          <li>照清單建置各平台、在掌機上測試、發版、回覆玩家</li>
+        </ul>
+        <ul class="en">
+          <li>Wrote the translation tooling, the runtime, graphics, Kinect and camera input, and the launcher</li>
+          <li>Wrote the tests and ran the full verification after every change</li>
+          <li>Reproduced problems, measured, traced causes, wrote the docs (133 in docs/)</li>
+          <li>Built every platform from the checklist, tested on the handheld, released, replied to players</li>
+        </ul>
+      </div>
+    </div>
+    <div class="zh"><p style="margin-top:14px">不管是誰寫的，你都可以直接檢查：程式碼、每個版本的驗證結果、每個 issue 的處理過程，全部公開在 GitHub 上。</p></div>
+    <div class="en"><p style="margin-top:14px">Whoever wrote it, you can check it yourself: the code, each release's validation results and how every issue was handled are all public on GitHub.</p></div>
+  </div>
+  <div class="code"><div class="code-h"><span class="zh">在專案裡的位置</span><span class="en">Where it is in the code</span></div><ul><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/commits/main" target="_blank" rel="noopener"><code>Commits</code></a><span class="zh">每個 commit 與共同作者紀錄</span><span class="en">Every commit, with its co-author lines</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/issues?q=is%3Aissue" target="_blank" rel="noopener"><code>Issues</code></a><span class="zh">每個回報與處理過程</span><span class="en">Every report and how it was handled</span></li><li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/pulls?q=is%3Apr" target="_blank" rel="noopener"><code>Pull requests</code></a><span class="zh">每個修改的 PR</span><span class="en">Every change as a PR</span></li></ul></div>
+</div></section>
+
+<section class="step"><div class="wrap">
+  <div class="num">BY THE NUMBERS</div>
+  <h2><span class="zh">數字一覽</span><span class="en">At a glance</span></h2>
+  <div class="tbl"><table>
+    <tbody>
+      <tr><td><span class="zh">實作紀錄開始</span><span class="en">Work log starts</span></td><td class="n">2026-09-10</td></tr>
+      <tr><td><span class="zh">公開 repo 第一個 commit，與第一個能玩的版本（0.1.0）</span><span class="en">First public commit, and first playable release (0.1.0)</span></td><td class="n">2026-09-22</td></tr>
+      <tr><td><span class="zh">版本數（到 0.10.38）</span><span class="en">Releases (to 0.10.38)</span></td><td class="n">86</td></tr>
+      <tr><td><span class="zh">Commit 數</span><span class="en">Commits</span></td><td class="n">879</td></tr>
+      <tr><td><span class="zh">合併的 PR</span><span class="en">Merged PRs</span></td><td class="n">235</td></tr>
+      <tr><td><span class="zh">程式碼（src、tests、scripts、tools、server、android）</span><span class="en">Code (src, tests, scripts, tools, server, android)</span></td><td class="n">≈ 137,000 lines</td></tr>
+      <tr><td><span class="zh">單元測試（0.10.38）</span><span class="en">Unit tests (0.10.38)</span></td><td class="n">183 Windows · 175 Linux</td></tr>
+      <tr><td><span class="zh">遊戲向主機借用的系統函式</span><span class="en">System functions the game imports</span></td><td class="n">299 + 13 variables</td></tr>
+      <tr><td><span class="zh">開始前準備的繪圖管線</span><span class="en">Pipelines prepared before play</span></td><td class="n">455</td></tr>
+      <tr><td><span class="zh">AYN Thor 比賽 fps</span><span class="en">AYN Thor race fps</span></td><td class="n">23–24 → 60</td></tr>
+      <tr><td><span class="zh">說明文件</span><span class="en">Docs</span></td><td class="n">133</td></tr>
+    </tbody>
+  </table></div>
+</div></section>
+
+<section class="step" id="code"><div class="wrap">
+  <div class="num">THE CODE TODAY</div>
+  <h2><span class="zh">目前的程式碼在這裡</span><span class="en">Where the code is today</span></h2>
+  <div class="zh"><p>上面的連結都固定在 commit <a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/tree/eb16749f01087ba4269e462279374c3ad3df21f6"><code>eb16749</code></a>（0.10.38 之後、Mac Kinect 合併時的 main），之後程式碼改了也不會跑掉。最新的程式碼請看：</p></div>
+  <div class="en"><p>The links above are pinned to commit <a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/tree/eb16749f01087ba4269e462279374c3ad3df21f6"><code>eb16749</code></a> (main after 0.10.38, when the Mac Kinect work was merged), so they don't drift as the code changes. For the latest code:</p></div>
+  <div class="code"><ul>
+    <li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled" target="_blank" rel="noopener"><code>YuutaTsubasa/Free-Riders-Recompiled</code></a><span class="zh">GitHub 上的專案首頁</span><span class="en">The project on GitHub</span></li>
+    <li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/tree/main" target="_blank" rel="noopener"><code>main</code></a><span class="zh">目前的程式碼</span><span class="en">The current code</span></li>
+    <li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/tree/eb16749f01087ba4269e462279374c3ad3df21f6" target="_blank" rel="noopener"><code>eb16749</code></a><span class="zh">這份文件對照的版本</span><span class="en">The version this page describes</span></li>
+    <li><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/latest" target="_blank" rel="noopener"><code>releases/latest</code></a><span class="zh">最新版本下載與驗證結果</span><span class="en">The latest release and its validation</span></li>
+  </ul></div>
+</div></section>
+
+</main>
+
+<footer><div class="wrap">
+  <p><span class="zh">專案：</span><span class="en">Project: </span><a href="https://github.com/YuutaTsubasa/Free-Riders-Recompiled">github.com/YuutaTsubasa/Free-Riders-Recompiled</a></p>
+  <p><span class="zh">本專案不含任何遊戲素材，你需要自己合法取得的《Sonic Free Riders》Xbox 360 光碟（美版／歐版）。Sonic Free Riders 是 SEGA 的商標與著作。這是非官方專案，與 SEGA、Microsoft 無關。</span><span class="en">This project contains no game assets; you need your own legally obtained Xbox 360 disc of <i>Sonic Free Riders</i> (USA/Europe). Sonic Free Riders is a trademark and work of SEGA. This is an unofficial project, not affiliated with SEGA or Microsoft.</span></p>
+</div></footer>
+
+<script>
+(function(){
+  var root=document.documentElement;
+  function setLang(l,save){
+    root.setAttribute('data-lang',l);
+    root.setAttribute('lang',l==='en'?'en':'zh-Hant');
+    document.getElementById('btn-zh').setAttribute('aria-pressed',l!=='en');
+    document.getElementById('btn-en').setAttribute('aria-pressed',l==='en');
+    if(save){try{localStorage.setItem('frh-lang',l)}catch(e){}}
+  }
+  var start='zh';
+  var h=(location.hash||'').slice(1);
+  if(h==='en'||h==='zh'){start=h}
+  else{
+    var saved=null;try{saved=localStorage.getItem('frh-lang')}catch(e){}
+    if(saved){start=saved}
+    else if(!/^zh/i.test(navigator.language||'')){start='en'}
+  }
+  setLang(start,false);
+  document.querySelectorAll('.lang button').forEach(function(b){
+    b.addEventListener('click',function(){setLang(b.getAttribute('data-set'),true)});
+  });
+})();
+</script>
+
+</body>
+</html>

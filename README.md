@@ -14,6 +14,10 @@ with [XenosRecomp](https://github.com/sonicnext-dev/XenosRecomp), then runs on
 a native runtime that stands in for the console's kernel, graphics, audio,
 input and Kinect.
 
+How it was made, step by step, with the numbers behind each step: the
+[Recompiled Handbook](https://yuuta-tsubasa.studio/Free-Riders-Recompiled/)
+(English and Traditional Chinese; its source is [site/index.html](site/index.html)).
+
 **This project does not include any game assets. You need your own legally
 acquired copy of the game (the USA/Europe disc) to play it:** the launcher
 installs the game's data from your disc image. Prebuilt versions are on the
