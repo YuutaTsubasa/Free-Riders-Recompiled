@@ -50,6 +50,18 @@ All counts are the game's own; nothing is counted by the port.
 that `822310A0` (award: player, achievement id) fills. The callers of
 `822310A0` are the checks:
 
+`822310A0`'s third argument picks the list: 0 is an achievement, anything
+else an Avatar award, which `82231228` sends as `XUserAwardAvatarAssets`
+(`XMsgStartIORequest(0xFB, 0xB0071, ...)` via `824D0530`, the same
+{count, (user, id)*} list). Its only caller is event 8 (award 8). There is no
+dashboard to give Avatar items to, so the port logs
+`RESULT XUserAwardAvatarAssets ... backend=none` and completes the request;
+before 0.11.0 it stopped the game (Issue #317, at the end of a Tag or Relay
+race). It can be checked without earning it: put one (user 0, id 8) entry in
+the queue at `83E516D8` with
+`SFR_POKE=7fea0000=0@3600,7fea0004=8@3600,83E516D8=2146041856@3600,83E516DC=2146041864@3600`
+(the entry lives in the unused XMA register page; the title copies it out).
+
 - `82231310(achievement object, event)`: a jump table over events 8..56. For
   most count achievements it adds one to a word and awards at 30
   (e.g. event 15: `lwz r10,0x19EC(r11); addi; stw; cmplwi r10,30; ... li r4,15`).
