@@ -296,6 +296,10 @@ add_executable(sfr_kinect_sensor_test tests/kinect_sensor_test.cpp src/kinect_se
     src/kinect_preview.cpp)
 target_include_directories(sfr_kinect_sensor_test PRIVATE src)
 add_test(NAME kinect_sensor COMMAND sfr_kinect_sensor_test)
+add_executable(sfr_motion_input_test tests/motion_input_test.cpp src/motion_input.cpp src/kinect_sensor.cpp src/kinect_sensor_none.cpp
+    src/nui_skeleton.cpp src/guest_memory.cpp src/kinect_preview.cpp)
+target_include_directories(sfr_motion_input_test PRIVATE src)
+add_test(NAME motion_input COMMAND sfr_motion_input_test)
 add_executable(sfr_kinect_smoothing_test tests/kinect_smoothing_test.cpp src/kinect_smoothing.cpp src/nui_transform_smooth.cpp)
 target_include_directories(sfr_kinect_smoothing_test PRIVATE src)
 add_test(NAME kinect_smoothing COMMAND sfr_kinect_smoothing_test)
@@ -1559,6 +1563,8 @@ if(SFR_BUILD_DIAGNOSTIC)
                    src/window_title.cpp src/camera_tuner.cpp src/camera_tuner_window.cpp
                    ${SFR_CAMERA_CAPTURE} ${SFR_POSE_SOURCES})
     # A real Kinect (SFR_CAMERA=kinect), through the Kinect for Windows runtime.
+    # One door for both: motion_input.h.
+    target_sources(sfr_cpu_diagnostic PRIVATE src/motion_input.cpp src/motion_input_device.cpp)
     target_sources(sfr_cpu_diagnostic PRIVATE src/kinect_sensor.cpp ${SFR_KINECT_SENSOR} ${SFR_VOICE}
         src/kinect_preview.cpp src/kinect_preview_window.cpp src/kinect_preview_layout.cpp)
     if(SFR_POSE_AVAILABLE)

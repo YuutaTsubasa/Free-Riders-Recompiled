@@ -1,4 +1,5 @@
 #include "pose_skeleton.h"
+#include "pose_nui_joints.h"
 
 #include <algorithm>
 #include <cmath>
@@ -10,11 +11,6 @@ using Point = std::array<float, 3>;
 
 Point middle(const Point& a, const Point& b) {
     return {(a[0] + b[0]) * 0.5f, (a[1] + b[1]) * 0.5f, (a[2] + b[2]) * 0.5f};
-}
-
-Point between(const Point& from, const Point& to, float part) {
-    return {from[0] + (to[0] - from[0]) * part, from[1] + (to[1] - from[1]) * part,
-            from[2] + (to[2] - from[2]) * part};
 }
 }
 
@@ -86,31 +82,16 @@ bool pose_to_joints(const PoseLandmarks& given, uint32_t picture_width, uint32_t
     // sides from the body, not from the picture, so the names carry straight
     // across: right to right (nui_skeleton.cpp's emulated player has its right
     // shoulder at +0.18 too, and the title's cursor centre sits beside it).
-    namespace joint = nui_joint;
-    joints[joint::shoulder_right] = place(pose_point::shoulder_right);
-    joints[joint::shoulder_left] = place(pose_point::shoulder_left);
-    joints[joint::elbow_right] = place(pose_point::elbow_right);
-    joints[joint::elbow_left] = place(pose_point::elbow_left);
-    joints[joint::hand_right] = place(pose_point::wrist_right);
-    joints[joint::hand_left] = place(pose_point::wrist_left);
-    joints[joint::hip_right] = place(pose_point::hip_right);
-    joints[joint::hip_left] = place(pose_point::hip_left);
-    joints[joint::knee_right] = place(pose_point::knee_right);
-    joints[joint::knee_left] = place(pose_point::knee_left);
-    joints[joint::ankle_right] = place(pose_point::ankle_right);
-    joints[joint::ankle_left] = place(pose_point::ankle_left);
-    joints[joint::head] = place(nose);
-
-    // The joints a NUI skeleton has and the model does not: the wrists sit
-    // most of the way down the forearm, the feet just past the ankles, and
-    // the spine between the hips and the shoulders.
-    joints[joint::wrist_right] = between(joints[joint::elbow_right], joints[joint::hand_right], 0.9f);
-    joints[joint::wrist_left] = between(joints[joint::elbow_left], joints[joint::hand_left], 0.9f);
-    joints[joint::foot_right] = {joints[joint::ankle_right][0], joints[joint::ankle_right][1] - 0.05f, joints[joint::ankle_right][2] - 0.08f};
-    joints[joint::foot_left] = {joints[joint::ankle_left][0], joints[joint::ankle_left][1] - 0.05f, joints[joint::ankle_left][2] - 0.08f};
-    joints[joint::hip_center] = middle(joints[joint::hip_left], joints[joint::hip_right]);
-    joints[joint::shoulder_center] = middle(joints[joint::shoulder_left], joints[joint::shoulder_right]);
-    joints[joint::spine] = between(joints[joint::hip_center], joints[joint::shoulder_center], 0.5f);
+    // The joints themselves are named as the Kinect on a Mac names them
+    // (pose_nui_joints.h); a camera's are all taken as tracked.
+    std::array<Point, pose_point::count> points{};
+    std::array<uint32_t, pose_point::count> states{};
+    for (uint32_t point = 0; point < pose_point::count; ++point) {
+        points[point] = place(point);
+        states[point] = nui_tracked;
+    }
+    std::array<uint32_t, nui_joint_count> joint_states{};
+    pose_nui_joints(points, states, joints, joint_states);
     return true;
 }
 }

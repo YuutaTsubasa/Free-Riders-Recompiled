@@ -3,6 +3,7 @@
 #include "guest_memory.h"
 #include "camera_player.h"
 #include "kinect_sensor.h"
+#include "motion_input.h"
 #include "kinect_race_record.h"
 #include "kinect_nui_record.h"
 #include "kinect_record_depth.h"
@@ -54,26 +55,25 @@
 
 namespace {
 sfr::NuiSkeletonEmulation skeleton;
-// SFR_CAMERA=motion: the first player's body comes from a webcam instead of
-// the pad. Started at the first frame the title asks for, because the camera
-// takes a moment to open and nothing should wait for it.
-std::unique_ptr<sfr::CameraPlayer> camera_player;
+// The motion device (motion_input.h), opened at the first frame the title
+// asks for (or at its first image stream): a camera takes a moment to open
+// and nothing should wait for it. What it can do decides how its bodies
+// reach the title:
+// - sensor bodies (a Kinect, SFR_CAMERA=kinect): the players, as on the
+//   console. Its skeletons go to the title untouched, and the race reads
+//   them through the title's own depth detectors (nui_body_from_sensor).
+// - one body (a camera, SFR_CAMERA=motion): the first player's, instead of
+//   the pad's while nobody touches the pad.
+sfr::MotionInput& motion() { return sfr::MotionInput::instance(); }
 std::unique_ptr<sfr::CameraDebugWindow> camera_debug;
-bool camera_started = false;
 sfr::SkeletonJoints camera_joints{};
 bool camera_has_joints = false;
-// SFR_CAMERA=kinect: a real sensor tracks the players, as on the console.
-// Its skeletons go to the title untouched, and the race reads them through
-// the title's own depth detectors instead of the pad (nui_body_from_sensor).
-std::unique_ptr<sfr::KinectSensor> kinect;
 // The menu's Kinect adjustment window over that sensor (kinect_tuner.h).
 std::mutex tuner_lock;
 std::atomic<uint64_t> tuner_generation{0};  // kinect_tuner_generation
 std::unique_ptr<sfr::KinectPreviewWindow> tuner;
 // The same over the webcam, when that is what the player uses.
 std::unique_ptr<sfr::CameraTunerWindow> camera_tuner;
-std::once_flag kinect_start_once;
-std::atomic<bool> sensor_body{false};
 // When the last depth frame was handed to the game (steady clock, ms): a gap
 // of more than half a second is logged once the frames come again, and
 // nothing else changes -- the game's own detectors read what it gets.
@@ -216,24 +216,17 @@ std::atomic<uint32_t> relay_out{0}, relay_tracking_id{0}, relay_next_pad{0};
 uint32_t frame_number = 0;
 const auto started = std::chrono::steady_clock::now();
 
-// Image streams can be requested before the first skeleton. Resolve the
-// backend at either entry point so stream-open success reflects its cameras.
-void start_kinect() {
-    std::call_once(kinect_start_once,[] {
-        std::string why;
-        kinect=sfr::KinectSensor::open_selected(sfr::kinect_selected_model(),&why);
-        sensor_body.store(kinect!=nullptr,std::memory_order_relaxed);
-        std::cerr << "NATIVE_KINECT started=" << (kinect?1:0);
-        if(kinect) std::cerr << " model=" << kinect->model() << " depth=" << kinect->has_depth_stream();
-        else std::cerr << " reason=" << why << " fallback=pad";
-        std::cerr << '\n';
-        // No substitute: without a depth stream the game gets none either
-        // (NuiImageStreamOpen is left to the library, which fails without a
-        // sensor) and its own detectors see nothing.
-        if(kinect && !kinect->has_depth_stream())
-            std::cerr << "NATIVE_KINECT_DEPTH unavailable model=" << kinect->model() << " reason="
-                      << (kinect->depth_failure().empty() ? "unknown" : kinect->depth_failure()) << '\n';
-    });
+// Image streams can be requested before the first skeleton. The device is
+// opened at either entry point so stream-open success reflects its cameras.
+// The camera's debug window (SFR_CAMERA_DEBUG) opens first, on the skeleton
+// hook's thread.
+void start_motion() {
+    static bool debug_started=false;
+    if(!debug_started && motion().device()!=sfr::MotionDevice::kinect) {
+        debug_started=true;
+        camera_debug=sfr::CameraDebugWindow::start();
+    }
+    motion().start();
 }
 }
 
@@ -247,15 +240,16 @@ KinectTuner open_kinect_tuner() {
         if(camera_tuner && !camera_tuner->closed()) camera_tuner->raise();
         return KinectTuner::already_open;
     }
+    // Each device has its own window: what is worth adjusting differs.
     bool opened=false;
-    if(kinect) {
+    if(KinectSensor* const kinect=motion().kinect()) {
         tuner.reset();  // a closed one: its thread has ended
         tuner=KinectPreviewWindow::open_over(*kinect);
         opened=tuner!=nullptr;
         std::cerr << "NUI_KINECT_TUNER opened=" << opened << " source=kinect\n";
-    } else if(camera_player) {
+    } else if(CameraPlayer* const camera=motion().camera()) {
         camera_tuner.reset();
-        camera_tuner=CameraTunerWindow::open_over(*camera_player);
+        camera_tuner=CameraTunerWindow::open_over(*camera);
         opened=camera_tuner!=nullptr;
         std::cerr << "NUI_KINECT_TUNER opened=" << opened << " source=webcam\n";
     }
@@ -365,7 +359,7 @@ bool pause_gesture_active(bool racing) {
 }
 
 
-bool sfr::nui_body_from_sensor() { return sensor_body.load(std::memory_order_relaxed); }
+bool sfr::nui_body_from_sensor() { return motion().capabilities().sensor_bodies; }
 uint64_t sfr::kinect_frame_generation() { return kinect_generation.load(std::memory_order_relaxed); }
 
 // NuiInitialize(flags, ?)
@@ -421,13 +415,8 @@ struct ImageStream {
 constexpr uint32_t image_stream_handle = 0x4E554900u;  // | type
 ImageStream image_streams[2];
 
-bool kinect_images_wanted() {
-    static const bool wanted=[] {
-        const char* camera=std::getenv("SFR_CAMERA");
-        return camera && std::string_view(camera)=="kinect";
-    }();
-    return wanted;
-}
+// Only a Kinect has cameras for the game's own image streams.
+bool kinect_images_wanted() { return motion().device()==sfr::MotionDevice::kinect; }
 
 ImageStream* image_stream(uint32_t handle) {
     if((handle&~1u)!=image_stream_handle) return nullptr;
@@ -456,7 +445,8 @@ SFR_INPUT_HOOK(sub_82768C40) {
     sfr::enter_function(ctx,"sub_82768C40",0x82768C40);
     const uint32_t type=ctx.r3.u32,resolution=ctx.r4.u32,flags=ctx.r5.u32,limit=ctx.r6.u32,event=ctx.r7.u32,
                    handle=ctx.r8.u32;
-    if(kinect_images_wanted()) start_kinect();
+    if(kinect_images_wanted()) motion().start();
+    sfr::KinectSensor* const kinect=motion().kinect();
     const bool ours=kinect && handle && ((type==0 && resolution==1 && kinect->has_depth_stream()) ||
                                          (type==1 && resolution==2 && kinect->has_colour_stream()));
     if(ours) {
@@ -515,6 +505,7 @@ SFR_INPUT_HOOK(sub_82767148) {
     }
     // game_image: a v1's camera as it is, or a v2's made depth image
     // (a Kinect v2's), never the preview's.
+    sfr::KinectSensor* const kinect=motion().kinect();
     if(!kinect || !kinect->game_image(kind,stream->image) || stream->image.width!=stream->width ||
        stream->image.height!=stream->height || stream->image.bytes_per_pixel!=stream->bytes_per_pixel) {
         ctx.r3.u64=0x83010001u;  // E_NUI_FRAME_NO_DATA: the title tries again later
@@ -676,17 +667,11 @@ SFR_INPUT_HOOK(sub_827707B0) {
         was_story=story;
         sfr::set_touch_story(story);
     }
-    const char* const choice=std::getenv("SFR_CAMERA");
-    if(choice && std::string_view(choice)=="kinect") {
-        // Every Kinect caller waits for initialization, including one that
-        // arrives while an image-stream request is opening the backend.
-        start_kinect();
-    } else if(!camera_started) {
-        camera_started=true;
-        camera_debug=sfr::CameraDebugWindow::start();
-        camera_player=sfr::CameraPlayer::start();
-    }
-    if(kinect) {
+    // Every caller waits for the device to open, including one that arrives
+    // while an image-stream request is opening it.
+    start_motion();
+    auto& input=motion();
+    if(input.capabilities().sensor_bodies) {
         static const bool motion_trace=sfr::motion_trace_enabled();
         const auto work_began=std::chrono::steady_clock::now();
         // How far the menu steadying moved each body's hands this frame.
@@ -710,12 +695,12 @@ SFR_INPUT_HOOK(sub_827707B0) {
         // Turned once per new frame: the last one is kept as it was turned.
         bool received=false, expired=false;
         if(tuning && arms_given) {
-            if(kinect->next(tuner_frame)) {
+            if(input.next(tuner_frame)) {
                 std::lock_guard guard(tuner_lock);
                 if(tuner && !tuner->closed()) tuner->show_frame(tuner_frame);
             }
         } else {
-            received=kinect->next(kinect_frame);
+            received=input.next(kinect_frame);
             if(received) {
                 sfr::note_kinect_frame();  // for the window's title
                 // The menu cursor steadied (kinect_stability.h) before
@@ -857,16 +842,19 @@ SFR_INPUT_HOOK(sub_827707B0) {
         return;
     }
     const bool debug_active=camera_debug && !camera_debug->closed();
-    sfr::CameraTrackingStatus camera_status;
-    if(camera_player) camera_player->set_in_menu(!racing);
+    // A device of one body (a camera) is the first player's over the pad's
+    // emulated one; with none, the pads drive both players.
+    sfr::MotionStatus camera_status;
+    static sfr::MotionFrame camera_frame;
+    const bool one_body=input.running();
+    input.set_in_menu(!racing);
     // While the adjustment window is open, as with the Kinect: the arms put
     // down once, then the pose kept (the camera's freshness still read, so
     // the camera stays the player's source).
     static bool camera_arms_given=false;
-    const bool camera_tuning=camera_player && sfr::kinect_tuner_open();
+    const bool camera_tuning=one_body && sfr::kinect_tuner_open();
     if(camera_tuning) {
-        sfr::SkeletonJoints ignored{};
-        camera_player->joints(ignored,&camera_status);
+        input.next(camera_frame,&camera_status);
         if(!camera_arms_given && camera_has_joints) {
             sfr::arms_down(camera_joints);
             camera_pose_counter.fetch_add(1,std::memory_order_relaxed);
@@ -876,8 +864,9 @@ SFR_INPUT_HOOK(sub_827707B0) {
     } else {
         if(camera_arms_given) std::cerr << "NUI_KINECT_TUNER input=released source=webcam\n";
         camera_arms_given=false;
-        if(camera_player) sfr::set_input_held(false);
-        if(camera_player && camera_player->joints(camera_joints,&camera_status)) {
+        if(one_body) sfr::set_input_held(false);
+        if(one_body && input.next(camera_frame,&camera_status) && !camera_frame.bodies.empty()) {
+            camera_joints=camera_frame.bodies.front().joints;
             camera_has_joints=true;
             camera_pose_counter.fetch_add(1,std::memory_order_relaxed);
         }
@@ -1055,7 +1044,7 @@ SFR_INPUT_HOOK(sub_827707B0) {
         // Publish only after the guest frame was written, with those exact joints.
         sfr::CameraDebugFrame snapshot;
         snapshot.game_frame=frame_number;
-        snapshot.camera_available=bool(camera_player);
+        snapshot.camera_available=input.camera()!=nullptr;
         snapshot.has_pose=true;
         snapshot.controller_active=!use_camera;
         const uint64_t data=uint64_t(frame)+sfr::nui_skeleton_data_offset+
@@ -1129,7 +1118,7 @@ SFR_INPUT_HOOK(sub_82764620) {
     // Only the first player is the signed-in profile; a second one joins as
     // an unenrolled guest, as a friend standing beside the sensor would.
     bool profile=false;
-    if(kinect) {
+    if(motion().capabilities().sensor_bodies) {
         // The sensor's own ids: the signed-in profile is whoever is identified
         // while nobody tracked holds it; everyone else is a guest.
         std::lock_guard guard(kinect_identity_lock);
