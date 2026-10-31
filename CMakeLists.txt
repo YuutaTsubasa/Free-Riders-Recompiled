@@ -560,8 +560,12 @@ endif()
 # compiled here. libfreenect's firmware fetcher and its build are not used:
 # the cameras need no firmware. fakenect is the same interface playing a
 # recording back (FAKENECT_PATH), for testing without a sensor.
+# A Kinect v2 the same way through libfreenect2: its depth decoded on the
+# CPU, its colour through VideoToolbox, no OpenGL, OpenCL or libjpeg; its own
+# CMake is not used either (config.h and export.h are written here).
 set(SFR_FREENECT_AVAILABLE OFF)
 if(APPLE AND NOT IOS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/libfreenect/src/core.c"
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/libfreenect2/src/libfreenect2.cpp"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/libusb/libusb/core.c")
     set(SFR_FREENECT_AVAILABLE ON)
     set(SFR_LIBUSB "${CMAKE_CURRENT_SOURCE_DIR}/tools/libusb/libusb")
@@ -576,8 +580,42 @@ if(APPLE AND NOT IOS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/libfreenect/s
         ${SFR_FREENECT}/src/flags.c ${SFR_FREENECT}/src/usb_libusb10.c ${SFR_FREENECT}/src/registration.c
         ${SFR_FREENECT}/src/audio.c ${SFR_FREENECT}/src/loader.c)
     target_include_directories(sfr_freenect PUBLIC ${SFR_FREENECT}/include PRIVATE ${SFR_FREENECT}/src)
-    target_link_libraries(sfr_freenect PUBLIC sfr_libusb)
     set_target_properties(sfr_freenect PROPERTIES COMPILE_OPTIONS -w)
+    set(SFR_FREENECT2 "${CMAKE_CURRENT_SOURCE_DIR}/tools/libfreenect2")
+    set(SFR_FREENECT2_GENERATED "${CMAKE_CURRENT_BINARY_DIR}/libfreenect2")
+    file(WRITE "${SFR_FREENECT2_GENERATED}/libfreenect2/export.h.new"
+        "#pragma once\n#define LIBFREENECT2_EXPORT\n#define LIBFREENECT2_NO_EXPORT\n")
+    file(READ "${SFR_FREENECT2}/include/libfreenect2/config.h.in" SFR_FREENECT2_CONFIG)
+    string(REPLACE "@PROJECT_VER@" "0.2.1" SFR_FREENECT2_CONFIG "${SFR_FREENECT2_CONFIG}")
+    string(REPLACE "@PROJECT_VER_MAJOR@" "0" SFR_FREENECT2_CONFIG "${SFR_FREENECT2_CONFIG}")
+    string(REPLACE "@PROJECT_VER_MINOR@" "2" SFR_FREENECT2_CONFIG "${SFR_FREENECT2_CONFIG}")
+    string(REPLACE "@TegraJPEG_LIBRARIES@" "" SFR_FREENECT2_CONFIG "${SFR_FREENECT2_CONFIG}")
+    foreach(feature VT_SUPPORT THREADING_STDLIB CXX11_SUPPORT)
+        string(REPLACE "#cmakedefine LIBFREENECT2_WITH_${feature}" "#define LIBFREENECT2_WITH_${feature}"
+            SFR_FREENECT2_CONFIG "${SFR_FREENECT2_CONFIG}")
+        string(REPLACE "#cmakedefine LIBFREENECT2_${feature}" "#define LIBFREENECT2_${feature}"
+            SFR_FREENECT2_CONFIG "${SFR_FREENECT2_CONFIG}")
+    endforeach()
+    string(REGEX REPLACE "#cmakedefine [A-Z0-9_]+" "" SFR_FREENECT2_CONFIG "${SFR_FREENECT2_CONFIG}")
+    file(WRITE "${SFR_FREENECT2_GENERATED}/libfreenect2/config.h.new" "${SFR_FREENECT2_CONFIG}")
+    foreach(header export.h config.h)
+        file(COPY_FILE "${SFR_FREENECT2_GENERATED}/libfreenect2/${header}.new"
+            "${SFR_FREENECT2_GENERATED}/libfreenect2/${header}" ONLY_IF_DIFFERENT)
+    endforeach()
+    set(SFR_FREENECT2_SOURCES transfer_pool event_loop usb_control allocator frame_listener_impl packet_pipeline
+        rgb_packet_stream_parser rgb_packet_processor depth_packet_stream_parser depth_packet_processor
+        cpu_depth_packet_processor resource command_transaction registration logging libfreenect2
+        vt_rgb_packet_processor)
+    list(TRANSFORM SFR_FREENECT2_SOURCES PREPEND "${SFR_FREENECT2}/src/")
+    list(TRANSFORM SFR_FREENECT2_SOURCES APPEND ".cpp")
+    add_library(sfr_freenect2 STATIC ${SFR_FREENECT2_SOURCES})
+    target_include_directories(sfr_freenect2 PUBLIC ${SFR_FREENECT2}/include ${SFR_FREENECT2_GENERATED}
+        PRIVATE ${SFR_FREENECT2}/include/internal)
+    target_link_libraries(sfr_freenect2 PUBLIC sfr_libusb "-framework VideoToolbox" "-framework CoreMedia"
+        "-framework CoreVideo")
+    set_target_properties(sfr_freenect2 PROPERTIES CXX_STANDARD 14 COMPILE_OPTIONS -w)
+    # Both kinds come as one: what links the sensor links both.
+    target_link_libraries(sfr_freenect PUBLIC sfr_libusb sfr_freenect2)
     add_library(sfr_fakenect STATIC ${SFR_FREENECT}/fakenect/fakenect.c ${SFR_FREENECT}/fakenect/parson.c
         ${SFR_FREENECT}/src/registration.c)
     # libusb's header only: libfreenect's internal header names its types.
@@ -588,11 +626,15 @@ if(APPLE AND NOT IOS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/libfreenect/s
     target_link_libraries(sfr_freenect_probe PRIVATE sfr_freenect)
     add_executable(sfr_fakenect_probe tests/freenect_probe.cpp)
     target_link_libraries(sfr_fakenect_probe PRIVATE sfr_fakenect)
+    add_executable(sfr_freenect2_probe tests/freenect2_probe.cpp)
+    target_link_libraries(sfr_freenect2_probe PRIVATE sfr_freenect2)
     # The Kinect v1 itself, in place of no sensor: what the runtime would
     # make of its cameras is made from them (kinect_depth_body.h), with the
     # camera's pose model (linked below, once it is known whether it is here).
     list(REMOVE_ITEM SFR_KINECT_SENSOR src/kinect_sensor_none.cpp)
-    list(APPEND SFR_KINECT_SENSOR src/kinect_sensor_freenect.cpp src/kinect_depth_body.cpp)
+    # The v2 then goes to the game as on Windows: through the virtual v1.
+    list(APPEND SFR_KINECT_SENSOR src/kinect_sensor_freenect.cpp src/kinect_sensor_freenect2.cpp src/kinect_depth_body.cpp
+        src/kinect_v2_depth.cpp src/kinect_v2_image.cpp)
 endif()
 # The Kinect's voice commands, through the host's speech recognizer.
 add_executable(sfr_voice_commands_test tests/voice_commands_test.cpp src/voice_commands.cpp src/voice_commands_none.cpp)

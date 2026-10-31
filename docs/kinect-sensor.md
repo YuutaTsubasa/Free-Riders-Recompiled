@@ -36,7 +36,7 @@
 5. 站在感測器前約 1.5～3 公尺、全身入鏡，開始遊戲。log 會有 `NATIVE_KINECT started=1`，
    之後每五秒一行 `NATIVE_KINECT frames=… with_body=… bodies=…`。
 
-## macOS（Kinect v1，開發中，#305）
+## macOS（Kinect v1 與 v2，開發中，#305）
 
 Mac 上沒有微軟的 Kinect runtime，改用 [libfreenect](https://github.com/OpenKinect/libfreenect)（經 libusb，
 兩者都由本專案的 CMake 在 macOS 上編譯，[`scripts/bootstrap.py`](../scripts/bootstrap.py) 取得）。libfreenect 只給
@@ -47,14 +47,31 @@ Mac 上沒有微軟的 Kinect runtime，改用 [libfreenect](https://github.com/
   用軀幹的深度把臀部放到公尺座標上，每個關節在深度和模型的 3D 形狀一致時用自己的深度，否則用形狀的位置
   （手臂細，深度常常量到後面的牆）。
 - **玩家編號**：從骨架的像素出發，往深度差不到 5 公分的鄰點擴展，限制在骨架外 30 公分內、腳踝下 7 公分以上（地板之上）。
-- **一位玩家**：姿勢模型只找一個人，2P 還沒做。Kinect v2（libfreenect2）也還沒做，launcher 在 Mac 上只列 Kinect（Xbox 360）；
-  Kinect 預覽視窗是 Windows 才有。
+- **一位玩家**：姿勢模型只找一個人，2P 還沒做。Kinect 預覽視窗是 Windows 才有（launcher 在 Mac 上沒有預覽按鈕）。
 - libfreenect 給的畫面是否跟 runtime 一樣是鏡像的，還沒在實機上確認：`SFR_FREENECT_MIRROR=1` 把兩張畫面左右翻過來。
 - 馬達與加速度計：Kinect 1414 可以；1473 要上傳韌體才開得到（沒有做），那時只開鏡頭。重力與地板平面先不給（全 0，「看不出來」）。
 
-檢查工具：`sfr_freenect_probe [秒數]`（實機）、`sfr_fakenect_probe`（播放 `FAKENECT_PATH` 的錄影）、
+**Kinect v2** 用 [libfreenect2](https://github.com/OpenKinect/libfreenect2)（同樣經 libusb、由本專案的 CMake 編譯；
+深度在 CPU 上解碼、彩色交給 macOS 的 VideoToolbox，不用 OpenGL、OpenCL 或 libjpeg）。做法跟 v1 一樣，只是換成 v2 自己的
+深度鏡頭（512x424，libfreenect2 的 registration 給的出廠鏡頭參數、已去除變形）：
+
+- **彩色對到深度**：registration 會告訴我們每個深度像素落在彩色畫面（1920x1080）的哪一點；反過來建一張表
+  （彩色畫面切成 4x4 的格子，每格記住落在裡面最近的深度像素，所以手在牆前面時，那幾格是手的），
+  姿勢模型在半尺寸（960x540）的彩色畫面找到的關節就由這張表找到深度。
+- **骨架與玩家編號**：同 v1 的 `kinect_depth_body`（取樣半徑依畫面寬度放大）。
+- **交給遊戲**：跟 Windows 的 v2 一樣，骨架與深度都經過「虛擬 v1」（`KinectDepthViewer`、`kinect_v2_synthesize_depth`，
+  見下方「Kinect v2 深度」），遊戲拿到 v1 格式的 320x240 深度加玩家編號。深度視角照 `SFR_KINECT_V2_DEPTH_VIEW` 等設定；
+  `fit` 的縮放用感測器自己的焦距。地板平面還沒有（Recompiled 視角因此不會「放平」，相機在感測器的高度）。
+- 畫面鏡像同 v1：`SFR_FREENECT_MIRROR=1` 把兩張畫面左右翻過來。
+- 每 5 秒一行 `NATIVE_KINECT model=v2 backend=libfreenect2 frames=… poses=… bodies=… pose_ms=… frame_ms=…`。
+
+launcher 在 Mac 上列出 Kinect（Xbox 360）與 Kinect v2；舊的 `camera=kinect` 先找 v1、找不到再找 v2，跟 Windows 一樣。
+
+檢查工具：`sfr_freenect_probe [秒數]`（v1 實機）、`sfr_freenect2_probe [秒數]`（v2 實機，印出鏡頭參數）、
+`sfr_fakenect_probe`（播放 `FAKENECT_PATH` 的錄影）、
 `sfr_kinect_probe`（經遊戲用的介面，含骨架）。單元測試 `kinect_depth_body` 用畫出來的場景（牆、地板、手臂伸出身體範圍的玩家）
-檢查骨架與玩家編號。
+檢查骨架與玩家編號，v1 與 v2 的鏡頭各一個場景，加上「彩色對到深度」的表。
+都還沒接實機或錄影驗證過。
 
 ## 感應器位置
 

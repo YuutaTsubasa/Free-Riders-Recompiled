@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 namespace sfr {
@@ -29,19 +30,37 @@ namespace sfr {
 // nominal one (kinect_preview.h), which leaves out the two cameras'
 // 2.5 cm apart: a few colour pixels at the distance players stand.
 //
+// A Kinect v2 through libfreenect2 is made the same way on its own depth
+// camera (512x424, its factory lens), the colour picture's pixels placed in
+// it through the map libfreenect2's registration gives
+// (KinectColourDepthGrid).
+//
 // None of this is a platform's, so it is tested everywhere
 // (kinect_depth_body_test).
 
 constexpr uint32_t kinect_depth_width = 320, kinect_depth_height = 240;
 constexpr uint32_t kinect_colour_width = 640, kinect_colour_height = 480;
 
-// One 320x240 depth picture in millimetres (0 for nothing measured), rows
-// top-down, as the game's depth image carries it before the player index.
+// One depth picture in millimetres (0 for nothing measured), rows top-down:
+// a v1's 320x240, as the game's depth image carries it before the player
+// index, or another camera's (KinectDepthCamera).
 using KinectDepthMillimetres = std::vector<uint16_t>;
+
+// A depth camera without distortion: its picture's size, and the lens that
+// puts pixel (x, y) at depth z at ((x - centre_x) z / focal_x,
+// (centre_y - y) z / focal_y, z) in camera space. The v1's is the runtime's
+// nominal one at 320x240.
+struct KinectDepthCamera {
+    uint32_t width = kinect_depth_width, height = kinect_depth_height;
+    float focal_x = 285.63f, focal_y = 285.63f;
+    float centre_x = 160.0f, centre_y = 120.0f;
+    size_t pixels() const { return size_t(width) * height; }
+};
 
 // A depth pixel at a depth, and back; a colour pixel's place in the depth
 // picture (the same direction, the depth camera's wider lens).
 std::array<float, 3> kinect_depth_pixel_point(float x, float y, float metres);
+std::array<float, 3> kinect_depth_pixel_point(const KinectDepthCamera& camera, float x, float y, float metres);
 std::array<float, 2> kinect_colour_to_depth_pixel(float x, float y);
 
 // The depth a colour pixel sees, from the depth picture's pixels around its
@@ -49,6 +68,34 @@ std::array<float, 2> kinect_colour_to_depth_pixel(float x, float y);
 // median, or 0 when none does.
 float kinect_depth_at(const KinectDepthMillimetres& depth, float depth_x, float depth_y, int radius, float near,
                       float far);
+float kinect_depth_at(const KinectDepthMillimetres& depth, const KinectDepthCamera& camera, float depth_x,
+                      float depth_y, int radius, float near, float far);
+
+// Where colour pixels fall in the depth picture, from the other way round:
+// for each depth pixel, the colour pixel it falls on (libfreenect2's
+// Registration::apply color_depth_map; -1 for none). The colour picture is
+// cut into cells of cell pixels; each cell keeps the nearest depth pixel
+// that falls in it, so a hand in front of the wall wins the hand's cells.
+// flip turns both pictures round (as a sensor handing them over unmirrored
+// is turned, SFR_FREENECT_MIRROR): the map is then of the turned pictures.
+class KinectColourDepthGrid {
+public:
+    void build(const int* colour_of_depth, const KinectDepthMillimetres& depth, const KinectDepthCamera& camera,
+               uint32_t colour_width, uint32_t colour_height, uint32_t cell, bool flip);
+    // The depth pixel colour pixel (x, y) sees: its cell's, or the nearest
+    // one of the cells around (up to three cells away). False when none is.
+    bool find(float x, float y, float& depth_x, float& depth_y) const;
+private:
+    uint32_t columns_ = 0, rows_ = 0, cell_ = 1, depth_width_ = 0;
+    std::vector<int32_t> nearest_;     // per cell: a depth pixel, or -1
+    std::vector<uint16_t> millimetres_;
+};
+
+// Every depth pixel as a camera-space point through the camera's lens
+// (three floats a pixel; zeros for a pixel without a depth), as
+// kinect_v2_synthesize_depth takes a v2's points.
+void kinect_depth_camera_points(const KinectDepthMillimetres& depth, const KinectDepthCamera& camera,
+                                std::vector<float>& points);
 
 struct KinectDepthBodySettings {
     float joint_agreement = 0.25f;  // metres a joint's own depth may differ from the shape's place
@@ -60,6 +107,13 @@ struct KinectDepthBodySettings {
 // or no depth at the torso. joint_states: 2 a joint at its own depth, 1 at
 // the shape's place.
 bool kinect_depth_body(const PoseLandmarks& landmarks, const KinectDepthMillimetres& depth,
+                       const KinectDepthBodySettings& settings, SkeletonJoints& joints,
+                       std::array<uint32_t, nui_joint_count>& joint_states);
+// The same on another depth camera: to_depth places a landmark's colour
+// pixel in the depth picture (false for one that falls outside it).
+using KinectColourToDepth = std::function<bool(float x, float y, float& depth_x, float& depth_y)>;
+bool kinect_depth_body(const PoseLandmarks& landmarks, const KinectDepthMillimetres& depth,
+                       const KinectDepthCamera& camera, const KinectColourToDepth& to_depth,
                        const KinectDepthBodySettings& settings, SkeletonJoints& joints,
                        std::array<uint32_t, nui_joint_count>& joint_states);
 
@@ -74,6 +128,9 @@ struct KinectPlayerCutSettings {
 // depth. Returns how many pixels were marked.
 uint32_t kinect_cut_player(const KinectDepthMillimetres& depth, const SkeletonJoints& joints, uint8_t player,
                            const KinectPlayerCutSettings& settings, std::vector<uint8_t>& index);
+uint32_t kinect_cut_player(const KinectDepthMillimetres& depth, const KinectDepthCamera& camera,
+                           const SkeletonJoints& joints, uint8_t player, const KinectPlayerCutSettings& settings,
+                           std::vector<uint8_t>& index);
 
 // The game's 16-bit depth-and-player image (millimetres << 3 | index), as
 // KinectImage pixels (two bytes a pixel, host order).

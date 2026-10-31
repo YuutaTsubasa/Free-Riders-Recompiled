@@ -165,6 +165,120 @@ void player_cut() {
     require(value == uint16_t(2000 << 3 | 1), "the game's pixel: millimetres << 3 | player");
 }
 
+// The same scene on a Kinect v2's depth camera (512x424, a typical lens)
+// with its colour camera (1920x1080, its own lens, the same direction), the
+// colour landmarks finding their depth through the map from the depth
+// pixels (KinectColourDepthGrid), as libfreenect2's registration gives it.
+const sfr::KinectDepthCamera v2_camera{512, 424, 365.0f, 365.0f, 255.5f, 211.5f};
+constexpr float v2_colour_focal = 1060.0f, v2_colour_x = 960.0f, v2_colour_y = 540.0f;
+
+std::array<float, 2> v2_colour_point(const Point& p) {
+    return {v2_colour_x + p[0] * v2_colour_focal / p[2], v2_colour_y - p[1] * v2_colour_focal / p[2]};
+}
+
+sfr::KinectDepthMillimetres v2_scene() {
+    sfr::KinectDepthMillimetres depth(v2_camera.pixels());
+    for (uint32_t v = 0; v < v2_camera.height; ++v)
+        for (uint32_t u = 0; u < v2_camera.width; ++u) {
+            float metres = wall;
+            if (float(v) > v2_camera.centre_y)
+                metres = (std::min)(metres, sensor_height * v2_camera.focal_y / (float(v) - v2_camera.centre_y));
+            const Point at_body = sfr::kinect_depth_pixel_point(v2_camera, float(u), float(v), body_front);
+            if (in_body(at_body[0], at_body[1])) metres = body_front;
+            depth[size_t(v) * v2_camera.width + u] = uint16_t(std::lround(metres * 1000.0f));
+        }
+    return depth;
+}
+
+std::vector<int> v2_colour_of_depth(const sfr::KinectDepthMillimetres& depth) {
+    std::vector<int> colour(depth.size(), -1);
+    for (size_t i = 0; i < depth.size(); ++i) {
+        const Point p = sfr::kinect_depth_pixel_point(v2_camera, float(i % v2_camera.width), float(i / v2_camera.width),
+                                                      depth[i] / 1000.0f);
+        const auto at = v2_colour_point(p);
+        const int x = int(std::lround(at[0])), y = int(std::lround(at[1]));
+        if (x >= 0 && y >= 0 && x < 1920 && y < 1080) colour[i] = y * 1920 + x;
+    }
+    return colour;
+}
+
+void v2_camera_body() {
+    const auto depth = v2_scene();
+    const auto colour_of_depth = v2_colour_of_depth(depth);
+    sfr::KinectColourDepthGrid grid;
+    grid.build(colour_of_depth.data(), depth, v2_camera, 1920, 1080, 4, false);
+    const auto joints = truth();
+    auto landmarks = landmarks_for(joints);
+    // landmarks_for placed them in a v1's colour picture: placed again in the v2's.
+    for (uint32_t i = 0; i < sfr::pose_point::count; ++i) {
+        // landmarks_for swapped the sides: so is truth's point i at the swapped place.
+        uint32_t from = i;
+        using namespace sfr::pose_point;
+        for (const auto& pair : {std::pair{shoulder_left, shoulder_right}, {elbow_left, elbow_right},
+                                 {wrist_left, wrist_right}, {hip_left, hip_right}, {knee_left, knee_right},
+                                 {ankle_left, ankle_right}, {eye_left, eye_right}, {ear_left, ear_right}}) {
+            if (i == pair.first) from = pair.second;
+            else if (i == pair.second) from = pair.first;
+        }
+        const auto at = v2_colour_point(joints[from]);
+        landmarks[i].x = at[0];
+        landmarks[i].y = at[1];
+    }
+    const auto to_depth = [&](float x, float y, float& depth_x, float& depth_y) { return grid.find(x, y, depth_x, depth_y); };
+    sfr::SkeletonJoints made{};
+    std::array<uint32_t, sfr::nui_joint_count> states{};
+    require(sfr::kinect_depth_body(landmarks, depth, v2_camera, to_depth, {}, made, states), "a v2 body is made");
+    namespace joint = sfr::nui_joint;
+    using namespace sfr::pose_point;
+    const auto near = [&](uint32_t nui, uint32_t point, float within, const char* name) {
+        const float off = distance(made[nui], joints[point]);
+        if (off > within) throw std::runtime_error(std::string("v2: ") + name + " is " + std::to_string(off) + " m off");
+    };
+    near(joint::shoulder_right, shoulder_right, 0.04f, "the right shoulder");
+    near(joint::shoulder_left, shoulder_left, 0.04f, "the left shoulder");
+    near(joint::hip_left, hip_left, 0.04f, "the left hip");
+    near(joint::knee_right, knee_right, 0.04f, "the right knee");
+    near(joint::hand_right, wrist_right, 0.06f, "the right hand");
+    require(states[joint::shoulder_left] == 2 && states[joint::hand_right] == 1, "v2: torso by depth, the arm out by shape");
+    std::vector<uint8_t> index;
+    const uint32_t marked = sfr::kinect_cut_player(depth, v2_camera, made, 1, {}, index);
+    uint32_t body = 0, wrong = 0;
+    for (size_t i = 0; i < depth.size(); ++i) {
+        const bool is_body = depth[i] == uint16_t(body_front * 1000.0f);
+        body += is_body;
+        if (index[i] && !is_body) ++wrong;
+    }
+    require(wrong == 0, "v2: nothing but the body is marked (" + std::to_string(wrong) + " pixels)");
+    require(marked > body * 9 / 10, "v2: most of the body is marked (" + std::to_string(marked) + " of " +
+                                        std::to_string(body) + ")");
+    // Its points for the virtual v1: the lens the other way.
+    std::vector<float> points;
+    sfr::kinect_depth_camera_points(depth, v2_camera, points);
+    const size_t centre = size_t(200) * v2_camera.width + 256;
+    const Point back = sfr::kinect_depth_pixel_point(v2_camera, 256, 200, body_front);
+    require(std::fabs(points[3 * centre] - back[0]) < 1e-5f && std::fabs(points[3 * centre + 2] - body_front) < 1e-5f,
+            "a depth pixel's camera-space point");
+}
+
+// A colour cell seen by a hand and the wall behind it is the hand's; a cell
+// nobody falls on takes a neighbour's; flipped, the map is of the turned pictures.
+void colour_depth_grid() {
+    const sfr::KinectDepthCamera camera{4, 1, 1, 1, 0, 0};
+    const sfr::KinectDepthMillimetres depth = {3500, 2000, 3500, 0};
+    const int colour_of_depth[] = {0, 1, 9, 2};  // pixels 0 and 1 share a cell of 2; 9 is cell 4
+    sfr::KinectColourDepthGrid grid;
+    grid.build(colour_of_depth, depth, camera, 10, 1, 2, false);
+    float x = -1, y = -1;
+    require(grid.find(0.5f, 0, x, y) && x == 1 && y == 0, "the nearer depth pixel wins its cell");
+    require(grid.find(4.0f, 0, x, y) && x == 1, "an empty cell takes the nearest cell around it");
+    require(grid.find(9.0f, 0, x, y) && x == 2, "a far cell its own");
+    require(!grid.find(-1.0f, 0, x, y) && !grid.find(10.0f, 0, x, y), "outside the picture: none");
+    // Turned round: depth pixel 1 (2000 mm) is now at 2, and its colour 1 at 8.
+    const sfr::KinectDepthMillimetres turned = {0, 3500, 2000, 3500};
+    grid.build(colour_of_depth, turned, camera, 10, 1, 2, true);
+    require(grid.find(8.5f, 0, x, y) && x == 2, "flipped: the map of the turned pictures");
+}
+
 void halving() {
     std::vector<uint16_t> big(640 * 480, 0);
     big[0] = 2100;
@@ -184,6 +298,8 @@ int main() {
         depth_sampling();
         skeleton();
         player_cut();
+        v2_camera_body();
+        colour_depth_grid();
         halving();
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << '\n';

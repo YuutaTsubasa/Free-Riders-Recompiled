@@ -3359,13 +3359,9 @@ struct Launcher {
                                     : camera_width;
         setting_row(tr(CameraLabel), tr(camera_hints[camera_described]), row_width, scale, [&] {
             const Text labels[] = {CameraOff, CameraMotion, CameraKinect, CameraKinectV2};
-            // A real sensor only where there is a runtime to reach it; a Mac
-            // reaches a Kinect v1 only (libfreenect, #305).
-#ifdef __APPLE__
-            const int choices = sfr::KinectSensor::supported() ? 3 : 2;
-#else
+            // A real sensor only where there is a runtime to reach it (a Mac
+            // reaches both kinds through libfreenect and libfreenect2, #305).
             const int choices = sfr::KinectSensor::supported() ? 4 : 2;
-#endif
             const int chosen = (std::min)(camera_chosen, choices - 1);
             camera_hovered = -1;
             const float control_x = ImGui::GetCursorPosX();
