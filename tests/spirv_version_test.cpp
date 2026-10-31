@@ -155,7 +155,7 @@ void refuses_what_spirv_1_3_lacks() {
 void lowers_a_shader_pack() {
     const char* path = std::getenv("SFR_SHADER_PACK");
     if (!path || !*path) return;
-    std::ifstream file(std::filesystem::u8path(path), std::ios::binary);
+    std::ifstream file(std::filesystem::path(reinterpret_cast<const char8_t*>(path)), std::ios::binary);
     const std::vector<uint8_t> data((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
     require(data.size() >= 16, "the pack is readable");
     uint32_t count;
@@ -184,7 +184,7 @@ void lowers_a_shader_pack() {
         const auto all = sfr::spirv_1_3(*rewritten, &why);
         require(all.has_value(), "rewritten pack shader " + std::to_string(i) + " is lowered: " + why);
         if (dump && *dump) {
-            const auto base = (std::filesystem::u8path(dump) / std::to_string(i)).string();
+            const auto base = (std::filesystem::path(reinterpret_cast<const char8_t*>(dump)) / std::to_string(i)).string();
             std::ofstream(base + ".plain.spv", std::ios::binary)
                 .write(reinterpret_cast<const char*>(plain->data()), std::streamsize(plain->size()));
             std::ofstream(base + ".all.spv", std::ios::binary)

@@ -921,7 +921,7 @@ void NativeRenderer::prepare_pipelines() {
     const char* name = backend == 1 ? "vulkan" : "d3d12";
     const auto path_setting = [](const char* key, std::filesystem::path fallback) {
         const char* value = std::getenv(key);
-        return value && *value ? std::filesystem::u8path(value) : fallback;
+        return value && *value ? std::filesystem::path(reinterpret_cast<const char8_t*>(value)) : fallback;
     };
     const auto pack = path_setting("SFR_SHADER_PACK", "out/shaders/shaders.pack");
     const auto bundled = path_setting("SFR_PIPELINE_MANIFEST", pack.parent_path() / (std::string("pipelines-") + name + ".manifest"));
