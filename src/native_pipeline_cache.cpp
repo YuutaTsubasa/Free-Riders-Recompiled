@@ -21,7 +21,7 @@ struct NativePipelineCache::Impl {
 
     explicit Impl(plume::VulkanDevice& d) : device(d) {
         const char* override_path = std::getenv("SFR_PIPELINE_CACHE_PATH");
-        path = override_path && *override_path ? std::filesystem::u8path(override_path) :
+        path = override_path && *override_path ? std::filesystem::path(reinterpret_cast<const char8_t*>(override_path)) :
             std::filesystem::path("pipeline-cache") / "vulkan.bin";
         auto data = load_pipeline_cache_file(path);
         const auto& properties = device.physicalDeviceProperties;

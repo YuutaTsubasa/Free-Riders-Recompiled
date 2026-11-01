@@ -312,7 +312,7 @@ void run() {
     }
     require(!fs::exists(directory / "must-not-translate"), "prewarm never invokes runtime translation for unknown identities");
     const char* screenshot_path = std::getenv("SFR_PREWARM_TEST_SCREENSHOT");
-    screenshot(graphics, screenshot_path && *screenshot_path ? fs::u8path(screenshot_path) : fs::path{});
+    screenshot(graphics, screenshot_path && *screenshot_path ? fs::path(reinterpret_cast<const char8_t*>(screenshot_path)) : fs::path{});
 #ifdef _WIN32
     environment("SFR_PIPELINE_MANIFEST", shipped.string());
     environment("SFR_PIPELINE_MANIFEST_LOCAL", (directory / "cancel-local.manifest").string());

@@ -132,7 +132,7 @@ void compacts_the_elements() {
 void compacts_a_shader_pack() {
     const char* path = std::getenv("SFR_SHADER_PACK");
     if (!path || !*path) return;
-    std::ifstream file(std::filesystem::u8path(path), std::ios::binary);
+    std::ifstream file(std::filesystem::path(reinterpret_cast<const char8_t*>(path)), std::ios::binary);
     const std::vector<uint8_t> data((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
     require(data.size() >= 16, "the pack is readable");
     uint32_t count;
