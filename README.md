@@ -270,6 +270,8 @@ with [docs/progress.md](docs/progress.md).
   The Mac app can now read a Kinect for Xbox One (Kinect v2) as well as a Kinect for Xbox 360: choose Camera > Kinect v2 in the launcher. Every motion device, camera or Kinect, now reaches the game through the same path, so later devices only need their own part (#305).
 - [v0.10.41 — A Male / Female choice for each Avatar model](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.41)
   Each model on the launcher's Avatar models page now has its own Male / Female choice, and the game uses the chosen model's body, so a female model races as the female Avatar with her own gear and board (#324).
+- [v0.10.42 — Fixes for online play, Chinese folders and the Android stop page](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.42)
+  Online, the game no longer closes on Linux and macOS when the server goes away (#328), no longer freezes when the server stops answering (#329), and no longer stops with an online name in letters other than English (#336). On Windows, mods load and the online name and password arrive intact when the game is in a folder with non-English letters (#330). On Android, the launcher shows why the game stopped instead of going back to its settings (#331).
 
 ## System Requirements
 
