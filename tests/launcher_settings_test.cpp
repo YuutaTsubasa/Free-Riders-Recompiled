@@ -789,6 +789,19 @@ void avatar_model_settings() {
     const auto kept = sfr::parse_launcher_settings(sfr::format_launcher_settings(none));
     require(kept.avatar_models.size() == 2 && value_of(kept, "SFR_AVATAR") == "0",
             "choosing no model keeps the list and disables the avatar");
+    // Issue #324: each model carries its own body, and switching the model
+    // switches the body the game is given.
+    require(value_of(both, "SFR_AVATAR_BODY") == "1" && value_of(defaults, "SFR_AVATAR_BODY").empty(),
+            "a model is male until marked female; no model gives no body");
+    auto mixed = both;
+    mixed.avatar_female_models.push_back("D:/avatars/second.glb");
+    const auto female = sfr::parse_launcher_settings(sfr::format_launcher_settings(mixed));
+    require(female.avatar_female_models.size() == 1 && value_of(female, "SFR_AVATAR_BODY") == "2",
+            "a model marked female survives a round trip and makes the Avatar female");
+    auto first = female;
+    first.avatar_model = first.avatar_models[0];
+    require(value_of(first, "SFR_AVATAR_BODY") == "1", "choosing the other model makes the Avatar male again");
+    require(value_of(kept, "SFR_AVATAR_BODY").empty(), "no model chosen gives no body");
     const auto missing = sfr::parse_launcher_settings("avatar_model=Z:/missing/avatar.glb\n");
     require(value_of(missing, "SFR_AVATAR_MODEL") == "Z:/missing/avatar.glb",
             "an unavailable model stays selected so it can be reported instead of silently discarded");

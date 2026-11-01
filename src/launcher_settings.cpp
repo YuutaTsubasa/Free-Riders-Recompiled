@@ -81,10 +81,12 @@ std::string_view race_frameskip_value(const LauncherSettings& s) {
 }
 
 namespace {
-// avatar_model_entry=<path> lines, one per model on the Avatar page.
+// avatar_model_entry=<path> lines, one per model on the Avatar page, and
+// avatar_model_female=<path> for each of them that is female.
 std::string avatar_entries(const LauncherSettings& s) {
     std::string lines;
     for (const auto& model : s.avatar_models) lines += "avatar_model_entry=" + path_utf8(model) + '\n';
+    for (const auto& model : s.avatar_female_models) lines += "avatar_model_female=" + path_utf8(model) + '\n';
     return lines;
 }
 }
@@ -165,6 +167,9 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         else if (key == "avatar_model_entry" && !value.empty() &&
                  settings.avatar_models.size() < LauncherSettings::max_avatar_models)
             settings.avatar_models.push_back(utf8_path(value));
+        else if (key == "avatar_model_female" && !value.empty() &&
+                 settings.avatar_female_models.size() < LauncherSettings::max_avatar_models)
+            settings.avatar_female_models.push_back(utf8_path(value));
         else if (key == "player1_device" && (value == "both" || value == "gamepad" || value == "keyboard"))
             settings.player1_device = value;
         else if (key == "player2_device" && (value == "gamepad" || value == "keyboard" || value == "off"))
@@ -291,8 +296,9 @@ LauncherSettings load_launcher_settings(const std::filesystem::path& file) {
     text << in.rdbuf();
     auto settings = parse_launcher_settings(text.str());
     settings.avatar_model = resolved_avatar_model(settings, std::filesystem::absolute(file).parent_path());
-    for (auto& model : settings.avatar_models)
-        if (!model.is_absolute()) model = (std::filesystem::absolute(file).parent_path() / model).lexically_normal();
+    for (auto* list : {&settings.avatar_models, &settings.avatar_female_models})
+        for (auto& model : *list)
+            if (!model.is_absolute()) model = (std::filesystem::absolute(file).parent_path() / model).lexically_normal();
     return settings;
 }
 
@@ -309,6 +315,11 @@ bool save_launcher_settings(const std::filesystem::path& file, const LauncherSet
     std::error_code error;
     std::filesystem::rename(temporary, file, error);
     return !error;
+}
+
+bool avatar_model_female(const LauncherSettings& settings, const std::filesystem::path& model) {
+    const auto& female = settings.avatar_female_models;
+    return std::find(female.begin(), female.end(), model) != female.end();
 }
 
 std::filesystem::path resolved_avatar_model(const LauncherSettings& settings, const std::filesystem::path& directory) {
@@ -456,6 +467,9 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         {"SFR_CAMERA_RACE_TRACE", s.motion_trace && (s.camera == "kinect" || s.camera == "motion") ? "1" : ""},
         {"SFR_AVATAR", s.avatar_model.empty() ? "0" : "1"},
         {"SFR_AVATAR_MODEL", path_utf8(resolved_avatar_model(s, directory))},
+        // Issue #324: the chosen model's body, which the game is given for
+        // XamAvatarManifestGetBodyType (1 male, 2 female).
+        {"SFR_AVATAR_BODY", s.avatar_model.empty() ? "" : avatar_model_female(s, s.avatar_model) ? "2" : "1"},
         // Mods (mod_loader.h): HedgeModManager's or the launcher's cpkredir.ini.
         {"SFR_MODS_INI", path_utf8(directory / "cpkredir.ini")},
 #ifdef _WIN32

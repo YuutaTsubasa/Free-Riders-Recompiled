@@ -128,7 +128,7 @@ enum Text {
     PressKey, PressButton, Unbound, ResetBindings, BindingsHint, SticksFixed,
     PlayerOneGamepad, PlayerTwoGamepad, GamepadHint, GamepadAutomatic, GamepadMissing,
     AvatarModel, AvatarModelHint, AvatarModelNone, AvatarModelMissing, AvatarModelImportFailed, Clear,
-    AvatarAdd, AvatarRemove, AvatarNoModel, AvatarTypePath,
+    AvatarAdd, AvatarRemove, AvatarNoModel, AvatarTypePath, AvatarMale, AvatarFemale, AvatarBodyHint,
     GameLanguageLabel, GameLanguageHint, VoiceLanguageLabel, VoiceLanguageHint, VoiceFollowsGame, TabAvatar,
     SectionLanguage, SectionPlayback, SectionReset, SectionRendering, SectionPerformance,
     SectionGameAudio, SectionLauncherAudio, SectionPlayer1, SectionPlayer2, SectionBindings, SectionTouch, SectionVoice,
@@ -408,8 +408,8 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Whichever is first", "自動（依順序）"},
     {"not plugged in", "目前沒插著"},
     {"Avatar model", "Avatar 模型"},
-    {"Add VRM or GLB models and choose the one to use, then select AVATAR in either player's character menu. The game shows one avatar, so one model is used at a time; the others stay in the list. Changes apply on the next game launch. Unsupported models are skipped; see game.log for details.",
-     "加入 VRM 或 GLB 模型並選擇要使用的一個，再由任一玩家在角色選單選 AVATAR。遊戲一次只顯示一個 Avatar，所以一次使用一個模型，其他模型會留在清單中。設定於下次啟動遊戲時套用。不支援的模型會略過，詳細資訊請查看 game.log。"},
+    {"Add VRM or GLB models and choose the one to use, then select AVATAR in either player's character menu. The game shows one avatar, so one model is used at a time; the others stay in the list. Choose Male or Female for each model: the game gives them different gear and boards. Changes apply on the next game launch. Unsupported models are skipped; see game.log for details.",
+     "加入 VRM 或 GLB 模型並選擇要使用的一個，再由任一玩家在角色選單選 AVATAR。遊戲一次只顯示一個 Avatar，所以一次使用一個模型，其他模型會留在清單中。請替每個模型選擇男性或女性：遊戲會給它們不同的裝備和滑板。設定於下次啟動遊戲時套用。不支援的模型會略過，詳細資訊請查看 game.log。"},
     {"No custom model", "未選擇自訂模型"},
     {"Model file not found. Choose another model or remove this one.", "找不到模型檔案，請選擇其他模型或移除這個項目。"},
     {"Could not import the model. Your previous selection is unchanged.", "無法匯入模型，已保留原本的選擇。"},
@@ -418,6 +418,10 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Remove", "移除"},
     {"Don't use a custom model", "不使用自訂模型"},
     {"Or type a model's path and press Enter", "或輸入模型路徑後按 Enter"},
+    {"Male", "男性"},
+    {"Female", "女性"},
+    {"The game gives a male and a female Avatar different gear and boards. The model file does not say which it is, so choose it for each model.",
+     "遊戲裡男性與女性 Avatar 的裝備和滑板不同。模型檔案本身沒有記錄性別，請替每個模型選擇。"},
     {"Game language", "遊戲語言"},
     {"Choose the game's language independently of the launcher. System language follows your OS; unsupported languages use English. Applies when the game starts.",
      "獨立選擇遊戲語言。「系統語言」依照作業系統設定，不支援時使用英文。於下次啟動遊戲時套用。"},
@@ -3191,6 +3195,12 @@ struct Launcher {
         }
         std::optional<size_t> removed;
         std::error_code error;
+        // The body choices line up after the longest name.
+        float names = 0;
+        for (const auto& model : settings.avatar_models)
+            names = (std::max)(names, ImGui::CalcTextSize((utf8(model.filename()) + "  (?)").c_str()).x);
+        const float body_column = ImGui::GetCursorPosX() + ImGui::GetFrameHeight() +
+                                  ImGui::GetStyle().ItemInnerSpacing.x + names + 16 * scale;
         for (size_t i = 0; i < settings.avatar_models.size(); ++i) {
             const auto& model = settings.avatar_models[i];
             ImGui::PushID(int(i));
@@ -3204,6 +3214,19 @@ struct Launcher {
                 ::play(sfr::UiSound::confirm);
             }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", utf8(shown).c_str());
+            // Issue #324: the body the game uses with this model.
+            for (const bool body_female : {false, true}) {
+                const bool is_female = sfr::avatar_model_female(settings, model);
+                if (body_female) ImGui::SameLine();
+                else ImGui::SameLine(body_column);
+                if (ImGui::RadioButton(tr(body_female ? AvatarFemale : AvatarMale), is_female == body_female) &&
+                    is_female != body_female) {
+                    if (body_female) settings.avatar_female_models.push_back(model);
+                    else std::erase(settings.avatar_female_models, model);
+                    ::play(sfr::UiSound::confirm);
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", wrapped(tr(AvatarBodyHint), 420 * scale).c_str());
+            }
             ImGui::SameLine();
             if (small_button(tr(AvatarRemove), scale)) removed = i;
             ImGui::PopID();
@@ -3212,6 +3235,7 @@ struct Launcher {
             const fs::path model = settings.avatar_models[*removed];
             settings.avatar_models.erase(settings.avatar_models.begin() + std::ptrdiff_t(*removed));
             if (settings.avatar_model == model) settings.avatar_model.clear();
+            std::erase(settings.avatar_female_models, model);
 #ifdef __ANDROID__
             // The copy this launcher made of it.
             if (model.parent_path() == directory / "avatar-models" || model == directory / "avatar-model.vrm")
