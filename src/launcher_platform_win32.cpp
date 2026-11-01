@@ -23,6 +23,14 @@ fs::path program_path() {
     return path;
 }
 
+// UTF-8 text for the wide functions (the launcher has no UTF-8 code page).
+std::wstring from_utf8(const std::string& text) {
+    const int length = MultiByteToWideChar(CP_UTF8, 0, text.data(), int(text.size()), nullptr, 0);
+    std::wstring wide(size_t(length > 0 ? length : 0), L'\0');
+    if (length > 0) MultiByteToWideChar(CP_UTF8, 0, text.data(), int(text.size()), wide.data(), length);
+    return wide;
+}
+
 std::wstring quoted(const std::wstring& argument) {
     std::wstring text = L"\"" + argument;
     if (!argument.empty() && argument.back() == L'\\') text += L'\\';  // keep the closing quote
@@ -123,11 +131,16 @@ bool quit_with_game() { return true; }
 
 std::unique_ptr<GameProcess> start_game(const LauncherSettings& settings, const fs::path& directory, const fs::path& log) {
     const auto avatar_model = resolved_avatar_model(settings, directory);
+    // The values are UTF-8 (the mods file's path, the online name and
+    // password): the A function would read them in the system's code page
+    // (Issue #330).
     for (const auto& [name, value] : game_environment(settings, directory)) {
-        if (name == "SFR_AVATAR_MODEL")
+        if (name == "SFR_AVATAR_MODEL") {
             SetEnvironmentVariableW(L"SFR_AVATAR_MODEL", avatar_model.empty() ? nullptr : avatar_model.c_str());
-        else
-            SetEnvironmentVariableA(name.c_str(), value.empty() ? nullptr : value.c_str());
+        } else {
+            const std::wstring wide = from_utf8(value);
+            SetEnvironmentVariableW(from_utf8(name).c_str(), value.empty() ? nullptr : wide.c_str());
+        }
     }
     // Saves beside the launcher (or where the player chose), whatever the
     // game's working directory.
@@ -170,10 +183,7 @@ bool can_open_log() { return true; }
 void open_log(const fs::path& log) { ShellExecuteW(owner_window, L"open", log.c_str(), nullptr, nullptr, SW_SHOWNORMAL); }
 void open_url(const char* url) {
     // UTF-8, so a folder with non-ASCII letters (the mods folder) opens too.
-    const int length = MultiByteToWideChar(CP_UTF8, 0, url, -1, nullptr, 0);
-    std::wstring wide(length > 0 ? size_t(length) : 1, L'\0');
-    if (length > 0) MultiByteToWideChar(CP_UTF8, 0, url, -1, wide.data(), length);
-    ShellExecuteW(owner_window, L"open", wide.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    ShellExecuteW(owner_window, L"open", from_utf8(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
 FontFiles font_files() {
