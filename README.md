@@ -268,6 +268,8 @@ with [docs/progress.md](docs/progress.md).
   Winning a race that earns one of the game's Avatar awards (seen after Tag and Relay races) no longer stops the game (#317). The macOS and iOS apps now carry the pose models, so Camera > Motion works there too, and a Kinect for Xbox 360 can be used on a Mac; macOS 14 or later is now needed (#305).
 - [v0.10.40 — Kinect v2 on a Mac](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.40)
   The Mac app can now read a Kinect for Xbox One (Kinect v2) as well as a Kinect for Xbox 360: choose Camera > Kinect v2 in the launcher. Every motion device, camera or Kinect, now reaches the game through the same path, so later devices only need their own part (#305).
+- [v0.10.41 — A Male / Female choice for each Avatar model](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.41)
+  Each model on the launcher's Avatar models page now has its own Male / Female choice, and the game uses the chosen model's body, so a female model races as the female Avatar with her own gear and board (#324).
 
 ## System Requirements
 
