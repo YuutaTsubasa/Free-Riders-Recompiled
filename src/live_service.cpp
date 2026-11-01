@@ -375,7 +375,7 @@ struct LiveService::Impl {
                     std::string text;
                     for (const auto& r : reply) text += r + '\n';
                     text += ".\n";
-                    send(console.control, text.data(), int(text.size()), 0);
+                    live_send(LiveSocket(console.control), text.data(), int(text.size()));
                     // A wrong password ends the connection: one try each.
                     if (reply[0] == "ERR wrong password") {
                         closing = true;

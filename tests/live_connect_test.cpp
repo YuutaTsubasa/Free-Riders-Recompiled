@@ -249,6 +249,23 @@ void the_game_service_answers() {
     sfr::close_live_connection(socket);
 }
 
+// Issue #328: requests after the server closed fail; on Linux and macOS the
+// write to the closed connection must not end the game with SIGPIPE.
+void a_closed_server_leaves_the_game_running() {
+    uint16_t port = 0;
+    auto service = start_service(port);
+    sfr::LiveReach failure = sfr::LiveReach::ok;
+    const auto socket = sfr::open_live_connection(*sfr::parse_live_server(at(port)), 3000, failure);
+    require(socket != sfr::no_live_socket, "a game connects");
+    std::string pending;
+    require(!sfr::live_exchange(socket, "HELLO 0009000000001235 Rider", pending, 3000).empty(), "and joins");
+    service.reset();
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    for (int i = 0; i < 3; ++i)
+        require(sfr::live_exchange(socket, "SEARCH 4", pending, 1000).empty(), "a request to a closed server fails");
+    sfr::close_live_connection(socket);
+}
+
 void nothing_listening_is_refused() {
     uint16_t port = 0;
     start_service(port).reset();  // a port nothing listens on now
@@ -342,6 +359,7 @@ int main() {
         the_game_service_answers();
         the_room_password_is_asked_for();
         datagrams_go_only_between_registered_consoles();
+        a_closed_server_leaves_the_game_running();
         nothing_listening_is_refused();
         unknown_names_are_not_found();
         other_servers_are_told_apart();

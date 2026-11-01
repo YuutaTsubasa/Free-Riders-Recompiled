@@ -72,6 +72,10 @@ constexpr LiveSocket no_live_socket = LiveSocket(-1);
 // open; no_live_socket and why (not_found, refused, no_answer) otherwise.
 LiveSocket open_live_connection(const LiveServerAddress& server, int timeout_ms, LiveReach& failure);
 void close_live_connection(LiveSocket socket);
+// send() on a TCP connection. When the other side has closed it, the result
+// is an error, not the SIGPIPE that ends the process on Linux and macOS
+// (Issue #328).
+int live_send(LiveSocket socket, const char* data, int size);
 // Sends one request line and reads the answer's lines up to the closing
 // ".", waiting up to timeout_ms in all (0: as long as it takes). pending
 // keeps what arrived past the answer. Empty when the connection failed or

@@ -257,9 +257,26 @@ void close_live_connection(LiveSocket socket) {
 #endif
 }
 
+int live_send(LiveSocket socket, const char* data, int size) {
+#ifdef _WIN32
+    return ::send(SOCKET(socket), data, size, 0);
+#else
+#ifdef SO_NOSIGPIPE
+    // Apple's way: a setting of the socket.
+    int on = 1;
+    setsockopt(socket, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on));
+#endif
+#ifdef MSG_NOSIGNAL
+    return int(::send(socket, data, size_t(size), MSG_NOSIGNAL));
+#else
+    return int(::send(socket, data, size_t(size), 0));
+#endif
+#endif
+}
+
 std::vector<std::string> live_exchange(LiveSocket socket, const std::string& line, std::string& pending, int timeout_ms) {
     const std::string text = line + '\n';
-    if (::send(socket, text.data(), int(text.size()), 0) != int(text.size())) return {};
+    if (live_send(socket, text.data(), int(text.size())) != int(text.size())) return {};
     const auto deadline = Clock::now() + std::chrono::milliseconds(timeout_ms);
     std::vector<std::string> lines;
     for (;;) {
