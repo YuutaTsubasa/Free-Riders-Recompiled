@@ -39,6 +39,10 @@ namespace {
 // Long enough for a LAN or the Internet, short enough that a first use at
 // boot does not hold the game for the system's own 21 s.
 constexpr int connect_timeout_ms = 3000;
+// A service answers a request at once. The game waits for it, so one that
+// went silent (the Wi-Fi gone, a server frozen) must not hold it for good
+// (Issue #329).
+constexpr int request_timeout_ms = 10000;
 
 std::atomic<bool> late_connection{false};
 
@@ -213,7 +217,18 @@ bool LiveClient::connect(const std::string& server, LiveReach& failure, bool qui
 
 std::vector<std::string> LiveClient::request(const std::string& line) {
     std::lock_guard lock(impl_->request_mutex);
-    return live_exchange(LiveSocket(impl_->control), line, impl_->pending, 0);
+    if (impl_->control == no_socket) return {};
+    auto answer = live_exchange(LiveSocket(impl_->control), line, impl_->pending, request_timeout_ms);
+    if (answer.empty()) {
+        // No answer in time, or the connection is gone. An answer arriving
+        // late would be taken for the next request's, so the connection ends
+        // here and later requests fail at once.
+        std::cerr << "LIVE_SERVER lost request=" << line.substr(0, line.find(' ')) << '\n';
+        close_socket(impl_->control);
+        impl_->control = no_socket;
+        impl_->pending.clear();
+    }
+    return answer;
 }
 
 void LiveClient::open_port(uint16_t port) {
