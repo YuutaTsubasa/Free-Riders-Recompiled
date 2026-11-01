@@ -55,8 +55,16 @@ uint64_t fnv(const std::string& text, uint64_t hash = 1469598103934665603ull) {
 bool take_live_late_connection() { return late_connection.load() && late_connection.exchange(false); }
 
 std::string live_gamertag() {
-    for (const char* name : {"SFR_LIVE_NAME", "SFR_PROFILE_NAME"})
-        if (const char* value = std::getenv(name); value && *value) return std::string(value).substr(0, 15);
+    for (const char* name : {"SFR_LIVE_NAME", "SFR_PROFILE_NAME"}) {
+        const char* value = std::getenv(name);
+        if (!value || !*value) continue;
+        // ASCII only, as Xbox gamertags: the title's multibyte conversion
+        // stops the game on anything else (Issue #336).
+        std::string gamertag;
+        for (const char* c = value; *c && gamertag.size() < 15; ++c)
+            if (*c >= 0x20 && *c <= 0x7E) gamertag += *c;
+        if (gamertag.find_first_not_of(' ') != std::string::npos) return gamertag;
+    }
     return "Player";
 }
 

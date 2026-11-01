@@ -471,8 +471,8 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"The host's IP address or name, optionally with :port (default 47800). Ignored while hosting.",
      "主持者的 IP 位址或名稱，可加上 :連接埠（預設 47800）。自己當伺服器時不使用。"},
     {"Online name", "線上名稱"},
-    {"The gamertag the others see (15 characters). Saves stay with your profile.",
-     "其他玩家看到的玩家名稱（15 個字元）。存檔仍跟著原本的設定檔。"},
+    {"The gamertag the others see: up to 15 English letters, digits or signs, as on Xbox. Saves stay with your profile.",
+     "其他玩家看到的玩家名稱：最多 15 個英文字母、數字或符號（和 Xbox 一樣）。存檔仍跟著原本的設定檔。"},
     {"Test connection", "測試連線"},
     {"Checking...", "檢查中…"},
     {"Connected: the server at %s answers.", "連線成功：%s 的伺服器有回應。"},
@@ -2540,7 +2540,14 @@ struct Launcher {
                 char text[16] = {};
                 std::snprintf(text, sizeof text, "%s", settings.online_name.c_str());
                 ImGui::SetNextItemWidth(260 * scale);
-                if (ImGui::InputTextWithHint("##online_name", "Player", text, sizeof text)) settings.online_name = text;
+                // English letters, digits and signs: the game takes nothing
+                // else in a gamertag (Issue #336).
+                const auto ascii = [](ImGuiInputTextCallbackData* data) {
+                    return data->EventChar < 0x20 || data->EventChar > 0x7E ? 1 : 0;
+                };
+                if (ImGui::InputTextWithHint("##online_name", "Player", text, sizeof text,
+                                             ImGuiInputTextFlags_CallbackCharFilter, ascii))
+                    settings.online_name = text;
             });
         }
         settings_section(SectionReset);
