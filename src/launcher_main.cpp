@@ -3195,12 +3195,19 @@ struct Launcher {
         }
         std::optional<size_t> removed;
         std::error_code error;
-        // The body choices line up after the longest name.
+        // The body choices line up after the longest name, or go under the
+        // names when that would push them and Remove off the panel (a long
+        // file name, a narrow window): there is no sideways scrolling here.
         float names = 0;
         for (const auto& model : settings.avatar_models)
             names = (std::max)(names, ImGui::CalcTextSize((utf8(model.filename()) + "  (?)").c_str()).x);
-        const float body_column = ImGui::GetCursorPosX() + ImGui::GetFrameHeight() +
-                                  ImGui::GetStyle().ItemInnerSpacing.x + names + 16 * scale;
+        const ImGuiStyle& style = ImGui::GetStyle();
+        const float radio = ImGui::GetFrameHeight() + style.ItemInnerSpacing.x;
+        const float row_start = ImGui::GetCursorPosX();
+        const float controls = 2 * radio + ImGui::CalcTextSize(tr(AvatarMale)).x + ImGui::CalcTextSize(tr(AvatarFemale)).x +
+                               ImGui::CalcTextSize(tr(AvatarRemove)).x + 3 * style.ItemSpacing.x + 40 * scale;
+        const float beside = row_start + radio + names + 16 * scale;
+        const bool body_beside = beside + controls <= row_start + ImGui::GetContentRegionAvail().x;
         for (size_t i = 0; i < settings.avatar_models.size(); ++i) {
             const auto& model = settings.avatar_models[i];
             ImGui::PushID(int(i));
@@ -3218,7 +3225,8 @@ struct Launcher {
             for (const bool body_female : {false, true}) {
                 const bool is_female = sfr::avatar_model_female(settings, model);
                 if (body_female) ImGui::SameLine();
-                else ImGui::SameLine(body_column);
+                else if (body_beside) ImGui::SameLine(beside);
+                else ImGui::SetCursorPosX(row_start + radio);
                 if (ImGui::RadioButton(tr(body_female ? AvatarFemale : AvatarMale), is_female == body_female) &&
                     is_female != body_female) {
                     if (body_female) settings.avatar_female_models.push_back(model);
