@@ -63,7 +63,8 @@ private:
     uint64_t xuid_ = 0;
 };
 
-// The gamertag shown online: SFR_LIVE_NAME, else the profile's name.
+// The gamertag shown online: SFR_LIVE_NAME, else the profile's name, in
+// ASCII only (up to 15), else "Player".
 // (The profile's own name also names its saves, so it is not changed here.)
 std::string live_gamertag();
 // True once after a retry connected (the service appeared after the title's

@@ -38,8 +38,10 @@ On every device: **Launcher → General → Online play → Xbox LIVE**.
 - **Password** (optional) is the room password. While hosting, the others must
   enter it to join; while joining, it is the server's. Empty means none. It
   travels unencrypted (below), so it should not be one used anywhere else.
-- **Online name** is the gamertag the others see. The profile's own name, and
-  with it the saves, stays as it is.
+- **Online name** is the gamertag the others see: up to 15 English letters,
+  digits or signs, as on Xbox (the game cannot take other letters in a
+  gamertag; any are left out). The profile's own name, and with it the saves,
+  stays as it is.
 
 ### A server in the cloud
 
