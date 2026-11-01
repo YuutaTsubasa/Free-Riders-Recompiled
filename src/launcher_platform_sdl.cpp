@@ -84,15 +84,18 @@ void call_activity(const char* method) {
 class AndroidGame final : public GameProcess {
 public:
     explicit AndroidGame(fs::path log) : log_(std::move(log)) {}
-    // Over once the launcher is back in front.
+    // Over once the launcher is back in front. The code is kept, as on Linux:
+    // the launcher asks for it twice (Issue #331).
     std::optional<uint32_t> exit_code() override {
-        if (!launcher_back.load()) return std::nullopt;
+        if (code_ || !launcher_back.load()) return code_;
         game_launched = false;
         launcher_back = false;
-        return exit_code_from_log(log_);
+        code_ = exit_code_from_log(log_);
+        return code_;
     }
 private:
     fs::path log_;
+    std::optional<uint32_t> code_;
 };
 #else
 // ---------------------------------------------------------------- Linux
