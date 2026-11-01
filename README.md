@@ -526,6 +526,9 @@ keyboard controls work with the model too.
 2. Choose **Add model...** and select a `.vrm` or binary `.glb` file. Desktop
    users can also type its path; Android imports a copy into the app's storage.
    Models you add stay in the list, so you can switch between them later.
+   Choose **Male** or **Female** next to each model: the game gives a male
+   and a female AVATAR different gear and boards, and the model file does not
+   say which it is.
 3. Start the game and select **AVATAR** in the character menu, then choose
    your Gear. AVATAR must already be available in your game save; selecting
    a model does not unlock it.

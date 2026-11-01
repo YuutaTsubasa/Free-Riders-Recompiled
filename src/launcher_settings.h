@@ -151,6 +151,10 @@ struct LauncherSettings {
     // it is one of these, or none. At most max_avatar_models.
     std::vector<std::filesystem::path> avatar_models;
     static constexpr size_t max_avatar_models = 32;
+    // The models of the list that are female (Issue #324). The game picks
+    // the Avatar's body, gear and board by it (SFR_AVATAR_BODY), not by the
+    // model file, so each model carries its own; the rest are male.
+    std::vector<std::filesystem::path> avatar_female_models;
     // Controls (input_bindings.h). The devices each player uses, and how
     // their keys and pad buttons are arranged, as "a=Z,b=X,..." lines. An
     // empty line means the defaults, so a settings file written before any
@@ -192,6 +196,9 @@ LauncherSettings parse_launcher_settings(const std::string& text);
 std::string format_launcher_settings(const LauncherSettings& settings);
 LauncherSettings load_launcher_settings(const std::filesystem::path& file);
 bool save_launcher_settings(const std::filesystem::path& file, const LauncherSettings& settings);
+
+// Whether this model of the list is female (Issue #324).
+bool avatar_model_female(const LauncherSettings& settings, const std::filesystem::path& model);
 
 // Model paths typed by the player are relative to the launcher, never the
 // game's working directory. Empty selections stay empty.

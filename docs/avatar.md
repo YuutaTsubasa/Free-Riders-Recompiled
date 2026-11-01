@@ -26,7 +26,8 @@ sfr_cpu_diagnostic.exe "C:\Game\image" "C:\Game\assets" --game-region=ntsc-us
   腳底最低點對齊遊戲角色的原點；不同模型仍需要實測尺寸。
 - `SFR_AVATAR_MODEL_POSE=rest`：使用檔案原本姿勢；預設依 VRM 人形骨架
   套用遊戲的 Avatar 骨骼動畫；無有效動作時使用中立骨架，避免沿用另一位玩家的姿勢。
-- `SFR_AVATAR_BODY=2`：使用女性 Avatar 的遊戲內 body/gear variant。
+- `SFR_AVATAR_BODY=2`：使用女性 Avatar 的遊戲內 body/gear variant。啟動器依選中模型的
+  「男性／女性」設定自動帶入（#324）。
 - `SFR_AVATAR_TEXTURE_MAX`：貼圖最大邊長，預設 `2048`。
 - `SFR_AVATAR_MODEL_PLAIN=1`：停用模型貼圖，方便診斷形狀。
 - `SFR_TRACE_AVATAR=1`：記錄角色狀態與前幾次矩陣；不記錄攝影機影像。

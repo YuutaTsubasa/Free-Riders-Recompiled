@@ -10,7 +10,10 @@ In the launcher's **Avatar models** tab, choose **Add model...** and select
 your own `.vrm` or binary `.glb` file. Every model added stays in the list:
 choose the one to use, **Don't use a custom model** to turn it off, or
 **Remove** a model from the list. The game shows one avatar, so one model is
-used at a time. VRM 0.x and VRM 1.0 humanoid mappings
+used at a time. Choose **Male** or **Female** next to each model: the game
+gives a male and a female AVATAR different gear and boards, and a VRM or GLB
+file does not say which it is (`avatar_model_female` lines in `settings.ini`).
+VRM 0.x and VRM 1.0 humanoid mappings
 provide animation; an ordinary GLB without that mapping stays static.
 
 Start the game, select **AVATAR**, and choose Gear. You can use a controller,
