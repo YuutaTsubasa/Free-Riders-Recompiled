@@ -38,6 +38,7 @@ struct RaceBody {
     uint32_t lb_pressed = 0;    // +260
     uint32_t rb_pressed = 0;    // +264
     uint32_t b_held = 0;        // +268 and +272
+    float b_held_seconds = 0;   // how long B (grab) has been held
     // +640 / +644: a pair the title compares for the lean (822C6200 and
     // others): 640 > 644 leans right by 640/644 - 1, 644 > 640 left by
     // 644/640 - 1, at most 3.5. Equal is upright; a zero +640 reads as a
@@ -56,6 +57,11 @@ struct RaceBody {
 };
 
 constexpr uint32_t race_body_size = 4788;
+
+// The reach bits the right stick adds to a detector group's final entry:
+// 0xA0000000 to the left, 0xC0000000 to the right (past 0.3), whatever the
+// stick's up or down; 0 otherwise.
+uint32_t race_reach_bits(const RaceBody& body);
 
 // Stick axis in -1..1 with the XInput dead zones (left 7849, right 8689).
 float race_axis(int16_t value, int16_t dead_zone);

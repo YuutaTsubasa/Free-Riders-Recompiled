@@ -844,6 +844,26 @@ RACE_DETECTOR(822C8650, {
 RACE_REACH(822C9E90)
 RACE_REACH(822CB340)
 
+// The detector group's update (822A8AB0) runs the detectors and then the
+// title's rider-state filters, which drop a reach in many states. Like the
+// No Kinect Patch (Issue #339), a reach the right stick asks for is added to
+// the group's final entry ([+16] + [+28] * 84) after the filters, so the
+// rider reaches for rings and poles at any moment.
+PPC_FUNC_IMPL(__imp__sub_822A8AB0);
+SFR_INPUT_HOOK(sub_822A8AB0) {
+    sfr::enter_function(ctx, "sub_822A8AB0", 0x822A8AB0);
+    const uint32_t group = ctx.r3.u32;
+    __imp__sub_822A8AB0(ctx, base);
+    if (!pad_racing() || !group) return;
+    auto& m = memory();
+    const uint32_t source = m.load<uint32_t>(group + 0x194);
+    if (!source) return;
+    const uint32_t player = player_of_source(ctx, base, source);
+    if (camera_player(player)) return;
+    if (const uint32_t bits = sfr::race_reach_bits(race[player].body()))
+        set_bits(m.load<uint32_t>(group + 16) + m.load<uint32_t>(group + 28) * 84 + 4, bits);
+}
+
 // Flying skill: A held.
 RACE_DETECTOR(822C9180, {
     if (b.a_held == 0) result = 2;
@@ -876,9 +896,12 @@ RACE_DETECTOR(822C9BF0, {
     } else { set_byte(e + 80, 0); result = 2; }
 })
 
-// Grab (poles, rails): B held, full strength.
+// Grab (poles, rails): B held, full strength. The original keeps how long
+// the grab has been held at +72 and clears it on release; the No Kinect
+// Patch keeps that time too (Issue #339).
 RACE_DETECTOR(822CB0B8, {
     const uint32_t e = entry(results);
+    store_float(detector + 72, b.b_held_seconds);
     if (b.b_held) { set_byte(e + 80, 100); set_bits(e + 4, 0x100); result = 1; }
     else { set_byte(e + 80, 0); result = 2; }
 })

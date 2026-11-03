@@ -40,6 +40,24 @@ void run(float steering_scale) {
     require(race.body().x_pressed == 0 && near(race.body().x_held_seconds, 0.75f), "X hold time");
     race.update(pad(0), 0.25f);
     require(race.body().x_released == 1 && race.body().x_held_seconds == 0, "X release fires the kick");
+    {
+        sfr::RaceInput grab;
+        sfr::GamepadState b{};
+        b.buttons = sfr::gamepad_button::b;
+        grab.update(b, 0.25f);
+        grab.update(b, 0.25f);
+        require(grab.body().b_held && near(grab.body().b_held_seconds, 0.5f), "B hold time");
+        grab.update({}, 0.25f);
+        require(!grab.body().b_held && grab.body().b_held_seconds == 0, "releasing B clears its hold time");
+        sfr::RaceBody reach;
+        reach.right_x = -0.5f;
+        require(sfr::race_reach_bits(reach) == 0xA0000000u, "right stick left reaches left");
+        reach.right_x = 0.5f;
+        reach.right_y = 1.0f;
+        require(sfr::race_reach_bits(reach) == 0xC0000000u, "right stick right reaches right, also when up");
+        reach.right_x = 0.2f;
+        require(sfr::race_reach_bits(reach) == 0, "a small push does not reach");
+    }
 
     race.update(pad(0, 32767, 0), 1.0f / 60);
     require(race.body().left_x == 1 && race.body().lean == -1 && race.body().lean_right == 1.f + steering_scale && race.body().lean_left == 1.0f, "full right lean reaches the configured steering range");

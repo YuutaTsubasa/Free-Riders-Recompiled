@@ -13,6 +13,12 @@ float race_axis(int16_t value, int16_t dead_zone) {
     return std::clamp((v - std::copysign(float(dead_zone), v)) / span, -1.0f, 1.0f);
 }
 
+uint32_t race_reach_bits(const RaceBody& b) {
+    if (b.right_x < -0.3f) return 0xA0000000u;
+    if (b.right_x > 0.3f) return 0xC0000000u;
+    return 0;
+}
+
 void RaceInput::update(const GamepadState& pad, float seconds) {
     namespace button = gamepad_button;
     const uint16_t held = pad.buttons, pressed = held & ~previous_, released = previous_ & ~held;
@@ -73,6 +79,7 @@ void RaceInput::update(const GamepadState& pad, float seconds) {
     b.lb_pressed = (pressed & button::left_shoulder) ? 1 : 0;
     b.rb_pressed = (pressed & button::right_shoulder) ? 1 : 0;
     b.b_held = (held & button::b) ? 1 : 0;
+    b.b_held_seconds = b.b_held ? b.b_held_seconds + seconds : 0.0f;
     // Hands count as tracked while they are used (crouching, braking) or
     // pulled back with the stick down.
     b.hands = (b.left_y <= -0.75f || b.a_held != 0 || b.b_held) ? 2 : 0;
