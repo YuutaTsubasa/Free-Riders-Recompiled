@@ -84,6 +84,18 @@ PPC_FUNC(__imp__sub_822CA6B0) {
     }
 }
 
+// Fixture for the original detector-group update (822A8AB0): the title's
+// rider-state filter keeps only bit 0x400 of the working entry ([+16] +
+// [+24] * 84), and the group publishes it as the entry at [+28].
+PPC_FUNC(__imp__sub_822A8AB0) {
+    auto& m = *sfr::active_memory;
+    const uint32_t group = ctx.r3.u32, entries = m.load<uint32_t>(group + 16);
+    const uint32_t working = entries + m.load<uint32_t>(group + 24) * 84;
+    m.store<uint32_t>(working + 4, m.load<uint32_t>(working + 4) & 0x400);
+    const uint32_t published = entries + m.load<uint32_t>(group + 28) * 84;
+    for (uint32_t i = 0; i < 84; i += 4) m.store<uint32_t>(published + i, m.load<uint32_t>(working + i));
+}
+
 #define UNUSED_ORIGINAL(address) PPC_FUNC(__imp__sub_##address) { \
     throw std::runtime_error("unexpected original detector " #address); }
 // A real Kinect's race: these originals never recognize a crouch or jump,
@@ -322,6 +334,48 @@ void run() {
         require(invoke("sub_822CA6B0") == 2 && primary() == (existing_primary | 0x1400000),
                 "inactive Side must preserve X release bits");
     }
+    // Grab keeps how long B has been held at +72, as the original does.
+    {
+        const auto held = [&] { return std::bit_cast<float>(m.load<uint32_t>(detector + 72)); };
+        frame(sfr::gamepad_button::b);
+        frame(sfr::gamepad_button::b);
+        require(invoke("sub_822CB0B8") == 1 && held() > 0 && m.load<uint8_t>(selected + 80) == 100,
+                "B must grab and keep its hold time");
+        const float first = held();
+        frame(sfr::gamepad_button::b);
+        require(invoke("sub_822CB0B8") == 1 && held() > first, "a longer grab must keep a longer hold time");
+        frame(0);
+        require(invoke("sub_822CB0B8") == 2 && held() == 0, "releasing B must clear the hold time");
+    }
+
+    // A reach is added to the group's published entry after the title's
+    // filters, whatever the stick's up or down (Issue #339).
+    {
+        constexpr uint32_t group = box + 0x4400, group_entries = box + 0x4600;
+        m.store<uint32_t>(group + 16, group_entries);
+        m.store<uint32_t>(group + 24, 0);
+        m.store<uint32_t>(group + 28, 1);
+        m.store<uint32_t>(group + 0x194, box + 0x4800);
+        const auto update = [&](int16_t rx, int16_t ry) {
+            input = {};
+            input.thumb_rx = rx;
+            input.thumb_ry = ry;
+            invoke("sub_82438930");
+            m.store<uint32_t>(group_entries + 4, 0x20000400);
+            PPCContext ctx;
+            ctx.r3.u64 = group;
+            hooks().at("sub_822A8AB0")(ctx, m.base());
+            return m.load<uint32_t>(group_entries + 84 + 4);
+        };
+        require(update(-32767, 0) == 0xA0000400, "left reach must survive the filters");
+        require(update(32767, 32767) == 0xC0000400, "right reach must survive with the stick also up");
+        require(update(0, 32767) == 0x400, "no reach without the stick to one side");
+        m.store<uint32_t>(race_flag_global, 0);
+        require(update(-32767, 0) == 0x400, "outside a pad race the group's entry stands");
+        m.store<uint32_t>(race_flag_global, 1);
+        frame(0);
+    }
+
     conflicting_action(sfr::gamepad_button::b, "sub_822C9BF0");
     conflicting_action(sfr::gamepad_button::x, "sub_822CA518");
     conflicting_action(sfr::gamepad_button::x, "sub_822CBD28");
