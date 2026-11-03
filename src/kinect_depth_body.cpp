@@ -13,10 +13,72 @@ using Point = std::array<float, 3>;
 // NuiImageCamera.h's nominal focal lengths (kinect_preview.cpp): depth at
 // 320x240, colour at 640x480.
 constexpr float depth_focal = 285.63f, colour_focal = 531.15f;
-// A joint is inside the body, a little behind the surface the depth sees.
-constexpr float torso_surface_to_joint = 0.07f, limb_surface_to_joint = 0.04f;
+// A joint is inside the body, behind the surface the depth sees: how far,
+// for the torso (where the shape is anchored) and for each of the model's
+// points, is where the runtime puts its joints behind that surface on a real
+// Kinect v1 (sfr_kinect_body_replay on KnucklesLee's recording): deepest at
+// the hips, least at the arms.
+constexpr float torso_surface_to_joint = 0.12f;
+float surface_to_joint(uint32_t point) {
+    using namespace pose_point;
+    switch (point) {
+    case shoulder_left: case shoulder_right: return 0.07f;
+    case hip_left: case hip_right: return 0.10f;
+    case knee_left: case knee_right: return 0.085f;
+    case ankle_left: case ankle_right: return 0.055f;
+    default: return 0.04f;
+    }
+}
 
 Point middle(const Point& a, const Point& b) { return {(a[0] + b[0]) * 0.5f, (a[1] + b[1]) * 0.5f, (a[2] + b[2]) * 0.5f}; }
+
+// The model's points are where a body's landmarks are seen (the hip joints,
+// the tops of the shoulders, the wrists, the nose); the runtime's joints are
+// its own: its hips higher, its shoulder centre at the neck, its shoulders
+// lower, its hands past the wrists, its head's centre above the nose. Each
+// moved along the body (the spine, the forearm), by the parts of the torso's
+// length (from the model's hips to its shoulders) that bring them to the
+// runtime's on a real sensor (sfr_kinect_body_replay on KnucklesLee's
+// recordings, the median of each joint's offset over the whole recording).
+// The two runtimes' joints differ: a v2's SpineBase is lower than a v1's hip
+// centre, its SpineShoulder lower than a v1's shoulder centre.
+// A v2 also puts its SpineBase, SpineMid and hips deeper in the body than a
+// v1 its hip centre, spine and hips (metres further from the camera).
+struct JointPlaces {
+    float hips, hip_center, spine, shoulder_center, shoulders, head;  // along the torso
+    float hand;                                                       // past the wrist, along the forearm
+    float hips_deeper, hip_center_deeper, spine_deeper;
+};
+constexpr JointPlaces v1_places{0.175f, 0.29f, 0.447f, 0.126f, -0.106f, 0.124f, 0.3f, 0, 0, 0};
+constexpr JointPlaces v2_places{-0.071f, -0.089f, 0.527f, -0.02f, -0.135f, 0.053f, 0.3f, 0.045f, 0.095f, 0.06f};
+
+void runtime_joint_places(const JointPlaces& places, SkeletonJoints& joints) {
+    namespace joint = nui_joint;
+    const auto plus = [](const Point& a, const Point& d, float k) {
+        return Point{a[0] + d[0] * k, a[1] + d[1] * k, a[2] + d[2] * k};
+    };
+    const auto minus = [](const Point& a, const Point& b) { return Point{a[0] - b[0], a[1] - b[1], a[2] - b[2]}; };
+    const Point hips = middle(joints[joint::hip_left], joints[joint::hip_right]);
+    const Point shoulders = middle(joints[joint::shoulder_left], joints[joint::shoulder_right]);
+    const Point up = minus(shoulders, hips);  // the torso, as long as it is
+    joints[joint::hip_left] = plus(joints[joint::hip_left], up, places.hips);
+    joints[joint::hip_right] = plus(joints[joint::hip_right], up, places.hips);
+    joints[joint::hip_center] = plus(hips, up, places.hip_center);
+    joints[joint::spine] = plus(hips, up, places.spine);
+    joints[joint::shoulder_center] = plus(shoulders, up, places.shoulder_center);
+    joints[joint::shoulder_left] = plus(joints[joint::shoulder_left], up, places.shoulders);
+    joints[joint::shoulder_right] = plus(joints[joint::shoulder_right], up, places.shoulders);
+    joints[joint::head] = plus(joints[joint::head], up, places.head);
+    joints[joint::hip_left][2] += places.hips_deeper;
+    joints[joint::hip_right][2] += places.hips_deeper;
+    joints[joint::hip_center][2] += places.hip_center_deeper;
+    joints[joint::spine][2] += places.spine_deeper;
+    for (const auto& [wrist, hand, elbow] : {std::array{joint::wrist_left, joint::hand_left, joint::elbow_left},
+                                             std::array{joint::wrist_right, joint::hand_right, joint::elbow_right}}) {
+        joints[wrist] = joints[hand];
+        joints[hand] = plus(joints[hand], minus(joints[hand], joints[elbow]), places.hand);
+    }
+}
 
 // The sampling radii were chosen on the v1's 320 pixels across: as many
 // pixels' worth of the view on another camera.
@@ -34,7 +96,15 @@ std::array<float, 3> kinect_depth_pixel_point(const KinectDepthCamera& camera, f
 }
 
 std::array<float, 2> kinect_colour_to_depth_pixel(float x, float y) {
-    return {160.0f + (x - 320.0f) * depth_focal / colour_focal, 120.0f + (y - 240.0f) * depth_focal / colour_focal};
+    // The colour camera does not look quite where the depth camera does: on
+    // a real Kinect v1 (KnucklesLee's recording, 2026-11-03) the runtime's
+    // skeleton through the depth lens sits 15 depth pixels above, and 2.5 to
+    // the left of, where the nominal lenses put the pose model's elbows,
+    // wrists, knees and ankles (sfr_kinect_body_replay's REGISTRATION, 7072
+    // points). The runtime's pictures are the cameras' own, as libfreenect's
+    // FREENECT_DEPTH_MM and RGB are.
+    return {160.0f + (x - 320.0f) * depth_focal / colour_focal + kinect_v1_colour_shift_x,
+            120.0f + (y - 240.0f) * depth_focal / colour_focal + kinect_v1_colour_shift_y};
 }
 
 float kinect_depth_at(const KinectDepthMillimetres& depth, float depth_x, float depth_y, int radius, float near,
@@ -204,11 +274,13 @@ bool kinect_depth_body(const PoseLandmarks& given, const KinectDepthMillimetres&
         if (landmarks[point].score < settings.min_score) continue;
         float x = 0, y = 0;
         if (!to_depth(landmarks[point].x, landmarks[point].y, x, y)) continue;
-        const float expected = points[point][2] - limb_surface_to_joint;
-        const float metres = kinect_depth_at(depth, camera, x, y, scaled_radius(camera, 2),
-                                             expected - settings.joint_agreement, expected + settings.joint_agreement);
+        const float expected = points[point][2] - surface_to_joint(point);
+        const bool arm = point == elbow_left || point == elbow_right || point == wrist_left || point == wrist_right;
+        const float agreement = arm ? settings.arm_agreement : settings.joint_agreement;
+        const float metres = kinect_depth_at(depth, camera, x, y, scaled_radius(camera, 2), expected - agreement,
+                                             expected + agreement);
         if (metres <= 0) continue;
-        points[point] = kinect_depth_pixel_point(camera, x, y, metres + limb_surface_to_joint);
+        points[point] = kinect_depth_pixel_point(camera, x, y, metres + surface_to_joint(point));
         states[point] = 2;
     }
 
@@ -216,6 +288,8 @@ bool kinect_depth_body(const PoseLandmarks& given, const KinectDepthMillimetres&
     // The head's centre is behind the nose, which is all the model sees of it.
     pose_nui_joints(points, states, joints, joint_states);
     joints[nui_joint::head][2] += 0.07f;
+    if (settings.places != KinectJointPlaces::model)
+        runtime_joint_places(settings.places == KinectJointPlaces::v2 ? v2_places : v1_places, joints);
     return true;
 }
 

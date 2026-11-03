@@ -783,6 +783,13 @@ if(SFR_POSE_AVAILABLE)
     target_include_directories(sfr_pose_probe PRIVATE src)
     target_link_libraries(sfr_pose_probe PRIVATE sfr_onnxruntime ${SFR_CAMERA_LIBRARIES})
     sfr_copy_onnx_dlls(sfr_pose_probe)
+    # A Kinect recording made on Windows played through what a Mac makes of
+    # the cameras, against the runtime's skeleton and player index.
+    add_executable(sfr_kinect_body_replay tests/kinect_body_replay.cpp src/kinect_depth_body.cpp src/kinect_record.cpp
+        src/kinect_record_depth.cpp src/kinect_record_colour.cpp src/kinect_v2_image.cpp ${SFR_POSE_SOURCES})
+    target_include_directories(sfr_kinect_body_replay PRIVATE src)
+    target_link_libraries(sfr_kinect_body_replay PRIVATE sfr_onnxruntime)
+    sfr_copy_onnx_dlls(sfr_kinect_body_replay)
 endif()
 # CI builds every available Android camera consumer, including pose when its
 # optional runtime is present, so launcher-only builds cannot hide missing deps.

@@ -231,8 +231,11 @@ private:
                 const auto to_depth = [&](float x, float y, float& depth_x, float& depth_y) {
                     return grid.find(x * 2.0f, y * 2.0f, depth_x, depth_y);
                 };
+                // The joints where a v2's runtime puts them, as Windows gives the game.
+                KinectDepthBodySettings settings;
+                settings.places = KinectJointPlaces::v2;
                 const bool found = estimator_->estimate(colour, landmarks) &&
-                                   kinect_depth_body(landmarks, depth, camera_, to_depth, {}, joints, states);
+                                   kinect_depth_body(landmarks, depth, camera_, to_depth, settings, joints, states);
                 pose_ms += std::chrono::duration<double, std::milli>(clock::now() - pose_started).count();
                 ++poses;
                 if (found) {
