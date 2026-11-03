@@ -376,6 +376,31 @@ void run() {
         frame(0);
     }
 
+    // The front-curve lean (+81) is answered in the selected entry, the one
+    // Metropolis Speedway's train pole reads to move the rider along it, not
+    // the one the second index names (Issue #339).
+    {
+        constexpr uint32_t second = entries + 2 * 84;
+        m.store<uint32_t>(results + 12, 2);
+        const auto lean = [&](int16_t lx) {
+            input = {};
+            input.thumb_lx = lx;
+            invoke("sub_82438930");
+            m.store<uint8_t>(selected + 81, 0);
+            m.store<uint32_t>(selected + 20, existing_secondary);
+            m.store<uint8_t>(second + 81, 0);
+            invoke("sub_822CD3F0");
+            return int(int8_t(m.load<uint8_t>(selected + 81)));
+        };
+        require(lean(-32767) == -100 && (secondary() & 0x800), "stick left must lean the selected entry left");
+        require(lean(32767) == 100, "stick right must lean the selected entry right");
+        require(lean(0) == 0 && secondary() == existing_secondary, "a centred stick must not lean");
+        require(m.load<uint8_t>(second + 81) == 0 && m.load<uint32_t>(second + 20) == 0,
+                "the second entry must not take the lean");
+        m.store<uint32_t>(results + 12, 0);
+        frame(0);
+    }
+
     conflicting_action(sfr::gamepad_button::b, "sub_822C9BF0");
     conflicting_action(sfr::gamepad_button::x, "sub_822CA518");
     conflicting_action(sfr::gamepad_button::x, "sub_822CBD28");

@@ -208,9 +208,9 @@ void note_detector_source(PPCContext& ctx, uint8_t* base, uint32_t address, uint
                   << std::dec << " count=" << count << " sources=" << seen.size() << char(10);
 }
 
-// Result entry the detector writes: [results] + [results+8 (or +12)] * 84.
-uint32_t entry(uint32_t results, uint32_t index_offset = 8) {
-    return memory().load<uint32_t>(results) + memory().load<uint32_t>(results + index_offset) * 84;
+// Result entry the detector writes: [results] + [results+8] * 84.
+uint32_t entry(uint32_t results) {
+    return memory().load<uint32_t>(results) + memory().load<uint32_t>(results + 8) * 84;
 }
 void set_bits(uint32_t address, uint32_t bits) { memory().store<uint32_t>(address, memory().load<uint32_t>(address) | bits); }
 void set_byte(uint32_t address, uint8_t value) { memory().store<uint8_t>(address, value); }
@@ -493,15 +493,15 @@ int nui_player_of_record(uint32_t record) {
     return -1;
 }
 bool nui_recording() { return sensor_steering && sfr::kinect_record_nui() != nullptr; }
-// The result entry a detector writes (front curve: the second one), and
-// its +4/+20 words before the detector ran, so that its own bits are known.
+// The result entry a detector writes, and its +4/+20 words before the
+// detector ran, so that its own bits are known.
 struct NuiEntryBits {
     uint32_t entry = 0, primary = 0, secondary = 0;
 };
-NuiEntryBits nui_entry_before(uint32_t address, uint32_t results) {
+NuiEntryBits nui_entry_before(uint32_t results) {
     NuiEntryBits bits;
     if (!results || !memory().readable(results, 16)) return bits;
-    bits.entry = entry(results, address == 0x822CD3F0 ? 12 : 8);
+    bits.entry = entry(results);
     if (!memory().readable(bits.entry, 84)) { bits.entry = 0; return bits; }
     bits.primary = memory().load<uint32_t>(bits.entry + 4);
     bits.secondary = memory().load<uint32_t>(bits.entry + 20);
@@ -523,7 +523,7 @@ void note_nui_detector(int player, uint32_t address, uint32_t detector, const Nu
     case v::entry_float_56: value = load_float(e + 56); break;
     case v::entry_signed_82: value = float(int8_t(m.load<uint8_t>(e + 82))); break;
     case v::entry_signed_83: value = float(int8_t(m.load<uint8_t>(e + 83))); break;
-    case v::second_entry_signed_81: value = float(int8_t(m.load<uint8_t>(e + 81))); break;
+    case v::entry_signed_81: value = float(int8_t(m.load<uint8_t>(e + 81))); break;
     case v::entry_signed_76: value = float(int8_t(m.load<uint8_t>(e + 76))); break;
     case v::detector_short_76:
         has_value = detector && m.readable(uint64_t(detector) + 76, 4);
@@ -759,7 +759,7 @@ void finish_sensor_detector(PPCContext& ctx,uint8_t* base,uint32_t address,uint3
             const uint32_t source = ctx.r4.u32;                                 \
             const uint32_t nui_detector = ctx.r3.u32;                           \
             const bool nui_wanted = nui_recording();                            \
-            const NuiEntryBits nui_before = nui_wanted ? nui_entry_before(0x##address, ctx.r5.u32) : NuiEntryBits{}; \
+            const NuiEntryBits nui_before = nui_wanted ? nui_entry_before(ctx.r5.u32) : NuiEntryBits{}; \
             __imp__sub_##address(ctx, base);                                   \
             if (sensor_steering)                                               \
                 finish_sensor_detector(ctx, base, 0x##address, source);        \
@@ -1024,9 +1024,13 @@ RACE_DETECTOR(822CD960, {
         if (memory().load<uint8_t>(e + 83)) { set_bits(e + 20, 0x4000); result = 1; }
     }
 })
-// Front curve gear: the lean, on the second result entry (+81).
+// Front curve gear: the lean (+81, percent), on the entry the other
+// detectors answer in, as the original writes it. The final entry's +81 is
+// also what Metropolis Speedway's train pole reads to move the rider from
+// one hold to the next (8237CBD8, past +-30): on the second entry, which
+// nothing reads, the left stick never moved a rider along it (Issue #339).
 RACE_DETECTOR(822CD3F0, {
-    const uint32_t e = entry(results, 12);
+    const uint32_t e = entry(results);
     set_byte(e + 81, uint8_t(int8_t(-b.lean * 100.0f)));
     if (memory().load<uint8_t>(e + 81)) set_bits(e + 20, 0x800);
 })
@@ -1055,7 +1059,7 @@ SFR_INPUT_HOOK(sub_822C8D88) {
         // two racers, not one source).
         const uint32_t detector = ctx.r3.u32;
         const bool nui_wanted = !pad_racing() && nui_recording();
-        const NuiEntryBits nui_before = nui_wanted ? nui_entry_before(0x822C8D88, ctx.r5.u32) : NuiEntryBits{};
+        const NuiEntryBits nui_before = nui_wanted ? nui_entry_before(ctx.r5.u32) : NuiEntryBits{};
         __imp__sub_822C8D88(ctx, base);
         if (nui_wanted) note_nui_detector(0, 0x822C8D88, detector, nui_before, ctx.r3.u32);
         return;
@@ -1099,7 +1103,7 @@ SFR_INPUT_HOOK(sub_822C8958) {
     // Retain that gear/stance mapping, bypass only its controller smoothing.
     const uint32_t detector = ctx.r3.u32, source = ctx.r4.u32, results = ctx.r5.u32;
     const bool nui_wanted = !pad_racing() && nui_recording();
-    const NuiEntryBits nui_before = nui_wanted ? nui_entry_before(0x822C8958, results) : NuiEntryBits{};
+    const NuiEntryBits nui_before = nui_wanted ? nui_entry_before(results) : NuiEntryBits{};
     {
         SteeringFilterScope scope(controller ? ctx.r3.u32 + 72 : 0);
         __imp__sub_822C8958(ctx, base);
@@ -1115,7 +1119,7 @@ SFR_INPUT_HOOK(sub_822CB9B8) {
     else {
         const uint32_t detector = ctx.r3.u32, source = ctx.r4.u32;
         const bool nui_wanted = !pad_racing() && nui_recording();
-        const NuiEntryBits nui_before = nui_wanted ? nui_entry_before(0x822CB9B8, ctx.r5.u32) : NuiEntryBits{};
+        const NuiEntryBits nui_before = nui_wanted ? nui_entry_before(ctx.r5.u32) : NuiEntryBits{};
         __imp__sub_822CB9B8(ctx, base);
         if (nui_wanted)
             note_nui_detector(nui_player_of_record(body_of_source(ctx, base, source)), 0x822CB9B8, detector, nui_before,

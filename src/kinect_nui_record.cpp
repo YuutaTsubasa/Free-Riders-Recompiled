@@ -31,7 +31,7 @@ const std::array<KinectNuiDetector, kinect_nui_detector_count> kinect_nui_detect
     {0x822CCD98, "under_swing", v::none},    {0x822CD068, "under_throw", v::none},
     {0x822CDDB0, "inflator", v::none},       {0x822CC8F0, "shake", v::none},
     {0x822CDEE0, "wipe", v::detector_short_76}, {0x822CD638, "lever", v::entry_signed_82},
-    {0x822CD960, "handle", v::entry_signed_83}, {0x822CD3F0, "front_curve", v::second_entry_signed_81},
+    {0x822CD960, "handle", v::entry_signed_83}, {0x822CD3F0, "front_curve", v::entry_signed_81},
     {0x822CE118, "swim", v::none},           {0x822C8D88, "hold_hands", v::none},
     {0x822C8958, "steer", v::entry_signed_76}, {0x822CB9B8, "steer_alt", v::entry_signed_76},
 }};
