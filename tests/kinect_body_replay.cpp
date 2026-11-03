@@ -167,20 +167,27 @@ const sfr::KinectRecordRow* nearest_row(const std::vector<sfr::KinectRecordRow>&
             best_gap = gap;
         }
     }
-    // Widen to every row of that frame (several bodies are several rows).
+    // Widen to every row of that frame (several bodies are several rows),
+    // from its first.
     if (best) {
-        for (auto it = rows.begin() + (best - rows.data()); it != rows.end() && it->frame.frame == best->frame.frame; ++it)
+        auto first = rows.begin() + (best - rows.data());
+        while (first != rows.begin() && (first - 1)->frame.frame == best->frame.frame) --first;
+        for (auto it = first; it != rows.end() && it->frame.frame == best->frame.frame; ++it)
             if (it->has_body && (!best->has_body || it->body.joints[0].position[2] < best->body.joints[0].position[2]))
                 best = &*it;
     }
     return best && best_gap <= 50000 ? best : nullptr;
 }
 
-float iou(const std::vector<uint8_t>& ours, const std::vector<uint16_t>& truth_pixels, uint32_t& truth_count) {
+// The overlap of our player with the runtime's: its player (its skeleton
+// slot + 1, as the depth's low three bits carry it), or any for 0.
+float iou(const std::vector<uint8_t>& ours, const std::vector<uint16_t>& truth_pixels, uint32_t player,
+          uint32_t& truth_count) {
     uint32_t both = 0, either = 0;
     truth_count = 0;
     for (size_t i = 0; i < ours.size(); ++i) {
-        const bool a = ours[i] != 0, b = (truth_pixels[i] & 7) != 0;
+        const uint32_t index = truth_pixels[i] & 7;
+        const bool a = ours[i] != 0, b = player ? index == player : index != 0;
         truth_count += b;
         both += a && b;
         either += a || b;
@@ -191,8 +198,9 @@ float iou(const std::vector<uint8_t>& ours, const std::vector<uint16_t>& truth_p
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::cerr << "usage: sfr_kinect_body_replay <prefix> --sensor v1|v2 [--csv out.csv] [--joint-agreement m] "
-                     "[--min-score s] [--step m] [--margin m] [--floor m] [--every N] [--limit N]\n";
+        std::cerr << "usage: sfr_kinect_body_replay <prefix> --sensor v1|v2 [--csv out.csv] [--joints model|v1|v2] "
+                     "[--colour-shift x,y] [--joint-agreement m] [--arm-agreement m] [--min-score s] [--step m] "
+                     "[--margin m] [--floor m] [--every N] [--limit N] [--dump N folder]\n";
         return 2;
     }
     const std::string prefix = argv[1];
@@ -383,6 +391,7 @@ int main(int argc, char** argv) {
         float hip_err = NAN, head_err = NAN, hand_err[2] = {NAN, NAN}, rel_err[2] = {NAN, NAN};
         float ours_iou = NAN, truth_iou = NAN;
         uint32_t truth_pixels = 0;
+        const uint32_t truth_player = truth ? row->body.sensor_index + 1 : 0;
         const auto truth_point = [&](uint32_t nui) { return row->body.joints[record_joint(nui)].position; };
         const auto truth_tracked = [&](uint32_t nui) { return row->body.joints[record_joint(nui)].state == 2; };
         if (truth && found) {
@@ -445,14 +454,14 @@ int main(int argc, char** argv) {
         if (found) {
             index.assign(depth.size(), 0);
             sfr::kinect_cut_player(depth, camera, joints, 1, cut_settings, index);
-            ours_iou = iou(index, d->pixels, truth_pixels);
+            ours_iou = iou(index, d->pixels, truth_player, truth_pixels);
         }
         if (truth) {
             sfr::SkeletonJoints given{};
             for (uint32_t j = 0; j < sfr::nui_joint_count; ++j) given[j] = truth_point(j);
             truth_index.assign(depth.size(), 0);
             sfr::kinect_cut_player(depth, camera, given, 1, cut_settings, truth_index);
-            truth_iou = iou(truth_index, d->pixels, truth_pixels);
+            truth_iou = iou(truth_index, d->pixels, truth_player, truth_pixels);
         }
         if (truth_pixels >= 150) {
             if (found) {
@@ -461,7 +470,7 @@ int main(int argc, char** argv) {
             }
             if (truth) mask_iou_truth_joints.add(truth_iou);
         }
-        if (dump_every && pictures % uint32_t(dump_every) == 1) {
+        if (dump_every && (pictures - 1) % uint32_t(dump_every) == 0) {
             // The picture, then the depth (scaled to the picture's height) beside it.
             const uint32_t w = colour.width, h = colour.height, dw = camera.width, dh = camera.height;
             const float k = float(h) / float(dh);
