@@ -789,6 +789,10 @@ if(SFR_POSE_AVAILABLE)
         src/kinect_record_depth.cpp src/kinect_record_colour.cpp src/kinect_v2_image.cpp ${SFR_POSE_SOURCES})
     target_include_directories(sfr_kinect_body_replay PRIVATE src)
     target_link_libraries(sfr_kinect_body_replay PRIVATE sfr_onnxruntime)
+    if(APPLE)
+        # The pose model is found in the app bundle (pose_estimator_onnx.cpp).
+        target_link_libraries(sfr_kinect_body_replay PRIVATE "-framework CoreFoundation")
+    endif()
     sfr_copy_onnx_dlls(sfr_kinect_body_replay)
 endif()
 # CI builds every available Android camera consumer, including pose when its
