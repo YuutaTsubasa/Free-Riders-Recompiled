@@ -157,7 +157,9 @@ const sfr::KinectRecordRow* nearest_row(const std::vector<sfr::KinectRecordRow>&
                                [](const sfr::KinectRecordRow& row, int64_t t) { return row.frame.steady_us < t; });
     const sfr::KinectRecordRow* best = nullptr;
     int64_t best_gap = 0;
-    for (auto it = at == rows.begin() ? at : at - 1; it != rows.end() && it <= at + 1; ++it) {
+    // The rows either side of the time (at is rows.end() past the last one).
+    const auto last = at == rows.end() ? at : at + 1;
+    for (auto it = at == rows.begin() ? at : at - 1; it != rows.end() && it <= last; ++it) {
         // Rows of one frame share its time; among them the nearest body.
         const int64_t gap = std::llabs(it->frame.steady_us - us);
         if (!best || gap < best_gap ||
