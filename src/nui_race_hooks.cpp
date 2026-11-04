@@ -1145,3 +1145,50 @@ SFR_INPUT_HOOK(sub_822B72E0) {
         std::cerr << "NUI_RACE_PREPARATION skipped=" << state << '\n';
     }
 }
+
+PPC_FUNC_IMPL(__imp__sub_8237BEF8);
+
+// Metropolis Speedway's train (update 8237BEF8): a rider hanging from its pole
+// lets go once both hands (+116 and +180, the hand joints' heights) are below
+// the shoulders (+36), so a Kinect player holds their arms up all the way. A
+// pad rider's skeleton keeps its hands down unless the right stick is up, and
+// the No Kinect Patch's riders hang on to the end (Issue #339): for the train
+// alone, the pad riders' hands are as high as the shoulders.
+SFR_INPUT_HOOK(sub_8237BEF8) {
+    sfr::enter_function(ctx, "sub_8237BEF8", 0x8237BEF8);
+    struct Hands { uint32_t record, left, right; };
+    std::vector<Hands> raised;
+    auto raise = [&](uint32_t record) {
+        if (!record || camera_player(player_of_record(record))) return;
+        for (const Hands& hands : raised) if (hands.record == record) return;
+        raised.push_back({record, memory().load<uint32_t>(record + 116), memory().load<uint32_t>(record + 180)});
+        const float shoulders = load_float(record + 36);
+        store_float(record + 116, std::max(load_float(record + 116), shoulders));
+        store_float(record + 180, std::max(load_float(record + 180), shoulders));
+    };
+    // The train's riders (+796, three) and the body each reads, as the train
+    // does: [[[rider+3220]+324]] owns the body, and its vtable[1] is the shared
+    // accessor 82918418 ([owner+4]). Only our pad bodies are raised.
+    const auto at = [&](uint32_t address) { return memory().readable(address, 4) ? memory().load<uint32_t>(address) : 0u; };
+    const auto body_of_rider = [&](uint32_t rider) -> uint32_t {
+        const uint32_t owner = rider ? at(at(at(rider + 3220) + 324)) : 0;
+        return owner && at(at(owner) + 4) == 0x82918418 ? at(owner + 4) : 0;
+    };
+    if (pad_racing() && !sfr::nui_body_from_sensor())
+        for (uint32_t i = 0; i < 3; ++i) {
+            const uint32_t record = body_of_rider(at(ctx.r3.u32 + 796 + i * 4));
+            const bool ours = record == body_address ||
+                std::any_of(source_records.begin(), source_records.end(), [&](const auto& s) { return s.second == record; });
+            if (record && ours && memory().readable(record, 184)) raise(record);
+        }
+    struct Restore {
+        const std::vector<Hands>& raised;
+        ~Restore() {
+            for (const Hands& hands : raised) {
+                memory().store<uint32_t>(hands.record + 116, hands.left);
+                memory().store<uint32_t>(hands.record + 180, hands.right);
+            }
+        }
+    } restore{raised};
+    __imp__sub_8237BEF8(ctx, base);
+}

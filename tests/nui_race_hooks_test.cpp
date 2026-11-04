@@ -25,6 +25,7 @@ bool sensor_body = false;
 bool camera_active = false;
 bool second_pad_present = false;
 unsigned pose_calls = 0;
+float train_hands[2] = {};  // the hand heights Metropolis's train update saw
 uint64_t kinect_sequence = 0;
 }
 
@@ -65,6 +66,12 @@ PPC_FUNC(__imp__sub_82918418) { ctx.r3.u64 = sfr::active_memory->load<uint32_t>(
 PPC_FUNC(__imp__sub_822C63E8) { throw std::runtime_error("unexpected original lean filter"); }
 PPC_FUNC(__imp__sub_82438930) { ++harness::manager_calls; }
 PPC_FUNC(__imp__sub_822A6988) { ++harness::pose_calls; }
+// Fixture for Metropolis Speedway's train update: what it sees of the body's hands.
+PPC_FUNC(__imp__sub_8237BEF8) {
+    const uint32_t record = sfr::active_memory->load<uint32_t>(harness::box + 0x78);
+    harness::train_hands[0] = std::bit_cast<float>(sfr::active_memory->load<uint32_t>(record + 116));
+    harness::train_hands[1] = std::bit_cast<float>(sfr::active_memory->load<uint32_t>(record + 180));
+}
 
 // Fixture for the original Side detector's observed result with the copied
 // race pose: tracked hands recognize Side. This is a guest-code boundary,
@@ -399,6 +406,39 @@ void run() {
                 "the second entry must not take the lean");
         m.store<uint32_t>(results + 12, 0);
         frame(0);
+    }
+
+    // Metropolis Speedway's train pole lets go of a rider whose hands are both
+    // below the shoulders: a pad rider's hands are lowered (the skeleton's,
+    // without the right stick up) but reach the shoulders for the train alone,
+    // so the rider hangs on as with the No Kinect Patch (Issue #339).
+    {
+        frame(0);
+        const uint32_t record = m.load<uint32_t>(box + 0x78);
+        const auto f = [&](uint32_t offset) { return std::bit_cast<float>(m.load<uint32_t>(record + offset)); };
+        m.store<uint32_t>(record + 116, std::bit_cast<uint32_t>(-0.15f));
+        m.store<uint32_t>(record + 180, std::bit_cast<uint32_t>(0.8f));
+        // The train's first rider reads its body through the shared accessor.
+        constexpr uint32_t train = 0x10010000, rider = 0x10011000, link = 0x10013000, owner = 0x10013100,
+                           vtable = 0x10013200;
+        m.map(train, 0x4000);
+        m.store<uint32_t>(train + 796, rider);
+        m.store<uint32_t>(rider + 3220, link);
+        m.store<uint32_t>(link + 324, link + 16);
+        m.store<uint32_t>(link + 16, owner);
+        m.store<uint32_t>(owner, vtable);
+        m.store<uint32_t>(vtable + 4, 0x82918418);
+        m.store<uint32_t>(owner + 4, record);
+        PPCContext ctx;
+        ctx.r3.u64 = train;
+        train_hands[0] = 0;
+        hooks().at("sub_8237BEF8")(ctx, m.base());
+        require(train_hands[0] >= f(36) && train_hands[1] == 0.8f, "the train must see the hands at the shoulders");
+        require(f(116) == -0.15f && f(180) == 0.8f, "the hands must be as they were after the train");
+        // A body that is not one of ours (here: no riders) is left alone.
+        m.store<uint32_t>(train + 796, 0);
+        hooks().at("sub_8237BEF8")(ctx, m.base());
+        require(train_hands[0] == -0.15f, "a train without our riders must see the hands as they are");
     }
 
     conflicting_action(sfr::gamepad_button::b, "sub_822C9BF0");
