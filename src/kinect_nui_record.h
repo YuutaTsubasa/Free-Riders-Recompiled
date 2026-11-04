@@ -43,7 +43,7 @@ struct KinectNuiDetector {
 };
 namespace kinect_nui_value_kind {
 constexpr uint8_t none = 0, entry_byte_80 = 1, entry_word_72 = 2, entry_float_56 = 3, entry_signed_82 = 4,
-                  entry_signed_83 = 5, second_entry_signed_81 = 6, detector_short_76 = 7, entry_signed_76 = 8;
+                  entry_signed_83 = 5, entry_signed_81 = 6, detector_short_76 = 7, entry_signed_76 = 8;
 }
 constexpr uint32_t kinect_nui_detector_count = 32;
 extern const std::array<KinectNuiDetector, kinect_nui_detector_count> kinect_nui_detectors;

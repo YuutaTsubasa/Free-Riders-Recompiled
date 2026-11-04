@@ -274,6 +274,8 @@ with [docs/progress.md](docs/progress.md).
   Online, the game no longer closes on Linux and macOS when the server goes away (#328), no longer freezes when the server stops answering (#329), and no longer stops with an online name in letters other than English (#336). On Windows, mods load and the online name and password arrive intact when the game is in a folder with non-English letters (#330). On Android, the launcher shows why the game stopped instead of going back to its settings (#331).
 - [v0.10.43 — Reach with the right stick at any moment](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.43)
   With a controller, pushing the right stick to a side now reaches for rings and poles at any moment in a race, as the No Kinect Patch allowed, instead of only now and then; the game also keeps how long the grab button has been held (#339, in part).
+- [v0.10.44 — Move along and hang on to Metropolis Speedway's train pole](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.44)
+  With a controller, the left stick now moves you along the train's pole in Metropolis Speedway, and you keep hanging on with the right stick let go, as with the No Kinect Patch (#339, in part).
 
 ## System Requirements
 
