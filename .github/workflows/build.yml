@@ -91,6 +91,12 @@ jobs:
           echo "LDFLAGS=-L$llvm/lib/c++ -L$llvm/lib/unwind -lunwind -Wl,-rpath,$llvm/lib/c++" >> "$GITHUB_ENV"
       - name: Fetch the pinned dependencies
         run: python scripts/bootstrap.py
+      # ONNX Runtime for macOS and the pose models, so what builds only with
+      # them (the camera motion input, the pose probe, the Kinect replay tool)
+      # is built here too: a Mac release links them (#342's missing
+      # CoreFoundation only showed at 0.10.45's release build).
+      - name: Fetch ONNX Runtime and the pose models
+        run: python scripts/fetch_pose_model.py --platform macos
       - name: Build
         run: |
           # On failure, keep going once more to list every error, not just the first.
