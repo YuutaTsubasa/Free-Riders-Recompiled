@@ -74,6 +74,13 @@ void runtime_joint_places(const JointPlaces& places, SkeletonJoints& joints,
     joints[joint::hip_right][2] += places.hips_deeper;
     joints[joint::hip_center][2] += places.hip_center_deeper;
     joints[joint::spine][2] += places.spine_deeper;
+    // The torso's joints are moved along the line from the hips to the
+    // shoulders, so they are no surer than the four joints that make it.
+    const uint32_t torso = (std::min)({joint_states[joint::hip_left], joint_states[joint::hip_right],
+                                       joint_states[joint::shoulder_left], joint_states[joint::shoulder_right]});
+    for (const uint32_t moved : {joint::hip_left, joint::hip_right, joint::hip_center, joint::spine,
+                                 joint::shoulder_center, joint::shoulder_left, joint::shoulder_right, joint::head})
+        joint_states[moved] = (std::min)(joint_states[moved], torso);
     for (const auto& [wrist, hand, elbow] : {std::array{joint::wrist_left, joint::hand_left, joint::elbow_left},
                                              std::array{joint::wrist_right, joint::hand_right, joint::elbow_right}}) {
         // The wrist is where the model's hand was, and as sure; the hand is

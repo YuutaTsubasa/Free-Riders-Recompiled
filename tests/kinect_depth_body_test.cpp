@@ -195,6 +195,10 @@ void joint_places() {
     require(v1_states[joint::hand_left] ==
                 (std::min)(model_states[joint::hand_left], model_states[joint::elbow_left]),
             "the hand is no surer than the wrist and elbow");
+    const uint32_t torso_state = (std::min)({model_states[joint::hip_left], model_states[joint::hip_right],
+                                             model_states[joint::shoulder_left], model_states[joint::shoulder_right]});
+    for (const uint32_t moved : {joint::hip_center, joint::spine, joint::shoulder_center, joint::head})
+        require(v1_states[moved] == (std::min)(model_states[moved], torso_state), "a torso joint is no surer than the torso");
     {
         // An elbow only guessed at makes the hand a guess too.
         auto guessed = landmarks;
