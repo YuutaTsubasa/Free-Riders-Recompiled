@@ -52,7 +52,8 @@ struct JointPlaces {
 constexpr JointPlaces v1_places{0.175f, 0.29f, 0.447f, 0.126f, -0.106f, 0.124f, 0.3f, 0, 0, 0};
 constexpr JointPlaces v2_places{-0.071f, -0.089f, 0.527f, -0.02f, -0.135f, 0.053f, 0.3f, 0.045f, 0.095f, 0.06f};
 
-void runtime_joint_places(const JointPlaces& places, SkeletonJoints& joints) {
+void runtime_joint_places(const JointPlaces& places, SkeletonJoints& joints,
+                          std::array<uint32_t, nui_joint_count>& joint_states) {
     namespace joint = nui_joint;
     const auto plus = [](const Point& a, const Point& d, float k) {
         return Point{a[0] + d[0] * k, a[1] + d[1] * k, a[2] + d[2] * k};
@@ -75,8 +76,12 @@ void runtime_joint_places(const JointPlaces& places, SkeletonJoints& joints) {
     joints[joint::spine][2] += places.spine_deeper;
     for (const auto& [wrist, hand, elbow] : {std::array{joint::wrist_left, joint::hand_left, joint::elbow_left},
                                              std::array{joint::wrist_right, joint::hand_right, joint::elbow_right}}) {
+        // The wrist is where the model's hand was, and as sure; the hand is
+        // carried on from the elbow, so no surer than either of them.
         joints[wrist] = joints[hand];
+        joint_states[wrist] = joint_states[hand];
         joints[hand] = plus(joints[hand], minus(joints[hand], joints[elbow]), places.hand);
+        joint_states[hand] = (std::min)(joint_states[hand], joint_states[elbow]);
     }
 }
 
@@ -289,7 +294,7 @@ bool kinect_depth_body(const PoseLandmarks& given, const KinectDepthMillimetres&
     pose_nui_joints(points, states, joints, joint_states);
     joints[nui_joint::head][2] += 0.07f;
     if (settings.places != KinectJointPlaces::model)
-        runtime_joint_places(settings.places == KinectJointPlaces::v2 ? v2_places : v1_places, joints);
+        runtime_joint_places(settings.places == KinectJointPlaces::v2 ? v2_places : v1_places, joints, joint_states);
     return true;
 }
 

@@ -167,13 +167,13 @@ void joint_places() {
     const auto depth = scene();
     const auto landmarks = landmarks_for(truth());
     namespace joint = sfr::nui_joint;
-    std::array<uint32_t, sfr::nui_joint_count> states{};
+    std::array<uint32_t, sfr::nui_joint_count> states{}, model_states{}, v1_states{};
     sfr::SkeletonJoints model{}, v1{}, v2{};
     sfr::KinectDepthBodySettings settings;
     settings.places = sfr::KinectJointPlaces::model;
-    require(sfr::kinect_depth_body(landmarks, depth, settings, model, states), "the model's points");
+    require(sfr::kinect_depth_body(landmarks, depth, settings, model, model_states), "the model's points");
     settings.places = sfr::KinectJointPlaces::v1;
-    require(sfr::kinect_depth_body(landmarks, depth, settings, v1, states), "a v1's joints");
+    require(sfr::kinect_depth_body(landmarks, depth, settings, v1, v1_states), "a v1's joints");
     settings.places = sfr::KinectJointPlaces::v2;
     require(sfr::kinect_depth_body(landmarks, depth, settings, v2, states), "a v2's joints");
     const float torso = model[joint::shoulder_center][1] - model[joint::hip_center][1];
@@ -189,6 +189,22 @@ void joint_places() {
                       1.3f * length(model[joint::hand_left], model[joint::elbow_left])) < 0.01f,
             "a hand past the wrist");
     require(distance(v1[joint::wrist_left], model[joint::hand_left]) < 1e-4f, "the wrist is the model's wrist");
+    // The moved wrist keeps the model wrist's tracking; the hand carried on
+    // from the elbow is no surer than the elbow.
+    require(v1_states[joint::wrist_left] == model_states[joint::hand_left], "the wrist keeps its tracking");
+    require(v1_states[joint::hand_left] ==
+                (std::min)(model_states[joint::hand_left], model_states[joint::elbow_left]),
+            "the hand is no surer than the wrist and elbow");
+    {
+        // An elbow only guessed at makes the hand a guess too.
+        auto guessed = landmarks;
+        std::array<uint32_t, sfr::nui_joint_count> guessed_states{};
+        sfr::SkeletonJoints guessed_joints{};
+        guessed[sfr::pose_point::elbow_left].score = 0.1f;
+        require(sfr::kinect_depth_body(guessed, depth, settings, guessed_joints, guessed_states), "a guessed elbow");
+        require(guessed_states[joint::hand_left] <= guessed_states[joint::elbow_left],
+                "a hand from a guessed elbow is no surer than it");
+    }
     require(distance(v1[joint::knee_left], model[joint::knee_left]) < 1e-4f, "the legs are the model's");
 }
 
