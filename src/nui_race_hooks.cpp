@@ -1166,10 +1166,21 @@ SFR_INPUT_HOOK(sub_8237BEF8) {
         store_float(record + 116, std::max(load_float(record + 116), shoulders));
         store_float(record + 180, std::max(load_float(record + 180), shoulders));
     };
-    if (pad_racing() && !sfr::nui_body_from_sensor()) {
-        raise(body_address);
-        for (const auto& [source, record] : source_records) raise(record);
-    }
+    // The train's riders (+796, three) and the body each reads, as the train
+    // does: [[[rider+3220]+324]] owns the body, and its vtable[1] is the shared
+    // accessor 82918418 ([owner+4]). Only our pad bodies are raised.
+    const auto at = [&](uint32_t address) { return memory().readable(address, 4) ? memory().load<uint32_t>(address) : 0u; };
+    const auto body_of_rider = [&](uint32_t rider) -> uint32_t {
+        const uint32_t owner = rider ? at(at(at(rider + 3220) + 324)) : 0;
+        return owner && at(at(owner) + 4) == 0x82918418 ? at(owner + 4) : 0;
+    };
+    if (pad_racing() && !sfr::nui_body_from_sensor())
+        for (uint32_t i = 0; i < 3; ++i) {
+            const uint32_t record = body_of_rider(at(ctx.r3.u32 + 796 + i * 4));
+            const bool ours = record == body_address ||
+                std::any_of(source_records.begin(), source_records.end(), [&](const auto& s) { return s.second == record; });
+            if (record && ours && memory().readable(record, 184)) raise(record);
+        }
     struct Restore {
         const std::vector<Hands>& raised;
         ~Restore() {
