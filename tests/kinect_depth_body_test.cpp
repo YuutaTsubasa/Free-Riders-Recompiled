@@ -39,11 +39,24 @@ sfr::KinectDepthMillimetres scene() {
     return depth;
 }
 
+// How far inside the body each of the model's points is (as
+// kinect_depth_body takes it: deepest at the hips, least at the arms).
+float inside(uint32_t point) {
+    using namespace sfr::pose_point;
+    switch (point) {
+    case shoulder_left: case shoulder_right: return 0.07f;
+    case hip_left: case hip_right: return 0.10f;
+    case knee_left: case knee_right: return 0.085f;
+    case ankle_left: case ankle_right: return 0.055f;
+    default: return 0.04f;
+    }
+}
+
 // The player's joints, in camera space: at the body's depth plus the joints'
 // place inside it, the right arm straight out at shoulder height.
 std::array<Point, sfr::pose_point::count> truth() {
     using namespace sfr::pose_point;
-    const float z = body_front + 0.06f;
+    const float z = body_front;
     std::array<Point, count> p{};
     p[nose] = {0.0f, 0.62f, body_front};
     p[eye_left] = {-0.03f, 0.65f, z};
@@ -63,6 +76,7 @@ std::array<Point, sfr::pose_point::count> truth() {
     p[knee_left] = {-0.10f, -0.45f, z};
     p[ankle_right] = {0.10f, -0.80f, z};
     p[ankle_left] = {-0.10f, -0.80f, z};
+    for (uint32_t i = nose + 1; i < count; ++i) p[i][2] += inside(i);
     return p;
 }
 
@@ -76,9 +90,10 @@ sfr::PoseLandmarks landmarks_for(const std::array<Point, sfr::pose_point::count>
                           (joints[hip_left][1] + joints[hip_right][1]) * 0.5f,
                           (joints[hip_left][2] + joints[hip_right][2]) * 0.5f};
     for (uint32_t i = 0; i < count; ++i) {
+        // The colour camera looks a little off the depth camera's way.
         const auto place = sfr::kinect_colour_point(joints[i]);
-        out[i].x = place.x;
-        out[i].y = place.y;
+        out[i].x = place.x - sfr::kinect_v1_colour_shift_x * 531.15f / 285.63f;
+        out[i].y = place.y - sfr::kinect_v1_colour_shift_y * 531.15f / 285.63f;
         out[i].score = 0.95f;
         out[i].world = {joints[i][0] - centre[0], -(joints[i][1] - centre[1]), joints[i][2] - centre[2]};
         out[i].has_world = true;
@@ -97,8 +112,9 @@ void lens() {
     require(distance(at, back) < 1e-4f, "a depth pixel goes back to its point");
     const auto in_colour = sfr::kinect_colour_point(at);
     const auto mapped = sfr::kinect_colour_to_depth_pixel(in_colour.x, in_colour.y);
-    require(std::fabs(mapped[0] - in_depth.x) < 1e-3f && std::fabs(mapped[1] - in_depth.y) < 1e-3f,
-            "a colour pixel lands where its point does in the depth picture");
+    require(std::fabs(mapped[0] - in_depth.x - sfr::kinect_v1_colour_shift_x) < 1e-3f &&
+                std::fabs(mapped[1] - in_depth.y - sfr::kinect_v1_colour_shift_y) < 1e-3f,
+            "a colour pixel lands where its point does in the depth picture, shifted as a real v1's");
 }
 
 void depth_sampling() {
@@ -113,7 +129,9 @@ void skeleton() {
     const auto joints = truth();
     sfr::SkeletonJoints made{};
     std::array<uint32_t, sfr::nui_joint_count> states{};
-    require(sfr::kinect_depth_body(landmarks_for(joints), depth, {}, made, states), "a body is made");
+    sfr::KinectDepthBodySettings model;
+    model.places = sfr::KinectJointPlaces::model;
+    require(sfr::kinect_depth_body(landmarks_for(joints), depth, model, made, states), "a body is made");
     namespace joint = sfr::nui_joint;
     using namespace sfr::pose_point;
     const auto near = [&](uint32_t nui, uint32_t point, float within, const char* name) {
@@ -131,7 +149,8 @@ void skeleton() {
     // so the shape places it.
     require(states[joint::hand_right] == 1 && states[joint::elbow_right] == 1, "the arm out of the body box: shape");
     near(joint::hand_right, wrist_right, 0.05f, "the right hand");
-    require(std::fabs(made[joint::hip_center][2] - (body_front + 0.06f)) < 0.03f, "the hips at the body's depth");
+    require(std::fabs(made[joint::hip_center][2] - (body_front + inside(hip_left))) < 0.03f,
+            "the hips at the body's depth");
     // No torso, no body.
     auto unsure = landmarks_for(joints);
     unsure[shoulder_left].score = 0.1f;
@@ -139,6 +158,58 @@ void skeleton() {
     auto flat = landmarks_for(joints);
     flat[nose].has_world = false;
     require(!sfr::kinect_depth_body(flat, depth, {}, made, states), "no world shape, no body");
+}
+
+// The joints where each runtime puts them, from the model's own points: a
+// v1's hip centre well above the model's hips, a v2's SpineBase a little
+// below them and deeper; both runtimes' hands past the wrists.
+void joint_places() {
+    const auto depth = scene();
+    const auto landmarks = landmarks_for(truth());
+    namespace joint = sfr::nui_joint;
+    std::array<uint32_t, sfr::nui_joint_count> states{}, model_states{}, v1_states{};
+    sfr::SkeletonJoints model{}, v1{}, v2{};
+    sfr::KinectDepthBodySettings settings;
+    settings.places = sfr::KinectJointPlaces::model;
+    require(sfr::kinect_depth_body(landmarks, depth, settings, model, model_states), "the model's points");
+    settings.places = sfr::KinectJointPlaces::v1;
+    require(sfr::kinect_depth_body(landmarks, depth, settings, v1, v1_states), "a v1's joints");
+    settings.places = sfr::KinectJointPlaces::v2;
+    require(sfr::kinect_depth_body(landmarks, depth, settings, v2, states), "a v2's joints");
+    const float torso = model[joint::shoulder_center][1] - model[joint::hip_center][1];
+    require(torso > 0.3f, "a torso");
+    require(std::fabs(v1[joint::hip_center][1] - model[joint::hip_center][1] - 0.29f * torso) < 0.01f,
+            "a v1's hip centre is above the model's hips");
+    require(v2[joint::hip_center][1] < model[joint::hip_center][1] &&
+                v2[joint::hip_center][2] > model[joint::hip_center][2] + 0.05f,
+            "a v2's SpineBase is below the model's hips, and deeper");
+    require(v1[joint::shoulder_center][1] > model[joint::shoulder_center][1], "a v1's shoulder centre is at the neck");
+    const auto length = [](const Point& a, const Point& b) { return distance(a, b); };
+    require(std::fabs(length(v1[joint::hand_left], v1[joint::elbow_left]) -
+                      1.3f * length(model[joint::hand_left], model[joint::elbow_left])) < 0.01f,
+            "a hand past the wrist");
+    require(distance(v1[joint::wrist_left], model[joint::hand_left]) < 1e-4f, "the wrist is the model's wrist");
+    // The moved wrist keeps the model wrist's tracking; the hand carried on
+    // from the elbow is no surer than the elbow.
+    require(v1_states[joint::wrist_left] == model_states[joint::hand_left], "the wrist keeps its tracking");
+    require(v1_states[joint::hand_left] ==
+                (std::min)(model_states[joint::hand_left], model_states[joint::elbow_left]),
+            "the hand is no surer than the wrist and elbow");
+    const uint32_t torso_state = (std::min)({model_states[joint::hip_left], model_states[joint::hip_right],
+                                             model_states[joint::shoulder_left], model_states[joint::shoulder_right]});
+    for (const uint32_t moved : {joint::hip_center, joint::spine, joint::shoulder_center, joint::head})
+        require(v1_states[moved] == (std::min)(model_states[moved], torso_state), "a torso joint is no surer than the torso");
+    {
+        // An elbow only guessed at makes the hand a guess too.
+        auto guessed = landmarks;
+        std::array<uint32_t, sfr::nui_joint_count> guessed_states{};
+        sfr::SkeletonJoints guessed_joints{};
+        guessed[sfr::pose_point::elbow_left].score = 0.1f;
+        require(sfr::kinect_depth_body(guessed, depth, settings, guessed_joints, guessed_states), "a guessed elbow");
+        require(guessed_states[joint::hand_left] <= guessed_states[joint::elbow_left],
+                "a hand from a guessed elbow is no surer than it");
+    }
+    require(distance(v1[joint::knee_left], model[joint::knee_left]) < 1e-4f, "the legs are the model's");
 }
 
 void player_cut() {
@@ -227,7 +298,9 @@ void v2_camera_body() {
     const auto to_depth = [&](float x, float y, float& depth_x, float& depth_y) { return grid.find(x, y, depth_x, depth_y); };
     sfr::SkeletonJoints made{};
     std::array<uint32_t, sfr::nui_joint_count> states{};
-    require(sfr::kinect_depth_body(landmarks, depth, v2_camera, to_depth, {}, made, states), "a v2 body is made");
+    sfr::KinectDepthBodySettings model;
+    model.places = sfr::KinectJointPlaces::model;
+    require(sfr::kinect_depth_body(landmarks, depth, v2_camera, to_depth, model, made, states), "a v2 body is made");
     namespace joint = sfr::nui_joint;
     using namespace sfr::pose_point;
     const auto near = [&](uint32_t nui, uint32_t point, float within, const char* name) {
@@ -297,6 +370,7 @@ int main() {
         lens();
         depth_sampling();
         skeleton();
+        joint_places();
         player_cut();
         v2_camera_body();
         colour_depth_grid();

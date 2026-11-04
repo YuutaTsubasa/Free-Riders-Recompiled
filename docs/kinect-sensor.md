@@ -45,7 +45,12 @@ Mac 上沒有微軟的 Kinect runtime，改用 [libfreenect](https://github.com/
 
 - **骨架**：彩色畫面跑攝影機體感的姿勢模型（模型自己分得出身體的左右；runtime 的畫面是鏡像的，所以左右要對調），
   用軀幹的深度把臀部放到公尺座標上，每個關節在深度和模型的 3D 形狀一致時用自己的深度，否則用形狀的位置
-  （手臂細，深度常常量到後面的牆）。
+  （手臂細，深度常常量到後面的牆；手肘與手腕允許差 50 公分，其他 25 公分）。
+  - 彩色鏡頭跟深度鏡頭看的方向不完全一樣：彩色像素換到深度畫面時，往上移 15、往左移 2.5 個深度像素
+    （`kinect_v1_colour_shift_*`，在 KnucklesLee 的實機錄影上量的）。
+  - 模型的點不是 runtime 的關節：runtime 的臀部比較高、肩膀中心在脖子、肩膀比較低、手在手腕再過去、頭的中心在鼻子上方，
+    關節也在身體表面後面不同深度（臀部最深）。沿著軀幹與前臂把它們移到 runtime 的位置（`KinectJointPlaces`，
+    v1 與 v2 的 runtime 各一組，見下方「錄影驗證」）。
 - **玩家編號**：從骨架的像素出發，往深度差不到 5 公分的鄰點擴展，限制在骨架外 30 公分內、腳踝下 7 公分以上（地板之上）。
 - **一位玩家**：姿勢模型只找一個人，2P 還沒做。Kinect 預覽視窗是 Windows 才有（launcher 在 Mac 上沒有預覽按鈕）。
 - libfreenect 給的畫面是否跟 runtime 一樣是鏡像的，還沒在實機上確認：`SFR_FREENECT_MIRROR=1` 把兩張畫面左右翻過來。
@@ -58,7 +63,8 @@ Mac 上沒有微軟的 Kinect runtime，改用 [libfreenect](https://github.com/
 - **彩色對到深度**：registration 會告訴我們每個深度像素落在彩色畫面（1920x1080）的哪一點；反過來建一張表
   （彩色畫面切成 4x4 的格子，每格記住落在裡面最近的深度像素，所以手在牆前面時，那幾格是手的），
   姿勢模型在半尺寸（960x540）的彩色畫面找到的關節就由這張表找到深度。
-- **骨架與玩家編號**：同 v1 的 `kinect_depth_body`（取樣半徑依畫面寬度放大）。
+- **骨架與玩家編號**：同 v1 的 `kinect_depth_body`（取樣半徑依畫面寬度放大），關節放在 v2 runtime 的位置
+  （`KinectJointPlaces::v2`：SpineBase 比 v1 的臀部中心低而且深）。
 - **交給遊戲**：跟 Windows 的 v2 一樣，骨架與深度都經過「虛擬 v1」（`KinectDepthViewer`、`kinect_v2_synthesize_depth`，
   見下方「Kinect v2 深度」），遊戲拿到 v1 格式的 320x240 深度加玩家編號。深度視角照 `SFR_KINECT_V2_DEPTH_VIEW` 等設定；
   `fit` 的縮放用感測器自己的焦距。地板平面還沒有（Recompiled 視角因此不會「放平」，相機在感測器的高度）。
@@ -70,8 +76,47 @@ launcher 在 Mac 上列出 Kinect（Xbox 360）與 Kinect v2；舊的 `camera=ki
 檢查工具：`sfr_freenect_probe [秒數]`（v1 實機）、`sfr_freenect2_probe [秒數]`（v2 實機，印出鏡頭參數）、
 `sfr_fakenect_probe`（播放 `FAKENECT_PATH` 的錄影）、
 `sfr_kinect_probe`（經遊戲用的介面，含骨架）。單元測試 `kinect_depth_body` 用畫出來的場景（牆、地板、手臂伸出身體範圍的玩家）
-檢查骨架與玩家編號，v1 與 v2 的鏡頭各一個場景，加上「彩色對到深度」的表。
-都還沒接實機或錄影驗證過。
+檢查骨架與玩家編號，v1 與 v2 的鏡頭各一個場景，加上「彩色對到深度」的表與兩種 runtime 的關節位置。
+
+### 錄影驗證（`sfr_kinect_body_replay`）
+
+Mac 的做法還沒接過實機，但已經用 Windows 錄的實機資料離線驗證：KnucklesLee 2026-11-03 的錄影
+（`sfr_kinect_probe 120 --both --record … --depth --colour`，v1 與 v2 各一次，照錄影包的八段動作；
+影像是他本人，只放本機 gitignored 的 `out/kinect-recordings/`）。
+
+```
+out\build\host\sfr_kinect_body_replay.exe <前綴> --sensor v1|v2 [--csv 每張.csv] [--dump N 資料夾]
+```
+
+讀 `<前綴>-skeleton.csv`、`<前綴>-v1-depth.bin`、`<前綴>-v1-colour.bin`（或 v2 的）。每張彩色畫面配時間最近的深度，
+把深度的玩家編號（runtime 的答案）拿掉當成公釐，跑姿勢模型與 `kinect_depth_body`，再跟時間最近的 runtime 骨架比：
+各關節的誤差與每軸偏差（中位數、第 90 百分位）、手相對肩膀中心的誤差（選單游標與比賽伸手看的）、
+玩家遮罩跟 runtime 的重疊率（IoU；也用 runtime 的骨架切一次，看切法本身），以及八段動作各自的結果。
+`REGISTRATION` 用模型的手肘、手腕、膝蓋、腳踝與 runtime 的同名關節，擬合彩色到深度的對應（v1 的位移就是這樣量的）。
+`--joints model` 看模型自己的點（量關節位置用），`--joint-agreement`、`--arm-agreement`、`--step`、`--margin`、`--floor` 試參數，
+`--dump N` 每 N 張存一張疊圖（彩色上紅點是模型、綠點是 runtime；深度上藍是 runtime 的玩家、黃是我們的）。
+
+v2 的錄影是探針合成的虛擬 v1 深度（`fit`：v2 的相機空間、深度乘上該張的 `z_scale`）與預覽的 640x466 彩色，
+不是 Mac 的 libfreenect2 給的 512x424 與 1920x1080：工具把深度的放大拿掉，當成焦距 285.63 / `z_scale` 的鏡頭，
+彩色用 v2 的典型鏡頭參數對到深度（`KinectColourDepthGrid`），所以 libfreenect2 自己的解碼與出廠校正不在驗證範圍內。
+典型彩色鏡頭在這次錄影偏了 7.1、-6.7 個預覽像素，量 v2 時加 `--colour-shift 7.11,-6.73`（只是工具自己的對位；Mac 用出廠校正）。
+
+結果（中位數；runtime 有追蹤到的關節）：
+
+| | v1 調整前 | v1 調整後 | v2 調整後 |
+| --- | --- | --- | --- |
+| 找到人（runtime 有人的畫面） | 99.8% | 99.8% | 99.7% |
+| 臀部中心 | 31 cm | 4.5 cm | 6.6 cm |
+| 頭、肩膀、手肘 | 34、10、15 cm | 3.9、3.5、4.2 cm | 3.9、4.1、3.5 cm |
+| 手 | 16 cm（第 90 百分位 40） | 5.1 cm（17） | 4.6 cm（25） |
+| 膝蓋、腳踝 | 19、15 cm | 5.0、4.7 cm | 9.0、12.6 cm |
+| 手相對肩膀中心 | 19.5 cm | 5.9 cm | 6.6 cm |
+| 玩家遮罩 IoU | 0.63（連地板一起切） | 0.95 | 0.91 |
+
+調整前最大的問題是彩色與深度沒對準（骨架整個低了十幾公分，腳踝跑到地板裡，玩家編號連地板一起長），
+其次是模型的點和 runtime 的關節定義不同。參數是在同一份錄影上量的，只有一個人、一個房間；v2 的腳常常超出畫面下緣
+（runtime 自己也只能推測），所以 v2 的膝蓋與腳踝比較差。還沒驗證的：Mac 實機上 libfreenect 的畫面是否鏡像、
+libfreenect2 的出廠校正、2P。
 
 ## 感應器位置
 

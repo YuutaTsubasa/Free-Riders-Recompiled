@@ -58,9 +58,12 @@ struct KinectDepthCamera {
 };
 
 // A depth pixel at a depth, and back; a colour pixel's place in the depth
-// picture (the same direction, the depth camera's wider lens).
+// picture (the depth camera's wider lens, and the colour camera looking a
+// little off the depth camera's way: the shift, in depth pixels, measured
+// on a real Kinect v1, kinect_depth_body.cpp).
 std::array<float, 3> kinect_depth_pixel_point(float x, float y, float metres);
 std::array<float, 3> kinect_depth_pixel_point(const KinectDepthCamera& camera, float x, float y, float metres);
+constexpr float kinect_v1_colour_shift_x = -2.5f, kinect_v1_colour_shift_y = -15.0f;
 std::array<float, 2> kinect_colour_to_depth_pixel(float x, float y);
 
 // The depth a colour pixel sees, from the depth picture's pixels around its
@@ -97,8 +100,21 @@ private:
 void kinect_depth_camera_points(const KinectDepthMillimetres& depth, const KinectDepthCamera& camera,
                                 std::vector<float>& points);
 
+// Whose joints the skeleton's are: the pose model's own points (a camera's
+// landmarks, for measuring), or where the Kinect for Windows runtime of a v1
+// or a v2 puts its joints (its hips, shoulders, hands and head are not the
+// model's: kinect_depth_body.cpp), which is what the game is given on Windows
+// with that sensor.
+enum class KinectJointPlaces : uint8_t { model, v1, v2 };
+
 struct KinectDepthBodySettings {
+    KinectJointPlaces places = KinectJointPlaces::v1;
     float joint_agreement = 0.25f;  // metres a joint's own depth may differ from the shape's place
+    // The same for the elbows and wrists: the model's depth for an arm is the
+    // least sure of its shape (a hand at the side placed 40 cm in front of the
+    // body), and wider lets the arm's own depth win (sfr_kinect_body_replay on
+    // KnucklesLee's recording: the hands' 90th percentile 39 cm -> 17 cm).
+    float arm_agreement = 0.5f;
     float min_score = 0.3f;         // a landmark less sure than this keeps the shape's place
 };
 
