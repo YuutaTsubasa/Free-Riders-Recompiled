@@ -134,6 +134,7 @@ ORIGINAL(822C8D88)
 ORIGINAL(822CB9B8)
 ORIGINAL(822B72E0)
 ORIGINAL(822A8AB0)
+ORIGINAL(8237BEF8)
 PPC_FUNC(__imp__sub_822C8958) {
     const uint32_t detector = ctx.r3.u32, results = ctx.r5.u32;
     ctx.r3.u64 = detector + 72;
