@@ -113,6 +113,8 @@ public:
             undrawn_ns_ = 0;
             drawn_ns_ = 0;
             frames_ = 0;
+            last_skip_ = 0;
+            retrying_ = false;
             return {};
         }
         // How long the frame that just ended took, undrawn and drawn apart: a
@@ -120,11 +122,15 @@ public:
         // then (a load, a shader) does not stop the skipping (on an AYN Thor
         // it held skips back 204 times in a race whose undrawn frames
         // averaged 6 ms).
+        // A retry's undrawn frame (below) that came in under a frame
+        // replaces the average: it shows that skipping helps now.
         if (now_ns > last_ns_) {
             const uint64_t took = (std::min)(now_ns - last_ns_, 2 * frame_ns);
             uint64_t& average = skipped_ ? undrawn_ns_ : drawn_ns_;
-            average = average ? (average * 7 + took) / 8 : took;
+            const bool retried = skipped_ && retrying_ && took < frame_ns;
+            average = average && !retried ? (average * 7 + took) / 8 : took;
         }
+        retrying_ = false;
         last_ns_ = now_ns;
         ++frames_;
         if (now_ns < due_ns_) {  // on time: wait for the frame's slot
@@ -152,12 +158,21 @@ public:
         // late by less now and then, and should not drop those frames.
         // Not when undrawn frames are no shorter than a frame (the game
         // itself too slow): they could not catch up, and the screen would
-        // only show fewer frames. Tried again once a second.
-        const bool helps = undrawn_ns_ < frame_ns || frames_ % 60 == 0 ||
+        // only show fewer frames. Tried again once a second: the first late
+        // frame a second after the last skip is skipped anyway. A retry on
+        // every sixtieth frame mostly fell on one that was on time or started
+        // the count again, and the average, learning one frame a retry, then
+        // kept one slow first undrawn frame for the whole race (Issue #1: a
+        // Galaxy Tab A9's stayed at 19 ms while its undrawn frames took
+        // 4-12 ms, and the race ran at 0.41).
+        const bool retry = frames_ >= last_skip_ + 60;
+        const bool helps = undrawn_ns_ < frame_ns || retry ||
                            (skip_slow_ && undrawn_ns_ * 4 < drawn_ns_ * 3);
         if (late > frame_ns && skipped_ < max_skips_ && !helps) ++blocked_;
         if (late > frame_ns && skipped_ < max_skips_ && helps) {
             ++skipped_;
+            last_skip_ = frames_;
+            retrying_ = retry;
             return {false, 0};
         }
         skipped_ = 0;
@@ -173,6 +188,8 @@ private:
     uint64_t undrawn_ns_ = 0;  // how long an undrawn frame takes (average)
     uint64_t drawn_ns_ = 0;    // and a drawn one
     uint64_t frames_ = 0;
+    uint64_t last_skip_ = 0;  // the frame of the last skip
+    bool retrying_ = false;   // the frame being run is a retry's undrawn one
     uint64_t resyncs_ = 0, blocked_ = 0;
 public:
     // For the log: times the race started its count again, skips held back

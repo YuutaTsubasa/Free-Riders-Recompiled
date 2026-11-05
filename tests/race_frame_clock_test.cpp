@@ -208,6 +208,30 @@ void frame_skipping() {
         require(skip.blocked() == 0, "no skip was held back");
     }
     {
+        // Issue #1 (a Galaxy Tab A9): drawn frames of 36 ms, undrawn ones of
+        // 8, but the race's first undrawn frame took 25. The retry a second
+        // later learns they are short again, and the race keeps real time
+        // from then on; it used to draw every frame and run at ~0.46.
+        sfr::RaceFrameSkip skip;
+        uint64_t now = 1'000'000'000;
+        auto decision = skip.next(now, true);
+        int undrawn = 0;
+        for (int i = 0; i < 120; ++i) {
+            now += decision.draw ? 36'000'000 : (undrawn++ == 0 ? 25'000'000 : 8'000'000);
+            decision = skip.next(now, true);
+            now += decision.wait_ns;
+        }
+        const uint64_t start = now;
+        const uint64_t blocked = skip.blocked();
+        for (int i = 0; i < 600; ++i) {
+            now += decision.draw ? 36'000'000 : 8'000'000;
+            decision = skip.next(now, true);
+            now += decision.wait_ns;
+        }
+        near(600 / 60.0 / (double(now - start) * 1e-9), 1.0, 0.04, "one slow first undrawn frame does not keep the race slow");
+        require(skip.blocked() == blocked, "no skip was held back after the retry");
+    }
+    {
         // Every frame takes 40 ms even undrawn (the game itself too slow):
         // skipping cannot catch up, so frames keep being drawn, and the race
         // slows down with its step unchanged, as on the console.
