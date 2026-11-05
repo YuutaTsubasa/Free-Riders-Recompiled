@@ -238,14 +238,13 @@ void save_screenshot() {
 namespace draw_capture {
 constexpr uint32_t grid_width=192, grid_height=108, every=10, columns=8, most=96;
 constexpr uint32_t race_draws=400, after_race=180;
-// Off, an earlier run's sheet is removed so a diagnostic ZIP never carries a
-// stale one.
+// An earlier run's sheet is removed first, on or off, so a diagnostic ZIP
+// never pairs one with another run's game.log.
 bool enabled() {
     static const bool on=[]{
+        std::remove("draw-capture.bmp");
         const char* t=std::getenv("SFR_DRAW_CAPTURE");
-        const bool set=t && std::strcmp(t,"1")==0;
-        if(!set) std::remove("draw-capture.bmp");
-        return set;
+        return t && std::strcmp(t,"1")==0;
     }();
     return on;
 }
