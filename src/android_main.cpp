@@ -33,6 +33,9 @@ extern "C" int SDL_main(int, char**) {
     if (!std::freopen("game.log", "w", stderr))
         __android_log_print(ANDROID_LOG_WARN, "FreeRiders", "cannot write %s/game.log", root);
     std::setvbuf(stderr, nullptr, _IOLBF, 1 << 16);  // whole lines, so a crash keeps the trace
+    // An earlier run's draw capture (Test options) goes with the log it
+    // belonged to, so the diagnostic ZIP never pairs it with this one.
+    std::remove("draw-capture.bmp");
     // GameActivity.loadLibraries has put settings.env and the defaults in the
     // environment already: the runtime reads them while libmain.so loads.
     const char* region = std::getenv("SFR_GAME_REGION");
