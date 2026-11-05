@@ -6,11 +6,13 @@ SHA-256 here instead of in config/dependencies.lock.json, and unpacked into
 tools/onnx (git-ignored). Windows, Linux and Android camera releases bundle
 these dependencies with their licences and notices (see docs/camera-input.md).
 
-  python scripts/fetch_pose_model.py [--model mediapipe|rtmpose] [--platform windows|linux]
+  python scripts/fetch_pose_model.py [--model mediapipe|rtmpose] [--platform windows|linux|macos]
                                      [--android] [--apple] [--verify-only]
 
 The runtime is Windows x64's unless --platform linux asks for Linux x64's
-(both unpack to tools/onnx/onnxruntime); --android also fetches the runtime
+(both unpack to tools/onnx/onnxruntime), or --platform macos for the macOS
+(arm64) one alone (tools/onnx/onnxruntime-macos, as --apple; CI's Mac build
+uses it); --android also fetches the runtime
 for Android's ABIs into tools/onnx/onnxruntime-android, and --apple the
 macOS (arm64) and iOS runtimes into tools/onnx/onnxruntime-macos and
 tools/onnx/onnxruntime-ios.
@@ -233,19 +235,20 @@ def main():
     parser.add_argument('--verify-only', action='store_true')
     parser.add_argument('--model', choices=('mediapipe', 'rtmpose'), default='mediapipe',
                         help='camera model family (default: mediapipe; rtmpose is legacy 2D)')
-    parser.add_argument('--platform', choices=('windows', 'linux'), default='windows',
+    parser.add_argument('--platform', choices=('windows', 'linux', 'macos'), default='windows',
                         help='the runtime for this machine (default: windows)')
     parser.add_argument('--android', action='store_true', help="also fetch the runtime for Android's ABIs")
     parser.add_argument('--apple', action='store_true', help='also fetch the macOS (arm64) and iOS runtimes')
     arguments = parser.parse_args()
-    desktop = 'onnxruntime-linux-x64.tgz' if arguments.platform == 'linux' else 'onnxruntime-win-x64.zip'
+    desktop = {'linux': 'onnxruntime-linux-x64.tgz', 'macos': 'onnxruntime-osx-arm64.tgz'}.get(
+        arguments.platform, 'onnxruntime-win-x64.zip')
     names = [desktop]
     if arguments.android and 'onnxruntime-linux-x64.tgz' not in names:
         names.append('onnxruntime-linux-x64.tgz')  # for the Android runtime's licence
     if arguments.android:
         names.append('onnxruntime-android.aar')
     if arguments.apple:
-        names += ['onnxruntime-osx-arm64.tgz', 'onnxruntime-ios.zip']
+        names += [name for name in ('onnxruntime-osx-arm64.tgz', 'onnxruntime-ios.zip') if name not in names]
     if arguments.model == 'mediapipe':
         names.extend(name for name in DOWNLOADS if name.startswith('mediapipe/'))
     else:
@@ -256,6 +259,8 @@ def main():
         return
     if arguments.platform == 'linux':
         runtime = unpack_linux(archives[desktop], TOOLS / 'onnxruntime')
+    elif arguments.platform == 'macos':
+        runtime = unpack_macos(archives[desktop])
     else:
         runtime = unpack_runtime(archives[desktop])
     print(f'ONNX Runtime in {runtime}')
