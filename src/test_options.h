@@ -86,6 +86,14 @@ inline constexpr TestOption table[] = {
       "測試用（Vulkan）：把著色器的分派迴圈改為依序執行，如同 Mac、iPhone、Samsung Xclipse 與 Intel GPU 的預設做法。"
       "若較舊的 GPU 在比賽中非常慢，或準備管線一直沒有進度，可試著開啟；關閉則保留迴圈。"},
      on_off, "#134, #224, #239"},
+    {"SFR_TEST_DEPTH_CLIP", TestGroup::graphics, test_platform::all,
+     {"Clip depth", "裁切深度"},
+     {"For testing (Vulkan): cuts off what lies beyond the near and far planes instead of flattening it onto "
+      "them, as Qualcomm Adreno GPUs do by default. Try On if walls, buildings or racers are missing in races; "
+      "Off flattens it.",
+      "測試用（Vulkan）：把超出近、遠平面的部分裁掉，而不是壓平到平面上，如同 Qualcomm Adreno GPU 的預設做法。"
+      "若比賽中牆壁、建築或選手不見，可試著開啟；關閉則壓平。"},
+     on_off, "#344"},
     {"SFR_TEST_NO_DESCRIPTOR_INDEXING", TestGroup::graphics, test_platform::all,
      {"Small texture sets", "小型材質組"},
      {"For testing (Vulkan): each draw binds a small set of textures of its own instead of one large array, "

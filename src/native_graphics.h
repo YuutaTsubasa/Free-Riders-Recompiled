@@ -58,6 +58,15 @@ public:
     // without it (an old Mali's). SFR_TEST_DEPTH_D24S8=1 takes D24S8 on any
     // Vulkan device.
     [[nodiscard]] plume::RenderFormat depth_format() const noexcept;
+    // Whether the game's pipelines clip depth instead of clamping it. The
+    // title draws with inverted viewports (minDepth 1, maxDepth 0); an
+    // Adreno 650's driver (512.502, Galaxy S20 FE) clamps such a draw's
+    // depth as if minDepth were the lower bound, so every pixel came out at
+    // the nearest depth and the sky, drawn after the canyon and the racers,
+    // covered them (Issue #344). Qualcomm's Vulkan drivers clip; the others
+    // clamp, as the title's own GPU does. SFR_TEST_DEPTH_CLIP=1 clips on any
+    // Vulkan device, =0 clamps on Qualcomm's too.
+    [[nodiscard]] bool clips_depth() const noexcept;
     // Vulkan with fewer vertex attributes than the twenty input locations
     // every draw declares (an old Mali's 16, Issue #169): each vertex shader
     // takes its inputs at compacted locations and its pipelines declare only
