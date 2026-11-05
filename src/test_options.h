@@ -239,6 +239,15 @@ inline constexpr TestOption table[] = {
      {"For testing: writes every sound and voice line the game asks for into game.log, to report a wrong one.",
       "測試用：把遊戲要求播放的每個音效與語音寫進 game.log，用來回報播錯的聲音。"},
      on, "#47"},
+    {"SFR_DRAW_CAPTURE", TestGroup::logging, test_platform::all,
+     {"Capture a race frame draw by draw", "逐次擷取比賽畫格的繪製"},
+     {"For testing: a few seconds into the first race, reads the screen back after every draw of one frame, "
+      "writes what each draw was into game.log and small pictures of the screen into draw-capture.bmp (in the "
+      "diagnostic ZIP on Android). That frame takes a few seconds. Turn it on to report scenery or characters "
+      "that are missing or broken.",
+      "測試用：第一場比賽開始幾秒後，在某一格的每次繪製後讀回畫面，把每次繪製的內容寫進 game.log，"
+      "畫面小圖存成 draw-capture.bmp（Android 會放進診斷 ZIP）。那一格會停頓幾秒。回報場景或角色消失、破圖時開啟。"},
+     on, "#344"},
 };
 }
 
