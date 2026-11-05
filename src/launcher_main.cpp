@@ -1120,14 +1120,14 @@ void follow_text_input(ImVec2 origin, float units_per_point) {
     const bool typing = ImGui::GetIO().WantTextInput && ImGui::GetActiveID() != 0;
     const auto step = sfr::launcher::keyboard_step(typing, asked, SDL_IsTextInputActive(),
                                                    ImGui::IsMouseReleased(ImGuiMouseButton_Left));
+    if (const ImGuiPlatformImeData& text = ImGui::GetCurrentContext()->PlatformImeData; typing && text.WantVisible) {
+        const SDL_Rect place{int((text.InputPos.x + origin.x) / units_per_point),
+                             int((text.InputPos.y + origin.y) / units_per_point), 1,
+                             int(std::ceil(text.InputLineHeight / units_per_point))};
+        SDL_SetTextInputRect(&place);
+    }
     switch (step) {
     case sfr::launcher::KeyboardStep::open:
-        if (const ImGuiPlatformImeData& text = ImGui::GetCurrentContext()->PlatformImeData; text.WantVisible) {
-            const SDL_Rect place{int((text.InputPos.x + origin.x) / units_per_point),
-                                 int((text.InputPos.y + origin.y) / units_per_point), 1,
-                                 int(std::ceil(text.InputLineHeight / units_per_point))};
-            SDL_SetTextInputRect(&place);
-        }
         SDL_StartTextInput();
         asked = true;
         break;
@@ -4612,6 +4612,9 @@ int main(int argc, char** argv) {
         return 1;
     }
     ImGui_ImplSDL2_InitForSDLRenderer(window, renderer);
+#if defined(__ANDROID__) || defined(SFR_IOS)
+    ImGui::GetPlatformIO().Platform_SetImeDataFn = nullptr;  // follow_text_input places it
+#endif
     picture_renderer = renderer;
 
     bool running = true;
