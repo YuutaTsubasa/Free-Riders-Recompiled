@@ -1378,6 +1378,7 @@ void NativePresentation::Impl::build_model() {
     // The game's own frame, not the swap chain: its colour and depth formats.
     pipeline_desc.renderTargetFormat[0] = plume::RenderFormat::B8G8R8A8_UNORM;
     pipeline_desc.depthTargetFormat = graphics->depth_format();
+    pipeline_desc.depthClipEnabled = graphics->clips_depth();
     pipeline_desc.renderTargetBlend[0] = plume::RenderBlendDesc::Copy();
     model_pipeline = device.createGraphicsPipeline(pipeline_desc);
     pipeline_desc.cullMode = plume::RenderCullMode::NONE;

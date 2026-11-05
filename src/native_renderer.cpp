@@ -184,7 +184,7 @@ private:
 
 std::unique_ptr<plume::RenderPipeline> create_draw_pipeline(plume::RenderDevice& device,
         const plume::RenderPipelineLayout* layout, const NativeDraw& draw, GraphicsBackend backend,
-        plume::RenderFormat depth_format, const plume::RenderShader* depth_flip = nullptr) {
+        plume::RenderFormat depth_format, const plume::RenderShader* depth_flip = nullptr, bool clips_depth = false) {
     const std::array<plume::RenderInputSlot, 2> slots{plume::RenderInputSlot(0, draw.stride),
                                                        plume::RenderInputSlot(zero_slot, 0)};
         plume::RenderGraphicsPipelineDesc desc;
@@ -203,6 +203,8 @@ std::unique_ptr<plume::RenderPipeline> create_draw_pipeline(plume::RenderDevice&
         desc.depthEnabled = draw.depth_enabled;
         desc.depthWriteEnabled = draw.depth_write;
         desc.depthFunction = draw.depth_function;
+        // Clipped rather than clamped where NativeGraphics::clips_depth says (Issue #344).
+        desc.depthClipEnabled = clips_depth;
         desc.stencilEnabled = draw.stencil_enabled;
         if (draw.stencil_enabled) {
             desc.stencilReference = draw.stencil_reference;
@@ -250,7 +252,7 @@ std::unique_ptr<plume::RenderPipeline> create_draw_pipeline(NativeGraphics& grap
         const plume::RenderPipelineLayout* layout, const NativeDraw& draw, const plume::RenderShader* depth_flip,
         const std::string& what) {
     auto pipeline = create_draw_pipeline(graphics.device(), layout, draw, graphics.backend(), graphics.depth_format(),
-                                         depth_flip);
+                                         depth_flip, graphics.clips_depth());
     if (pipeline || !graphics.removes_dispatch_loops()) return pipeline;
     const auto* vertex = graphics.with_dispatch_loop(draw.vertex_shader);
     const auto* pixel = graphics.with_dispatch_loop(draw.pixel_shader);
@@ -259,7 +261,7 @@ std::unique_ptr<plume::RenderPipeline> create_draw_pipeline(NativeGraphics& grap
     if (vertex) kept.vertex_shader = vertex;
     if (pixel) kept.pixel_shader = pixel;
     pipeline = create_draw_pipeline(graphics.device(), layout, kept, graphics.backend(), graphics.depth_format(),
-                                    depth_flip);
+                                    depth_flip, graphics.clips_depth());
     std::cerr << "NATIVE_DISPATCH_LOOP_FALLBACK " << what << " vertex=" << (vertex != nullptr)
               << " pixel=" << (pixel != nullptr) << " made=" << (pipeline != nullptr) << '\n';
     return pipeline;

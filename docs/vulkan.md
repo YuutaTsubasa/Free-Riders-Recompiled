@@ -130,6 +130,21 @@ Firebase Test Lab 的 Galaxy S9（Mali-G72，Android 10，驅動程式 r19，Vul
 `scalar_block_layout=1 device_address=0`：改版前一樣會停在建立裝置。它也沒有 `D32_SFLOAT_S8_UINT`
 （只有 D24S8），因此需要上面的深度格式。
 
+### 裁切深度而不是壓平（`SFR_TEST_DEPTH_CLIP`，Issue #344）
+
+Plume 的管線預設 `depthClipEnabled = false`，也就是 Vulkan 的 depth clamp：超出近、遠平面的片段
+壓平到平面上，不裁掉。遊戲的比賽用反轉的 viewport（`minDepth` 1、`maxDepth` 0）。Galaxy S20 FE
+（Adreno 650，驅動 512.502，Vulkan 1.1.128）上比賽只看得到地面、柵欄與影子：逐次擷取
+（`SFR_DRAW_CAPTURE`）顯示峽谷、建築與選手其實都畫出來了，之後的天空（`vs=0x20ad5560`）卻蓋掉
+192×108 格裡的 11688 格（PC 上同一個繪製只有 940 格），天空之後畫的東西才留下來。也就是深度測試
+沒有擋住它：這個驅動把反轉 viewport 的深度當作 `minDepth` 是下限來壓，每個像素都成了最近的深度。
+AYN Thor（Adreno 740，驅動 512.676）沒有這個問題。
+
+`NativeGraphics::clips_depth`：Qualcomm（vendor 0x5143）的 Vulkan 驅動改用裁切（遊戲的繪製管線與
+Avatar 模型的管線都是），其他維持壓平，跟遊戲原本的 GPU 一樣。`SFR_TEST_DEPTH_CLIP=1` 在任何 Vulkan
+裝置上裁切，`=0` 在 Qualcomm 上也壓平（啟動器的測試選項「裁切深度」）。`game.log` 記
+`NATIVE_DEPTH_CLIP enabled=0|1`。
+
 ### 頂點屬性數
 
 每個繪製都為 XenosRecomp 頂點著色器可能讀的 20 個輸入位置各宣告一個頂點屬性

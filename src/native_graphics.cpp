@@ -220,6 +220,7 @@ struct NativeGraphics::Impl {
     bool bounded_descriptors = false;
     BoundedLengths bounded_lengths;
     plume::RenderFormat depth_format = plume::RenderFormat::D32_FLOAT_S8_UINT;
+    bool clips_depth = false;
     bool without_clip_distance = false;
     bool spirv_1_3 = false;
     bool without_dispatch_loop = false;
@@ -548,6 +549,17 @@ void NativeGraphics::initialize() {
         std::cerr << "NATIVE_DISPATCH_LOOP removed=" << without_dispatch_loop << '\n';
     }
 
+    // NativeGraphics::clips_depth (Issue #344).
+    bool clips_depth = false;
+    if (backend == GraphicsBackend::vulkan) {
+        constexpr uint32_t qualcomm_vendor = 0x5143;
+        clips_depth = uint32_t(render_device->getDescription().vendor) == qualcomm_vendor;
+        const char* forced = std::getenv("SFR_TEST_DEPTH_CLIP");
+        if (forced && (std::strcmp(forced, "1") == 0 || std::strcmp(forced, "0") == 0))
+            clips_depth = forced[0] == '1';
+        std::cerr << "NATIVE_DEPTH_CLIP enabled=" << clips_depth << '\n';
+    }
+
     auto render_queue = render_device->createCommandQueue(plume::RenderCommandListType::DIRECT);
     if (!render_queue)
         throw std::runtime_error(std::string("failed to create a ") + name + " direct command queue");
@@ -557,6 +569,7 @@ void NativeGraphics::initialize() {
     implementation->bounded_descriptors = bounded_descriptors;
     implementation->bounded_lengths = bounded_lengths;
     implementation->depth_format = depth_format;
+    implementation->clips_depth = clips_depth;
     implementation->without_clip_distance = without_clip_distance;
     implementation->spirv_1_3 = spirv_1_3;
     implementation->without_dispatch_loop = without_dispatch_loop;
@@ -609,6 +622,10 @@ BoundedLengths NativeGraphics::bounded_lengths() const noexcept {
 
 plume::RenderFormat NativeGraphics::depth_format() const noexcept {
     return impl_ ? impl_->depth_format : plume::RenderFormat::D32_FLOAT_S8_UINT;
+}
+
+bool NativeGraphics::clips_depth() const noexcept {
+    return impl_ && impl_->clips_depth;
 }
 
 bool NativeGraphics::compacts_vertex_inputs() const noexcept {
