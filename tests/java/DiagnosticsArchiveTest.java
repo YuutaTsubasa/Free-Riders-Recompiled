@@ -51,6 +51,14 @@ public class DiagnosticsArchiveTest {
             check(!entry.getValue().contains("room-secret"), "no room password in " + entry.getKey());
         check(!small.containsKey("exits.txt") && small.get("report.txt").contains("exits.txt: none"),
               "no exits recorded: said, no file");
+        check(!small.containsKey("draw-capture.bmp"), "no draw capture without one");
+        // A draw capture (Test options, Issue #344) is kept beside game.log.
+        File capture = new File(root, "draw-capture.bmp");
+        writeString(capture.toPath(), "BMcapture");
+        Map<String, String> captured = archive(root);
+        check("BMcapture".equals(captured.get("draw-capture.bmp")), "the draw capture is kept");
+        check(captured.get("report.txt").contains("draw-capture.bmp:"), "the draw capture is explained");
+        check(capture.delete(), "capture removed");
         {
             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
             DiagnosticsArchive.write(root, bytes, "model=test\n", Arrays.asList(

@@ -38,7 +38,10 @@ final class DiagnosticsArchive {
         "SFR_TEST_DEPTH_D24S8", "SFR_TEST_NO_DEVICE_ADDRESS", "SFR_TEST_NO_INVERTED_DEPTH",
         "SFR_RENDER_THREAD", "SFR_INDEX_CACHE", "SFR_STREAM_CACHE", "SFR_CONSTANT_RUNS", "SFR_CONSTANT_UPLOAD_REUSE", "SFR_CLEAR_LOAD_OPS", "SFR_TEXTURE_MIPS", "SFR_CORE_PLAN", "SFR_PERF_HINT", "SFR_AUDIO_PRIORITY",
         "SFR_MAIN_HELPS_JOBS", "SFR_MAIN_HELPS_COLLISION", "SFR_MAIN_AFFINITY", "SFR_HOST_TIMING", "SFR_STEP_WAITS_COLLISION", "SFR_UNDRAWN_STAGE_AREAS", "SFR_GPU_TIMING",
-        "SFR_AUDIO_CUES", "SFR_TOUCH_IN_SCENES", "SFR_HIDE_KINECT_UI"));
+        "SFR_AUDIO_CUES", "SFR_TOUCH_IN_SCENES", "SFR_HIDE_KINECT_UI", "SFR_DRAW_CAPTURE"));
+    // What SFR_DRAW_CAPTURE wrote (guest_graphics_hooks.cpp): a sheet of small
+    // pictures, a few MB at most.
+    private static final int CAPTURE_LIMIT = 8 * 1024 * 1024;
 
     static void write(File root, OutputStream output, String device) throws IOException {
         write(root, output, device, Collections.emptyList());
@@ -87,6 +90,15 @@ final class DiagnosticsArchive {
                         selected.append(line).append('\n');
                 }
                 text(zip, name, selected.toString());
+            }
+            File capture = new File(root, "draw-capture.bmp");
+            if (capture.isFile() && capture.length() <= CAPTURE_LIMIT) {
+                try (RandomAccessFile input = new RandomAccessFile(capture, "r")) {
+                    zip.putNextEntry(new ZipEntry("draw-capture.bmp"));
+                    copy(input, zip, input.length());
+                    zip.closeEntry();
+                }
+                report.append("draw-capture.bmp: the screen every 10 draws of one race frame (Test options).\n");
             }
             StringBuilder ended = new StringBuilder();
             int traces = 0;

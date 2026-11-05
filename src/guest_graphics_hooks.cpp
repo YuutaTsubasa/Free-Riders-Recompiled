@@ -225,6 +225,105 @@ void save_screenshot() {
     write_framebuffer(path);
 }
 
+// SFR_DRAW_CAPTURE=1 (Test options, Issue #344): for a report of scenery or
+// racers missing on one GPU and not on ours, one race frame is read back
+// after every draw: the first drawn 3 s after the race scene first fills a
+// frame (the race flag rises already on the loading pages, which draw a
+// hundred things; a race frame draws several hundred). game.log gets one
+// NATIVE_DRAW_CAPTURE line a draw (what it was and how many cells of a
+// 192x108 grid it changed) and draw-capture.bmp, next to game.log, the grid
+// every 10 draws. The same frame of the same course on a PC then says which
+// draws come out empty on that device, and what they have in common. Each
+// readback waits for the GPU: that one frame takes seconds.
+namespace draw_capture {
+constexpr uint32_t grid_width=192, grid_height=108, every=10, columns=8, most=96;
+constexpr uint32_t race_draws=400, after_race=180;
+// Off, an earlier run's sheet is removed so a diagnostic ZIP never carries a
+// stale one.
+bool enabled() {
+    static const bool on=[]{
+        const char* t=std::getenv("SFR_DRAW_CAPTURE");
+        const bool set=t && std::strcmp(t,"1")==0;
+        if(!set) std::remove("draw-capture.bmp");
+        return set;
+    }();
+    return on;
+}
+uint32_t race_present=0, frame=0, captured=0;
+bool armed=false, finished=false;
+std::vector<uint8_t> previous;           // the grid after the draw before (BGR)
+std::vector<std::vector<uint8_t>> shots;  // the grid every `every` draws
+
+// Whether the draw being made is one of the captured frame's: the first
+// frame drawn once armed (race frameskip leaves some undrawn).
+bool capturing() {
+    if(!armed || finished) return false;
+    const uint32_t present=sfr::present_count.load();
+    if(!frame) frame=present;
+    return present==frame;
+}
+
+std::vector<uint8_t> grid() {
+    auto& presentation=graphics().presentation();
+    const auto pixels=presentation.readback_color();
+    const uint32_t width=presentation.render_width(), height=presentation.render_height();
+    std::vector<uint8_t> cells(size_t(grid_width)*grid_height*3,0);
+    if(!width || !height || pixels.size()<size_t(width)*height*4) return cells;
+    for(uint32_t y=0;y<grid_height;++y)
+        for(uint32_t x=0;x<grid_width;++x)
+            std::memcpy(cells.data()+(size_t(y)*grid_width+x)*3,
+                        pixels.data()+(size_t(y*height/grid_height)*width+x*width/grid_width)*4,3);
+    return cells;
+}
+
+// After draw `index` of the captured frame; `what` describes it.
+void after_draw(uint32_t index,const std::string& what) {
+    auto cells=grid();
+    if(previous.size()!=cells.size()) previous.assign(cells.size(),0);
+    uint32_t changed=0;
+    for(size_t i=0;i<cells.size();i+=3)
+        for(size_t c=0;c<3;++c)
+            if(std::abs(int(cells[i+c])-int(previous[i+c]))>8) { ++changed; break; }
+    ++captured;
+    std::cerr << "NATIVE_DRAW_CAPTURE draw=" << index << " changed=" << changed << ' ' << what << '\n';
+    if(index%every==0 && shots.size()<most) shots.push_back(cells);
+    previous=std::move(cells);
+}
+
+// At every present, with the draws of the frame it ends: arms the capture,
+// and once the captured frame is over writes its grids as one sheet.
+void at_present(uint32_t draws,sfr::GuestMemory& memory) {
+    if(!enabled() || finished) return;
+    const uint32_t present=sfr::present_count.load();
+    if(!armed) {
+        const bool racing=memory.readable(0x83E52F8C,4) && memory.load<uint32_t>(0x83E52F8C);
+        if(!race_present && racing && draws>=race_draws) race_present=present;
+        if(race_present && present>=race_present+after_race) armed=true;
+        return;
+    }
+    if(!frame || present<=frame) return;
+    finished=true;
+    const uint32_t rows=(std::max)(1u,uint32_t((shots.size()+columns-1)/columns));
+    const uint32_t width=grid_width*columns, height=grid_height*rows, row_bytes=width*3;
+    std::vector<uint8_t> sheet(size_t(row_bytes)*height,0);
+    for(size_t s=0;s<shots.size();++s)
+        for(uint32_t y=0;y<grid_height;++y)
+            std::memcpy(sheet.data()+size_t((s/columns)*grid_height+y)*row_bytes+(s%columns)*grid_width*3,
+                        shots[s].data()+size_t(y)*grid_width*3,grid_width*3);
+    std::ofstream out("draw-capture.bmp",std::ios::binary);
+    const auto u16=[&](uint16_t v){ out.put(char(v)); out.put(char(v>>8)); };
+    const auto u32=[&](uint32_t v){ u16(uint16_t(v)); u16(uint16_t(v>>16)); };
+    const uint32_t size=uint32_t(sheet.size());
+    out.put('B'); out.put('M'); u32(54+size); u32(0); u32(54);
+    u32(40); u32(width); u32(uint32_t(-int32_t(height))); u16(1); u16(24); u32(0); u32(size); u32(2835); u32(2835); u32(0); u32(0);
+    out.write(reinterpret_cast<const char*>(sheet.data()),std::streamsize(size));
+    std::cerr << "NATIVE_DRAW_CAPTURE_DONE frame=" << frame << " race_present=" << race_present << " draws=" << captured
+              << " pictures=" << shots.size() << " every=" << every << " path=draw-capture.bmp written=" << bool(out) << '\n';
+    shots.clear();
+    previous.clear();
+}
+}
+
 void create_shader(PPCContext& ctx,uint8_t* base,sfr::ShaderStage stage,PPCFunc* original) {
     const uint32_t callback_address=stage==sfr::ShaderStage::vertex?0x82B50A30:0x82B50A2C;
     if(!sfr::active_memory) throw sfr::RuntimeStop("native-shader",0,"guest memory is unavailable");
@@ -826,6 +925,7 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
                   << std::chrono::duration<double>(std::chrono::steady_clock::now()-process_start).count()
                   << std::defaultfloat << '\n';
     }
+    if(sfr::active_memory) draw_capture::at_present(frame_draws,*sfr::active_memory);
     frame_draws=frame_textured_draws=foreign_draws=0;
     frame_vertex_bytes=0;
     frame_vertex_cached_bytes=frame_vertex_swap_bytes=frame_vertex_repack_bytes=0;
@@ -1780,6 +1880,19 @@ static bool native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
                 std::cerr << (slot?",":"") << "0x" << (graphics().texture_fetch(slot)[1]&0xFFFFF000u);
             std::cerr << std::dec << '\n';
         }
+    }
+    if(draw_capture::capturing()) {
+        std::ostringstream what;
+        what << "lr=0x" << std::hex << ctx.lr << " vs=0x" << vs_object << " ps=0x" << ps_object
+             << " target=0x" << memory.load<uint32_t>(uint64_t(device)+0x3148) << std::dec
+             << " vertices=" << draw.vertex_count << " indices=" << draw.index_count << " stride=" << draw.stride
+             << " topology=" << uint32_t(draw.topology) << " blend=" << draw.blend.blendEnabled
+             << " mask=0x" << std::hex << uint32_t(draw.write_mask) << std::dec << " depth=" << draw.depth_enabled
+             << " elements=";
+        for(const auto& e:draw.elements)
+            what << e.semanticName << e.semanticIndex << ':' << uint32_t(e.format) << '@' << e.slotIndex << '+'
+                 << e.alignedByteOffset << ';';
+        draw_capture::after_draw(frame_draws,what.str());
     }
     // SFR_DRAW_DUMP=N prints the vertices (as floats) of the first N draws.
     static const long draw_dump=[]{ const char* t=std::getenv("SFR_DRAW_DUMP"); return t?std::strtol(t,nullptr,10):0L; }();
