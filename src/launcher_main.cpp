@@ -45,6 +45,7 @@
 #include "control_prompts.h"
 #include "launcher_fonts.h"
 #include "launcher_screen_fit.h"
+#include "launcher_screen_keyboard.h"
 #include "test_options.h"
 #ifdef SFR_IOS
 #include "disc_image_search.h"
@@ -1107,6 +1108,42 @@ void touch_input_frame(float scale) {
     apply_touch_scrollbars(scale, touch_screen_ui());
     touch_drag_scroll(scale);
 }
+
+#if defined(__ANDROID__) || defined(SFR_IOS)
+// The phones' keyboard comes only when SDL is asked for it (issue #356: the
+// desktops take text all the time, and the boxes never asked). Called after
+// ImGui::Render, when the frame has placed the text cursor; SDL's rectangle
+// is what the system keeps clear of the keyboard, measured from the window's
+// origin in its own units.
+void follow_text_input(ImVec2 origin, float units_per_point) {
+    static bool asked = false;
+    const bool typing = ImGui::GetIO().WantTextInput && ImGui::GetActiveID() != 0;
+    const auto step = sfr::launcher::keyboard_step(typing, asked, SDL_IsTextInputActive(),
+                                                   ImGui::IsMouseReleased(ImGuiMouseButton_Left));
+    switch (step) {
+    case sfr::launcher::KeyboardStep::open:
+        if (const ImGuiPlatformImeData& text = ImGui::GetCurrentContext()->PlatformImeData; text.WantVisible) {
+            const SDL_Rect place{int((text.InputPos.x + origin.x) / units_per_point),
+                                 int((text.InputPos.y + origin.y) / units_per_point), 1,
+                                 int(std::ceil(text.InputLineHeight / units_per_point))};
+            SDL_SetTextInputRect(&place);
+        }
+        SDL_StartTextInput();
+        asked = true;
+        break;
+    case sfr::launcher::KeyboardStep::close:
+        SDL_StopTextInput();
+        asked = false;
+        break;
+    case sfr::launcher::KeyboardStep::leave_box:
+        ImGui::ClearActiveID();
+        asked = false;
+        break;
+    case sfr::launcher::KeyboardStep::stay:
+        break;
+    }
+}
+#endif
 
 float approach(float value, float target, float rate) {
     return value + (target - value) * (std::min)(1.0f, ImGui::GetIO().DeltaTime * rate);
@@ -4647,6 +4684,11 @@ int main(int argc, char** argv) {
         touch_input_frame(launcher.scale);
         trace_navigation();
         ImGui::Render();
+#ifdef __ANDROID__
+        follow_text_input(ImVec2(0, 0), 1.0f);
+#elif defined(SFR_IOS)
+        follow_text_input(ImVec2(screen.x, screen.y), screen.pixels_per_point);
+#endif
 #ifdef SFR_IOS
         {
             // Into the safe area: SDL's renderer backend resets the viewport,
