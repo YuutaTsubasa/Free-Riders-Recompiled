@@ -924,11 +924,18 @@ struct NativePresentation::Impl {
         timing.pool->queryResults();
         const uint64_t* r = timing.pool->getResults();
         if (!r) return;
+        // The framebuffer's passes one by one (fb1, fb2...), in the list's
+        // order: a race splits it at each resolve (Issue #176).
+        std::array<uint16_t, 8> numbered{};
+        for (size_t i = 0; i < numbered.size(); ++i) numbered[i] = pass_category("fb" + std::to_string(i + 1));
         std::lock_guard lock(pass_mutex);
+        size_t framebuffer_spans = 0;
         for (uint32_t i = 0; i < timing.used; ++i) {
             if (r[i + 1] < r[i]) continue;
-            pass_ms[timing.category[i]] += double(r[i + 1] - r[i]) / 1e6;
-            ++pass_spans[timing.category[i]];
+            uint16_t category = timing.category[i];
+            if (category == fb_category) category = numbered[(std::min)(framebuffer_spans++, numbered.size() - 1)];
+            pass_ms[category] += double(r[i + 1] - r[i]) / 1e6;
+            ++pass_spans[category];
         }
         if (++pass_lists < 120) return;
         std::vector<size_t> order(pass_names.size());

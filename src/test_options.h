@@ -71,6 +71,7 @@ namespace test_option_detail {
 inline constexpr TestChoice on[] = {{"1", {"On", "開啟"}}};
 inline constexpr TestChoice off[] = {{"0", {"Off", "關閉"}}};
 inline constexpr TestChoice on_off[] = {{"1", {"On", "開啟"}}, {"0", {"Off", "關閉"}}};
+inline constexpr TestChoice gpu_timing[] = {{"1", {"Frames", "畫格"}}, {"2", {"Frames and passes", "畫格與各 pass"}}};
 inline constexpr TestChoice core_plan[] = {
     {"13", {"As in 0.10.8", "與 0.10.8 相同"}},
     {"0", {"Left to Android", "交給 Android"}},
@@ -241,7 +242,7 @@ inline constexpr TestOption table[] = {
      {"GPU timing", "GPU 時間"},
      {"For testing: writes the GPU's time for the frames into game.log.",
       "測試用：把 GPU 繪製畫格所花的時間寫進 game.log。"},
-     on, "#134"},
+     gpu_timing, "#134, #176"},
     {"SFR_AUDIO_CUES", TestGroup::logging, test_platform::all,
      {"Sound cue IDs", "音效 cue ID"},
      {"For testing: writes every sound and voice line the game asks for into game.log, to report a wrong one.",
