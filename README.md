@@ -282,6 +282,8 @@ with [docs/progress.md](docs/progress.md).
   For reports of scenery or characters missing on one GPU: Test options › Logs for a bug report › Capture a race frame draw by draw saves what each draw of one race frame did, so it can be compared with a PC (#344).
 - [v0.10.47 — Races draw their scenery on older Snapdragon phones](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.47)
   On Qualcomm (Snapdragon / Adreno) GPUs the game now clips depth instead of clamping it, so the sky no longer covers the canyon, buildings and racers on drivers such as the Galaxy S20 FE's; Test options › Graphics › Clip depth turns it on or off (#344).
+- [v0.10.49 — The on-screen keyboard opens for the launcher's text boxes](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.49)
+  Tapping a text box in the launcher on Android (online name, server address, password) put the cursor in the box but opened no keyboard; the keyboard now opens, the page moves so the box stays visible, and Back closes it without leaving the page (#356).
 - [v0.10.48 — Frame skipping starts again on slow tablets](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.48)
   One slow frame at the start of a race could keep Auto frame skipping off for the whole race, so a Galaxy Tab A9 (Mali-G57) raced at about 0.4 speed; skipping now tries again on the first late frame a second after the last skip (#1).
 
