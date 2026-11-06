@@ -7,6 +7,7 @@ namespace sfr {
 struct NativeVertexLayout {
     std::vector<plume::RenderInputElement> elements;
     std::vector<uint32_t> dec3n_offsets;
+    uint32_t dec3n_mask = 0;
     std::array<uint32_t, 8> swapped{};
 };
 struct NativeVertexLayoutError : std::runtime_error {
@@ -14,17 +15,18 @@ struct NativeVertexLayoutError : std::runtime_error {
     NativeVertexLayoutError(uint32_t value, const char* message) : std::runtime_error(message), value(value) {}
 };
 // Each element is the title's original 12-byte, big-endian declaration.
-NativeVertexLayout decode_native_vertex_layout(std::span<const uint8_t> bytes, uint32_t stride);
+NativeVertexLayout decode_native_vertex_layout(std::span<const uint8_t> bytes, uint32_t stride, bool gpu_dec3n = false);
 class NativeVertexLayoutCache {
 public:
     // Caller validates and rereads the bytes on EVERY call, including hits.
     // A returned reference lasts only until a later call replaces its entry.
-    const NativeVertexLayout& get(uint32_t identity, uint32_t stride, std::span<const uint8_t> bytes);
+    const NativeVertexLayout& get(uint32_t identity, uint32_t stride, std::span<const uint8_t> bytes, bool gpu_dec3n = false);
     uint64_t hits() const { return hits_; }
     uint64_t misses() const { return misses_; }
 private:
     struct Entry {
         bool valid = false;
+        bool gpu_dec3n = false;
         uint32_t identity = 0, stride = 0;
         size_t size = 0;
         std::array<uint8_t, 192> bytes{};

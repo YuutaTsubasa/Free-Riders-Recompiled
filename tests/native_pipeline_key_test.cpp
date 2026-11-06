@@ -81,6 +81,9 @@ int main(int argc, char** argv) {
         int shader_tokens[2]; // Identity only; the serializer never dereferences shaders.
         changes_identity([&] { draw.vertex_shader = reinterpret_cast<const plume::RenderShader*>(&shader_tokens[0]); });
         changes_identity([&] { draw.pixel_shader = reinterpret_cast<const plume::RenderShader*>(&shader_tokens[1]); });
+        for(uint32_t bit=0;bit<9;++bit)
+            changes_identity([&] { draw.vertex_dec3n_mask=1u<<bit; }, "each packed vertex mask bit is pipeline identity");
+        changes_identity([&] { draw.vertex_dec3n_mask=0; }, "legacy mask has distinct identity");
         changes_identity([&] { draw.topology = plume::RenderPrimitiveTopology::LINE_LIST; });
         changes_identity([&] { draw.cull = plume::RenderCullMode::BACK; });
         changes_identity([&] { draw.blend.dstBlend = plume::RenderBlend::ONE; });

@@ -14,13 +14,13 @@
 namespace sfr {
 namespace {
 constexpr std::string_view magic = "SFRPMNF1";
-constexpr uint32_t format_version = 1;
+constexpr uint32_t format_version = 2;
 constexpr size_t header_bytes = 32, checksum_bytes = 8;
 constexpr size_t max_record_bytes = 2048;
 constexpr uint32_t max_stride = 2048;
-constexpr std::array<const char*, 14> semantics{
+constexpr std::array<const char*, 15> semantics{
     "POSITION", "BLENDWEIGHT", "BLENDINDICES", "NORMAL", "PSIZE", "TEXCOORD", "TANGENT",
-    "BINORMAL", "TESSFACTOR", "POSITIONT", "COLOR", "FOG", "DEPTH", "SAMPLE"};
+    "BINORMAL", "TESSFACTOR", "POSITIONT", "COLOR", "FOG", "DEPTH", "SAMPLE", "SFR_DEC3N"};
 
 [[noreturn]] void invalid(const char* reason) { throw std::invalid_argument(reason); }
 void check(bool condition, const char* reason) { if (!condition) invalid(reason); }
@@ -93,6 +93,7 @@ void validate(const PipelineRecipe& recipe) {
     using namespace plume;
     check(recipe.vertex.size && recipe.pixel.size, "missing pipeline shader identity");
     const auto& d = recipe.state;
+    check(!(d.vertex_dec3n_mask & ~0x1ffu), "invalid vertex DEC3N mask");
     enum_range(d.topology, RenderPrimitiveTopology::POINT_LIST, RenderPrimitiveTopology::TRIANGLE_STRIP);
     enum_range(d.cull, RenderCullMode::NONE, RenderCullMode::BACK);
     enum_range(d.depth_function, RenderComparisonFunction::NEVER, RenderComparisonFunction::ALWAYS);
@@ -109,6 +110,7 @@ void validate(const PipelineRecipe& recipe) {
     check(d.stride <= max_stride, "pipeline stride exceeds bound");
     check(d.elements.size() <= pipeline_manifest_max_elements, "too many pipeline input elements");
     uint32_t locations = 0;
+    uint32_t packed_locations = 0;
     std::set<std::pair<uint32_t, uint32_t>> names;
     for (const auto& e : d.elements) {
         const auto semantic = semantic_id(e.semanticName);
@@ -117,10 +119,20 @@ void validate(const PipelineRecipe& recipe) {
         locations |= uint32_t(1) << e.location;
         check(names.insert({semantic, e.semanticIndex}).second, "duplicate pipeline input semantic");
         const auto size = format_bytes(e.format);
+        if (semantic == 14) {
+            check(e.semanticIndex < 9 && e.location == 20 + e.semanticIndex &&
+                e.format == RenderFormat::R32_UINT, "invalid packed vertex input");
+            packed_locations |= 1u << e.semanticIndex;
+            const bool active = (d.vertex_dec3n_mask & (1u << e.semanticIndex)) != 0;
+            check(e.slotIndex == (active ? 0u : 15u) && !(e.alignedByteOffset & 3), "invalid packed vertex binding");
+            check(active || e.alignedByteOffset == 0, "nonzero unused packed vertex binding");
+        }
         check(e.slotIndex == 0 || e.slotIndex == 15, "unsupported pipeline input slot");
         const uint32_t limit = e.slotIndex == 0 ? d.stride : 256;
         check(size <= limit && e.alignedByteOffset <= limit - size, "pipeline input exceeds vertex storage");
     }
+    check(!d.vertex_dec3n_mask || (packed_locations == 0x1ffu && d.stride && !(d.stride & 3)),
+          "incomplete packed vertex layout");
     if (d.stencil_enabled) {
         for (auto face : {d.stencil_front, d.stencil_back}) {
             for (auto op : {face.passOp, face.failOp, face.depthFailOp})
@@ -130,13 +142,14 @@ void validate(const PipelineRecipe& recipe) {
     }
 }
 void validate_backend(uint32_t backend) { check(backend <= 1, "unsupported pipeline manifest backend"); }
-PipelineRecipe read_recipe(std::span<const uint8_t> bytes) {
+PipelineRecipe read_recipe(std::span<const uint8_t> bytes, bool dec3n_field) {
     Reader in{bytes};
     PipelineRecipe recipe;
     recipe.vertex = {in.number(8), in.word()};
     recipe.pixel = {in.number(8), in.word()};
     recipe.pixel_link_constants = in.word();
     auto& d = recipe.state;
+    d.vertex_dec3n_mask = dec3n_field ? in.word() : 0;
     d.pixel_spec_constants = in.word();
     d.stride = in.word();
     d.topology = in.enumeration<plume::RenderPrimitiveTopology>();
@@ -145,7 +158,7 @@ PipelineRecipe read_recipe(std::span<const uint8_t> bytes) {
     d.elements.reserve(count);
     for (uint32_t i = 0; i < count; ++i) {
         const auto semantic = in.word();
-        check(semantic < semantics.size(), "unsupported pipeline semantic name");
+        check(semantic < semantics.size() - (dec3n_field ? 0 : 1), "unsupported pipeline semantic name");
         plume::RenderInputElement e;
         e.semanticName = semantics[semantic];
         e.semanticIndex = in.word();
@@ -198,7 +211,7 @@ std::vector<uint8_t> pipeline_recipe_key(const PipelineRecipe& recipe) {
     put(bytes, recipe.pixel.hash, 8); word(recipe.pixel.size);
     word(recipe.pixel_link_constants);
     const auto& d = recipe.state;
-    word(d.pixel_spec_constants); word(d.stride); word(d.topology); word(d.elements.size());
+    word(d.vertex_dec3n_mask); word(d.pixel_spec_constants); word(d.stride); word(d.topology); word(d.elements.size());
     for (const auto& e : d.elements) {
         word(semantic_id(e.semanticName)); word(e.semanticIndex); word(e.location);
         word(e.format); word(e.slotIndex); word(e.alignedByteOffset);
@@ -241,8 +254,10 @@ std::vector<PipelineRecipe> decode_pipeline_manifest(std::span<const uint8_t> by
     Reader in{bytes.first(bytes.size() - checksum_bytes)};
     const auto signature = in.take(magic.size());
     check(std::equal(signature.begin(), signature.end(), magic.begin()), "invalid pipeline manifest magic");
-    check(in.word() == format_version, "pipeline manifest format version mismatch");
-    check(in.word() == shader_abi_version, "pipeline manifest shader ABI mismatch");
+    const uint32_t version = in.word(), abi = in.word();
+    // Prior bundled recipes have identical state fields and no DEC3N mask.
+    check((version == format_version && abi == shader_abi_version) || (version == 1 && abi == 12),
+          "pipeline manifest format version or shader ABI mismatch");
     check(in.word() == backend, "pipeline manifest backend mismatch");
     const auto count = in.word();
     check(count <= pipeline_manifest_max_recipes, "too many pipeline recipes");
@@ -257,7 +272,7 @@ std::vector<PipelineRecipe> decode_pipeline_manifest(std::span<const uint8_t> by
         const auto length = in.word();
         check(length <= max_record_bytes, "pipeline recipe exceeds record bound");
         const auto record = in.take(length);
-        auto recipe = read_recipe(record);
+        auto recipe = read_recipe(record, version >= 2);
         if (seen.insert(pipeline_recipe_key(recipe)).second) recipes.push_back(std::move(recipe));
     }
     check(in.end(), "trailing pipeline manifest records");

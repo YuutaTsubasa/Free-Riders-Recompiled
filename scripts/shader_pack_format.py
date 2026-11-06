@@ -3,7 +3,7 @@ import struct
 
 # Keep in sync with src/shader_pack_format.h and the runtime cache key.
 MAGIC = b'SFRSHPK2'
-SHADER_ABI = 12
+SHADER_ABI = 13
 
 
 def header(count):
@@ -20,13 +20,15 @@ def validate_shader_pack(data):
         raise ValueError('shader pack contains no shaders')
     at = 16
     for _ in range(count):
-        if len(data) - at < 20:
+        if len(data) - at < 24:
             raise ValueError('shader pack is truncated')
-        stage, mask, source, dxil, spirv = struct.unpack_from('<5I', data, at)
-        at += 20
+        stage, mask, source, dxil, spirv, dec3n = struct.unpack_from('<6I', data, at)
+        at += 24
         if stage > 1 or not source or not (dxil or spirv):
             raise ValueError('shader pack has an invalid entry')
-        size = source + dxil + spirv
+        if (stage == 1 and dec3n) or (stage == 0 and bool(dxil) != bool(dec3n)):
+            raise ValueError('shader pack requires paired vertex DXIL/DEC3N libraries and no pixel DEC3N payload')
+        size = source + dxil + spirv + dec3n
         if size > len(data) - at:
             raise ValueError('shader pack is truncated')
         at += size

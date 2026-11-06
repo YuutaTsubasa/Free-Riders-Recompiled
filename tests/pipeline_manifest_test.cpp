@@ -63,6 +63,22 @@ int main(int argc, char** argv) {
         const auto one = std::span<const sfr::PipelineRecipe>(&recipe, 1);
         for (uint32_t backend : {0u, 1u}) {
             const auto bytes = sfr::encode_pipeline_manifest(one, backend);
+            require(bytes[8]==2 && bytes[9]==0 && bytes[10]==0 && bytes[11]==0 &&
+                    bytes[12]==13 && bytes[13]==0 && bytes[14]==0 && bytes[15]==0,
+                    "vertex specialization uses manifest v2 and shader ABI13");
+            auto legacy = bytes;
+            // One recipe: remove only the v2 zero-mask word and repair framed extents.
+            legacy.erase(legacy.begin()+64,legacy.begin()+68);
+            put32(legacy,8,1);put32(legacy,12,12);
+            put32(legacy,24,uint32_t(legacy.size()-40));put32(legacy,28,0);
+            put32(legacy,32,uint32_t(baseline.size()-4));repair_checksum(legacy);
+            const auto old = sfr::decode_pipeline_manifest(legacy,backend);
+            require(old.size()==1 && old[0].state.vertex_dec3n_mask==0 && sfr::pipeline_recipe_key(old[0])==baseline,
+                    "exact format1 ABI12 recipes bridge only as mask0");
+            auto mixed=legacy;put32(mixed,12,13);repair_checksum(mixed);
+            rejects([&]{sfr::decode_pipeline_manifest(mixed,backend);},"format1 ABI13 mixed identity rejected");
+            mixed=bytes;put32(mixed,12,12);repair_checksum(mixed);
+            rejects([&]{sfr::decode_pipeline_manifest(mixed,backend);},"format2 ABI12 mixed identity rejected");
             auto decoded = sfr::decode_pipeline_manifest(bytes, backend);
             require(decoded.size() == 1 && sfr::pipeline_recipe_key(decoded.front()) == baseline,
                     "all graphics state and shader identities round trip");
@@ -92,19 +108,22 @@ int main(int argc, char** argv) {
                 rejects([&] { sfr::decode_pipeline_manifest(corrupt, backend); }, "invalid manifest field rejected");
             };
             bad_word(8, 99); // format version
+            bad_word(8, 1); // previous manifest cannot be interpreted as v2
             bad_word(12, 0); // shader ABI
+            bad_word(12, 12); // v2 cannot use prior five-field shader ABI
             bad_word(20, uint32_t(sfr::pipeline_manifest_max_recipes + 1));
             bad_word(32, 0xffffffff); // record length
             constexpr size_t key_start = 36;
             bad_word(key_start + 8, 0); // missing vertex source identity
-            bad_word(key_start + 36, 99); // topology
-            bad_word(key_start + 40, 0xffffffff); // element count
-            bad_word(key_start + 44, 99); // semantic name
-            bad_word(key_start + 44 + 12, uint32_t(plume::RenderFormat::BC1_UNORM));
-            bad_word(key_start + 44 + 16, 9); // unbound input slot
-            bad_word(key_start + 44 + 20, 0xffffffff); // offset
-            bad_word(key_start + 44 + 3 * 24 + 24, 2); // blend boolean
-            constexpr size_t blend_start = key_start + 44 + 3 * 24;
+            bad_word(key_start + 28, 0x200); // out-of-domain vertex specialization
+            bad_word(key_start + 40, 99); // topology
+            bad_word(key_start + 44, 0xffffffff); // element count
+            bad_word(key_start + 48, 99); // semantic name
+            bad_word(key_start + 48 + 12, uint32_t(plume::RenderFormat::BC1_UNORM));
+            bad_word(key_start + 48 + 16, 9); // unbound input slot
+            bad_word(key_start + 48 + 20, 0xffffffff); // offset
+            bad_word(key_start + 48 + 3 * 24 + 24, 2); // blend boolean
+            constexpr size_t blend_start = key_start + 48 + 3 * 24;
             bad_word(blend_start, 0xffffffff); // blend enum
             bad_word(blend_start + 8, 0); // blend operation UNKNOWN
             bad_word(blend_start + 28, 256); // write mask narrowing
@@ -202,6 +221,34 @@ int main(int argc, char** argv) {
         invalid([](auto& r) { r.state.elements[0].format = plume::RenderFormat::D32_FLOAT; });
         invalid([](auto& r) { r.state.blend.srcBlend = plume::RenderBlend::SRC1_COLOR; });
         invalid([](auto& r) { r.state.blend.srcBlendAlpha = plume::RenderBlend::SRC_COLOR; });
+        invalid([](auto& r) { r.state.vertex_dec3n_mask=0x200; });
+        invalid([](auto& r) { r.state.vertex_dec3n_mask=1; }); // active mask needs the complete nine-input layout
+        for(uint32_t mask:{1u,2u,4u,8u,16u,32u,64u,128u,256u,0x1ffu}) {
+            auto packed=recipe;packed.state.vertex_dec3n_mask=mask;packed.state.stride=36;
+            packed.state.elements.clear();
+            for(uint32_t bit=0;bit<9;++bit)
+                packed.state.elements.emplace_back("SFR_DEC3N",bit,20+bit,plume::RenderFormat::R32_UINT,
+                    (mask&(1u<<bit))?0:15,(mask&(1u<<bit))?bit*4:0);
+            const auto key=sfr::pipeline_recipe_key(packed);
+            require(key!=baseline,"raw vertex specialization has a distinct portable key");
+            auto decoded=sfr::decode_pipeline_manifest(sfr::encode_pipeline_manifest(std::span(&packed,1),0),0);
+            require(decoded.size()==1 && decoded[0].state.vertex_dec3n_mask==mask &&
+                    sfr::pipeline_recipe_key(decoded[0])==key &&
+                    std::string(decoded[0].state.elements[0].semanticName)=="SFR_DEC3N",
+                    "all nine mask bits and uint semantics survive manifest round trip");
+            const sfr::PipelineRecipe variants[]{recipe,packed,packed};
+            require(sfr::decode_pipeline_manifest(sfr::encode_pipeline_manifest(variants,0),0).size()==2,
+                    "manifest deduplication retains legacy and specialized variants separately");
+            if(mask==1){
+                const auto malformed=[&](auto change){auto bad=packed;change(bad.state.elements);
+                    rejects([&]{sfr::pipeline_recipe_key(bad);},"invalid packed semantic/binding rejected");};
+                malformed([](auto& e){e.pop_back();});
+                malformed([](auto& e){e[0].slotIndex=15;});
+                malformed([](auto& e){e[1].alignedByteOffset=4;});
+                malformed([](auto& e){e[0].location=19;});
+                malformed([](auto& e){e[0].format=plume::RenderFormat::R32_FLOAT;});
+            }
+        }
         auto vertex_id = recipe;
         vertex_id.state.elements.clear();
         vertex_id.state.stride = 0;

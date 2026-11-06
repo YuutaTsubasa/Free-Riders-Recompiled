@@ -34,15 +34,50 @@ class ShaderPackTests(unittest.TestCase):
             self.assertIn(MAGIC.decode(), native)
 
     def test_invalid_entries_and_trailing_data_are_rejected(self):
-        entry = struct.pack('<5I', 0, 0, 4, 1, 1) + b'gameDS'
+        entry = struct.pack('<6I', 0, 0, 4, 1, 1, 1) + b'gameDSR'
         validate_shader_pack(header(1) + entry)
         for data in (header(0), header(2) + entry, header(1) + entry + b'extra',
-                     header(1) + struct.pack('<5I', 2, 0, 4, 1, 1) + b'gameDS',
-                     header(1) + struct.pack('<5I', 0, 0, 4, 0, 0) + b'game',
-                     header(1) + struct.pack('<5I', 0, 0, 0xFFFFFFFF, 1, 1)):
+                     header(1) + struct.pack('<6I', 2, 0, 4, 1, 1, 1) + b'gameDSR',
+                     header(1) + struct.pack('<6I', 0, 0, 4, 0, 0, 0) + b'game',
+                     header(1) + struct.pack('<6I', 0, 0, 0xFFFFFFFF, 1, 1, 1)):
             with self.subTest(data=data):
                 with self.assertRaises(ValueError):
                     validate_shader_pack(data)
+
+    def test_vertex_pair_and_pixel_exclusion(self):
+        def entry(stage, dxil, spirv, raw):
+            return struct.pack('<6I', stage, 0, 4, len(dxil), len(spirv), len(raw)) + b'game' + dxil + spirv + raw
+        for sample in (entry(0, b'D', b'', b'R'), entry(0, b'', b'S', b''),
+                       entry(1, b'D', b'S', b'')):
+            validate_shader_pack(header(1) + sample)
+        for sample in (entry(0, b'D', b'S', b''), entry(0, b'', b'S', b'R'),
+                       entry(1, b'D', b'S', b'R')):
+            with self.subTest(sample=sample), self.assertRaisesRegex(ValueError, 'paired vertex'):
+                validate_shader_pack(header(1) + sample)
+        old_entry = struct.pack('<5I', 0, 0, 4, 1, 1) + b'gameDS'
+        with self.assertRaises(ValueError):
+            validate_shader_pack(MAGIC + struct.pack('<II', SHADER_ABI - 1, 1) + old_entry)
+
+    def test_producer_refuses_unpaired_dxil_and_explicit_vulkan_only_strips_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            folder = root / f'v{SHADER_ABI}-vertex'; folder.mkdir()
+            (folder / 'original.bin').write_bytes(b'\0\0\0\1')
+            (folder / 'specialization_mask.txt').write_text('0')
+            (folder / 'shader.dxil').write_bytes(b'D')
+            (folder / 'shader.spv').write_bytes(b'S')
+            output = root / 'pack'
+            args = [sys.executable, str(ROOT / 'scripts/pack_shaders.py'), '--cache', str(root), '--output', str(output)]
+            rejected = subprocess.run(args, capture_output=True, text=True)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn('paired DEC3N', rejected.stderr)
+            self.assertFalse(output.exists())
+            subprocess.run([*args, '--vulkan-only'], capture_output=True, check=True)
+            self.assertEqual(struct.unpack_from('<6I', output.read_bytes(), 16), (0, 0, 4, 0, 1, 0))
+            (folder / 'shader.dec3n.dxil').write_bytes(b'R')
+            subprocess.run(args, capture_output=True, check=True)
+            self.assertEqual(struct.unpack_from('<6I', output.read_bytes(), 16), (0, 0, 4, 1, 1, 1))
+            self.assertTrue(output.read_bytes().endswith(b'DSR'))
 
     def test_android_packager_rejects_legacy_pack_before_build_tools(self):
         with tempfile.TemporaryDirectory() as directory:

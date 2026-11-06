@@ -94,6 +94,7 @@ struct NativeDraw {
     const ShaderCacheEntry* vertex_entry = nullptr;
     const ShaderCacheEntry* pixel_entry = nullptr;
     uint32_t pixel_link_constants = 0;
+    uint32_t vertex_dec3n_mask = 0;
     // Vulkan: the pixel shader's specialization constant (constant_id 0),
     // set in its pipeline; D3D12 links it into the shader instead.
     uint32_t pixel_spec_constants = 0;
@@ -133,6 +134,7 @@ public:
 
     // Links a specialization-library pixel shader with the given constants.
     const plume::RenderShader* specialized(const ShaderCacheEntry& entry, uint32_t spec_constants);
+    const plume::RenderShader* specialized_vertex(const ShaderCacheEntry& entry, uint32_t dec3n_mask);
     // Descriptor index of the texture described by a fetch constant, uploading
     // it from guest memory the first time. Returns a null descriptor when unbound.
     uint32_t texture(GuestMemory& memory, const FetchWords& words);

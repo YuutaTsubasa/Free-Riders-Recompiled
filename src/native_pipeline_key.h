@@ -12,6 +12,7 @@ inline void native_pipeline_key_legacy(const NativeDraw& draw, std::vector<uint8
     };
     put(&draw.vertex_shader, sizeof(void*));
     put(&draw.pixel_shader, sizeof(void*));
+    put(&draw.vertex_dec3n_mask, 4);
     put(&draw.pixel_spec_constants, 4);
     for (const auto& e : draw.elements) {
         put(&e.semanticIndex, 4); put(&e.location, 4); put(&e.format, sizeof(e.format));
@@ -45,7 +46,7 @@ inline void native_pipeline_key_bulk(const NativeDraw& draw, std::vector<uint8_t
     constexpr size_t blend_bytes = 4 * sizeof(plume::RenderBlend) + 2 * sizeof(plume::RenderBlendOperation) + sizeof(bool);
     constexpr size_t stencil_face_bytes = 3 * sizeof(plume::RenderStencilOp) + sizeof(plume::RenderComparisonFunction);
     const size_t fixed_bytes = sizeof(draw.vertex_shader) + sizeof(draw.pixel_shader) +
-        sizeof(draw.pixel_spec_constants) + sizeof(draw.stride) + sizeof(draw.topology) + blend_bytes +
+        sizeof(draw.vertex_dec3n_mask) + sizeof(draw.pixel_spec_constants) + sizeof(draw.stride) + sizeof(draw.topology) + blend_bytes +
         sizeof(draw.write_mask) + sizeof(draw.depth_enabled) + sizeof(draw.depth_write) +
         sizeof(draw.depth_function) + sizeof(draw.cull) + sizeof(draw.stencil_enabled);
     const size_t stencil_bytes = draw.stencil_enabled ? sizeof(draw.stencil_reference) +
@@ -57,7 +58,7 @@ inline void native_pipeline_key_bulk(const NativeDraw& draw, std::vector<uint8_t
         std::memcpy(next, &value, sizeof(value));
         next += sizeof(value);
     };
-    put(draw.vertex_shader); put(draw.pixel_shader); put(draw.pixel_spec_constants);
+    put(draw.vertex_shader); put(draw.pixel_shader); put(draw.vertex_dec3n_mask); put(draw.pixel_spec_constants);
     for (const auto& e : draw.elements) {
         put(e.semanticIndex); put(e.location); put(e.format); put(e.slotIndex); put(e.alignedByteOffset); put(e.semanticName);
     }

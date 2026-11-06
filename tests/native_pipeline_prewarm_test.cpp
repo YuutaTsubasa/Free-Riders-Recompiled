@@ -5,6 +5,7 @@
 #include "pipeline_manifest.h"
 #include "runtime_shader_cache.h"
 #include "shader_pack_format.h"
+#include "shader_inputs.h"
 #include "plume_render_interface.h"
 #include <algorithm>
 #include <array>
@@ -50,18 +51,29 @@ std::string quote(const fs::path& path) {
     return result + "'";
 #endif
 }
-std::vector<uint8_t> compile(const fs::path& directory, bool vulkan, bool vertex) {
-    const auto source = directory / (vertex ? "vertex.hlsl" : "pixel.hlsl");
-    const auto output = directory / (vertex ? "vertex.bin" : "pixel.bin");
+std::vector<uint8_t> compile(const fs::path& directory, bool vulkan, bool vertex, bool raw = false) {
+    const auto source = directory / (raw ? "vertex.dec3n.hlsl" : vertex ? "vertex.hlsl" : "pixel.hlsl");
+    const auto output = directory / (raw ? "vertex.dec3n.bin" : vertex ? "vertex.bin" : "pixel.bin");
     // No private assets, vertex buffers, resource descriptors or shader header
     // dependencies: a full-screen triangle and a distinctive constant color.
-    std::ofstream(source) << (vertex ? R"(
-float4 shaderMain(uint id : SV_VertexID) : SV_Position {
+    std::string text = vertex ? R"(
+struct VertexShaderInput
+{
+    uint iId : SV_VertexID;
+};
+[shader("vertex")]
+float4 shaderMain(VertexShaderInput input) : SV_Position {
     float2 p[3] = {float2(-1,-1), float2(-1,3), float2(3,-1)};
-    return float4(p[id], 0.5, 1);
+    return float4(p[input.iId], 0.5, 1);
 })" : R"(
 float4 shaderMain() : SV_Target { return float4(0.25, 0.5, 0.75, 1); }
-)");
+)";
+    if (raw) {
+        const auto variant = sfr::dec3n_vertex_shader_source(text);
+        require(vertex && !vulkan && variant.has_value(), "raw prewarm fixture uses the production vertex adapter");
+        text = *variant;
+    }
+    std::ofstream(source) << text;
     const char* override = std::getenv("SFR_DXC");
 #ifdef _WIN32
     constexpr const char* compiler = "tools/XenosRecomp/thirdparty/dxc-bin/bin/x64/dxc.exe";
@@ -71,8 +83,8 @@ float4 shaderMain() : SV_Target { return float4(0.25, 0.5, 0.75, 1); }
     constexpr const char* compiler = "tools/XenosRecomp/thirdparty/dxc-bin/bin/x64/dxc-linux";
 #endif
     const fs::path dxc = override ? fs::path(override) : fs::path(SFR_SOURCE_DIR) / compiler;
-    const std::string command = quote(dxc) + " -T " + (vertex ? "vs_6_0" : "ps_6_0") +
-        " -E shaderMain -HV 2021 -all-resources-bound -Qstrip_debug" +
+    const std::string command = quote(dxc) + " -T " + (raw ? "lib_6_3" : vertex ? "vs_6_0" : "ps_6_0") +
+        (raw ? "" : " -E shaderMain") + " -HV 2021 -all-resources-bound -Qstrip_debug" +
         (vulkan ? " -spirv -fvk-use-dx-layout -fspv-target-env=vulkan1.2" : "") +
         (vulkan && vertex ? " -fvk-invert-y" : "") + " -Fo " + quote(output) + " " + quote(source) +
         " > " + quote(directory / "compile.log") + " 2>&1";
@@ -102,20 +114,22 @@ void word(std::ostream& output, uint32_t value) {
     for (unsigned i = 0; i < 4; ++i) output.put(char(value >> (8 * i)));
 }
 void write_pack(const fs::path& path, bool vulkan, const std::vector<uint8_t>& vertex,
-                const std::vector<uint8_t>& pixel) {
+                const std::vector<uint8_t>& pixel, const std::vector<uint8_t>& raw_vertex) {
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
     output.write("SFRSHPK2", 8);
     word(output, sfr::shader_abi_version);
     word(output, 2);
     const auto entry = [&](sfr::ShaderStage stage, std::span<const uint8_t> source,
-                           std::span<const uint8_t> code) {
+                           std::span<const uint8_t> code, std::span<const uint8_t> raw = {}) {
         word(output, uint32_t(stage)); word(output, 0); word(output, uint32_t(source.size()));
         word(output, vulkan ? 0 : uint32_t(code.size()));
         word(output, vulkan ? uint32_t(code.size()) : 0);
+        word(output, uint32_t(raw.size()));
         output.write(reinterpret_cast<const char*>(source.data()), std::streamsize(source.size()));
         output.write(reinterpret_cast<const char*>(code.data()), std::streamsize(code.size()));
+        if (!raw.empty()) output.write(reinterpret_cast<const char*>(raw.data()), std::streamsize(raw.size()));
     };
-    entry(sfr::ShaderStage::vertex, vertex_source, vertex);
+    entry(sfr::ShaderStage::vertex, vertex_source, vertex, raw_vertex);
     entry(sfr::ShaderStage::pixel, pixel_source, pixel);
     output.close();
     require(bool(output), "fixture shader pack is written");
@@ -180,6 +194,7 @@ void run() {
     const uint32_t backend = uint32_t(graphics.backend());
     const auto vertex_code = compile(directory, vulkan, true);
     const auto pixel_code = compile(directory, vulkan, false);
+    const auto raw_vertex_code = vulkan ? std::vector<uint8_t>{} : compile(directory, false, true, true);
     sfr::PipelineRecipe known;
     known.vertex = sfr::pipeline_shader_id(vertex_source);
     known.pixel = sfr::pipeline_shader_id(pixel_source);
@@ -206,7 +221,7 @@ void run() {
         }
         require(rejected, "prewarm must not silently accept a corrupt required shader pack");
     }
-    write_pack(directory / "fixture.pack", vulkan, vertex_code, pixel_code);
+    write_pack(directory / "fixture.pack", vulkan, vertex_code, pixel_code, raw_vertex_code);
     const auto* vertex_entry = sfr::packed_pipeline_shader(sfr::ShaderStage::vertex, known.vertex.hash, known.vertex.size);
     const auto* pixel_entry = sfr::packed_pipeline_shader(sfr::ShaderStage::pixel, known.pixel.hash, known.pixel.size);
     require(vertex_entry && pixel_entry, "current ABI pack resolves both fixture identities");
@@ -309,6 +324,23 @@ void run() {
         renderer.draw(draw);
         require(renderer.take_pipeline_work().created == 1, "optional manifest failure retains on-demand pipeline creation");
         expect_color(presentation.readback_color(), false);
+    }
+    if (!vulkan) {
+        auto raw_recipe=known;raw_recipe.state.vertex_dec3n_mask=1;raw_recipe.state.stride=4;
+        raw_recipe.state.elements.clear();
+        for(uint32_t bit=0;bit<9;++bit)raw_recipe.state.elements.emplace_back("SFR_DEC3N",bit,20+bit,
+            plume::RenderFormat::R32_UINT,bit?15:0,0);
+        const auto raw_manifest=directory/"raw.manifest";
+        const std::array raw_recipes{raw_recipe};
+        require(sfr::save_pipeline_manifest_file(raw_manifest,raw_recipes,backend),"raw recipe saved");
+        environment("SFR_PIPELINE_MANIFEST",raw_manifest.string());
+        environment("SFR_PIPELINE_MANIFEST_LOCAL",(directory/"raw-local.manifest").string());
+        sfr::NativePresentation presentation(graphics,16,16);sfr::NativeRenderer renderer(graphics,presentation);
+        renderer.prepare_pipelines();
+        const auto prepared=renderer.prepared_draws();
+        require(prepared.size()==1 && prepared[0].vertex_dec3n_mask==1 && prepared[0].vertex_shader &&
+                prepared[0].vertex_shader==renderer.specialized_vertex(*vertex_entry,1),
+                "prewarm and reconstructed draws select the same owned mask-linked VS");
     }
     require(!fs::exists(directory / "must-not-translate"), "prewarm never invokes runtime translation for unknown identities");
     const char* screenshot_path = std::getenv("SFR_PREWARM_TEST_SCREENSHOT");

@@ -6,12 +6,16 @@
 #include <set>
 
 namespace sfr {
-NativeVertexLayout decode_native_vertex_layout(std::span<const uint8_t> bytes, uint32_t stride) {
+NativeVertexLayout decode_native_vertex_layout(std::span<const uint8_t> bytes, uint32_t stride, bool gpu_dec3n) {
     if (bytes.size() > 192 || bytes.size() % 12)
         throw NativeVertexLayoutError(uint32_t(bytes.size()), "invalid vertex declaration byte count");
     NativeVertexLayout result;
     result.elements.reserve(36);
     const uint32_t elements = uint32_t(bytes.size()/12);
+    std::array<uint32_t, 9> packed_offsets;
+    packed_offsets.fill(~0u);
+    std::array<bool, 20> bound{};
+    bool packed = gpu_dec3n && stride && !(stride & 3);
     const auto read = [&](size_t offset, size_t size) {
         uint32_t value = 0;
         for (size_t i=0; i<size; ++i) value = (value << 8) | bytes[offset+i];
@@ -36,12 +40,19 @@ NativeVertexLayout decode_native_vertex_layout(std::span<const uint8_t> bytes, u
         uint32_t location=~0u;
         for(uint32_t l=0;l<std::size(locations);++l)
             if(locations[l].usage==input.usage && locations[l].index==input.index) location=l;
-        if(location==~0u) continue;  // bound but read by no XenosRecomp shader
+        if(location==~0u) {
+            if (type == dec3n) packed = false;
+            continue;  // bound but read by no XenosRecomp shader
+        }
+        if (bound[location]) packed = false;
+        bound[location] = true;
         uint32_t element_offset=offset;
         if(type==dec3n) {
             if(offset+4>stride) throw NativeVertexLayoutError(offset,"vertex element exceeds the stride");
             element_offset=stride+8*uint32_t(result.dec3n_offsets.size());
             result.dec3n_offsets.push_back(offset);
+            if (location < 4 || location > 12 || (offset & 3)) packed = false;
+            else packed_offsets[location - 4] = offset;
         }
         // Vulkan wants an attribute's offset aligned to its component size.
         // Desktop drivers fetch an under-aligned one anyway; an Adreno need
@@ -60,6 +71,23 @@ NativeVertexLayout decode_native_vertex_layout(std::span<const uint8_t> bytes, u
         result.elements.emplace_back(semantic,input.index,location,format->format,0,element_offset);
         if(format->swapped_pairs && (input.usage==1 || input.usage==3 || input.usage==5 || input.usage==6 || input.usage==7)) result.swapped[input.usage]|=1u<<input.index;
     }
+    if (packed && !result.dec3n_offsets.empty()) {
+        for (auto& element : result.elements) {
+            if (element.location >= 4 && element.location <= 12 &&
+                packed_offsets[element.location - 4] != ~0u) {
+                element.format = plume::RenderFormat::R32G32B32_FLOAT;
+                element.slotIndex = 15;
+                element.alignedByteOffset = 0;
+            }
+        }
+        for (uint32_t bit = 0; bit < packed_offsets.size(); ++bit) {
+            const bool active = packed_offsets[bit] != ~0u;
+            result.elements.emplace_back("SFR_DEC3N", bit, 20 + bit, plume::RenderFormat::R32_UINT,
+                active ? 0 : 15, active ? packed_offsets[bit] : 0);
+            if (active) result.dec3n_mask |= 1u << bit;
+        }
+        result.dec3n_offsets.clear();
+    }
     for(uint32_t l=0;l<std::size(locations);++l) {
         if(std::any_of(result.elements.begin(),result.elements.end(),[&](const auto& e){ return e.location==l; })) continue;
         const uint32_t usage=locations[l].usage;
@@ -72,7 +100,7 @@ NativeVertexLayout decode_native_vertex_layout(std::span<const uint8_t> bytes, u
 }
 
 const NativeVertexLayout& NativeVertexLayoutCache::get(uint32_t identity, uint32_t stride,
-                                                       std::span<const uint8_t> bytes) {
+                                                       std::span<const uint8_t> bytes, bool gpu_dec3n) {
     if (bytes.size() > 192 || bytes.size() % 12)
         throw NativeVertexLayoutError(uint32_t(bytes.size()), "invalid vertex declaration byte count");
     // Guest memory can change while a detached worker runs. Compare, decode
@@ -83,7 +111,7 @@ const NativeVertexLayout& NativeVertexLayoutCache::get(uint32_t identity, uint32
     for (size_t i=0; i<bytes.size(); ++i) snapshot[i] = source[i];
     bytes = {snapshot.data(), bytes.size()};
     const auto matches = [&](const Entry& entry) {
-        return entry.valid && entry.identity == identity && entry.stride == stride && entry.size == bytes.size() &&
+        return entry.valid && entry.identity == identity && entry.stride == stride && entry.gpu_dec3n == gpu_dec3n && entry.size == bytes.size() &&
             (bytes.empty() || std::memcmp(entry.bytes.data(), bytes.data(), bytes.size()) == 0);
     };
     for (size_t offset=0; offset<entries_.size(); ++offset) {
@@ -95,10 +123,11 @@ const NativeVertexLayout& NativeVertexLayoutCache::get(uint32_t identity, uint32
         }
     }
     // Decode before replacing anything: failure leaves the old entries valid.
-    auto decoded = decode_native_vertex_layout(bytes, stride);
+    auto decoded = decode_native_vertex_layout(bytes, stride, gpu_dec3n);
     auto& entry = entries_[next_];
     entry.layout = std::move(decoded);
     std::copy(bytes.begin(), bytes.end(), entry.bytes.begin());
+    entry.gpu_dec3n = gpu_dec3n;
     entry.identity = identity; entry.stride = stride; entry.size = bytes.size(); entry.valid = true;
     last_ = next_; next_ = (next_+1)%entries_.size();
     ++misses_;
