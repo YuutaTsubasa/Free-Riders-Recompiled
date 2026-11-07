@@ -8,8 +8,11 @@
 #include "kinect_nui_record.h"
 #include "avatar_state.h"
 #include "nui_analysis_trace.h"
+#include "race_frame_clock.h"
 #include "motion_trace.h"
+#include <array>
 #include <bit>
+#include <cstdio>
 #include <chrono>
 #include <cstdlib>
 #include <cmath>
@@ -51,6 +54,8 @@ void store_float(uint32_t address, float value) { memory().store<uint32_t>(addre
 // dwell durations use the host monotonic clock instead of assuming seconds.
 float frame_seconds() {
     const uint32_t clock = memory().load<uint32_t>(time_global);
+    // A short race step (race_frame_clock.h) keeps these at the console's pace.
+    if (clock && sfr::race_step_rate() != 60) return load_float(memory().load<uint32_t>(clock + 24) + 40);
     return clock ? load_float(memory().load<uint32_t>(clock + 24) + 4) : 1.0f / 60.0f;
 }
 float frame_count() {
@@ -364,7 +369,42 @@ SFR_INPUT_HOOK(sub_82438930) {
     const bool racing = !disabled && !sfr::nui_body_from_sensor() && m.load<uint32_t>(race_flag) != 0;
     const float seconds = frame_seconds();
     if(camera_player(0)) race[0]=sfr::RaceInput{};
-    else race[0].update(sfr::nui_gamepad(), seconds);
+    else {
+        // SFR_TEST_RACE_HOLD=x0,x1,z0,z1[,...] (testing): A is held while the first
+        // racer is in one of those boxes, so a scripted race charges a jump at a
+        // place on the course rather than at a time.
+        auto pad = sfr::nui_gamepad();
+        static const std::array<float,8> box = [] {
+            std::array<float,8> value{1,0,0,0,1,0,0,0};
+            if (const char* text = std::getenv("SFR_TEST_RACE_HOLD"))
+                std::sscanf(text, "%f,%f,%f,%f,%f,%f,%f,%f", &value[0], &value[1], &value[2], &value[3],
+                            &value[4], &value[5], &value[6], &value[7]);
+            return value;
+        }();
+        if (m.load<uint32_t>(race_flag)) {
+            const uint32_t team = m.load<uint32_t>(0x83E52FDC);
+            const uint32_t begin = team ? m.load<uint32_t>(team + 36) : 0;
+            const uint32_t racer = begin ? m.load<uint32_t>(begin) : 0;
+            if (racer) {
+                const float x = load_float(racer + 0x120), z = load_float(racer + 0x128);
+                for (int i = 0; i < 8; i += 4)
+                    if (box[i] < box[i+1] && x >= box[i] && x <= box[i+1] && z >= box[i+2] && z <= box[i+3])
+                        pad.buttons |= sfr::gamepad_button::a;
+                // SFR_TEST_RACE_STEER=x0,x1,z[,...] (testing): the stick steers the racer
+                // to that z while it is between those x, onto a side ramp.
+                static const std::array<float,6> lane = [] {
+                    std::array<float,6> value{1,0,0,1,0,0};
+                    if (const char* text = std::getenv("SFR_TEST_RACE_STEER"))
+                        std::sscanf(text, "%f,%f,%f,%f,%f,%f", &value[0], &value[1], &value[2], &value[3], &value[4], &value[5]);
+                    return value;
+                }();
+                for (int i = 0; i < 6; i += 3)
+                    if (lane[i] < lane[i+1] && x >= lane[i] && x <= lane[i+1])
+                        pad.thumb_lx = int16_t(std::clamp((z - lane[i+2]) * 0.1f, -1.0f, 1.0f) * 32767.0f);
+            }
+        }
+        race[0].update(pad, seconds);
+    }
     const auto second_pad = sfr::second_player_pad();
     if (second_pad) race[1].update(*second_pad, seconds);
     else race[1] = sfr::RaceInput{};  // loss of a pad is not an A/X release gesture

@@ -12,6 +12,9 @@ namespace {
 // Publish one completed clock sample for both threads.
 std::atomic<float> race_ui_frames{1.0f};
 thread_local bool updating_race_ui = false;
+// Whole frames the running short step completed (RaceWholeFrames), -1 when
+// a race is not stepping short: guest 1 writes it, its workers read it.
+std::atomic<int32_t> race_whole_frames{-1};
 
 // Android steps the race by the time that passed (SFR_REALTIME_RACE=0 turns
 // it off), so a frame rate under 60 does not slow the race. Desktops, held
@@ -20,6 +23,7 @@ thread_local bool updating_race_ui = false;
 // a charged jump off the side of Rocky Ridge then flew out of the course.
 bool realtime_races() {
     static const bool enabled = [] {
+        if (sfr::race_step_rate() != 60) return true;
         if (const char* value = std::getenv("SFR_REALTIME_RACE")) return *value && *value != '0';
 #ifdef __ANDROID__
         // Frame skipping (race_frame_clock.h) keeps the race's speed with the
@@ -71,20 +75,31 @@ SFR_CONCURRENT_HOOK(sub_824B1588) {
     const auto step = elapsed.update(now_ns, scene);
     if (!step) {
         race_ui_frames.store(1.0f, std::memory_order_relaxed);
+        race_whole_frames.store(-1, std::memory_order_relaxed);
         return;
     }
 
-    const float seconds = step->frames * (1.0f / 60.0f);
+    const float frames = sfr::race_step_rate() != 60 ? 60.0f / float(sfr::race_step_rate()) : step->frames;
+    const float seconds = frames * (1.0f / 60.0f);
     memory.store<uint32_t>(clock+32, std::bit_cast<uint32_t>(seconds * 1000.0f));
     memory.store<uint32_t>(clock+36, std::bit_cast<uint32_t>(seconds));
-    memory.store<uint32_t>(clock+40, std::bit_cast<uint32_t>(step->frames));
-    memory.store<uint8_t>(clock+91, step->frames > 1.0f ? 1 : 0);
-    race_ui_frames.store(step->frames, std::memory_order_relaxed);
+    memory.store<uint32_t>(clock+40, std::bit_cast<uint32_t>(frames));
+    memory.store<uint8_t>(clock+91, frames > 1.0f ? 1 : 0);
+    race_ui_frames.store(frames, std::memory_order_relaxed);
+    static thread_local sfr::RaceWholeFrames whole;
+    if (sfr::race_step_rate() != 60) race_whole_frames.store(whole.update(frames), std::memory_order_relaxed);
     // Keep +4 untouched: legacy controller gestures also read that setting.
     // +44/+48/+52/+92 retain the original clock's computed diagnostic values.
     if (step->clamped && step->elapsed_seconds > 0.25)
         std::cerr << "RACE_CLOCK clamped_seconds=" << step->elapsed_seconds
                   << " applied_seconds=" << seconds << '\n';
+}
+
+// config/freeriders.toml: after an fctiwz or fctidz of the step, whose result
+// is read back from the register's low word.
+void RaceWholeFramesMidAsmHook(PPCRegister& truncated) {
+    const int32_t whole = race_whole_frames.load(std::memory_order_relaxed);
+    if (whole >= 0) truncated.u64 = uint64_t(whole);
 }
 
 PPC_FUNC_IMPL(__imp__sub_824AE2A0);

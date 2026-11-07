@@ -71,6 +71,9 @@ namespace test_option_detail {
 inline constexpr TestChoice on[] = {{"1", {"On", "開啟"}}};
 inline constexpr TestChoice off[] = {{"0", {"Off", "關閉"}}};
 inline constexpr TestChoice on_off[] = {{"1", {"On", "開啟"}}, {"0", {"Off", "關閉"}}};
+inline constexpr TestChoice step_rates[] = {
+    {"80", {"80 Hz", "80 Hz"}}, {"90", {"90 Hz", "90 Hz"}}, {"120", {"120 Hz", "120 Hz"}}, {"144", {"144 Hz", "144 Hz"}},
+};
 inline constexpr TestChoice core_plan[] = {
     {"13", {"As in 0.10.8", "與 0.10.8 相同"}},
     {"0", {"Left to Android", "交給 Android"}},
@@ -217,6 +220,14 @@ inline constexpr TestOption table[] = {
      {"For testing: Off turns off the fix for racers flying out of the course at the Fly board.",
       "測試用：關閉後會停用「選手在飛行板（Fly）處飛出賽道」的修正。"},
      off, "#153"},
+    {"SFR_RACE_STEP_RATE", TestGroup::gameplay, test_platform::all,
+     {"Race step rate", "比賽步進頻率"},
+     {"For testing: runs races at this many steps and frames a second instead of 60, so a screen faster than 60 Hz "
+      "shows more frames. Choose a rate the device holds: a race that cannot keep it slows down. Not used online or "
+      "with a webcam or Kinect, or with Frame skipping off.",
+      "測試用：比賽以這個頻率（每秒步進與畫面數）進行，而不是 60，讓高於 60 Hz 的螢幕顯示更多畫面。"
+      "請選擇裝置撐得住的頻率：撐不住時比賽會變慢。線上對戰、使用網路攝影機或 Kinect、或關閉跳過畫格時不會套用。"},
+     step_rates, ""},
     {"SFR_UNDRAWN_STAGE_AREAS", TestGroup::gameplay, test_platform::all,
      {"Skipped frames: stage areas only", "跳過的畫格：賽道只找區域"},
      {"For testing: On makes the course's own task, in a race frame that frame skipping does not show, only find "

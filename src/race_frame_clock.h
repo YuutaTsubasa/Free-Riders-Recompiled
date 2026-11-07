@@ -65,6 +65,21 @@ private:
     double carry_ = 0;  // time owed to (or ahead of) the steps given so far, in frames
 };
 
+// For the title's integer timers, which truncate the step: how many whole
+// frames a step completed, the rest carried. A step of half a frame gives 0,
+// 1, 0, 1, so they keep the console's pace where truncating would stop them.
+class RaceWholeFrames {
+public:
+    int32_t update(float frames) {
+        carry_ += frames;
+        const double whole = std::floor(carry_);
+        carry_ -= whole;
+        return int32_t(whole);
+    }
+private:
+    double carry_ = 0;
+};
+
 // Frame skipping for a race that cannot keep 60 fps (SFR_RACE_FRAMESKIP).
 // The race keeps the console's step of one sixtieth of a second, which its
 // collisions were made for: a longer step let a fast racer through the side
@@ -87,8 +102,8 @@ public:
     // busiest parts, its drawn ones ~35; Issue #177: a laptop's undrawn
     // ~18.7 ms). Not the default: where undrawn frames cannot catch up, the
     // screen shows fewer frames for a race that is still slow.
-    explicit RaceFrameSkip(uint32_t max_skips = 4, bool skip_slow = false)
-        : max_skips_(max_skips), skip_slow_(skip_slow) {}
+    explicit RaceFrameSkip(uint32_t max_skips = 4, bool skip_slow = false, uint64_t period_ns = frame_ns)
+        : max_skips_(max_skips), skip_slow_(skip_slow), period_ns_(period_ns) {}
     struct Decision {
         bool draw = true;      // draw the next frame
         uint64_t wait_ns = 0;  // wait this long first (the frame ended early)
@@ -107,7 +122,7 @@ public:
         }
         if (!started_) {
             started_ = true;
-            due_ns_ = now_ns + frame_ns;
+            due_ns_ = now_ns + period_ns_;
             skipped_ = 0;
             last_ns_ = now_ns;
             undrawn_ns_ = 0;
@@ -125,9 +140,9 @@ public:
         // A retry's undrawn frame (below) that came in under a frame
         // replaces the average: it shows that skipping helps now.
         if (now_ns > last_ns_) {
-            const uint64_t took = (std::min)(now_ns - last_ns_, 2 * frame_ns);
+            const uint64_t took = (std::min)(now_ns - last_ns_, 2 * period_ns_);
             uint64_t& average = skipped_ ? undrawn_ns_ : drawn_ns_;
-            const bool retried = skipped_ && retrying_ && took < frame_ns;
+            const bool retried = skipped_ && retrying_ && took < period_ns_;
             average = average && !retried ? (average * 7 + took) / 8 : took;
         }
         retrying_ = false;
@@ -135,7 +150,7 @@ public:
         ++frames_;
         if (now_ns < due_ns_) {  // on time: wait for the frame's slot
             const uint64_t wait = due_ns_ - now_ns;
-            due_ns_ += frame_ns;
+            due_ns_ += period_ns_;
             skipped_ = 0;
             last_ns_ = now_ns + wait;
             return {true, wait};
@@ -143,13 +158,13 @@ public:
         // How late the frame that just ended is, against a clock that moves
         // on a sixtieth of a second a frame.
         const uint64_t late = now_ns - due_ns_;
-        due_ns_ += frame_ns;
+        due_ns_ += period_ns_;
         // Far behind (a load, a stall, or a game too slow to catch up even
         // undrawn): start again from now. The race then runs slower than
         // real time, as the console's did when it could not keep up: its
         // step stays the console's, so it never plays differently.
-        if (late > 6 * frame_ns) {
-            due_ns_ = now_ns + frame_ns;
+        if (late > 6 * period_ns_) {
+            due_ns_ = now_ns + period_ns_;
             skipped_ = 0;
             ++resyncs_;
             return {};
@@ -166,10 +181,10 @@ public:
         // Galaxy Tab A9's stayed at 19 ms while its undrawn frames took
         // 4-12 ms, and the race ran at 0.41).
         const bool retry = frames_ >= last_skip_ + 60;
-        const bool helps = undrawn_ns_ < frame_ns || retry ||
+        const bool helps = undrawn_ns_ < period_ns_ || retry ||
                            (skip_slow_ && undrawn_ns_ * 4 < drawn_ns_ * 3);
-        if (late > frame_ns && skipped_ < max_skips_ && !helps) ++blocked_;
-        if (late > frame_ns && skipped_ < max_skips_ && helps) {
+        if (late > period_ns_ && skipped_ < max_skips_ && !helps) ++blocked_;
+        if (late > period_ns_ && skipped_ < max_skips_ && helps) {
             ++skipped_;
             last_skip_ = frames_;
             retrying_ = retry;
@@ -181,6 +196,7 @@ public:
 private:
     uint32_t max_skips_;
     bool skip_slow_;
+    uint64_t period_ns_;
     bool started_ = false;
     uint64_t due_ns_ = 0;   // when the frame being run should end
     uint32_t skipped_ = 0;  // undrawn frames in a row
@@ -232,6 +248,26 @@ inline RaceFrameskipMode race_frameskip_mode() {
 }
 
 inline bool race_frameskip_enabled() { return race_frameskip_mode() != RaceFrameskipMode::off; }
+
+// SFR_RACE_STEP_RATE, the launcher's Test option "Race step rate": a race
+// steps this many fixed steps a second instead of the console's 60, which is
+// the frame rate it is then drawn at (docs/high-frame-rate-races.md). 60, or
+// unset, changes nothing. Frame skipping paces those steps, so it must be on.
+// Online races and body controls (a webcam, a Kinect) stay at 60: a race with
+// other consoles and the title's own gesture detectors have not been tried.
+inline uint32_t race_step_rate(const char* rate, bool frameskip, bool online, bool body_controls) {
+    const unsigned long value = rate ? std::strtoul(rate, nullptr, 10) : 60;
+    return frameskip && !online && !body_controls && value > 60 && value <= 240 ? uint32_t(value) : 60;
+}
+
+inline uint32_t race_step_rate() {
+    static const uint32_t rate = [] {
+        const auto set = [](const char* name) { const char* text = std::getenv(name); return text && *text; };
+        return race_step_rate(std::getenv("SFR_RACE_STEP_RATE"), race_frameskip_enabled(),
+                              set("SFR_LIVE_HOST") || set("SFR_LIVE_SERVER"), set("SFR_CAMERA"));
+    }();
+    return rate;
+}
 
 // SFR_PRESENT_LIMIT_RACING=N (guest_graphics_hooks.cpp): the run ends at the
 // Nth present with the title's race flag set, so the menus and the loading
