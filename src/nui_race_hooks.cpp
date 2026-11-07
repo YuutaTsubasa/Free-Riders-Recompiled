@@ -62,6 +62,13 @@ float frame_count() {
     const uint32_t clock = memory().load<uint32_t>(time_global);
     return clock ? load_float(memory().load<uint32_t>(clock + 24) + 40) : 1.0f;
 }
+// For a detector that fires once its total reaches a threshold: the total
+// grows by 1 an original frame (above), so a short step's 0.5 would pass the
+// threshold on every step. Whole frames keep it firing at the console's pace.
+std::unordered_map<uint32_t, sfr::RaceWholeFrames> detector_frames;
+float detector_seconds(uint32_t detector) {
+    return sfr::race_step_rate() == 60 ? frame_seconds() : float(detector_frames[detector].update(frame_count()));
+}
 
 bool pad_racing() { return swapped; }
 bool camera_player(uint32_t player) {
@@ -1028,7 +1035,7 @@ RACE_DETECTOR(822CC8F0, {
     if (b.right_trigger == 0) result = 2;
     else {
         float& time = shakes[detector];
-        time += frame_seconds();
+        time += detector_seconds(detector);
         if (time >= 1.0f / 3.0f) { time = 0; set_bits(entry(results) + 20, 0x44); result = 1; }
     }
 })
@@ -1081,7 +1088,7 @@ RACE_DETECTOR(822CE118, {
     float& stroke = strokes[detector];
     if (b.x_held_seconds <= 0) stroke = 0;
     else {
-        stroke += frame_seconds();
+        stroke += detector_seconds(detector);
         if (stroke >= 0.5f) { stroke = 0; set_bits(entry(results) + 20, 0x80); result = 1; }
     }
 })
