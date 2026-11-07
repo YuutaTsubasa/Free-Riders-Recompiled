@@ -1624,8 +1624,12 @@ struct ResolveCopy {
     plume::RenderTexture* target;
     plume::RenderTextureLayout from_layout;
     NativePresentation* presentation;  // for SFR_GPU_TIMING=2
+    uint32_t physical = 0;
+    bool depth = false;
     void operator()(plume::RenderCommandList& list, uint64_t) const {
-        presentation->mark_gpu_pass(true);
+        char name[40];
+        std::snprintf(name, sizeof name, "copy-%s-%x", depth ? "depth" : "color", physical);
+        presentation->mark_gpu_pass(name);
         const std::array<plume::RenderTextureBarrier, 2> before{
             plume::RenderTextureBarrier(source, plume::RenderTextureLayout::COPY_SOURCE),
             plume::RenderTextureBarrier(target, plume::RenderTextureLayout::COPY_DEST)};
@@ -1635,7 +1639,7 @@ struct ResolveCopy {
             plume::RenderTextureBarrier(target, plume::RenderTextureLayout::SHADER_READ),
             plume::RenderTextureBarrier(source, from_layout)};
         list.barriers(plume::RenderBarrierStage::GRAPHICS, after.data(), uint32_t(after.size()));
-        presentation->mark_gpu_pass(false);
+        presentation->mark_gpu_pass(nullptr);
     }
 };
 }
@@ -1686,7 +1690,7 @@ uint32_t NativeRenderer::adopt_resolved_target(uint32_t physical, bool depth) {
     impl_->resolve_to(physical, index);
     ++impl_->resolve_copies;
     presentation.record_async(ResolveCopy{source, impl_->texture_objects[index - first_texture].get(),
-        depth ? plume::RenderTextureLayout::DEPTH_WRITE : plume::RenderTextureLayout::COLOR_WRITE, &presentation});
+        depth ? plume::RenderTextureLayout::DEPTH_WRITE : plume::RenderTextureLayout::COLOR_WRITE, &presentation, physical, depth});
     return index;
 }
 
@@ -1734,7 +1738,7 @@ void NativeRenderer::materialize_aliases(const void* surface) {
         ++impl_->texture_generation;
         ++impl_->resolve_copies;
         impl_->presentation.record_async(ResolveCopy{alias.source, impl_->texture_objects[index - first_texture].get(),
-                                                     plume::RenderTextureLayout::SHADER_READ, &impl_->presentation});
+                                                     plume::RenderTextureLayout::SHADER_READ, &impl_->presentation, alias.physical, alias.depth});
     }
 }
 

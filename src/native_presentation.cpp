@@ -938,6 +938,18 @@ struct NativePresentation::Impl {
             ++pass_spans[category];
         }
         if (++pass_lists < 120) return;
+        // This list's passes in order, as a race's frame runs them.
+        std::string spans = "GPU_PASS_ORDER";
+        size_t framebuffer_order = 0;
+        for (uint32_t i = 0; i < timing.used; ++i) {
+            if (r[i + 1] < r[i]) continue;
+            uint16_t category = timing.category[i];
+            if (category == fb_category) category = numbered[(std::min)(framebuffer_order++, numbered.size() - 1)];
+            char span[96];
+            std::snprintf(span, sizeof span, " %s=%.2f", pass_names[category].c_str(), double(r[i + 1] - r[i]) / 1e6);
+            spans += span;
+        }
+        std::cerr << spans << char(10);
         std::vector<size_t> order(pass_names.size());
         for (size_t i = 0; i < order.size(); ++i) order[i] = i;
         std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return pass_ms[a] > pass_ms[b]; });
@@ -1807,9 +1819,17 @@ void NativePresentation::set_target(uint64_t key, uint32_t surface_width, uint32
         auto made = std::make_unique<Impl::SurfaceTarget>();
         // Scaled as the frame is; a surface larger than the frame stops at
         // the largest side (its own ratio maps the raster, scaled_raster).
-        const auto pixels = [](uint32_t value, uint32_t render, uint32_t logical) {
-            return std::clamp<uint32_t>(uint32_t((std::min<uint64_t>)((uint64_t(value) * render + logical / 2) / logical,
-                                                                      render_scale::max_extent)),
+        // SFR_SURFACE_SCALE=<percent of guest pixels>: shadows and the bloom
+        // chain stop there; a surface as tall as the frame scales with it.
+        static const uint32_t surface_scale = [] {
+            const char* t = std::getenv("SFR_SURFACE_SCALE");
+            return t ? uint32_t(std::strtoul(t, nullptr, 10)) : 0u;
+        }();
+        const bool capped = surface_scale && surface_height != impl_->height;
+        const auto pixels = [&](uint32_t value, uint32_t render, uint32_t logical) {
+            uint64_t scaled = (uint64_t(value) * render + logical / 2) / logical;
+            if (capped) scaled = (std::min<uint64_t>)(scaled, (uint64_t(value) * surface_scale + 50) / 100);
+            return std::clamp<uint32_t>(uint32_t((std::min<uint64_t>)(scaled, render_scale::max_extent)),
                                         1u, render_scale::max_extent);
         };
         made->width = pixels(surface_width, impl_->render_width, impl_->width);
@@ -1854,7 +1874,7 @@ plume::RenderTexture& NativePresentation::target_depth() {
 
 const void* NativePresentation::target_identity() const noexcept { return impl_->target; }
 
-void NativePresentation::mark_gpu_pass(bool copy) {
+void NativePresentation::mark_gpu_pass(const char* copy) {
     if (!Impl::gpu_pass_timing()) return;
     const uint16_t bound = impl_->bound_category();
     if (!copy) {
@@ -1865,6 +1885,10 @@ void NativePresentation::mark_gpu_pass(bool copy) {
     // ("copy-fb") apart from those out of a render surface.
     auto& copies = impl_->copy_categories;
     if (copies.size() <= bound) copies.resize(bound + 1, 0);
+    if (*copy) {
+        impl_->mark_pass(impl_->pass_category(copy));
+        return;
+    }
     if (!copies[bound]) {
         std::string name;
         {
