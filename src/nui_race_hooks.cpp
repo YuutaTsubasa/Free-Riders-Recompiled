@@ -1045,8 +1045,11 @@ RACE_DETECTOR(822CC8F0, {
 RACE_DETECTOR(822CDEE0, {
     if (b.right_trigger > 0) {
         set_bits(entry(results) + 20, 0x10000);
+        // Whole frames on a short step: the position below is an integer, so
+        // a small tilt's part of a frame would be cut off every step.
+        const float frames = sfr::race_step_rate() == 60 ? frame_count() : detector_seconds(detector);
         auto move = [&](uint32_t offset, float axis, float limit) {
-            const float step = axis * frame_count() * 14.0f;
+            const float step = axis * frames * 14.0f;
             const float next = std::clamp(float(int16_t(memory().load<uint16_t>(detector + offset))) - step, -limit, limit);
             memory().store<uint16_t>(detector + offset, uint16_t(int16_t(next)));
         };
