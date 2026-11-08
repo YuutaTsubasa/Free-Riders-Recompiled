@@ -1729,7 +1729,6 @@ void NativeRenderer::materialize_aliases(const void* surface) {
     // had (SFR_RESOLVE_SWAP=0 copies them out, as before).
     static const bool swap = [] { const char* t = std::getenv("SFR_RESOLVE_SWAP"); return !t || *t != '0'; }();
     const uint8_t replaces = swap ? impl_->presentation.write_replaces() : 0;
-    const plume::RenderTexture* swapped[2]{};
     const auto in_use = [&](const plume::RenderTexture* texture) {
         const auto view = impl_->surface_views.find(texture);
         if (view == impl_->surface_views.end()) return false;
@@ -1737,26 +1736,33 @@ void NativeRenderer::materialize_aliases(const void* surface) {
             if (index == view->second) return true;
         return false;
     };
-    for (const auto& alias : aliases) {
-        const auto view = impl_->surface_views.find(alias.source);
-        const auto current = impl_->resolved_targets.find(alias.physical);
-        // Dropped (its memory freed) or resolved again since: nothing to keep.
-        if (view == impl_->surface_views.end() || current == impl_->resolved_targets.end() ||
-            current->second != view->second) continue;
-        auto& swapped_out = swapped[alias.depth ? 1 : 0];
-        if (swapped_out == alias.source) continue;
-        if ((replaces & (alias.depth ? 2 : 1)) && !swapped_out &&
-            impl_->presentation.replace_target_attachment(alias.depth, in_use)) {
-            swapped_out = alias.source;
-            ++impl_->resolve_swaps;
-            continue;
-        }
+    const auto copy_out = [&](const Impl::Alias& alias, std::map<uint32_t, uint32_t>::iterator current) {
         const uint32_t index = own_resolve(*impl_, alias.physical, alias.width, alias.height, alias.format, alias.depth);
         current->second = index;
         ++impl_->texture_generation;
         ++impl_->resolve_copies;
         impl_->presentation.record_async(ResolveCopy{alias.source, impl_->texture_objects[index - first_texture].get(),
                                                      plume::RenderTextureLayout::SHADER_READ, &impl_->presentation});
+    };
+    // Copies first, swaps after: a swap binds the surface's attachments in
+    // their write layouts, the last thing done to them before the write.
+    std::vector<std::pair<const Impl::Alias*, std::map<uint32_t, uint32_t>::iterator>> to_swap[2];
+    for (const auto& alias : aliases) {
+        const auto view = impl_->surface_views.find(alias.source);
+        const auto current = impl_->resolved_targets.find(alias.physical);
+        // Dropped (its memory freed) or resolved again since: nothing to keep.
+        if (view == impl_->surface_views.end() || current == impl_->resolved_targets.end() ||
+            current->second != view->second) continue;
+        if (replaces & (alias.depth ? 2 : 1)) to_swap[alias.depth ? 1 : 0].push_back({&alias, current});
+        else copy_out(alias, current);
+    }
+    for (int depth = 0; depth < 2; ++depth) {
+        if (to_swap[depth].empty()) continue;
+        if (impl_->presentation.replace_target_attachment(depth != 0, in_use)) {
+            impl_->resolve_swaps += uint32_t(to_swap[depth].size());
+            continue;
+        }
+        for (const auto& [alias, current] : to_swap[depth]) copy_out(*alias, current);
     }
 }
 
