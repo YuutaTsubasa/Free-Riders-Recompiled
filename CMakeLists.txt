@@ -1236,6 +1236,8 @@ if(WIN32 OR UNIX)
         target_link_libraries(sfr_native_graphics PUBLIC plume PRIVATE d3d12 dxgi Threads::Threads)
     else()
         target_link_libraries(sfr_native_graphics PUBLIC plume SDL2::SDL2 PRIVATE Threads::Threads)
+        # The game window's icon on Linux (native_graphics.cpp).
+        target_sources(sfr_native_graphics PRIVATE src/launcher_art.cpp)
     endif()
     set(SFR_SHADER_CACHE_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/out/shaders/basic/shader_cache_data.cpp" CACHE FILEPATH "Generated private shader cache")
     if(EXISTS "${SFR_SHADER_CACHE_SOURCE}")

@@ -34,6 +34,9 @@
 #if defined(__APPLE__)
 #include "apple_vulkan_loader.h"
 #endif
+#if !defined(_WIN32) && !defined(__ANDROID__) && !defined(__APPLE__)
+#include "launcher_art.h"
+#endif
 
 namespace plume {
 #if defined(_WIN32)
@@ -304,6 +307,17 @@ void NativeGraphics::initialize() {
                                           SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE);
 #endif
     if (!window) throw std::runtime_error(std::string("failed to create the SDL window: ") + SDL_GetError());
+#if !defined(__ANDROID__) && !defined(__APPLE__)
+    {
+        // The launcher's icon on the game window too. Without it X11 and
+        // Wayland desktops showed their default icon for the game (Issue #365).
+        auto pixels = sfr::render_icon(64);
+        if (SDL_Surface* icon = SDL_CreateRGBSurfaceWithFormatFrom(pixels.data(), 64, 64, 32, 64 * 4, SDL_PIXELFORMAT_ARGB8888)) {
+            SDL_SetWindowIcon(window, icon);
+            SDL_FreeSurface(icon);
+        }
+    }
+#endif
 #if defined(__ANDROID__) || defined(__APPLE__)
     auto render_interface = plume::CreateVulkanInterface();
 #else
