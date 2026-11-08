@@ -1724,8 +1724,8 @@ void NativePresentation::clear(const NativeClear& clear, std::span<const plume::
     NativeClear effective = clear;
     uint8_t replaces = 0;
     if (auto* surface = impl_->target) {
-        const bool whole = rectangles.empty() || std::any_of(rectangles.begin(), rectangles.end(), [&](const auto& r) {
-            return r.left <= 0 && r.top <= 0 && uint32_t(r.right) >= logical_width && uint32_t(r.bottom) >= logical_height;
+        const bool whole = rectangles.empty() || std::any_of(rectangles.begin(), rectangles.end(), [&, w = logical_width, h = logical_height](const auto& r) {
+            return r.left <= 0 && r.top <= 0 && uint32_t(r.right) >= w && uint32_t(r.bottom) >= h;
         });
         if (clear.stencil) surface->stencil_used = true;
         // A stencil nothing has used still holds zeros: clearing it to zero
