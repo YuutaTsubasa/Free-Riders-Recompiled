@@ -286,6 +286,8 @@ with [docs/progress.md](docs/progress.md).
   Tapping a text box in the launcher on Android (online name, server address, password) put the cursor in the box but opened no keyboard; the keyboard now opens, the page moves so the box stays visible, and Back closes it without leaving the page (#356).
 - [v0.10.48 — Frame skipping starts again on slow tablets](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.48)
   One slow frame at the start of a race could keep Auto frame skipping off for the whole race, so a Galaxy Tab A9 (Mali-G57) raced at about 0.4 speed; skipping now tries again on the first late frame a second after the last skip (#1).
+- [v0.10.50 — Textures use their smaller copies for distant surfaces](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.50)
+  Textures now load the smaller copies (mip levels) the game stores beside them, as on the console, so distant surfaces shimmer less and the GPU reads less memory; on a Galaxy Tab S12 Ultra a race frame takes about 12 ms of GPU time instead of 12.7. Test options › Graphics › Texture mip levels › Off is the old way (#176). Also new, for testing: Test options › Gameplay › Race step rate runs races at 80 to 144 steps a second on screens faster than 60 Hz.
 
 ## System Requirements
 
