@@ -1,0 +1,48 @@
+--- a/plume_render_interface_types.h
++++ b/plume_render_interface_types.h
+@@ -162,6 +162,7 @@
+         BC7_UNORM_SRGB,
+         // Last, so that the formats before it keep their values.
+         D24_UNORM_S8_UINT,
++        ASTC_4X4_UNORM,
+         MAX
+     };
+ 
+@@ -605,6 +606,7 @@
+         case RenderFormat::BC6H_SF16:
+         case RenderFormat::BC7_UNORM:
+         case RenderFormat::BC7_UNORM_SRGB:
++        case RenderFormat::ASTC_4X4_UNORM:
+             return 16;
+         default:
+             assert(false && "Unknown format.");
+@@ -690,6 +692,7 @@
+         case RenderFormat::BC7_TYPELESS:
+         case RenderFormat::BC7_UNORM:
+         case RenderFormat::BC7_UNORM_SRGB:
++        case RenderFormat::ASTC_4X4_UNORM:
+             return 4;
+         default:
+             assert(false && "Unknown format.");
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -204,6 +204,8 @@
+             return VK_FORMAT_D32_SFLOAT_S8_UINT;
+         case RenderFormat::D24_UNORM_S8_UINT:
+             return VK_FORMAT_D24_UNORM_S8_UINT;
++        case RenderFormat::ASTC_4X4_UNORM:
++            return VK_FORMAT_ASTC_4x4_UNORM_BLOCK;
+         case RenderFormat::R32_FLOAT:
+             return VK_FORMAT_R32_SFLOAT;
+         case RenderFormat::R32_UINT:
+--- a/plume_metal.cpp
++++ b/plume_metal.cpp
+@@ -358,6 +358,8 @@
+                 return MTL::PixelFormatDepth32Float_Stencil8;
+             case RenderFormat::D24_UNORM_S8_UINT:
+                 return MTL::PixelFormatDepth24Unorm_Stencil8;
++            case RenderFormat::ASTC_4X4_UNORM:
++                return MTL::PixelFormatASTC_4x4_LDR;
+             case RenderFormat::R32_FLOAT:
+                 return MTL::PixelFormatR32Float;
+             case RenderFormat::R32_UINT:

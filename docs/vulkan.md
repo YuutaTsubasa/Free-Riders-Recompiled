@@ -347,6 +347,28 @@ framebuffer 在 pass 開始前再設定一次時不再結束什麼。`SFR_CLEAR_
 兩組 0.99→0.82 與 1.51→1.50 毫秒，機器上同時有其他負載，看不出結論。Mali（Issue #176 的 Pixel 10a）
 尚未量測，所以預設仍關閉，留給玩家以測試選項比較。
 
+
+### BC1 貼圖轉 ASTC（`SFR_TEXTURE_ASTC`，Issue #176）
+
+GPU 沒有 BC 格式（Mali 與多數手機）時，BC 貼圖原本都在 CPU 解成 RGBA8，每個 texel 4 位元組，是 BC1
+的 8 倍。有 ASTC LDR 的裝置（`textureCompressionASTC_LDR`，`VK_FORMAT_ASTC_4x4_UNORM_BLOCK` 可取樣、
+線性過濾、當複製目的）上，BC1 改轉成 ASTC 4x4（每 texel 1 位元組；`transcode_bc1_to_astc`，plume 由
+`patches/plume-astc-4x4.patch` 加上 `ASTC_4X4_UNORM`）。不是重新壓縮：每個 BC1 block 直接變成一個 ASTC
+block，兩個端點照原樣存成位元組（colour endpoint mode 8），索引變成權重：四色 block 用 2 bit 權重
+（0、21、43、64，即三等分），三色 block 用 trit 權重（0、32、64，即中點；ASTC 的 integer sequence
+encoding）。解出來與 BC1 的顏色每個通道差 2 以內（單元測試以規格的解碼比對）。端點和的大小順序若會
+觸發 blue contraction，就把兩端對調、權重反過來。
+
+一張貼圖的所有 mip 層要嘛全轉、要嘛全解成 RGBA8：只要一個 block 用到三色模式的透明黑（index 3，ASTC
+的一條直線上給不出來），整張照舊解成 RGBA8。BC2/BC3 的 alpha 在 ASTC 4x4 放不下原樣，也照舊。
+`NATIVE_TEXTURE_ASTC` 每 256 張 BC1 貼圖記一次轉了幾張。`SFR_TEXTURE_ASTC=0`（啟動器測試選項「ASTC
+貼圖」，只在 Android）回到全部解成 RGBA8。
+
+Tab S12 Ultra（Mali-G1-Ultra）Dolphin Resort 1.0x（3290x1850），每場前等 SKIN 降到 39°C 以下，順序
+ABBA：BC1 513 張中 492 張轉成 ASTC；GPU 每格中位數開 14.2／14.8 ms、關 15.3／15.7 ms（約少 6.5%），
+跳格數 153／67 對 367／187。畫面截圖看不出差別。2.0x 時貼圖不是瓶頸：所有取樣器 LOD bias +1（貼圖
+讀取量約四分之一）GPU 時間 37.3／37.7 → 37.7 ms 沒變；那時的時間在主場景（約 16 ms）、整張畫面的顏色
+與深度複製（約 7.5 ms）和放大到 3940x3940 的陰影貼圖（約 6 ms）。
 ## 著色器包
 
 `python scripts/pack_shaders.py` 把執行期快取中已編好的著色器（原始容器、mask、DXIL、SPIR-V）
