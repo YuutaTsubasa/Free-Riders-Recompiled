@@ -301,9 +301,10 @@ framebuffer 在 pass 開始前再設定一次時不再結束什麼。`SFR_CLEAR_
 ### 貼圖的 mip 層級（`SFR_TEXTURE_MIPS`，Issue #176）
 
 原本每張貼圖只建立、上傳最大的一層，遠處的表面也從全尺寸的貼圖取樣：比主機上閃爍，GPU 讀的貼圖
-資料也多。`SFR_TEXTURE_MIPS=1`（啟動器測試選項「貼圖的 mip 層級」，預設關閉；兩個後端都適用）讓
-`NativeRenderer::texture` 照 Xenos 的存放方式讀進第 1 到 max mip 層（`texture_mip_levels`，依 Xenia
-的 `texture_util`）：
+資料也多。現在預設開啟（`SFR_TEXTURE_MIPS=0` 或啟動器測試選項「貼圖的 mip 層級」可關閉；兩個後端
+都適用）：`NativeRenderer::texture` 照 Xenos 的存放方式讀進第 1 到 max mip 層（`texture_mip_levels`，
+依 Xenia 的 `texture_util`）。Tab S12 Ultra（Mali-G1-Ultra）1.0x 比賽，平板涼的時候 GPU 每格 12.7 降到
+11.8 ms，貼圖讀外部記憶體少約 20%；2.0x 幾乎沒差；貼圖記憶體多約 27%（363 → 460 MB）：
 
 - 第 0 層在 fetch 的 base address；其餘從 mip address 開始依序存放，每層的寬高是 base 寬高進位到
   2 的次方再逐層減半，列寬補到整個 tile（tiled，32 個 block）或 256 位元組（linear），高度補到 32 個

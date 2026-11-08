@@ -161,11 +161,11 @@ inline constexpr TestOption table[] = {
     {"SFR_TEXTURE_MIPS", TestGroup::graphics, test_platform::all,
      {"Texture mip levels", "貼圖的 mip 層級"},
      {"For testing: textures also get the smaller copies (mip levels) the game stores beside them, so distant "
-      "surfaces are drawn from those, as on the console: less shimmer and less memory traffic for the GPU, a "
-      "little more texture memory. Compare the picture and the GPU timing with it On and at Default.",
+      "surfaces are drawn from those, as on the console: less shimmer and less memory traffic for the GPU, for "
+      "about a quarter more texture memory. Off is the old way, for comparing the picture and the GPU timing.",
       "測試用：貼圖同時載入遊戲存在旁邊的縮小版本（mip 層級），遠處的表面改用它們繪製，與主機上相同："
-      "閃爍較少，GPU 讀取記憶體的量也較少，但貼圖記憶體稍微增加。請比較開啟與預設時的畫面與 GPU 時間。"},
-     on, "#176"},
+      "閃爍較少，GPU 讀取記憶體的量也較少，但貼圖記憶體多約四分之一。關閉是舊的做法，用來比較畫面與 GPU 時間。"},
+     off, "#176"},
     // ---- processor
     {"SFR_CORE_PLAN", TestGroup::processor, test_platform::android,
      {"Core placement", "核心配置"},

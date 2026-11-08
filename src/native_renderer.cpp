@@ -369,14 +369,14 @@ static bool frame_metrics_timed() {
     return timed;
 }
 
-// SFR_TEXTURE_MIPS=1: guest textures are created with the mip chain the title
-// stores (at the fetch's mip address, see texture_mip_levels), and samplers
-// take the fetch's mip range and LOD bias. Off, every texture has its base
-// level only, as before, and distant surfaces sample the full-size image.
+// Guest textures are created with the mip chain the title stores (at the
+// fetch's mip address, see texture_mip_levels), and samplers take the fetch's
+// mip range and LOD bias. SFR_TEXTURE_MIPS=0: every texture has its base level
+// only, and distant surfaces sample the full-size image.
 static bool texture_mips_enabled() {
     static const bool enabled = [] {
         const char* value = std::getenv("SFR_TEXTURE_MIPS");
-        const bool on = value && *value == '1';
+        const bool on = !value || *value != '0';
         std::cerr << "NATIVE_TEXTURE_MIPS enabled=" << on << '\n';
         return on;
     }();

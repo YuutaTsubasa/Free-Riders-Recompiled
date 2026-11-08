@@ -124,7 +124,7 @@ void decode_block_compression(std::vector<uint8_t>& bytes, TextureLayout& layout
 extern bool depth_texture_placeholder;
 
 // Sampler state from fetch words: clamps from w0, filters from w3. With
-// `mips` (textures carry their mip chains, SFR_TEXTURE_MIPS), also the mip
+// `mips` (textures carry their mip chains, unless SFR_TEXTURE_MIPS=0), also the mip
 // LOD bias of w4 and its min mip as the lowest LOD (its max mip is the
 // texture's level count), and the base map mip filter (2) samples min mip only.
 plume::RenderSamplerDesc fetch_sampler(const FetchWords& words, bool mips = false);
