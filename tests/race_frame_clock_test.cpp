@@ -287,10 +287,46 @@ void frameskip_modes() {
             "the log names each mode");
     // What Always when behind changes (skip_slow) is checked in frame_skipping.
 }
+void whole_frames_keep_the_step_pace() {
+    sfr::RaceWholeFrames half;
+    require(half.update(0.5f)==0 && half.update(0.5f)==1 && half.update(0.5f)==0 && half.update(0.5f)==1,
+            "half a frame completes one whole frame every second step");
+    for (const uint32_t rate : {80u,90u,120u,144u}) {
+        sfr::RaceWholeFrames whole;
+        int32_t frames=0;
+        for (uint32_t i=0;i<rate*60;++i) {
+            const int32_t step=whole.update(60.0f/float(rate));
+            require(step==0 || step==1,"a short step completes at most one frame");
+            frames+=step;
+        }
+        near(frames,3600,2,"a minute of short steps holds a minute of whole frames");
+    }
+}
+void step_rate_stays_60_unless_it_can_apply() {
+    require(sfr::race_step_rate(nullptr,true,false,false)==60,"unset is the console's rate");
+    require(sfr::race_step_rate("120",true,false,false)==120,"a chosen rate applies");
+    require(sfr::race_step_rate("120",false,false,false)==60,"without frame skipping nothing paces the steps");
+    require(sfr::race_step_rate("120",true,true,false)==60,"online stays at the console's rate");
+    require(sfr::race_step_rate("120",true,false,true)==60,"body controls stay at the console's rate");
+    require(sfr::race_step_rate("30",true,false,false)==60 && sfr::race_step_rate("1000",true,false,false)==60,
+            "only rates above 60 up to 240");
+}
+void frame_skip_paces_a_short_step() {
+    constexpr uint64_t period=1'000'000'000/120;
+    sfr::RaceFrameSkip skip(4,false,period);
+    uint64_t now=1'000'000'000;
+    skip.next(now,true);
+    now+=period/2;
+    const auto early=skip.next(now,true);
+    require(early.draw && early.wait_ns>0 && early.wait_ns<=period,"an early step waits for its short slot");
+}
 int main() {
     try {
         frameskip_modes();
         frame_skipping();
+        whole_frames_keep_the_step_pace();
+        step_rate_stays_60_unless_it_can_apply();
+        frame_skip_paces_a_short_step();
         transitions(); elapsed_time_is_preserved(); discontinuities_are_bounded_and_observable();
         sixty_fps_steps_whole_frames();
         ui_timelines_keep_time_and_events();

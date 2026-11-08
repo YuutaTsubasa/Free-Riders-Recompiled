@@ -675,6 +675,22 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
     sfr::AchievementOverlay::instance().poll(
         std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(), sfr::present_count.load());
     const bool frame_drawn=rendering_this_frame();
+    // SFR_RACE_PACING=1 (testing): how evenly a race's drawn frames were
+    // presented, every 1200 of them.
+    static const bool race_pacing=std::getenv("SFR_RACE_PACING")!=nullptr;
+    if(race_pacing && frame_drawn && sfr::active_memory->load<uint32_t>(0x83E52F8C)) {
+        static std::vector<float> intervals;
+        static std::chrono::steady_clock::time_point previous{};
+        if(previous!=std::chrono::steady_clock::time_point{})
+            intervals.push_back(std::chrono::duration_cast<std::chrono::duration<float,std::milli>>(present_start-previous).count());
+        previous=present_start;
+        if(intervals.size()>=1200) {
+            std::sort(intervals.begin(),intervals.end());
+            const auto at=[&](double share){ return intervals[size_t(share*double(intervals.size()-1))]; };
+            std::cerr << "RACE_PACING p50=" << at(.5) << " p95=" << at(.95) << " p99=" << at(.99) << " max=" << intervals.back() << "\n";
+            intervals.clear();
+        }
+    }
     if(frame_drawn) {
         graphics().present_front_buffer(ctx.r3.u32);
         // SFR_TEST_RACE_DRAW_MS=<ms> (testing): each drawn race frame takes that
@@ -698,13 +714,14 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
         // Once, for a bug report: which frame skipping the run uses.
         static const bool told=[]{
             std::cerr << "RACE_FRAMESKIP mode=" << sfr::race_frameskip_name(sfr::race_frameskip_mode()) << '\n';
+            if(sfr::race_step_rate()!=60) std::cerr << "RACE_STEP_RATE rate=" << sfr::race_step_rate() << char(10);
             return true;
         }();
         (void)told;
     }
     if(sfr::race_frameskip_enabled()) {
         // SFR_RACE_FRAMESKIP=2 (Always when behind): race_frame_clock.h skip_slow.
-        static sfr::RaceFrameSkip skip(4,sfr::race_frameskip_mode()==sfr::RaceFrameskipMode::always);
+        static sfr::RaceFrameSkip skip(4,sfr::race_frameskip_mode()==sfr::RaceFrameskipMode::always,1'000'000'000/sfr::race_step_rate());
         // SFR_TEST_RACE_FRAME_MS=<ms> (testing): every race frame, drawn or
         // not, takes that much longer, as on a phone whose cores run the
         // game's own work slower (with SFR_TEST_RACE_DRAW_MS, a Pixel 10a's
@@ -741,7 +758,7 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
             if(frames%600==0) {
                 const double seconds=double(now-race_start)*1e-9;
                 std::cerr << "RACE_FRAMESKIP frames=" << frames << " skipped=" << skipped
-                          << " speed=" << (seconds>0 ? frames/60.0/seconds : 0.0) << " resyncs=" << skip.resyncs()
+                          << " speed=" << (seconds>0 ? double(frames)/sfr::race_step_rate()/seconds : 0.0) << " resyncs=" << skip.resyncs()
                           << " blocked=" << skip.blocked() << " undrawn_ms=" << skip.undrawn_ns()/1e6
                           << " drawn_ms=" << skip.drawn_ns()/1e6 << '\n';
             }

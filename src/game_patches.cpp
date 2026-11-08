@@ -857,6 +857,33 @@ static void race_state_digest() {
     std::cerr << text.str();
 }
 
+// SFR_RACE_TRACK=<n>: every n-th race step, the elapsed race time and each
+// racer's position, for comparing races at different step rates.
+static void race_track() {
+    static const uint32_t every=[]{ const char* t=std::getenv("SFR_RACE_TRACK"); return t?uint32_t(std::strtoul(t,nullptr,10)):0u; }();
+    if(!every || !sfr::active_memory) return;
+    auto& memory=*sfr::active_memory;
+    if(!memory.readable(0x83E52F8C,4) || !memory.load<uint32_t>(0x83E52F8C)) return;
+    static uint32_t step=0;
+    static double time=0;
+    time+=std::bit_cast<float>(memory.load<uint32_t>(0x83E53810+36));
+    if(step++%every) return;
+    const uint32_t team=memory.readable(0x83E52FDC,4)?memory.load<uint32_t>(0x83E52FDC):0;
+    const uint32_t begin=team && memory.readable(team+36,8)?memory.load<uint32_t>(team+36):0;
+    const uint32_t end=begin?memory.load<uint32_t>(team+40):0;
+    const uint32_t count=end>begin && end-begin<=64?(end-begin)/4:0;
+    std::ostringstream text;
+    text << "RACE_TRACK step=" << step-1 << " time=" << time;
+    for(uint32_t i=0;i<count;++i) {
+        const uint32_t racer=memory.load<uint32_t>(begin+4*i);
+        if(!racer || !memory.readable(racer,0xC00)) continue;
+        text << " r" << i << '=';
+        for(uint32_t offset:{0x120u,0x124u,0x128u}) text << std::bit_cast<float>(memory.load<uint32_t>(racer+offset)) << ',';
+    }
+    text << "\n";
+    std::cerr << text.str();
+}
+
 // SFR_TEST_RAND_SEED=<n>: the CRT's srand (82A54FA0; rand is 82A54FA0+0x30,
 // a per-thread LCG) seeds with n instead of the value the title passes, so
 // the AI's choices do not change from one run to the next with it. For
@@ -880,6 +907,7 @@ SFR_CONCURRENT_HOOK(sub_82A54FA0) {
 SFR_CONCURRENT_HOOK(sub_8249F048) {
     sfr::enter_function(ctx,"sub_8249F048",0x8249F048);
     race_state_digest();
+    race_track();
     const uint64_t collision_started=steady_ns();
     wait_for_collision_batch(ctx,base);
     const uint64_t collision_ns=steady_ns()-collision_started;

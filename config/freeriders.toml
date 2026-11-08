@@ -94,3 +94,122 @@ address = 0x823B614C
 [[midasm_hook]]
 name = "WorkerDoneMidAsmHook"
 address = 0x824C3A38
+
+# Short race steps (SFR_RACE_STEP_RATE, race_frame_clock_hooks.cpp): each of
+# these truncates the step to a whole number of frames for an integer timer
+# (a jump's arc, 822C09A0: timer -= int(frames), height from timer squared).
+# A step of half a frame truncates to 0 and the timer stops, so a racer in
+# the air never comes down. The hook gives the frames the step completed.
+[[midasm_hook]]
+name = "RaceWholeFramesMidAsmHook"
+address = 0x822C0A30
+registers = ["f12"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RaceWholeFramesMidAsmHook"
+address = 0x822C1018
+registers = ["f12"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RaceWholeFramesMidAsmHook"
+address = 0x822E0634
+registers = ["f13"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RaceWholeFramesMidAsmHook"
+address = 0x823097FC
+registers = ["f13"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RaceWholeFramesMidAsmHook"
+address = 0x8230BA1C
+registers = ["f12"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RaceWholeFramesMidAsmHook"
+address = 0x82316F68
+registers = ["f13"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RaceWholeFramesMidAsmHook"
+address = 0x8231F800
+registers = ["f9"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RaceWholeFramesMidAsmHook"
+address = 0x8231F8DC
+registers = ["f13"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RaceWholeFramesMidAsmHook"
+address = 0x8231FDB0
+registers = ["f8"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RaceWholeFramesMidAsmHook"
+address = 0x823217F4
+registers = ["f11"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RaceWholeFramesMidAsmHook"
+address = 0x8232207C
+registers = ["f13"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RaceWholeFramesMidAsmHook"
+address = 0x8232223C
+registers = ["f13"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RaceWholeFramesMidAsmHook"
+address = 0x823871BC
+registers = ["f4"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RaceWholeFramesMidAsmHook"
+address = 0x823AD9A4
+registers = ["f6"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RaceWholeFramesMidAsmHook"
+address = 0x823FFED4
+registers = ["f13"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RaceWholeFramesMidAsmHook"
+address = 0x8240E76C
+registers = ["f13"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RaceWholeFramesMidAsmHook"
+address = 0x8240E888
+registers = ["f13"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RaceWholeFramesMidAsmHook"
+address = 0x8240F044
+registers = ["f13"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RaceWholeFramesMidAsmHook"
+address = 0x8223F868
+registers = ["f13"]
+after_instruction = true
