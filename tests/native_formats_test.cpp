@@ -1,5 +1,7 @@
 #include "native_formats.h"
 #include <algorithm>
+#include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <set>
 #include <stdexcept>
@@ -7,6 +9,60 @@
 
 static void require(bool value, const char* message) {
     if (!value) throw std::runtime_error(message);
+}
+
+// Decodes the two kinds of ASTC 4x4 block transcode_bc1_to_astc writes (one
+// partition, colour endpoint mode 8 with byte end points, and 2-bit weights
+// (block mode 0x042) or trits (0x051)) to RGBA8, after the ASTC
+// specification's integer sequence and LDR decode.
+static void decode_astc_rgb_block(const uint8_t* block, uint8_t out[16][4]) {
+    const auto bits = [&](uint32_t at, uint32_t count) {
+        uint32_t value = 0;
+        for (uint32_t i = 0; i < count; ++i) value |= uint32_t(block[(at + i) / 8] >> ((at + i) % 8) & 1) << i;
+        return value;
+    };
+    const uint32_t mode = bits(0, 11);
+    require((mode == 0x042 || mode == 0x051) && bits(11, 2) == 0 && bits(13, 4) == 8, "the block kinds the transcoder writes");
+    int v[6];
+    for (int i = 0; i < 6; ++i) v[i] = int(bits(17 + 8 * i, 8));
+    require(v[1] + v[3] + v[5] >= v[0] + v[2] + v[4], "end points never in blue-contracted order");
+    // The weight stream, read from the block's top bit down.
+    const auto stream = [&](uint32_t at, uint32_t count) {
+        uint32_t value = 0;
+        for (uint32_t i = 0; i < count; ++i) value |= bits(127 - (at + i), 1) << i;
+        return value;
+    };
+    int weight[16];
+    if (mode == 0x042) {
+        static constexpr int unquantised[4] = {0, 21, 43, 64};
+        for (int texel = 0; texel < 16; ++texel) weight[texel] = unquantised[stream(uint32_t(2 * texel), 2)];
+    } else {
+        for (int group = 0; group < 4; ++group) {
+            // Bits past the stream's 26 read as zero.
+            const uint32_t t = stream(uint32_t(8 * group), group < 3 ? 8 : 2);
+            int trit[5];
+            uint32_t c;
+            const auto b = [&](int i) { return int(t >> i & 1); };
+            if ((t >> 2 & 7) == 7) { c = (t >> 5 & 7) << 2 | (t & 3); trit[4] = trit[3] = 2; }
+            else {
+                c = t & 31;
+                if ((t >> 5 & 3) == 3) { trit[4] = 2; trit[3] = b(7); }
+                else { trit[4] = b(7); trit[3] = int(t >> 5 & 3); }
+            }
+            const auto cb = [&](int i) { return int(c >> i & 1); };
+            if ((c & 3) == 3) { trit[2] = 2; trit[1] = cb(4); trit[0] = cb(3) << 1 | (cb(2) & ~cb(3) & 1); }
+            else if ((c >> 2 & 3) == 3) { trit[2] = trit[1] = 2; trit[0] = int(c & 3); }
+            else { trit[2] = cb(4); trit[1] = int(c >> 2 & 3); trit[0] = cb(1) << 1 | (cb(0) & ~cb(1) & 1); }
+            for (int i = 0; i < 5 && group * 5 + i < 16; ++i) weight[group * 5 + i] = trit[i] * 32;
+        }
+    }
+    for (int texel = 0; texel < 16; ++texel) {
+        for (int channel = 0; channel < 3; ++channel) {
+            const int c = (v[2 * channel] * 257 * (64 - weight[texel]) + v[2 * channel + 1] * 257 * weight[texel] + 32) >> 6;
+            out[texel][channel] = uint8_t(c >> 8);
+        }
+        out[texel][3] = 255;
+    }
 }
 
 int main() {
@@ -468,6 +524,57 @@ int main() {
                                 "each level reads back its own texels");
                     }
             }
+        }
+        {
+            // BC1 as ASTC: random blocks of both kinds decode to BC1's colours
+            // (within the rounding of ASTC's 1/64 weights and moved end points).
+            uint32_t seed = 12345;
+            const auto next = [&] { seed = seed * 1664525u + 1013904223u; return seed >> 8; };
+            uint32_t three_colour = 0;
+            for (int round = 0; round < 4000; ++round) {
+                uint8_t bc1[8];
+                for (auto& byte : bc1) byte = uint8_t(next());
+                if (round % 4 == 1) {
+                    // Three colours without transparent black: indices 0..2.
+                    const uint16_t a = uint16_t(bc1[0] | bc1[1] << 8), b = uint16_t(bc1[2] | bc1[3] << 8);
+                    const uint16_t low = (std::min)(a, b), high = (std::max)(a, b);
+                    bc1[0] = uint8_t(low); bc1[1] = uint8_t(low >> 8); bc1[2] = uint8_t(high); bc1[3] = uint8_t(high >> 8);
+                    for (int texel = 0; texel < 16; ++texel) {
+                        const uint8_t index = uint8_t(next() % 3);
+                        bc1[4 + texel / 4] = uint8_t((bc1[4 + texel / 4] & ~(3 << (2 * (texel % 4)))) | index << (2 * (texel % 4)));
+                    }
+                }
+                if (round % 4 == 3) {
+                    // Black and white end points: the midpoint needs halves.
+                    bc1[0] = 0x00; bc1[1] = 0x00; bc1[2] = 0xFF; bc1[3] = 0xFF;
+                    std::memset(bc1 + 4, 0x99, 4);  // indices 1 and 2 only
+                }
+                sfr::TextureLayout layout{plume::RenderFormat::BC1_UNORM, 4, 8, 8, 1, 4, 4};
+                std::vector<uint8_t> bytes(bc1, bc1 + 8), decoded = bytes;
+                auto rgba = layout;
+                sfr::decode_block_compression(decoded, rgba);
+                const bool three = (bc1[0] | bc1[1] << 8) <= (bc1[2] | bc1[3] << 8);
+                bool transparent = false;
+                for (int texel = 0; texel < 16; ++texel) transparent = transparent || (three && (bc1[4 + texel / 4] >> (2 * (texel % 4)) & 3) == 3);
+                const bool done = sfr::transcode_bc1_to_astc(bytes, layout);
+                require(done == !transparent, "only transparent black is refused");
+                if (!done) {
+                    require(bytes == std::vector<uint8_t>(bc1, bc1 + 8) && layout.format == plume::RenderFormat::BC1_UNORM,
+                            "a refused level is left as it was");
+                    continue;
+                }
+                require(done && bytes.size() == 16 && layout.format == plume::RenderFormat::ASTC_4X4_UNORM &&
+                        layout.block_bytes == 16 && layout.block_width == 4 && layout.row_bytes == 16 && layout.rows == 1,
+                        "a BC1 block becomes one ASTC block");
+                three_colour += three;
+                uint8_t astc[16][4];
+                decode_astc_rgb_block(bytes.data(), astc);
+                for (int texel = 0; texel < 16; ++texel)
+                    for (int channel = 0; channel < 4; ++channel)
+                        require(std::abs(int(astc[texel][channel]) - int(decoded[texel * 4 + channel])) <= 2,
+                                "ASTC decodes to BC1's colours");
+            }
+            require(three_colour > 1500, "three-colour blocks were covered");
         }
         {
             // Sampler mip state: off by default; with mips, min mip and bias.

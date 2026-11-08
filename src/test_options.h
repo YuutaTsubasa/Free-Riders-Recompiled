@@ -169,6 +169,14 @@ inline constexpr TestOption table[] = {
       "測試用：貼圖同時載入遊戲存在旁邊的縮小版本（mip 層級），遠處的表面改用它們繪製，與主機上相同："
       "閃爍較少，GPU 讀取記憶體的量也較少，但貼圖記憶體多約四分之一。關閉是舊的做法，用來比較畫面與 GPU 時間。"},
      off, "#176"},
+    {"SFR_TEXTURE_ASTC", TestGroup::graphics, test_platform::android,
+     {"ASTC textures", "ASTC 貼圖"},
+     {"For testing, on GPUs without the console's texture compression (Mali): most textures are kept compressed in "
+      "a format the phone reads (ASTC) instead of being unpacked to full size, so the GPU reads a quarter of the "
+      "data. Off unpacks them as before, for comparing the picture and the GPU timing.",
+      "測試用，在不支援主機貼圖壓縮格式的 GPU（Mali）上：多數貼圖改用手機能直接讀的壓縮格式（ASTC），"
+      "不再解成原尺寸，GPU 讀的資料只有四分之一。關閉是舊的做法（全部解開），用來比較畫面與 GPU 時間。"},
+     off, "#176"},
     // ---- processor
     {"SFR_CORE_PLAN", TestGroup::processor, test_platform::android,
      {"Core placement", "核心配置"},

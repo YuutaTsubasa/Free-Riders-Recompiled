@@ -288,6 +288,30 @@ bool block_compression_supported(NativeGraphics& graphics) {
     return supported;
 }
 
+// Where BC is missing, BC1 textures become ASTC 4x4 when the device samples
+// it (Mali): a quarter of RGBA8's memory and memory traffic. SFR_TEXTURE_ASTC=0
+// decodes them to RGBA8 as before.
+bool astc_supported(NativeGraphics& graphics) {
+    static const bool supported = [&] {
+        if (const char* value = std::getenv("SFR_TEXTURE_ASTC"); value && *value == '0') return false;
+        if (graphics.backend() != GraphicsBackend::vulkan) return false;
+        const VkPhysicalDevice physical = static_cast<plume::VulkanDevice&>(graphics.device()).physicalDevice;
+        VkPhysicalDeviceFeatures features{};
+        vkGetPhysicalDeviceFeatures(physical, &features);
+        VkFormatProperties properties{};
+        vkGetPhysicalDeviceFormatProperties(physical, VK_FORMAT_ASTC_4x4_UNORM_BLOCK, &properties);
+        const VkFormatFeatureFlags needed = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+            VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+        return features.textureCompressionASTC_LDR == VK_TRUE && (properties.optimalTilingFeatures & needed) == needed;
+    }();
+    static const bool reported = [] {
+        std::cerr << "NATIVE_TEXTURE_ASTC supported=" << supported << '\n';
+        return true;
+    }();
+    (void)reported;
+    return supported;
+}
+
 // What the Vulkan driver supports of the formats the game needs, logged once.
 // A format a driver cannot sample or fetch shows up as wrong colours or
 // missing geometry, so a report from an unfamiliar device says in one line
@@ -1891,12 +1915,14 @@ uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
     if (mips && fetch.format != 23 && fetch.format != 32)
         mip_levels = texture_mip_levels(fetch, *layout, texture_level_count(fetch));
     const bool native_bc = block_compression_supported(impl_->graphics);
+    // BC1 for ASTC is decided once every level is read: all of them or none.
+    const bool try_astc = !native_bc && fetch.format == 18 && astc_supported(impl_->graphics);
     const auto prepare = [&](std::vector<uint8_t>& data, TextureLayout& shape) {
         swap_texture_bytes(data, fetch.endian);
         if (shape.tiled || shape.base_x_blocks || shape.base_y_blocks)
             data = untile_texture(data, shape);
         if (fetch.format == 15) decode_rgba4(data, shape);
-        if (!native_bc) decode_block_compression(data, shape);
+        if (!native_bc && !try_astc) decode_block_compression(data, shape);
     };
     prepare(bytes, *layout);
     std::vector<TextureLevelData> levels;
@@ -1915,6 +1941,22 @@ uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
         if (begin >= fetch.base_address && end <= fetch.base_address + guest_size) continue;
         mip_begin = mip_end > mip_begin ? (std::min)(mip_begin, begin) : begin;
         mip_end = (std::max)(mip_end, end);
+    }
+    if (try_astc) {
+        std::vector<TextureLevelData> astc = levels;
+        bool all = true;
+        for (auto& level : astc) all = all && transcode_bc1_to_astc(level.bytes, level.layout);
+        if (all) {
+            levels = std::move(astc);
+        } else {
+            for (auto& level : levels) decode_block_compression(level.bytes, level.layout);
+        }
+        *layout = levels.front().layout;
+        static uint32_t transcoded = 0, decoded = 0;
+        ++(all ? transcoded : decoded);
+        if ((transcoded + decoded) % 256 == 1)
+            std::cerr << "NATIVE_TEXTURE_ASTC bc1_textures=" << transcoded + decoded << " astc=" << transcoded
+                      << " rgba8=" << decoded << '\n';
     }
     static uint32_t chains_logged = 0;
     if (mips && fetch.max_mip && chains_logged < 256) {

@@ -1,5 +1,6 @@
 #include "native_formats.h"
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cstring>
 #include <utility>
@@ -584,6 +585,154 @@ void decode_block_compression(std::vector<uint8_t>& bytes, TextureLayout& layout
     layout.guest_rows = height;
     layout.tiled = false;
     layout.base_x_blocks = layout.base_y_blocks = 0;
+}
+
+namespace {
+void put_bits(uint8_t* block, uint32_t at, uint32_t count, uint32_t value) {
+    for (uint32_t i = 0; i < count; ++i)
+        if (value >> i & 1) block[(at + i) / 8] |= uint8_t(1u << ((at + i) % 8));
+}
+
+// ASTC's trit packing (integer sequence encoding): the five trits, 0..2,
+// that eight bits stand for, as the specification decodes them.
+void unpack_trits(uint32_t packed, uint8_t trits[5]) {
+    const auto bit = [&](int at) { return packed >> at & 1; };
+    uint32_t c;
+    if ((packed >> 2 & 7) == 7) {
+        c = (packed >> 5 & 7) << 2 | (packed & 3);
+        trits[4] = trits[3] = 2;
+    } else {
+        c = packed & 31;
+        if ((packed >> 5 & 3) == 3) {
+            trits[4] = 2;
+            trits[3] = uint8_t(bit(7));
+        } else {
+            trits[4] = uint8_t(bit(7));
+            trits[3] = uint8_t(packed >> 5 & 3);
+        }
+    }
+    if ((c & 3) == 3) {
+        trits[2] = 2;
+        trits[1] = uint8_t(c >> 4 & 1);
+        trits[0] = uint8_t((c >> 3 & 1) << 1 | ((c >> 2 & 1) & ~(c >> 3) & 1));
+    } else if ((c >> 2 & 3) == 3) {
+        trits[2] = trits[1] = 2;
+        trits[0] = uint8_t(c & 3);
+    } else {
+        trits[2] = uint8_t(c >> 4 & 1);
+        trits[1] = uint8_t(c >> 2 & 3);
+        trits[0] = uint8_t((c >> 1 & 1) << 1 | ((c & 1) & ~(c >> 1) & 1));
+    }
+}
+
+// The eight bits for five trits: the first packing that decodes to them.
+uint32_t pack_trits(const uint8_t trits[5]) {
+    static const auto table = [] {
+        std::array<uint8_t, 243> packed{};
+        std::array<bool, 243> found{};
+        for (uint32_t value = 0; value < 256; ++value) {
+            uint8_t t[5];
+            unpack_trits(value, t);
+            const uint32_t index = t[0] + 3 * (t[1] + 3 * (t[2] + 3 * (t[3] + 3 * t[4])));
+            if (!found[index]) { found[index] = true; packed[index] = uint8_t(value); }
+        }
+        return packed;
+    }();
+    return table[trits[0] + 3 * (trits[1] + 3 * (trits[2] + 3 * (trits[3] + 3 * trits[4])))];
+}
+
+// An ASTC 4x4 block with one partition and LDR RGB direct end points (colour
+// endpoint mode 8). Its sixteen weights are positions from e0 (0) to e1
+// (`steps` - 1): with 4 steps 2-bit weights (0, 21, 43, 64 of 64), with 3
+// steps trits (0, 32, 64; 26 bits). Either way the bits left for the six end
+// point values hold them as plain bytes.
+void put_astc_block(uint8_t* block, int e0[3], int e1[3], uint8_t weights[16], int steps) {
+    // A decoder swaps the end points and contracts blue when the second sums
+    // to less than the first, so that order is kept by turning the line round.
+    if (e1[0] + e1[1] + e1[2] < e0[0] + e0[1] + e0[2]) {
+        for (int channel = 0; channel < 3; ++channel) std::swap(e0[channel], e1[channel]);
+        for (int texel = 0; texel < 16; ++texel) weights[texel] = uint8_t(steps - 1 - weights[texel]);
+    }
+    std::memset(block, 0, 16);
+    // Block mode: 4x4 weights, single plane, weight range 4 (2 bits) or 3 (trits).
+    put_bits(block, 0, 11, steps == 4 ? 0x042 : 0x051);
+    put_bits(block, 11, 2, 0);  // one partition
+    put_bits(block, 13, 4, 8);  // colour endpoint mode 8
+    for (int channel = 0; channel < 3; ++channel) {
+        put_bits(block, 17 + 16 * channel, 8, uint32_t(e0[channel]));
+        put_bits(block, 25 + 16 * channel, 8, uint32_t(e1[channel]));
+    }
+    // The weights' bits in order, then into the block from its top bit down.
+    uint8_t stream[8] = {};
+    uint32_t length = 0;
+    if (steps == 4) {
+        for (int texel = 0; texel < 16; ++texel) put_bits(stream, uint32_t(2 * texel), 2, weights[texel]);
+        length = 32;
+    } else {
+        // Groups of five trits in eight bits each; the sixteenth weight alone
+        // needs the group's first two bits (the rest read as zero).
+        for (int group = 0; group < 4; ++group) {
+            uint8_t trits[5] = {};
+            for (int i = 0; i < 5 && group * 5 + i < 16; ++i) trits[i] = weights[group * 5 + i];
+            put_bits(stream, uint32_t(8 * group), group < 3 ? 8 : 2, pack_trits(trits));
+        }
+        length = 26;
+    }
+    for (uint32_t at = 0; at < length; ++at)
+        if (stream[at / 8] >> (at % 8) & 1) block[(127 - at) / 8] |= uint8_t(1u << ((127 - at) % 8));
+}
+
+// One BC1 block as ASTC; false for transparent black, which ASTC cannot
+// give alongside the colours on one line.
+bool bc1_block_to_astc(const uint8_t* bc1, uint8_t* astc) {
+    const uint16_t c0 = uint16_t(bc1[0] | bc1[1] << 8), c1 = uint16_t(bc1[2] | bc1[3] << 8);
+    const auto expand = [](uint16_t c, int* rgb) {
+        rgb[0] = int((c >> 11 & 31) * 255 / 31);
+        rgb[1] = int((c >> 5 & 63) * 255 / 63);
+        rgb[2] = int((c & 31) * 255 / 31);
+    };
+    int e0[3], e1[3];
+    expand(c0, e0);
+    expand(c1, e1);
+    const uint32_t indices = uint32_t(bc1[4]) | uint32_t(bc1[5]) << 8 | uint32_t(bc1[6]) << 16 | uint32_t(bc1[7]) << 24;
+    uint8_t weights[16];
+    if (c0 > c1) {
+        // Four colours: c0, c1, then the thirds between them.
+        static constexpr uint8_t position[4] = {0, 3, 1, 2};
+        for (int texel = 0; texel < 16; ++texel) weights[texel] = position[indices >> (2 * texel) & 3];
+        put_astc_block(astc, e0, e1, weights, 4);
+        return true;
+    }
+    // Three colours: c0, c1, their midpoint, and transparent black (index 3).
+    static constexpr uint8_t position[4] = {0, 2, 1, 0};
+    for (int texel = 0; texel < 16; ++texel) {
+        const uint32_t index = indices >> (2 * texel) & 3;
+        if (index == 3) return false;
+        weights[texel] = position[index];
+    }
+    put_astc_block(astc, e0, e1, weights, 3);
+    return true;
+}
+}
+
+bool transcode_bc1_to_astc(std::vector<uint8_t>& bytes, TextureLayout& layout) {
+    if (layout.format != RenderFormat::BC1_UNORM) return false;
+    const uint32_t blocks_wide = (layout.width + 3) / 4;
+    std::vector<uint8_t> astc(size_t(blocks_wide) * layout.rows * 16);
+    for (uint32_t by = 0; by < layout.rows; ++by)
+        for (uint32_t bx = 0; bx < blocks_wide; ++bx) {
+            const size_t at = size_t(by) * layout.row_bytes + size_t(bx) * layout.block_bytes;
+            if (at + layout.block_bytes > bytes.size()) return false;
+            if (!bc1_block_to_astc(bytes.data() + at, astc.data() + (size_t(by) * blocks_wide + bx) * 16)) return false;
+        }
+    bytes = std::move(astc);
+    layout.format = RenderFormat::ASTC_4X4_UNORM;
+    layout.block_bytes = 16;
+    layout.row_bytes = blocks_wide * 16;
+    layout.guest_rows = layout.rows;
+    layout.tiled = false;
+    layout.base_x_blocks = layout.base_y_blocks = 0;
+    return true;
 }
 
 namespace {

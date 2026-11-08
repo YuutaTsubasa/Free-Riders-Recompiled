@@ -116,6 +116,14 @@ void decode_rgba4(std::vector<uint8_t>& bytes, TextureLayout& layout);
 // laid out as `layout` (after untiling) to R8G8B8A8 texels, rewriting the
 // layout to match. Other formats are left as they are.
 void decode_block_compression(std::vector<uint8_t>& bytes, TextureLayout& layout);
+// For GPUs with ASTC but no BC formats (Mali): rewrites a BC1 level laid out
+// as `layout` (after untiling) as ASTC 4x4 blocks that decode to the same
+// colours, a quarter of the memory RGBA8 takes. Each block carries BC1's two
+// end points as they are and its indices as weights: thirds for four-colour
+// blocks, halves for three-colour ones. Returns false and leaves `bytes` as
+// they are when a block has BC1's transparent black, which ASTC cannot give
+// on the same line as the colours.
+bool transcode_bc1_to_astc(std::vector<uint8_t>& bytes, TextureLayout& layout);
 
 // SFR_ALLOW_RENDER_TARGETS=1 (investigation): depth textures (format 23) are
 // laid out as four-byte texels so that a race which samples its shadow maps
