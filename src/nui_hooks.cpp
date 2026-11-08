@@ -894,7 +894,8 @@ SFR_INPUT_HOOK(sub_827707B0) {
     // START in a story scene (no menu page, no dialog, not racing): the World
     // Grand Prix scenes end through a SKIP button that only a hand resting on
     // it presses, and a parked hand never reaches it. The hand moves to the
-    // centre where that button is, as a nudge of the right stick does.
+    // centre where that button is, as a nudge of the right stick does; a
+    // hand a race lowered is raised first (Issue #365).
     {
         static bool start_held=false;
         const bool start=(first.buttons & sfr::gamepad_button::start)!=0;

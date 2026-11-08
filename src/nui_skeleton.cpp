@@ -121,8 +121,16 @@ void NuiSkeletonEmulation::park_pointed() {
 }
 
 bool NuiSkeletonEmulation::centre_cursor() {
-    if (engage_ <= 30) return false;
-    right_ = centred_hand;
+    if (engage_ > 30) {
+        right_ = centred_hand;
+        return true;
+    }
+    // A race lowers the hand and nothing raises it again (identification
+    // happens once), so after the first race a scene had no cursor and
+    // START did nothing (Issue #365): raise it, ending at the centre.
+    if (engage_ == 0) { engage_ = 1; lower_first_ = 0; }
+    park_ = false;
+    pointed_ = false;
     return true;
 }
 
