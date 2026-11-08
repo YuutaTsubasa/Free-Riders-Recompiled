@@ -169,6 +169,14 @@ inline constexpr TestOption table[] = {
       "測試用：貼圖同時載入遊戲存在旁邊的縮小版本（mip 層級），遠處的表面改用它們繪製，與主機上相同："
       "閃爍較少，GPU 讀取記憶體的量也較少，但貼圖記憶體多約四分之一。關閉是舊的做法，用來比較畫面與 GPU 時間。"},
      off, "#176"},
+    {"SFR_RESOLVE_SWAP", TestGroup::graphics, test_platform::all,
+     {"Swap cleared surfaces", "清除時換一張畫面"},
+     {"For testing: when the game copies a picture out of one of its own drawing surfaces (the shadow maps) and "
+      "then clears that surface, the surface gets a spare texture to draw on and the picture stays where it was, "
+      "so it is not copied. Off copies it as before, for comparing the picture and the GPU timing.",
+      "測試用：遊戲從自己的繪製表面（陰影貼圖）取出畫面、接著清除該表面時，改給表面一張備用貼圖繼續畫，"
+      "原本的畫面留在原處，不必複製。關閉是舊的做法（複製），用來比較畫面與 GPU 時間。"},
+     off, "#176"},
     // ---- processor
     {"SFR_CORE_PLAN", TestGroup::processor, test_platform::android,
      {"Core placement", "核心配置"},

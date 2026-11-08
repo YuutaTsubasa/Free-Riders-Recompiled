@@ -347,6 +347,27 @@ framebuffer 在 pass 開始前再設定一次時不再結束什麼。`SFR_CLEAR_
 兩組 0.99→0.82 與 1.51→1.50 毫秒，機器上同時有其他負載，看不出結論。Mali（Issue #176 的 Pixel 10a）
 尚未量測，所以預設仍關閉，留給玩家以測試選項比較。
 
+### 清除時換一張畫面，不複製 resolve（`SFR_RESOLVE_SWAP`，Issue #176）
+
+比賽每一格的畫面複製（2.0x、6566×3694，平板 Mali-G1-Ultra，`SFR_RESOLVE_STATS=1` 加上繪製順序記錄）：
+
+| resolve | 之後對來源做什麼 | 處理 |
+| --- | --- | --- |
+| 陰影貼圖 `17705000`、`17b05000`（surface 768×768 的深度） | 下一個動作就是整張清除深度 | 本節：換一張備用貼圖，不複製 |
+| 場景顏色 `18d05000`、場景深度 `f8f9000`（framebuffer） | 約 240 個特效一邊取樣這兩份、一邊畫回 framebuffer（深度只測試，前 6 個也寫入） | 仍要複製 |
+| 場景完成 `18105000`（framebuffer） | bloom 縮小鏈取樣它，接著一個 4 頂點、全 viewport、不混色的繪製蓋滿 framebuffer | 尚未處理 |
+
+從 surface 的 resolve 本來就延後複製（`SFR_ALIASED_RESOLVES`）：等 surface 下一次要被寫，才把還在被取樣的內容複製出去。陰影 surface 下一次寫入是整張深度清除，複製出去的內容隨即被清掉的那一份取代，所以改成：清除涵蓋整個 surface 的顏色或深度＋stencil 時，surface 換上一張沒有 resolve 在取樣的備用貼圖（`NativePresentation::replace_target_attachment`），舊貼圖原地留給取樣它的 resolve。每個 surface 每種最多三張（附著中的一張加兩張備用，夠一格兩次 resolve 輪流）；都被取樣時照舊複製。只清深度時，若這個 surface 從建立以來沒有任何清除或繪製用過 stencil，stencil 仍是一開始的 0，清除就順便把 stencil 清成 0（結果相同），讓深度和 stencil 一起換掉。
+
+平板 2.0x 比賽 ABBA（每場前降溫到 39°C 以下，比賽中段 20 個 120 清單視窗的中位數）：
+
+| | GPU 每格 | 陰影 surface 的複製 | 陰影 surface 本身 |
+| --- | --- | --- | --- |
+| 換貼圖 | 35.6／36.0 ms | 0 | 2.18／2.20 ms |
+| 複製（`SFR_RESOLVE_SWAP=0`） | 37.8／35.8 ms | 1.76／1.68 ms | 2.12／2.09 ms |
+
+陰影的複製整個消失，陰影 pass 沒有變慢；整格的差距比雜訊（同設定兩場差到 2 ms）小，平均約 1 ms。截圖上圓頂鋼架的影子照常落在賽道上。
+
 ## 著色器包
 
 `python scripts/pack_shaders.py` 把執行期快取中已編好的著色器（原始容器、mask、DXIL、SPIR-V）

@@ -58,7 +58,7 @@
 - **進度（2026-10-04）：** 第 1、2 項已做，`SFR_SURFACE_TARGETS=1` 開啟（預設關）。
   - 遊戲每個 pass 都設 0,0,1280,720 的 viewport（連 110×90、768×768 的 surface 也是），畫的是蓋滿 viewport 的四邊形；所以原點為 0 的 pass 把「虛擬 1280×720 畫面」映到整張 surface，有偏移的（分割畫面）用 surface 自己的像素。
   - 同一個 surface 物件會以不同大小重用（110×90／112×92／55×45），target 以（surface 指標, +36 大小字）為鍵；每張有自己的深度（bloom pass 的深度測試都是關的）。
-  - Resolve（第 3 項，`SFR_ALIASED_RESOLVES=0` 關閉）：照 Marathon 的延遲／別名 resolve，從遊戲自己的 surface resolve 時不複製，目的位址直接取樣該 surface（每個 surface 一個永久的取樣描述子）；等那個 surface 下一次要被畫或清除前，才把內容複製到目的地自己的貼圖（`NativePresentation::mark_target_read`／`set_before_surface_write`、`NativeRenderer::materialize_aliases`）。GPU 依序執行，所以先錄下的繪製會在覆寫前讀到正確內容，不需改寫使用中的描述子。從 framebuffer 的 resolve 仍當下複製。
+  - Resolve（第 3 項，`SFR_ALIASED_RESOLVES=0` 關閉）：照 Marathon 的延遲／別名 resolve，從遊戲自己的 surface resolve 時不複製，目的位址直接取樣該 surface（每個 surface 一個永久的取樣描述子）；等那個 surface 下一次要被畫或清除前，才把內容複製到目的地自己的貼圖（`NativePresentation::mark_target_read`／`set_before_surface_write`、`NativeRenderer::materialize_aliases`）。GPU 依序執行，所以先錄下的繪製會在覆寫前讀到正確內容，不需改寫使用中的描述子。從 framebuffer 的 resolve 仍當下複製。下一次寫入是整張清除時（陰影貼圖），改換一張備用貼圖而不複製（`SFR_RESOLVE_SWAP=0` 關閉，見 `docs/vulkan.md`）。
   - 深度 resolve（`SFR_DEPTH_RESOLVE=0` 關閉）：來源 4（深度 surface：陰影貼圖、場景深度）保留成可取樣的深度貼圖，畫進 surface 時也用該 surface 的深度做測試與 stencil。比賽開始有陰影了（之前陰影貼圖是 guest 記憶體裡的舊位元組）。
   - 結果：選單逐像素相同；比賽中舊路徑會隨時間變亮（曝光鏈 64→16→4→1 原本讀的是全解析度的一個像素，不是平均），新路徑聚光燈周圍較暗、對比較高——推測較接近主機，但尚未與主機或 Xenia 截圖比對。
   - AYN Thor（frames 15000–20500，A/B/A/B，同一個 APK 切換環境變數）：GPU 39.3／38.7 → 21.9／21.9 ms，fps 25.0／25.5 → 29.6／29.5。RTX 4090：6.7 → 5.8 ms。CTest 141/141。
