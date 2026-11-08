@@ -1947,15 +1947,22 @@ bool NativePresentation::replace_target_attachment(bool depth, const std::functi
         framebuffer = impl_->graphics->device().createFramebuffer(plume::RenderFramebufferDesc(&color, 1, surface->depth.get()));
         if (!framebuffer) throw std::runtime_error("render surface framebuffer creation failed");
     }
+    // Writable before it is bound: a framebuffer's attachments must be in
+    // their write layouts (D3D12 checks), and a spare is new or was sampled.
     struct Attach {
         Impl::SurfaceTarget* surface;
         plume::RenderFramebuffer* framebuffer;
+        plume::RenderTexture* texture;
+        bool depth;
         void operator()(plume::RenderCommandList& list, uint64_t) const {
+            list.barriers(plume::RenderBarrierStage::GRAPHICS,
+                          plume::RenderTextureBarrier(texture, depth ? plume::RenderTextureLayout::DEPTH_WRITE
+                                                                     : plume::RenderTextureLayout::COLOR_WRITE));
             surface->recording_framebuffer = framebuffer;
             list.setFramebuffer(framebuffer);
         }
     };
-    impl_->enqueue_body(Attach{surface, framebuffer.get()});
+    impl_->enqueue_body(Attach{surface, framebuffer.get(), attached.get(), depth});
     return true;
 }
 
