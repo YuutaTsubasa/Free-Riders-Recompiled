@@ -1465,6 +1465,31 @@ void traced_host_wait(void (*wait)(void*), void* argument, const char* kind, int
     block_guest([&](std::stop_token) { wait(argument); },
         {kind, current_context ? uint32_t(current_context->lr) : 0, {guest_thread_state.entry.current_address}, timeout_ns});
 }
+// The present hook sleeps for the frame cap inside its graphics scope. Holding
+// the graphics lock through that sleep left a guest thread working in the
+// device only the rest of each frame: the boot's shader loader (82480100,
+// ~770 shaders, hidden behind the logos unless they are skipped) took ~110 frames whatever the frame
+// rate (Issue #365). The sleep gives the lock back and takes it again after,
+// as a graphics hook would on entry.
+void frame_cap_wait(void (*wait)(void*), void* argument, int64_t timeout_ns) {
+    auto& entry = guest_thread_state.entry;
+    give_back_kept_graphics_lock(entry);
+    const uint32_t scope = entry.graphics_stack_pointer;
+    if (!scope) return traced_host_wait(wait, argument, "frame_cap", timeout_ns);
+    const uint32_t function = graphics_holder_function.load(std::memory_order_relaxed);
+    graphics_lock.unlock();
+    graphics_lock_released();
+    try { traced_host_wait(wait, argument, "frame_cap", timeout_ns); }
+    catch (...) { entry.graphics_stack_pointer = 0; throw; }  // the scope's exit must not unlock it again
+    if (!graphics_lock.try_lock()) {
+        graphics_waiters.fetch_add(1, std::memory_order_relaxed);
+        try { lock_with_report(graphics_lock, "graphics", graphics_holder, graphics_holder_function); }
+        catch (...) { graphics_waiters.fetch_sub(1, std::memory_order_relaxed); entry.graphics_stack_pointer = 0; throw; }
+        graphics_waiters.fetch_sub(1, std::memory_order_relaxed);
+    }
+    graphics_holder.store(current_id, std::memory_order_relaxed);
+    graphics_holder_function.store(function, std::memory_order_relaxed);
+}
 
 // Who resumed a created-suspended thread, and how many times that resumer
 // had blocked then (GuestExecution::wait_for_block), by thread handle.

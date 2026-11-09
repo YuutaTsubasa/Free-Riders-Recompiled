@@ -623,12 +623,12 @@ static double limit_frame_rate() {
     const bool waited=now<next;
     if(waited) {
         struct Until { clock::time_point at; } until{next};
-        sfr::traced_host_wait([](void* argument) {
+        sfr::frame_cap_wait([](void* argument) {
             const auto at=static_cast<Until*>(argument)->at;
             // Sleep to within about a millisecond (the sleep granularity), then yield.
             while(clock::now()+std::chrono::milliseconds(2)<at) std::this_thread::sleep_for(std::chrono::milliseconds(1));
             while(clock::now()<at) std::this_thread::yield();
-        },&until,"frame_cap",std::chrono::duration_cast<std::chrono::nanoseconds>(next-now).count());
+        },&until,std::chrono::duration_cast<std::chrono::nanoseconds>(next-now).count());
     }
     next+=period;
     return waited?std::chrono::duration<double,std::milli>(clock::now()-now).count():0.0;
@@ -740,12 +740,12 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
         if(racing && decision.wait_ns) {
             const auto until=std::chrono::steady_clock::now()+std::chrono::nanoseconds(decision.wait_ns);
             struct Until { std::chrono::steady_clock::time_point at; } wait{until};
-            sfr::traced_host_wait([](void* argument) {
+            sfr::frame_cap_wait([](void* argument) {
                 const auto at=static_cast<Until*>(argument)->at;
                 while(std::chrono::steady_clock::now()+std::chrono::milliseconds(2)<at)
                     std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 while(std::chrono::steady_clock::now()<at) std::this_thread::yield();
-            },&wait,"frame_cap",int64_t(decision.wait_ns));
+            },&wait,int64_t(decision.wait_ns));
             pacing_ms=double(decision.wait_ns)/1e6;
         }
         if(!racing) race_start=0;

@@ -11,6 +11,8 @@ namespace sfr {
 // Runtime integration; implemented beside the guest execution permit.
 void flush_main_wait_trace(uint32_t frame, bool force = false);
 void traced_host_wait(void (*wait)(void*), void* argument, const char* kind, int64_t timeout_ns);
+// traced_host_wait for the present's frame cap, without the graphics lock its hook holds.
+void frame_cap_wait(void (*wait)(void*), void* argument, int64_t timeout_ns);
 struct WaitTargets {
     std::array<uint32_t, 64> values{};
     uint32_t count = 0;
