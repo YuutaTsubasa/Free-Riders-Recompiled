@@ -1950,21 +1950,25 @@ bool NativePresentation::replace_target_attachment(bool depth, const std::functi
     // Both attachments writable before they are bound (D3D12 checks a
     // framebuffer's layouts when it is set): a spare is new or was sampled,
     // and the other attachment may be laid out for a resolve of its own.
+    // The texture taken off stays sampled: an earlier swap of the other
+    // attachment may have made it writable.
     struct Attach {
         Impl::SurfaceTarget* surface;
         plume::RenderFramebuffer* framebuffer;
         plume::RenderTexture* color;
         plume::RenderTexture* depth;
+        plume::RenderTexture* released;
         void operator()(plume::RenderCommandList& list, uint64_t) const {
-            const std::array<plume::RenderTextureBarrier, 2> barriers{
+            const std::array<plume::RenderTextureBarrier, 3> barriers{
                 plume::RenderTextureBarrier(color, plume::RenderTextureLayout::COLOR_WRITE),
-                plume::RenderTextureBarrier(depth, plume::RenderTextureLayout::DEPTH_WRITE)};
+                plume::RenderTextureBarrier(depth, plume::RenderTextureLayout::DEPTH_WRITE),
+                plume::RenderTextureBarrier(released, plume::RenderTextureLayout::SHADER_READ)};
             list.barriers(plume::RenderBarrierStage::GRAPHICS, barriers.data(), uint32_t(barriers.size()));
             surface->recording_framebuffer = framebuffer;
             list.setFramebuffer(framebuffer);
         }
     };
-    impl_->enqueue_body(Attach{surface, framebuffer.get(), surface->color.get(), surface->depth.get()});
+    impl_->enqueue_body(Attach{surface, framebuffer.get(), surface->color.get(), surface->depth.get(), free->get()});
     return true;
 }
 
