@@ -276,10 +276,13 @@ struct NativePresentation::Impl {
     struct SurfaceTarget {
         uint32_t width = 0, height = 0;  // pixels
         std::unique_ptr<plume::RenderTexture> color, depth;
-        std::unique_ptr<plume::RenderFramebuffer> framebuffer;
         // Asking side: textures a clear swapped out (replace_target_attachment)
-        // and a framebuffer for each pairing of colour and depth used.
+        // and a framebuffer for each pairing of colour and depth used. Every
+        // texture is declared before every framebuffer, so the framebuffers
+        // (which hold views of them) are destroyed first: after a swap the
+        // first framebuffer's textures may be among the spares.
         std::vector<std::unique_ptr<plume::RenderTexture>> spare_color, spare_depth;
+        std::unique_ptr<plume::RenderFramebuffer> framebuffer;
         std::map<std::pair<const plume::RenderTexture*, const plume::RenderTexture*>,
                  std::unique_ptr<plume::RenderFramebuffer>> framebuffers;
         // Recording side: the framebuffer of what is attached now.
