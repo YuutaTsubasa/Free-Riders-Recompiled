@@ -441,7 +441,7 @@ struct NativeRenderer::Impl {
     // mip_begin..mip_end: the mip levels stored outside the base's range
     // (empty without SFR_TEXTURE_MIPS). bytes: the native texture's size.
     struct TextureRange { std::array<uint32_t, 4> key; uint64_t begin, end; uint64_t hash; bool dynamic;
-                          uint64_t checked_frame = 0; uint64_t seen_frame = 0;
+                          uint64_t checked_frame = 0; uint64_t seen_frame = 0; uint32_t epoch = 0;
                           uint64_t mip_begin = 0, mip_end = 0, bytes = 0; };
     uint64_t texture_bytes = 0;  // native bytes of the textures in texture_ranges
     uint64_t frame = 1;  // counts flushes
@@ -577,7 +577,7 @@ struct NativeRenderer::Impl {
     uint32_t draws = 0;
     uint32_t pipelines_created = 0;
     double pipeline_ms = 0;
-    uint32_t ring_flushes = 0, textures_uploaded = 0, resolve_copies = 0, resolve_swaps = 0;
+    uint32_t ring_flushes = 0, textures_uploaded = 0, resolve_copies = 0, resolve_swaps = 0, texture_rewrites_same = 0;
     double texture_ms = 0;
     // Two upload rings: while the GPU renders one frame from one, the next
     // frame fills the other (NativePresentation::after_flush).
@@ -1454,6 +1454,7 @@ NativeRenderer::PipelineWork NativeRenderer::take_pipeline_work() noexcept {
     impl_->constant_saved_bytes = 0;
     work.resolve_copies = impl_->resolve_copies;
     work.resolve_swaps = impl_->resolve_swaps;
+    work.texture_rewrites_same = impl_->texture_rewrites_same;
     work.texture_bytes = impl_->texture_bytes;
     if (auto* bounded = impl_->bounded.get()) {
         work.descriptor_sets = bounded->frame_sets;
@@ -1463,7 +1464,7 @@ NativeRenderer::PipelineWork NativeRenderer::take_pipeline_work() noexcept {
         bounded->frame_sets = bounded->frame_writes = 0;
         bounded->frame_ms = 0;
     }
-    impl_->resolve_copies = impl_->resolve_swaps = 0;
+    impl_->resolve_copies = impl_->resolve_swaps = impl_->texture_rewrites_same = 0;
     impl_->pipelines_created = 0;
     impl_->pipeline_ms = 0;
     impl_->ring_flushes = 0;
@@ -1897,14 +1898,41 @@ uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
         // the content check beside it already behaves.
         if (range.seen_frame == impl_->frame) return found->second;
         range.seen_frame = impl_->frame;
+        // Writes since this texture's own last look (write epochs): textures
+        // share pages, and a shared written bit taken by one would hide the
+        // write from the others.
+        const uint32_t now = memory.write_epoch();
         bool written = false;
         views(uint32_t(range.begin), range.end - range.begin, [&](uint64_t view) {
-            written |= memory.take_written(view, range.end - range.begin);
+            written |= memory.written_since(view, range.end - range.begin, range.epoch);
         });
         if (range.mip_end > range.mip_begin)
             views(uint32_t(range.mip_begin), range.mip_end - range.mip_begin, [&](uint64_t view) {
-                written |= memory.take_written(view, range.mip_end - range.mip_begin);
+                written |= memory.written_since(view, range.mip_end - range.mip_begin, range.epoch);
             });
+        if (written) {
+            range.epoch = now;
+            // Protected again where page protection records the writes.
+            views(uint32_t(range.begin), range.end - range.begin,
+                  [&](uint64_t view) { memory.watch_writes(view, range.end - range.begin); });
+            if (range.mip_end > range.mip_begin)
+                views(uint32_t(range.mip_begin), range.mip_end - range.mip_begin,
+                      [&](uint64_t view) { memory.watch_writes(view, range.mip_end - range.mip_begin); });
+        }
+        // A write to the pages is not a change to the texture: the title also
+        // writes data that shares a page with one (loading screens do every
+        // frame), and decoding and uploading it again costs milliseconds on
+        // devices without BC. Unchanged bytes keep the texture (the hash
+        // covers the mips when they follow the base, the usual layout).
+        static const bool same_check = [] { const char* t = std::getenv("SFR_TEXTURE_SAME_CHECK"); return !t || *t != '0'; }();
+        if (written && same_check && range.mip_end == range.mip_begin) {
+            const uint64_t size = range.end - range.begin;
+            const uint32_t source = guest_view(memory, uint32_t(range.begin), size);
+            if (content_hash(memory.base() + source, size) == range.hash) {
+                written = false;
+                ++impl_->texture_rewrites_same;
+            }
+        }
         if (!written && range.dynamic && range.checked_frame != impl_->frame) {
             range.checked_frame = impl_->frame;
             // Content check for textures the CPU rewrites (e.g. movie planes).
@@ -2136,15 +2164,15 @@ uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
     range.mip_begin = mip_begin;
     range.mip_end = mip_end;
     range.bytes = native_bytes;
+    memory.enable_write_epochs();
+    range.epoch = memory.write_epoch();
     impl_->texture_bytes += native_bytes;
     views(fetch.base_address, watched, [&](uint64_t view) {
         memory.watch_writes(view, watched);
-        memory.take_written(view, watched);
     });
     if (mip_end > mip_begin)
         views(uint32_t(mip_begin), mip_end - mip_begin, [&](uint64_t view) {
             memory.watch_writes(view, mip_end - mip_begin);
-            memory.take_written(view, mip_end - mip_begin);
         });
     ++impl_->textures_uploaded;
     static uint64_t uploads = 0;
