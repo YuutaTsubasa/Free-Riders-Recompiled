@@ -119,7 +119,7 @@ enum Text {
     InstallFailed, InstallCancelledText, InstalledTitle, InstalledText, OpenSettings, NoShaderTools,
     GuideSelect, GuideBack, GuideQuit, GuidePlay, GuideCancel, GuideTabs,
     QuitTitle, QuitText, CancelInstallTitle, CancelInstallText, Yes, No,
-    UiSoundsLabel, UiSoundsHint, GraphicsBackendLabel, GraphicsBackendHint,
+    UiSoundsLabel, UiSoundsHint, GraphicsBackendLabel, GraphicsBackendHint, GraphicsFallback,
     ShaderPack, ShaderPackHint, ChoosePack, InstallIntroFile, InstallFromImage, NoShaderPack,
     LanguageLabel, LanguageHint, LanguageSystem, LanguageEnglish, LanguageChinese, TouchLabel, TouchHint, TiltLabel, TiltHint, TiltLeanLabel, TiltLeanHint,
     BarSettings, BarInstaller, BarInstalling, BarStopped,
@@ -350,8 +350,10 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Launcher sounds", "啟動器音效"},
     {"The short sounds this launcher makes when you move and choose.", "在啟動器中移動與選擇時的提示音。"},
     {"Graphics backend", "繪圖後端"},
-    {"Choose Vulkan (default) or D3D12. Changes apply the next time you start the game.",
-     "選擇 Vulkan（預設）或 D3D12，下次啟動遊戲時生效。"},
+    {"Choose Vulkan (default) or D3D12. Direct3D 11 (experimental) is for older graphics chips with neither, such as Intel HD 4000 and 4600. Changes apply the next time you start the game.",
+     "選擇 Vulkan（預設）或 D3D12。Direct3D 11（實驗性）給兩者都沒有的舊顯示晶片，例如 Intel HD 4000、4600。下次啟動遊戲時生效。"},
+    {"The graphics driver could not start this graphics backend. On an older graphics chip (such as Intel HD 4000 or 4600), try Graphics > Graphics backend > Direct3D 11 (experimental).",
+     "顯示驅動程式無法啟動這個繪圖後端。若是較舊的顯示晶片（例如 Intel HD 4000、4600），請試試「畫面與效能 > 繪圖後端 > Direct3D 11 (experimental)」。"},
     {"Shader pack", "著色器包"},
     {"shaders.pack: the shaders compiled on a computer (python scripts/pack_shaders.py). The game needs it where it cannot compile shaders itself, as on phones.",
      "shaders.pack：在電腦上編好的著色器（python scripts/pack_shaders.py）。在無法自行編譯著色器的地方（例如手機）需要它。"},
@@ -3911,6 +3913,24 @@ struct Launcher {
         const float x = margin * scale + slide();
         ImGui::SetCursorPosX(x);
         ImGui::TextColored(dim_text, tr(StoppedDetail), exit_code);
+#ifdef _WIN32
+        // Vulkan or D3D12 that the driver could not start: Direct3D 11
+        // (experimental) may run on the GPU (Issue #359). Never chosen for
+        // the player: the game stays on what they picked.
+        if (!settings.d3d11)
+            for (const auto& line : stopped_lines)
+                if (line.find("failed to create the Vulkan render") != std::string::npos ||
+                    line.find("failed to create a Vulkan render") != std::string::npos ||
+                    line.find("D3D12 render device") != std::string::npos ||
+                    line.find("failed to create the D3D12 render") != std::string::npos ||
+                    line.find("failed to create a D3D12 render") != std::string::npos) {
+                    ImGui::SetCursorPosX(x);
+                    ImGui::PushTextWrapPos(size.x - margin * scale);
+                    ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.35f, 1), "%s", tr(GraphicsFallback));
+                    ImGui::PopTextWrapPos();
+                    break;
+                }
+#endif
         // The runtime names why it stopped on a line of its own.
         for (const auto& line : stopped_lines)
             if (line.rfind("STOP ", 0) == 0) {
