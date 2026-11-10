@@ -13,7 +13,8 @@
 // markers went to the edge); the first return address above that layer is
 // the HUD element's own function. Found with the guest return-address chain
 // of every 2D draw (SFR_ASPECT_TRACE) in scripted one- and two-player races
-// at 22:9 (2026-10-16) and a World Grand Prix Ring Challenge (2026-10-25).
+// at 22:9 (2026-10-16), a World Grand Prix Ring Challenge (2026-10-25) and a
+// Free Race Damage Survival at 2424x1080 (2026-11-10).
 
 #include <algorithm>
 #include <cstdint>
@@ -35,6 +36,12 @@ inline constexpr Owner owners[] = {
     {0x8240069C, -1, -1},                        // LAP, RECORD
     {0x823EFF80, +1, +1}, {0x82403158, +1, +1},  // map and its markers
     {0x823F97E4, +1, by_half},                   // speed gauge (one per player)
+    // A Damage Survival race's gauge frame (Issue #365): there the gauge
+    // function draws its dark curved frame from 823F9890 instead of 823F97E4
+    // (which draws only the SPEED panel then), while the fill inside it is
+    // 823F9D8C's like in any race. Unlisted, the frame stayed in the 16:9
+    // area and its fill went to the right edge without it.
+    {0x823F9890, +1, by_half},
     {0x823F9AF4, +1, by_half},                   // SPEED
     {0x823F9D8C, by_half, by_half},              // effects at both edges
     {0x823FC63C, 0, by_half},                    // gauge scale
