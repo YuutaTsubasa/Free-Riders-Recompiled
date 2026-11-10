@@ -39,6 +39,21 @@ void ring_challenge() {
     require(chain_side(kinect_player, false) == 0, "the player figure stays in the middle");
 }
 
+// A Damage Survival race at 2424x1080 (Issue #365): the gauge's frame and the
+// fill inside it, innermost first.
+const std::vector<uint32_t> survival_frame{0x824C0C88, 0x824AC1C8, 0x824AD1A0, 0x823F9890, 0x824087A8, 0x824067AC};
+const std::vector<uint32_t> survival_fill{0x824C0C88, 0x824AC1C8, 0x824AD1A0, 0x824AD1A0,
+                                         0x824AE4F0, 0x823F9D8C, 0x823F9B4C, 0x824087A8};
+
+void damage_survival() {
+    require(chain_side(survival_frame, false) == +1, "the survival gauge's frame goes to the right edge");
+    require(chain_side(survival_frame, true) == by_half, "in two players it goes with its player's half");
+    // The fill's boxes from the trace are in the right half: the same edge.
+    require(chain_side(survival_fill, false) == by_half, "the fill goes by its half");
+    require(half_side(1154.5f, 1231.5f, 1280.0f) == +1 && half_side(1167.5f, 1231.5f, 1280.0f) == +1,
+            "the fill is in the right half, with its frame");
+}
+
 void race_hud_unchanged() {
     require(owner_side(0x82401C9C, false) == -1 && owner_side(0x82401CE0, true) == -1, "rings and LV stay left");
     require(owner_side(0x8240069C, false) == -1, "LAP and RECORD stay left");
@@ -56,6 +71,7 @@ void race_hud_unchanged() {
 int main() {
     try {
         ring_challenge();
+        damage_survival();
         race_hud_unchanged();
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << '\n';
