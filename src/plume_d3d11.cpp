@@ -7,6 +7,7 @@
 #include <d3dcompiler.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cstdlib>
@@ -223,6 +224,27 @@ std::filesystem::path shaderCacheFolder() {
     const char* runtime = std::getenv("SFR_RUNTIME_SHADER_CACHE");
     return std::filesystem::path(runtime && *runtime ? runtime : "out/shaders/runtime") / "d3d11";
 }
+
+std::atomic<uint32_t> precompiledHits{0};
+}
+
+const std::vector<uint8_t>* (*D3D11PrecompiledShader)(const std::string& key) = nullptr;
+
+std::string D3D11ShaderKey(std::span<const uint8_t> source, const std::string& entry, const char* profile,
+                           uint32_t specConstants) {
+    char key[128];
+    std::snprintf(key, sizeof key, "%016llx-%zu-%s-%s-%u",
+                  static_cast<unsigned long long>(fnv1a(source.data(), source.size())), source.size(), entry.c_str(),
+                  profile, specConstants);
+    return key;
+}
+
+std::vector<uint8_t> D3D11CompileShader(std::span<const uint8_t> source, const std::string& entry, const char* profile,
+                                        uint32_t specConstants, std::string* errors) {
+    const std::string text(source.begin(), source.end());
+    const std::string spec = std::to_string(specConstants);
+    const std::vector<D3D_SHADER_MACRO> macros{{"SFR_SPEC_CONSTANTS", spec.c_str()}, {nullptr, nullptr}};
+    return compile(text, entry.c_str(), profile, macros, errors);
 }
 
 // What the immediate context has bound, as far as this submission knows, so
@@ -309,6 +331,8 @@ struct D3D11Replay {
     uint32_t draws = 0;
     // Binding calls made, and skipped as bound already (NATIVE_D3D11_REPLAY).
     uint32_t calls = 0, skipped = 0;
+    // Constants copied at draws (without constant buffer offsets).
+    uint64_t windowBytes = 0;
     D3D11Replay(D3D11Device* device, ID3D11DeviceContext* context, ID3D11DeviceContext1* context1)
         : device(device), context(context), context1(context1) {}
     template <typename Draw>
@@ -444,6 +468,37 @@ struct D3D11Replay {
             else context->PSSetConstantBuffers(reg, 1, &buffer);
         }
     }
+    // Without constant buffer offsets: the window's constants, from the CPU
+    // memory, into the register's dynamic buffer (renamed by the driver at
+    // each WRITE_DISCARD, so each draw keeps what it was given), bound whole.
+    void setWindowConstants(UINT reg, D3D11Buffer* buffer, UINT first, UINT count) {
+        if (reg >= D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT) return;
+        const uint64_t begin = uint64_t(first) * 16, bytes = uint64_t(count) * 16;
+        ID3D11Buffer* target = nullptr;
+        if (buffer->cpu.empty()) {
+            // A GPU buffer: whole, as without an offset (the renderer binds
+            // windows of its upload ring only).
+            static bool reported = false;
+            if (begin && !reported) {
+                reported = true;
+                std::cerr << "NATIVE_D3D11 window_constants=gpu-buffer-at-offset (bound whole)\n";
+            }
+            target = buffer->constantBuffer();
+        } else if ((target = device->windowConstantBuffer(reg, UINT(bytes)))) {
+            D3D11_MAPPED_SUBRESOURCE mapped{};
+            if (FAILED(context->Map(target, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) return;
+            const uint64_t available =
+                begin < buffer->cpu.size() ? std::min<uint64_t>(bytes, buffer->cpu.size() - begin) : 0;
+            std::memcpy(mapped.pData, buffer->cpu.data() + begin, size_t(available));
+            const uint64_t size = device->windowConstantBytes[reg];
+            if (available < size) std::memset(static_cast<uint8_t*>(mapped.pData) + available, 0, size_t(size - available));
+            context->Unmap(target, 0);
+            windowBytes += available;
+        }
+        if (!target) return;
+        setConstants(0, reg, target, 0, 0);
+        setConstants(2, reg, target, 0, 0);
+    }
     void setVertexBuffer(UINT slot, ID3D11Buffer* buffer, UINT stride, UINT offset) {
         if (slot >= D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT) return;
         if (change(bound.vertices[slot], D3D11Bound::Vertices{buffer, stride, offset}))
@@ -573,6 +628,10 @@ D3D11Device::D3D11Device(D3D11Interface* renderInterface, ComPtr<IDXGIAdapter1> 
     D3D11_FEATURE_DATA_D3D11_OPTIONS options{};
     if (SUCCEEDED(d3d->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS, &options, sizeof options)))
         constantBufferOffsets = options.ConstantBufferOffsetting && context1;
+    // SFR_D3D11_NO_CB_OFFSET=1: as a driver without constant buffer offsets
+    // (the copying fallback), to test it on one that has them.
+    if (const char* setting = std::getenv("SFR_D3D11_NO_CB_OFFSET"); setting && *setting == '1')
+        constantBufferOffsets = false;
     std::cerr << "NATIVE_D3D11_OPTIONS offsetting=" << options.ConstantBufferOffsetting
               << " partial_update=" << options.ConstantBufferPartialUpdate
               << " map_default_buffer=" << options.MapNoOverwriteOnDynamicConstantBuffer << '\n';
@@ -598,12 +657,9 @@ D3D11Device::D3D11Device(D3D11Interface* renderInterface, ComPtr<IDXGIAdapter1> 
     std::cerr << "NATIVE_D3D11 feature_level=" << std::hex << unsigned(featureLevel) << std::dec
               << " warp=" << (adapter == nullptr) << " constant_buffer_offsets=" << constantBufferOffsets
               << " clear_view=" << (context1 != nullptr) << '\n';
-    if (!constantBufferOffsets) {
-        // The renderer's constants are ranges of its upload ring.
-        std::cerr << "NATIVE_D3D11 refused=no-constant-buffer-offsets (D3D11.1 runtime and driver needed)\n";
-        d3d.Reset();
-        return;
-    }
+    // The renderer's constants are ranges of its upload ring: without
+    // offsets each draw's are copied into buffers of their own.
+    if (!constantBufferOffsets) std::cerr << "NATIVE_D3D11 constant_windows=copied\n";
 
     // Clearing part of a depth target (clearDepthStencil with rectangles).
     static const char clear_source[] = R"(
@@ -632,6 +688,22 @@ float4 main(uint index : SV_VertexID) : SV_Position {
     d3d->CreateBlendState(&blend, &clearBlend);
 }
 
+ID3D11Buffer* D3D11Device::windowConstantBuffer(UINT reg, uint32_t bytes) {
+    if (reg >= windowConstants.size()) return nullptr;
+    bytes = (bytes + 15) & ~15u;
+    if (!windowConstants[reg] || windowConstantBytes[reg] < bytes) {
+        windowConstants[reg].Reset();
+        windowConstantBytes[reg] = 0;
+        D3D11_BUFFER_DESC desc{bytes, D3D11_USAGE_DYNAMIC, D3D11_BIND_CONSTANT_BUFFER, D3D11_CPU_ACCESS_WRITE, 0, 0};
+        if (const HRESULT result = d3d->CreateBuffer(&desc, nullptr, &windowConstants[reg]); FAILED(result)) {
+            std::cerr << "NATIVE_D3D11 window_constants bytes=" << bytes << " create=" << hresult(result) << '\n';
+            return nullptr;
+        }
+        windowConstantBytes[reg] = bytes;
+    }
+    return windowConstants[reg].Get();
+}
+
 std::unique_ptr<RenderDescriptorSet> D3D11Device::createDescriptorSet(const RenderDescriptorSetDesc& desc) {
     return std::make_unique<D3D11DescriptorSet>(desc);
 }
@@ -654,10 +726,14 @@ std::vector<uint8_t> D3D11Device::shaderCode(const D3D11Shader* shader, const ch
 
 std::vector<uint8_t> D3D11Device::compiledCode(const std::vector<uint8_t>& source, const std::string& entry, const char* profile,
                                                uint32_t specConstants, bool prewarming) {
-    const uint64_t hash = fnv1a(source.data(), source.size());
-    char key[128];
-    std::snprintf(key, sizeof key, "%016llx-%zu-%s-%s-%u", static_cast<unsigned long long>(hash), source.size(),
-                  entry.c_str(), profile, specConstants);
+    const std::string key = D3D11ShaderKey(source, entry, profile, specConstants);
+    // Compiled ahead of time (shaders-d3d11.pack): nothing to compile or wait for.
+    if (D3D11PrecompiledShader)
+        if (const auto* packed = D3D11PrecompiledShader(key)) {
+            const uint32_t hits = ++precompiledHits;
+            if (hits == 1 || hits % 100 == 0) std::cerr << "NATIVE_D3D11_SHADER packed_hits=" + std::to_string(hits) + '\n';
+            return *packed;
+        }
     std::promise<std::vector<uint8_t>> promise;
     {
         std::unique_lock guard(shaderMutex);
@@ -670,16 +746,13 @@ std::vector<uint8_t> D3D11Device::compiledCode(const std::vector<uint8_t>& sourc
         compiledShaders.emplace(key, promise.get_future().share());
     }
     const auto folder = shaderCacheFolder();
-    const auto file = folder / (std::string(key) + ".dxbc");
+    const auto file = folder / (key + ".dxbc");
     std::vector<uint8_t> code;
     if (std::ifstream in{file, std::ios::binary}) code.assign(std::istreambuf_iterator<char>(in), {});
     if (code.size() < 4 || std::memcmp(code.data(), "DXBC", 4) != 0) {
-        const std::string text(source.begin(), source.end());
-        const std::string spec = std::to_string(specConstants);
-        const std::vector<D3D_SHADER_MACRO> macros{{"SFR_SPEC_CONSTANTS", spec.c_str()}, {nullptr, nullptr}};
         std::string errors;
         const auto started = std::chrono::steady_clock::now();
-        code = compile(text, entry.c_str(), profile, macros, &errors);
+        code = D3D11CompileShader(source, entry, profile, specConstants, &errors);
         const double milliseconds =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
         if (code.empty()) {
@@ -1194,11 +1267,19 @@ void D3D11CommandList::setGraphicsRootDescriptor(RenderBufferReference reference
     const uint64_t offset = reference.offset & ~uint64_t(255);
     const uint64_t available = buffer->desc.size > offset ? buffer->desc.size - offset : 0;
     const UINT first = UINT(offset / 16);
-    const UINT count = UINT(std::min<uint64_t>(4096, (available / 16) & ~uint64_t(15)));
+    UINT count = UINT(std::min<uint64_t>(4096, (available / 16) & ~uint64_t(15)));
     if (!count) return;
-    if (!buffer->cpu.empty()) uses.push_back({buffer, offset, offset + uint64_t(count) * 16, true});
+    const bool offsets = queue->device->constantBufferOffsets;
+    if (!offsets) {
+        // Copied at the draw from the CPU memory: only what the shaders read.
+        if (rootDescriptorIndex < layout->rootDescriptorBytes.size() && layout->rootDescriptorBytes[rootDescriptorIndex])
+            count = std::min<UINT>(count, (layout->rootDescriptorBytes[rootDescriptorIndex] + 15) / 16);
+    } else if (!buffer->cpu.empty()) {
+        uses.push_back({buffer, offset, offset + uint64_t(count) * 16, true});
+    }
     D3D11Command command{D3D11Op::rootDescriptor, layout->rootDescriptors[rootDescriptorIndex].shaderRegister, first, count};
     command.p = buffer;
+    command.d = offsets ? 0 : 1;
     commands.push_back(command);
 }
 
@@ -1314,6 +1395,10 @@ void D3D11Replay::run(const D3D11CommandList& list) {
         }
         case D3D11Op::rootDescriptor: {
             auto* buffer = static_cast<D3D11Buffer*>(const_cast<void*>(command.p));
+            if (command.d) {
+                setWindowConstants(command.a, buffer, command.b, command.c);
+                break;
+            }
             ID3D11Buffer* constants = buffer->constantBuffer();
             setConstants(0, command.a, constants, command.b, command.c);
             setConstants(2, command.a, constants, command.b, command.c);
@@ -1776,7 +1861,7 @@ void D3D11CommandQueue::executeCommandLists(const RenderCommandList** commandLis
         const auto now = std::chrono::steady_clock::now();
         device->noteReplay({std::chrono::duration<float, std::milli>(now - started).count(),
                             std::chrono::duration<float, std::milli>(copied - started).count(), replay.draws, replay.calls,
-                            replay.skipped, uploaded});
+                            replay.skipped, uploaded + replay.windowBytes});
     }
 }
 

@@ -1271,6 +1271,13 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
     }
     layout.end();
     impl_->layout = layout.create(&device);
+#ifdef _WIN32
+    // D3D11 without constant buffer offsets copies each draw's windows:
+    // only as much as the shaders read (Impl::uniform_ranges).
+    if (impl_->layout && graphics.backend() == GraphicsBackend::d3d11)
+        static_cast<plume::D3D11PipelineLayout*>(impl_->layout.get())->rootDescriptorBytes.assign(
+            Impl::uniform_ranges.begin(), Impl::uniform_ranges.end());
+#endif
     if (!impl_->layout || !impl_->textures || !impl_->samplers || (survey_set && !impl_->survey) ||
         (vulkan && (!impl_->uniform_sets[0] || !impl_->uniform_sets[1])))
         unsupported(0, "native draw pipeline layout creation failed");

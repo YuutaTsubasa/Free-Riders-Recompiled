@@ -14,12 +14,15 @@
 //    are copied up (UpdateSubresource), which also makes the CPU memory
 //    reusable at once. A buffer used as constants has a copy of its own
 //    (D3D11 forbids constant buffers bound as anything else), bound at an
-//    offset with D3D11.1's *SetConstantBuffers1.
+//    offset with D3D11.1's *SetConstantBuffers1. A driver without constant
+//    buffer offsets (or SFR_D3D11_NO_CB_OFFSET=1) gets each window copied
+//    instead, at the draw, into a dynamic constant buffer of its register.
 //  - Copies into a texture from an upload buffer are UpdateSubresource from
 //    the CPU memory; into a readback buffer, a staging texture mapped at once.
 //  - Shaders are DXBC, or HLSL text (not starting with "DXBC") that each
 //    pipeline compiles with d3dcompiler_47 for its specialization constant
-//    (SFR_SPEC_CONSTANTS), with a disk cache.
+//    (SFR_SPEC_CONSTANTS), with a disk cache. Shaders compiled ahead of time
+//    (shaders-d3d11.pack) come from D3D11PrecompiledShader first.
 //  - Descriptor sets are arrays of views. Generic sets bind their textures and
 //    samplers at their binding numbers, push constants at a constant buffer
 //    of their binding number, root descriptors at their register. The game's
@@ -41,6 +44,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -131,6 +135,11 @@ struct D3D11Sampler : RenderSampler {
 struct D3D11PipelineLayout : RenderPipelineLayout {
     std::vector<RenderPushConstantRange> pushConstantRanges;
     std::vector<RenderRootDescriptorDesc> rootDescriptors;
+    // The bytes the shaders read through each root descriptor, when the
+    // renderer says (rootDescriptorBytes[i] for rootDescriptors[i]): without
+    // constant buffer offsets each draw copies that much, not the 64 KB
+    // window D3D11.1 would bind.
+    std::vector<uint32_t> rootDescriptorBytes;
     std::vector<ComPtr<ID3D11Buffer>> pushConstantBuffers;
 };
 
@@ -349,7 +358,14 @@ struct D3D11Device : RenderDevice {
     ComPtr<ID3D11DeviceContext> context;
     ComPtr<ID3D11DeviceContext1> context1;
     D3D_FEATURE_LEVEL featureLevel = D3D_FEATURE_LEVEL_11_0;
+    // D3D11.1's *SetConstantBuffers1 with offsets. Without them (an old
+    // driver, or SFR_D3D11_NO_CB_OFFSET=1) a root descriptor's window is
+    // copied at the draw into windowConstants[register], a dynamic constant
+    // buffer mapped with WRITE_DISCARD, and bound whole.
     bool constantBufferOffsets = false;
+    std::array<ComPtr<ID3D11Buffer>, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT> windowConstants;
+    std::array<uint32_t, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT> windowConstantBytes{};
+    ID3D11Buffer* windowConstantBuffer(UINT reg, uint32_t bytes);
     // The immediate context is one thread's at a time.
     std::recursive_mutex contextMutex;
     RenderDeviceCapabilities capabilities;
@@ -423,5 +439,17 @@ struct D3D11Device : RenderDevice {
 };
 
 std::unique_ptr<RenderInterface> CreateD3D11Interface();
+
+// The key a compiled shader is kept under, on disk and in shaders-d3d11.pack:
+// the HLSL's hash and size, entry point, profile and specialization.
+std::string D3D11ShaderKey(std::span<const uint8_t> source, const std::string& entry, const char* profile,
+                           uint32_t specConstants);
+// d3dcompiler_47 as the backend compiles (optimization level 3, the
+// specialization as SFR_SPEC_CONSTANTS); empty with errors when it fails.
+std::vector<uint8_t> D3D11CompileShader(std::span<const uint8_t> source, const std::string& entry, const char* profile,
+                                        uint32_t specConstants, std::string* errors);
+// Shaders compiled ahead of time, by D3D11ShaderKey (shaders-d3d11.pack,
+// runtime_shader_cache.cpp sets it): null when the pack has none.
+extern const std::vector<uint8_t>* (*D3D11PrecompiledShader)(const std::string& key);
 }
 #endif
