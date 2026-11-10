@@ -1549,6 +1549,12 @@ NativeRenderer::CachedVertices NativeRenderer::vertex_cache(GuestMemory& memory,
     if (!entry.buffer) return {};
     auto* mapped = static_cast<uint8_t*>(entry.buffer->map());
     if (!mapped) { entry.buffer.reset(); return {}; }
+#ifdef _WIN32
+    // D3D11 (Issue #359) copies host memory up at each submission: this one
+    // is filled now, before any draw reads it, and only once.
+    if (impl_->graphics.backend() == GraphicsBackend::d3d11)
+        static_cast<plume::D3D11Buffer*>(entry.buffer.get())->writeOnce = true;
+#endif
     impl_->cached_vertex_bytes += host_bytes;
     entry.size = host_bytes;
     entry.epoch = now;

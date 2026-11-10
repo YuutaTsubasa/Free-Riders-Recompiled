@@ -5,8 +5,10 @@
 //
 // It lives in this repository, not in tools/Plume (the pinned upstream), and
 // implements only what the game's renderer and presentation use:
-//  - Command lists record; executeCommandLists replays them on the immediate
-//    context, so everything the GPU sees is ordered as recorded.
+//  - Command lists record (draws and bindings as plain data, the rest as
+//    callbacks); executeCommandLists replays them on the immediate context,
+//    so everything the GPU sees is ordered as recorded. The replay keeps
+//    what the context has bound and calls D3D11 only for what changes.
 //  - Upload buffers are CPU memory (map() hands it out, persistently) with
 //    GPU copies: before a list replays, the ranges its draws and copies read
 //    are copied up (UpdateSubresource), which also makes the CPU memory
@@ -33,10 +35,14 @@
 #include <wrl/client.h>
 
 #include <array>
+#include <condition_variable>
+#include <deque>
 #include <functional>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -78,6 +84,13 @@ struct D3D11Buffer : RenderBuffer {
     // whole and once.
     uint32_t mapCount = 0;
     bool dirty = false;
+    // Set by the renderer for a buffer it fills once, before any draw reads
+    // it, and keeps mapped (its kept vertices and indices): copied up whole
+    // at the first submission that reads it, never again. Copying the ranges
+    // a frame's draws read from every such buffer, as from the upload ring,
+    // moved ~50 MB a race frame.
+    bool writeOnce = false;
+    bool copiedOnce = false;
     D3D11Buffer(D3D11Device* device, const RenderBufferDesc& desc);
     void* map(uint32_t subresource, const RenderRange* readRange) override;
     void unmap(uint32_t subresource, const RenderRange* writtenRange) override;
@@ -178,12 +191,52 @@ struct D3D11BufferUse {
     bool constants;
 };
 
+// A recorded command: the frequent ones are plain data (no allocation a
+// draw), anything else a callback. Payloads of varying size live in the
+// list's side arrays, at the offset a command names.
+enum class D3D11Op : uint8_t {
+    draw,               // a vertices, b instances, c first vertex, d first instance
+    drawIndexed,        // a indices, b instances, c first index, d first instance, e base vertex
+    pipeline,           // p
+    stencilReference,   // a
+    pushConstants,      // p buffer, a register, b offset into bytes, c bytes
+    descriptorSet,      // p
+    xenosTextures,      // p textures, q samplers, a offset into slots
+    rootDescriptor,     // p D3D11Buffer, a register, b first constant, c constants
+    indexBuffer,        // p D3D11Buffer or null, a offset, b DXGI format
+    vertexBuffers,      // a first slot, b count, c offset into vertexBindings
+    viewports,          // a offset into viewportData, b count
+    scissors,           // a offset into scissorData, b count
+    framebuffer,        // p
+    callback,           // a index into callbacks
+};
+
+struct D3D11Command {
+    D3D11Op op;
+    uint32_t a = 0, b = 0, c = 0, d = 0;
+    int32_t e = 0;
+    const void* p = nullptr;
+    const void* q = nullptr;
+};
+
+struct D3D11VertexBinding {
+    D3D11Buffer* buffer;
+    UINT stride, offset;
+};
+
 struct D3D11CommandList : RenderCommandList {
     D3D11CommandQueue* queue = nullptr;
-    std::vector<std::function<void(D3D11Replay&)>> commands;
+    std::vector<D3D11Command> commands;
+    std::vector<uint8_t> bytes;
+    std::vector<uint16_t> slots;
+    std::vector<D3D11VertexBinding> vertexBindings;
+    std::vector<D3D11_VIEWPORT> viewportData;
+    std::vector<D3D11_RECT> scissorData;
+    std::vector<std::function<void(D3D11Replay&)>> callbacks;
     std::vector<D3D11BufferUse> uses;
     // The layout recorded with, for root descriptors and push constants.
     const D3D11PipelineLayout* recordingLayout = nullptr;
+    void callback(std::function<void(D3D11Replay&)> function);
     explicit D3D11CommandList(D3D11CommandQueue* queue) : queue(queue) {}
     void begin() override;
     void end() override {}
@@ -281,6 +334,13 @@ struct D3D11CommandQueue : RenderCommandQueue {
     void waitForCommandFence(RenderCommandFence* fence) override;
 };
 
+// One submission's cost, for NATIVE_D3D11_REPLAY.
+struct D3D11ReplayStats {
+    float milliseconds, uploadMilliseconds;
+    uint32_t draws, calls, skipped;
+    uint64_t uploadBytes;
+};
+
 struct D3D11Device : RenderDevice {
     D3D11Interface* renderInterface = nullptr;
     ComPtr<IDXGIAdapter1> adapter;
@@ -300,11 +360,30 @@ struct D3D11Device : RenderDevice {
     ComPtr<ID3D11RasterizerState> clearRasterizer;
     ComPtr<ID3D11BlendState> clearBlend;
     std::unordered_map<uint32_t, ComPtr<ID3D11DepthStencilState>> clearDepthStates;
-    // Compiled shaders by source hash, entry, profile and specialization.
+    // Compiled shaders by source hash, entry, profile and specialization:
+    // done, or being compiled (by a pipeline or the prewarm threads), so
+    // that one is never compiled twice at once.
     std::mutex shaderMutex;
-    std::unordered_map<std::string, std::vector<uint8_t>> compiledShaders;
+    std::unordered_map<std::string, std::shared_future<std::vector<uint8_t>>> compiledShaders;
+    // Prewarm (SFR_D3D11_PREWARM=0 turns it off): HLSL shaders start
+    // compiling on threads of their own when the game makes them (as a
+    // level loads), at the specialization most pipelines use, so that the
+    // first draw with them seldom waits for d3dcompiler.
+    bool prewarm = true;
+    std::mutex prewarmMutex;
+    std::condition_variable prewarmWake;
+    std::deque<std::function<void()>> prewarmJobs;
+    std::vector<std::thread> prewarmThreads;
+    bool prewarmStop = false;
+    void prewarmShader(const D3D11Shader& shader);
+    // A submission's upload ranges (reused), under contextMutex.
+    std::vector<D3D11BufferUse> uploadUses;
+    // Replay timing (NATIVE_D3D11_REPLAY), under contextMutex.
+    std::vector<D3D11ReplayStats> replayStats;
+    void noteReplay(const D3D11ReplayStats& stats);
 
     D3D11Device(D3D11Interface* renderInterface, ComPtr<IDXGIAdapter1> adapter);
+    ~D3D11Device() override;
     bool valid() const { return d3d != nullptr; }
     std::unique_ptr<RenderDescriptorSet> createDescriptorSet(const RenderDescriptorSetDesc& desc) override;
     std::unique_ptr<RenderShader> createShader(const void* data, uint64_t size, const char* entryPointName,
@@ -339,6 +418,8 @@ struct D3D11Device : RenderDevice {
     // The DXBC for a shader at this specialization (compiled once); empty,
     // with the compiler's message logged, when it does not compile.
     std::vector<uint8_t> shaderCode(const D3D11Shader* shader, const char* profile, uint32_t specConstants);
+    std::vector<uint8_t> compiledCode(const std::vector<uint8_t>& source, const std::string& entry, const char* profile,
+                                      uint32_t specConstants, bool prewarming);
 };
 
 std::unique_ptr<RenderInterface> CreateD3D11Interface();

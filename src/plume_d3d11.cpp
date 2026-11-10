@@ -225,6 +225,72 @@ std::filesystem::path shaderCacheFolder() {
 }
 }
 
+// What the immediate context has bound, as far as this submission knows, so
+// that a command binding what is bound already costs nothing. Everything
+// starts unknown at each submission (presentation and resizing touch the
+// context between them).
+struct D3D11Bound {
+    template <typename T>
+    static T* unknown() { return reinterpret_cast<T*>(uintptr_t(1)); }
+    struct Constants {
+        ID3D11Buffer* buffer;
+        UINT first, count;  // count 0: bound without an offset
+        bool operator==(const Constants&) const = default;
+    };
+    struct Vertices {
+        ID3D11Buffer* buffer;
+        UINT stride, offset;
+        bool operator==(const Vertices&) const = default;
+    };
+    ID3D11VertexShader* vs;
+    ID3D11GeometryShader* gs;
+    ID3D11PixelShader* ps;
+    ID3D11InputLayout* inputLayout;
+    D3D11_PRIMITIVE_TOPOLOGY topology;
+    ID3D11RasterizerState* rasterizer;
+    ID3D11BlendState* blend;
+    ID3D11DepthStencilState* depthStencil;
+    UINT stencilReference;
+    // views and samplers [stage]: 0 vertex, 1 pixel; constants: 0 vertex,
+    // 1 geometry, 2 pixel.
+    std::array<std::array<ID3D11ShaderResourceView*, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT>, 2> views;
+    std::array<std::array<ID3D11SamplerState*, D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT>, 2> samplers;
+    std::array<std::array<Constants, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT>, 3> constants;
+    std::array<Vertices, D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT> vertices;
+    ID3D11Buffer* indexBuffer;
+    DXGI_FORMAT indexFormat;
+    UINT indexOffset;
+    const D3D11Framebuffer* framebuffer;
+    bool viewportsKnown, scissorsKnown;
+    D3D11Bound() { forget(); }
+    void forgetViews() {
+        for (auto& stage : views) stage.fill(unknown<ID3D11ShaderResourceView>());
+    }
+    void forgetPipeline() {
+        vs = unknown<ID3D11VertexShader>();
+        gs = unknown<ID3D11GeometryShader>();
+        ps = unknown<ID3D11PixelShader>();
+        inputLayout = unknown<ID3D11InputLayout>();
+        topology = D3D11_PRIMITIVE_TOPOLOGY(-1);
+        rasterizer = unknown<ID3D11RasterizerState>();
+        blend = unknown<ID3D11BlendState>();
+        depthStencil = unknown<ID3D11DepthStencilState>();
+        stencilReference = ~0u;
+    }
+    void forget() {
+        forgetPipeline();
+        forgetViews();
+        for (auto& stage : samplers) stage.fill(unknown<ID3D11SamplerState>());
+        for (auto& stage : constants) stage.fill({unknown<ID3D11Buffer>(), 0, 0});
+        vertices.fill({unknown<ID3D11Buffer>(), 0, 0});
+        indexBuffer = unknown<ID3D11Buffer>();
+        indexFormat = DXGI_FORMAT_UNKNOWN;
+        indexOffset = ~0u;
+        framebuffer = unknown<const D3D11Framebuffer>();
+        viewportsKnown = scissorsKnown = false;
+    }
+};
+
 struct D3D11Replay {
     D3D11Device* device;
     ID3D11DeviceContext* context;
@@ -235,12 +301,19 @@ struct D3D11Replay {
     std::vector<D3D11_RECT> scissors;
     uint32_t stencilReference = 0;
     bool stencilOverride = false;
+    D3D11Bound bound;
     // SFR_D3D11_TRACE=<n>: the n-th submission with draws logs each draw's
     // state and how many samples it wrote (an occlusion query a draw).
     bool trace = false;
     uint32_t traced = 0;
+    uint32_t draws = 0;
+    // Binding calls made, and skipped as bound already (NATIVE_D3D11_REPLAY).
+    uint32_t calls = 0, skipped = 0;
+    D3D11Replay(D3D11Device* device, ID3D11DeviceContext* context, ID3D11DeviceContext1* context1)
+        : device(device), context(context), context1(context1) {}
     template <typename Draw>
     void draw(const char* kind, uint32_t count, Draw&& issue) {
+        ++draws;
         if (!trace) {
             issue();
             return;
@@ -257,11 +330,11 @@ struct D3D11Replay {
         ID3D11DepthStencilView* depth = nullptr;
         context->OMGetRenderTargets(2, targets, &depth);
         D3D11_VIEWPORT viewport{};
-        UINT viewports = 1;
-        context->RSGetViewports(&viewports, &viewport);
+        UINT viewportCount = 1;
+        context->RSGetViewports(&viewportCount, &viewport);
         D3D11_RECT scissor{};
-        UINT scissors = 1;
-        context->RSGetScissorRects(&scissors, &scissor);
+        UINT scissorCount = 1;
+        context->RSGetScissorRects(&scissorCount, &scissor);
         ID3D11Buffer* constants[5] = {};
         UINT first[5] = {}, num[5] = {};
         if (context1) context1->VSGetConstantBuffers1(0, 5, constants, first, num);
@@ -289,19 +362,141 @@ struct D3D11Replay {
         if (sampler) sampler->Release();
         if (vertices) vertices->Release();
     }
+    // Each set below calls D3D11 only for what differs from what is bound.
+    template <typename T, typename Value>
+    bool change(T& slot, const Value& value) {
+        if (slot == value) {
+            ++skipped;
+            return false;
+        }
+        slot = value;
+        ++calls;
+        return true;
+    }
     void applyPipeline() {
         if (!pipeline) return;
-        context->VSSetShader(pipeline->vs.Get(), nullptr, 0);
-        context->GSSetShader(pipeline->gs.Get(), nullptr, 0);
-        context->PSSetShader(pipeline->ps.Get(), nullptr, 0);
-        context->IASetInputLayout(pipeline->inputLayout.Get());
-        context->IASetPrimitiveTopology(pipeline->topology);
-        context->RSSetState(pipeline->rasterizer.Get());
-        const float factor[4] = {1, 1, 1, 1};
-        context->OMSetBlendState(pipeline->blend.Get(), factor, 0xFFFFFFFFu);
-        context->OMSetDepthStencilState(pipeline->depthStencil.Get(),
-                                        stencilOverride ? stencilReference : pipeline->stencilReference);
+        if (change(bound.vs, pipeline->vs.Get())) context->VSSetShader(bound.vs, nullptr, 0);
+        if (change(bound.gs, pipeline->gs.Get())) context->GSSetShader(bound.gs, nullptr, 0);
+        if (change(bound.ps, pipeline->ps.Get())) context->PSSetShader(bound.ps, nullptr, 0);
+        if (change(bound.inputLayout, pipeline->inputLayout.Get())) context->IASetInputLayout(bound.inputLayout);
+        if (change(bound.topology, pipeline->topology)) context->IASetPrimitiveTopology(bound.topology);
+        if (change(bound.rasterizer, pipeline->rasterizer.Get())) context->RSSetState(bound.rasterizer);
+        // Vulkan's pipelines and D3D12's lists leave the blend constant at 0.
+        static const float factor[4] = {0, 0, 0, 0};
+        if (change(bound.blend, pipeline->blend.Get())) context->OMSetBlendState(bound.blend, factor, 0xFFFFFFFFu);
+        const UINT reference = stencilOverride ? stencilReference : pipeline->stencilReference;
+        if (bound.depthStencil != pipeline->depthStencil.Get() || bound.stencilReference != reference) {
+            bound.depthStencil = pipeline->depthStencil.Get();
+            bound.stencilReference = reference;
+            ++calls;
+            context->OMSetDepthStencilState(bound.depthStencil, reference);
+        } else {
+            ++skipped;
+        }
     }
+    // Views of slots [first, first + count) of a stage (0 vertex, 1 pixel):
+    // one call over the range that differs.
+    void setViews(int stage, UINT first, UINT count, ID3D11ShaderResourceView* const* views) {
+        auto& slots = bound.views[stage];
+        UINT low = UINT_MAX, high = 0;
+        for (UINT i = 0; i < count; ++i)
+            if (slots[first + i] != views[i]) {
+                low = std::min(low, i);
+                high = i;
+                slots[first + i] = views[i];
+            }
+        if (low == UINT_MAX) {
+            ++skipped;
+            return;
+        }
+        ++calls;
+        if (stage == 0) context->VSSetShaderResources(first + low, high - low + 1, views + low);
+        else context->PSSetShaderResources(first + low, high - low + 1, views + low);
+    }
+    void setSamplers(int stage, UINT first, UINT count, ID3D11SamplerState* const* states) {
+        auto& slots = bound.samplers[stage];
+        UINT low = UINT_MAX, high = 0;
+        for (UINT i = 0; i < count; ++i)
+            if (slots[first + i] != states[i]) {
+                low = std::min(low, i);
+                high = i;
+                slots[first + i] = states[i];
+            }
+        if (low == UINT_MAX) {
+            ++skipped;
+            return;
+        }
+        ++calls;
+        if (stage == 0) context->VSSetSamplers(first + low, high - low + 1, states + low);
+        else context->PSSetSamplers(first + low, high - low + 1, states + low);
+    }
+    // count 0: the whole buffer (*SetConstantBuffers); otherwise a window.
+    void setConstants(int stage, UINT reg, ID3D11Buffer* buffer, UINT first, UINT count) {
+        if (reg >= D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT) return;
+        if (!change(bound.constants[stage][reg], D3D11Bound::Constants{buffer, first, count})) return;
+        if (count) {
+            if (stage == 0) context1->VSSetConstantBuffers1(reg, 1, &buffer, &first, &count);
+            else if (stage == 1) context1->GSSetConstantBuffers1(reg, 1, &buffer, &first, &count);
+            else context1->PSSetConstantBuffers1(reg, 1, &buffer, &first, &count);
+        } else {
+            if (stage == 0) context->VSSetConstantBuffers(reg, 1, &buffer);
+            else if (stage == 1) context->GSSetConstantBuffers(reg, 1, &buffer);
+            else context->PSSetConstantBuffers(reg, 1, &buffer);
+        }
+    }
+    void setVertexBuffer(UINT slot, ID3D11Buffer* buffer, UINT stride, UINT offset) {
+        if (slot >= D3D11_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT) return;
+        if (change(bound.vertices[slot], D3D11Bound::Vertices{buffer, stride, offset}))
+            context->IASetVertexBuffers(slot, 1, &buffer, &stride, &offset);
+    }
+    void setIndexBuffer(ID3D11Buffer* buffer, DXGI_FORMAT format, UINT offset) {
+        if (bound.indexBuffer == buffer && bound.indexFormat == format && bound.indexOffset == offset) {
+            ++skipped;
+            return;
+        }
+        ++calls;
+        bound.indexBuffer = buffer;
+        bound.indexFormat = format;
+        bound.indexOffset = offset;
+        context->IASetIndexBuffer(buffer, format, offset);
+    }
+    void setViewports(const D3D11_VIEWPORT* data, UINT count) {
+        if (bound.viewportsKnown && viewports.size() == count && std::memcmp(viewports.data(), data, count * sizeof *data) == 0) {
+            ++skipped;
+            return;
+        }
+        ++calls;
+        viewports.assign(data, data + count);
+        bound.viewportsKnown = true;
+        context->RSSetViewports(count, data);
+    }
+    void setScissors(const D3D11_RECT* data, UINT count) {
+        if (bound.scissorsKnown && scissors.size() == count && std::memcmp(scissors.data(), data, count * sizeof *data) == 0) {
+            ++skipped;
+            return;
+        }
+        ++calls;
+        scissors.assign(data, data + count);
+        bound.scissorsKnown = true;
+        context->RSSetScissorRects(count, data);
+    }
+    void setFramebuffer(const D3D11Framebuffer* target) {
+        framebuffer = target;
+        if (!change(bound.framebuffer, target)) return;
+        // Binding targets unbinds the views of their textures that shaders
+        // read (and a view of a bound target binds as null): what the
+        // shaders see is no longer known.
+        bound.forgetViews();
+        if (!target) {
+            context->OMSetRenderTargets(0, nullptr, nullptr);
+            return;
+        }
+        std::array<ID3D11RenderTargetView*, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT> colors{};
+        const UINT count = UINT(std::min(target->colors.size(), colors.size()));
+        for (UINT i = 0; i < count; ++i) colors[i] = target->colors[i].Get();
+        context->OMSetRenderTargets(count, colors.data(), target->depth.Get());
+    }
+    void run(const D3D11CommandList& list);
 };
 
 // D3D11Interface
@@ -353,6 +548,7 @@ std::unique_ptr<RenderInterface> CreateD3D11Interface() {
 D3D11Device::D3D11Device(D3D11Interface* renderInterface, ComPtr<IDXGIAdapter1> chosen) {
     this->renderInterface = renderInterface;
     adapter = chosen;
+    if (const char* setting = std::getenv("SFR_D3D11_PREWARM"); setting && *setting == '0') prewarm = false;
     const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
     const D3D_FEATURE_LEVEL* first = renderInterface->maxFeatureLevel == D3D_FEATURE_LEVEL_11_0 ? levels + 1 : levels;
     const UINT count = UINT(std::end(levels) - first);
@@ -447,45 +643,112 @@ std::unique_ptr<RenderShader> D3D11Device::createShader(const void* data, uint64
     shader->code.assign(bytes, bytes + size);
     shader->entryPoint = entryPointName ? entryPointName : "main";
     shader->source = size < 4 || std::memcmp(bytes, "DXBC", 4) != 0;
+    if (shader->source && prewarm) prewarmShader(*shader);
     return shader;
 }
 
 std::vector<uint8_t> D3D11Device::shaderCode(const D3D11Shader* shader, const char* profile, uint32_t specConstants) {
     if (!shader->source) return shader->code;
-    const uint64_t hash = fnv1a(shader->code.data(), shader->code.size());
+    return compiledCode(shader->code, shader->entryPoint, profile, specConstants, false);
+}
+
+std::vector<uint8_t> D3D11Device::compiledCode(const std::vector<uint8_t>& source, const std::string& entry, const char* profile,
+                                               uint32_t specConstants, bool prewarming) {
+    const uint64_t hash = fnv1a(source.data(), source.size());
     char key[128];
-    std::snprintf(key, sizeof key, "%016llx-%zu-%s-%s-%u", static_cast<unsigned long long>(hash), shader->code.size(),
-                  shader->entryPoint.c_str(), profile, specConstants);
+    std::snprintf(key, sizeof key, "%016llx-%zu-%s-%s-%u", static_cast<unsigned long long>(hash), source.size(),
+                  entry.c_str(), profile, specConstants);
+    std::promise<std::vector<uint8_t>> promise;
     {
-        std::lock_guard guard(shaderMutex);
-        if (const auto found = compiledShaders.find(key); found != compiledShaders.end()) return found->second;
+        std::unique_lock guard(shaderMutex);
+        if (const auto found = compiledShaders.find(key); found != compiledShaders.end()) {
+            // Done, or being compiled on another thread: its result.
+            auto future = found->second;
+            guard.unlock();
+            return future.get();
+        }
+        compiledShaders.emplace(key, promise.get_future().share());
     }
     const auto folder = shaderCacheFolder();
     const auto file = folder / (std::string(key) + ".dxbc");
     std::vector<uint8_t> code;
     if (std::ifstream in{file, std::ios::binary}) code.assign(std::istreambuf_iterator<char>(in), {});
     if (code.size() < 4 || std::memcmp(code.data(), "DXBC", 4) != 0) {
-        const std::string text(shader->code.begin(), shader->code.end());
+        const std::string text(source.begin(), source.end());
         const std::string spec = std::to_string(specConstants);
         const std::vector<D3D_SHADER_MACRO> macros{{"SFR_SPEC_CONSTANTS", spec.c_str()}, {nullptr, nullptr}};
         std::string errors;
         const auto started = std::chrono::steady_clock::now();
-        code = compile(text, shader->entryPoint.c_str(), profile, macros, &errors);
+        code = compile(text, entry.c_str(), profile, macros, &errors);
         const double milliseconds =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
         if (code.empty()) {
             for (char& c : errors) if (c == '\n' || c == '\r') c = ' ';
-            std::cerr << "NATIVE_D3D11_SHADER compiled=0 key=" << key << " errors=" << errors.substr(0, 600) << '\n';
-            return {};
+            std::cerr << "NATIVE_D3D11_SHADER compiled=0 key=" + std::string(key) + " errors=" + errors.substr(0, 600) + '\n';
+        } else {
+            std::cerr << "NATIVE_D3D11_SHADER compiled=1 key=" + std::string(key) + " ms=" + std::to_string(int(milliseconds)) +
+                             " prewarm=" + (prewarming ? "1" : "0") + '\n';
+            // Written beside and renamed, so that no reader sees half a file.
+            std::error_code error;
+            std::filesystem::create_directories(folder, error);
+            auto partial = file;
+            partial += ".part" + std::to_string(GetCurrentThreadId());
+            {
+                std::ofstream out(partial, std::ios::binary);
+                out.write(reinterpret_cast<const char*>(code.data()), std::streamsize(code.size()));
+            }
+            std::filesystem::rename(partial, file, error);
+            if (error) std::filesystem::remove(partial, error);
         }
-        std::cerr << "NATIVE_D3D11_SHADER compiled=1 key=" << key << " ms=" << int(milliseconds) << '\n';
-        std::error_code error;
-        std::filesystem::create_directories(folder, error);
-        std::ofstream(file, std::ios::binary).write(reinterpret_cast<const char*>(code.data()), std::streamsize(code.size()));
     }
-    std::lock_guard guard(shaderMutex);
-    compiledShaders.emplace(key, code);
+    promise.set_value(code);
     return code;
+}
+
+void D3D11Device::prewarmShader(const D3D11Shader& shader) {
+    // Which stage the translated HLSL is for: only pixel shaders write
+    // SV_Target; vertex shaders read the VertexShaderInput.
+    const std::string_view text(reinterpret_cast<const char*>(shader.code.data()), shader.code.size());
+    const char* profile = text.find("SV_Target") != std::string_view::npos           ? "ps_5_0"
+                          : text.find("VertexShaderInput") != std::string_view::npos ? "vs_5_0"
+                                                                                     : nullptr;
+    if (!profile) return;
+    std::lock_guard guard(prewarmMutex);
+    if (prewarmThreads.empty()) {
+        // Leave the game's own threads a core or two (a dual-core laptop
+        // gets one compiler thread).
+        const unsigned cores = std::max(std::thread::hardware_concurrency(), 1u);
+        const unsigned count = std::clamp(cores > 2 ? cores - 2 : 1u, 1u, 4u);
+        for (unsigned i = 0; i < count; ++i)
+            prewarmThreads.emplace_back([this] {
+                SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+                for (;;) {
+                    std::function<void()> job;
+                    {
+                        std::unique_lock lock(prewarmMutex);
+                        prewarmWake.wait(lock, [this] { return prewarmStop || !prewarmJobs.empty(); });
+                        if (prewarmStop) return;
+                        job = std::move(prewarmJobs.front());
+                        prewarmJobs.pop_front();
+                    }
+                    job();
+                }
+            });
+    }
+    prewarmJobs.push_back([this, source = shader.code, entry = shader.entryPoint, profile] {
+        compiledCode(source, entry, profile, 0, true);
+    });
+    prewarmWake.notify_one();
+}
+
+D3D11Device::~D3D11Device() {
+    {
+        std::lock_guard guard(prewarmMutex);
+        prewarmStop = true;
+        prewarmJobs.clear();
+    }
+    prewarmWake.notify_all();
+    for (auto& thread : prewarmThreads) thread.join();
 }
 
 std::unique_ptr<RenderSampler> D3D11Device::createSampler(const RenderSamplerDesc& desc) {
@@ -849,47 +1112,40 @@ void D3D11DescriptorSet::setSampler(uint32_t index, const RenderSampler* sampler
 
 void D3D11CommandList::begin() {
     commands.clear();
+    bytes.clear();
+    slots.clear();
+    vertexBindings.clear();
+    viewportData.clear();
+    scissorData.clear();
+    callbacks.clear();
     uses.clear();
     recordingLayout = nullptr;
 }
 
+void D3D11CommandList::callback(std::function<void(D3D11Replay&)> function) {
+    D3D11Command command{D3D11Op::callback};
+    command.a = uint32_t(callbacks.size());
+    callbacks.push_back(std::move(function));
+    commands.push_back(command);
+}
+
 void D3D11CommandList::drawInstanced(uint32_t vertexCount, uint32_t instanceCount, uint32_t startVertex, uint32_t startInstance) {
-    commands.push_back([=](D3D11Replay& replay) {
-        if (!replay.pipeline || !replay.pipeline->valid) return;
-        replay.draw("vertices", vertexCount, [&] {
-            if (instanceCount == 1 && startInstance == 0) replay.context->Draw(vertexCount, startVertex);
-            else replay.context->DrawInstanced(vertexCount, instanceCount, startVertex, startInstance);
-        });
-    });
+    commands.push_back({D3D11Op::draw, vertexCount, instanceCount, startVertex, startInstance});
 }
 
 void D3D11CommandList::drawIndexedInstanced(uint32_t indexCount, uint32_t instanceCount, uint32_t startIndex,
                                             int32_t baseVertex, uint32_t startInstance) {
-    commands.push_back([=](D3D11Replay& replay) {
-        if (!replay.pipeline || !replay.pipeline->valid) return;
-        replay.draw("indices", indexCount, [&] {
-            if (instanceCount == 1 && startInstance == 0) replay.context->DrawIndexed(indexCount, startIndex, baseVertex);
-            else replay.context->DrawIndexedInstanced(indexCount, instanceCount, startIndex, baseVertex, startInstance);
-        });
-    });
+    commands.push_back({D3D11Op::drawIndexed, indexCount, instanceCount, startIndex, startInstance, baseVertex});
 }
 
 void D3D11CommandList::setPipeline(const RenderPipeline* pipeline) {
-    const auto* graphics = static_cast<const D3D11GraphicsPipeline*>(pipeline);
-    commands.push_back([graphics](D3D11Replay& replay) {
-        replay.pipeline = graphics;
-        replay.stencilOverride = false;
-        replay.applyPipeline();
-    });
+    D3D11Command command{D3D11Op::pipeline};
+    command.p = pipeline;
+    commands.push_back(command);
 }
 
 void D3D11CommandList::setStencilReference(uint32_t reference) {
-    commands.push_back([reference](D3D11Replay& replay) {
-        replay.stencilReference = reference;
-        replay.stencilOverride = true;
-        if (replay.pipeline)
-            replay.context->OMSetDepthStencilState(replay.pipeline->depthStencil.Get(), reference);
-    });
+    commands.push_back({D3D11Op::stencilReference, reference});
 }
 
 void D3D11CommandList::setGraphicsPipelineLayout(const RenderPipelineLayout* pipelineLayout) {
@@ -901,68 +1157,38 @@ void D3D11CommandList::setGraphicsPushConstants(uint32_t rangeIndex, const void*
     if (!layout || rangeIndex >= layout->pushConstantRanges.size()) return;
     const auto& range = layout->pushConstantRanges[rangeIndex];
     if (!size) size = range.size;
-    std::vector<uint8_t> bytes(static_cast<const uint8_t*>(data), static_cast<const uint8_t*>(data) + size);
-    ID3D11Buffer* buffer = layout->pushConstantBuffers[rangeIndex].Get();
-    const uint32_t reg = range.binding, total = range.size;
-    commands.push_back([buffer, reg, offset, total, bytes = std::move(bytes)](D3D11Replay& replay) {
-        // Constant buffers update whole (D3D11.1's partial updates aside).
-        std::vector<uint8_t> whole((total + 15u) & ~15u, 0);
-        std::memcpy(whole.data() + offset, bytes.data(), std::min<size_t>(bytes.size(), whole.size() - offset));
-        replay.context->UpdateSubresource(buffer, 0, nullptr, whole.data(), 0, 0);
-        replay.context->VSSetConstantBuffers(reg, 1, &buffer);
-        replay.context->GSSetConstantBuffers(reg, 1, &buffer);
-        replay.context->PSSetConstantBuffers(reg, 1, &buffer);
-    });
+    // Constant buffers update whole (D3D11.1's partial updates aside): the
+    // whole buffer's bytes, zero where the range was not given.
+    const uint32_t whole = (range.size + 15u) & ~15u;
+    if (offset >= whole) return;
+    D3D11Command command{D3D11Op::pushConstants, range.binding, uint32_t(bytes.size()), whole};
+    command.p = layout->pushConstantBuffers[rangeIndex].Get();
+    bytes.resize(bytes.size() + whole, 0);
+    std::memcpy(bytes.data() + command.b + offset, data, std::min<size_t>(size, whole - offset));
+    commands.push_back(command);
 }
 
 void D3D11CommandList::setGraphicsDescriptorSet(RenderDescriptorSet* descriptorSet, uint32_t) {
-    const auto* set = static_cast<const D3D11DescriptorSet*>(descriptorSet);
-    commands.push_back([set](D3D11Replay& replay) {
-        for (const auto& entry : set->entries) {
-            switch (entry.type) {
-            case RenderDescriptorRangeType::TEXTURE: {
-                if (entry.reg >= D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT) break;
-                ID3D11ShaderResourceView* view = entry.srv.Get();
-                replay.context->VSSetShaderResources(entry.reg, 1, &view);
-                replay.context->PSSetShaderResources(entry.reg, 1, &view);
-                break;
-            }
-            case RenderDescriptorRangeType::SAMPLER: {
-                if (entry.reg >= D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT) break;
-                ID3D11SamplerState* sampler = entry.sampler.Get();
-                replay.context->VSSetSamplers(entry.reg, 1, &sampler);
-                replay.context->PSSetSamplers(entry.reg, 1, &sampler);
-                break;
-            }
-            default: break;
-            }
-        }
-    });
+    D3D11Command command{D3D11Op::descriptorSet};
+    command.p = descriptorSet;
+    commands.push_back(command);
 }
 
 void D3D11CommandList::setXenosTextures(const RenderDescriptorSet* textures, const RenderDescriptorSet* samplers,
                                         const std::array<uint32_t, 64>& indices) {
-    const auto* textureSet = static_cast<const D3D11DescriptorSet*>(textures);
-    const auto* samplerSet = static_cast<const D3D11DescriptorSet*>(samplers);
-    commands.push_back([textureSet, samplerSet, indices](D3D11Replay& replay) {
-        std::array<ID3D11ShaderResourceView*, 48> views{};
-        std::array<ID3D11SamplerState*, 16> states{};
-        for (uint32_t i = 0; i < 48; ++i)
-            if (indices[i] < textureSet->entries.size()) views[i] = textureSet->entries[indices[i]].srv.Get();
-        for (uint32_t i = 0; i < 16; ++i)
-            if (indices[48 + i] < samplerSet->entries.size()) states[i] = samplerSet->entries[indices[48 + i]].sampler.Get();
-        replay.context->VSSetShaderResources(0, 48, views.data());
-        replay.context->PSSetShaderResources(0, 48, views.data());
-        replay.context->VSSetSamplers(0, 16, states.data());
-        replay.context->PSSetSamplers(0, 16, states.data());
-    });
+    // The views themselves are read as the list replays, as D3D12 reads a
+    // descriptor heap when the GPU runs.
+    D3D11Command command{D3D11Op::xenosTextures, uint32_t(slots.size())};
+    command.p = textures;
+    command.q = samplers;
+    for (const uint32_t index : indices) slots.push_back(uint16_t(std::min(index, 0xFFFFu)));
+    commands.push_back(command);
 }
 
 void D3D11CommandList::setGraphicsRootDescriptor(RenderBufferReference reference, uint32_t rootDescriptorIndex) {
     const auto* layout = recordingLayout;
     if (!layout || rootDescriptorIndex >= layout->rootDescriptors.size() || !reference.ref) return;
     auto* buffer = const_cast<D3D11Buffer*>(static_cast<const D3D11Buffer*>(reference.ref));
-    const uint32_t reg = layout->rootDescriptors[rootDescriptorIndex].shaderRegister;
     // A window of up to 4096 constants at the offset, in whole 16-constant
     // (256-byte) steps, as D3D11.1 binds them.
     const uint64_t offset = reference.offset & ~uint64_t(255);
@@ -971,87 +1197,160 @@ void D3D11CommandList::setGraphicsRootDescriptor(RenderBufferReference reference
     const UINT count = UINT(std::min<uint64_t>(4096, (available / 16) & ~uint64_t(15)));
     if (!count) return;
     if (!buffer->cpu.empty()) uses.push_back({buffer, offset, offset + uint64_t(count) * 16, true});
-    commands.push_back([buffer, reg, first, count](D3D11Replay& replay) {
-        ID3D11Buffer* constants = buffer->constantBuffer();
-        replay.context1->VSSetConstantBuffers1(reg, 1, &constants, &first, &count);
-        replay.context1->PSSetConstantBuffers1(reg, 1, &constants, &first, &count);
-    });
+    D3D11Command command{D3D11Op::rootDescriptor, layout->rootDescriptors[rootDescriptorIndex].shaderRegister, first, count};
+    command.p = buffer;
+    commands.push_back(command);
 }
 
 void D3D11CommandList::setIndexBuffer(const RenderIndexBufferView* view) {
-    if (!view || !view->buffer.ref) {
-        commands.push_back([](D3D11Replay& replay) { replay.context->IASetIndexBuffer(nullptr, DXGI_FORMAT_R32_UINT, 0); });
-        return;
+    D3D11Command command{D3D11Op::indexBuffer, 0, DXGI_FORMAT_R32_UINT};
+    if (view && view->buffer.ref) {
+        auto* buffer = const_cast<D3D11Buffer*>(static_cast<const D3D11Buffer*>(view->buffer.ref));
+        command.p = buffer;
+        command.a = UINT(view->buffer.offset);
+        command.b = toDXGI(view->format);
+        if (!buffer->cpu.empty()) uses.push_back({buffer, command.a, command.a + uint64_t(view->size), false});
     }
-    auto* buffer = const_cast<D3D11Buffer*>(static_cast<const D3D11Buffer*>(view->buffer.ref));
-    const UINT offset = UINT(view->buffer.offset);
-    const DXGI_FORMAT format = toDXGI(view->format);
-    if (!buffer->cpu.empty()) uses.push_back({buffer, offset, offset + uint64_t(view->size), false});
-    commands.push_back([buffer, offset, format](D3D11Replay& replay) {
-        replay.context->IASetIndexBuffer(buffer->gpu.Get(), format, offset);
-    });
+    commands.push_back(command);
 }
 
 void D3D11CommandList::setVertexBuffers(uint32_t startSlot, const RenderVertexBufferView* views, uint32_t viewCount,
                                         const RenderInputSlot* inputSlots) {
-    std::vector<ID3D11Buffer*> buffers(viewCount);
-    std::vector<UINT> strides(viewCount), offsets(viewCount);
-    std::vector<D3D11Buffer*> owners(viewCount);
+    D3D11Command command{D3D11Op::vertexBuffers, startSlot, viewCount, uint32_t(vertexBindings.size())};
     for (uint32_t i = 0; i < viewCount; ++i) {
         auto* buffer = const_cast<D3D11Buffer*>(static_cast<const D3D11Buffer*>(views[i].buffer.ref));
-        owners[i] = buffer;
-        offsets[i] = UINT(views[i].buffer.offset);
+        UINT stride = 0;
         for (uint32_t j = 0; inputSlots && j < viewCount; ++j)
-            if (inputSlots[j].index == startSlot + i) strides[i] = inputSlots[j].stride;
+            if (inputSlots[j].index == startSlot + i) stride = inputSlots[j].stride;
+        vertexBindings.push_back({buffer, stride, UINT(views[i].buffer.offset)});
         if (buffer && !buffer->cpu.empty() && views[i].size)
             uses.push_back({buffer, views[i].buffer.offset, views[i].buffer.offset + views[i].size, false});
     }
-    commands.push_back([startSlot, owners, strides, offsets](D3D11Replay& replay) {
-        std::vector<ID3D11Buffer*> buffers(owners.size());
-        for (size_t i = 0; i < owners.size(); ++i) buffers[i] = owners[i] ? owners[i]->gpu.Get() : nullptr;
-        replay.context->IASetVertexBuffers(startSlot, UINT(buffers.size()), buffers.data(), strides.data(), offsets.data());
-    });
+    commands.push_back(command);
 }
 
 void D3D11CommandList::setViewports(const RenderViewport* viewports, uint32_t count) {
-    std::vector<D3D11_VIEWPORT> out(count);
+    commands.push_back({D3D11Op::viewports, uint32_t(viewportData.size()), count});
     for (uint32_t i = 0; i < count; ++i)
-        out[i] = {viewports[i].x, viewports[i].y, viewports[i].width, viewports[i].height, viewports[i].minDepth,
-                  viewports[i].maxDepth};
-    commands.push_back([out = std::move(out)](D3D11Replay& replay) {
-        replay.viewports = out;
-        replay.context->RSSetViewports(UINT(out.size()), out.data());
-    });
+        viewportData.push_back({viewports[i].x, viewports[i].y, viewports[i].width, viewports[i].height,
+                                viewports[i].minDepth, viewports[i].maxDepth});
 }
 
 void D3D11CommandList::setScissors(const RenderRect* rects, uint32_t count) {
-    std::vector<D3D11_RECT> out(count);
-    for (uint32_t i = 0; i < count; ++i) out[i] = {rects[i].left, rects[i].top, rects[i].right, rects[i].bottom};
-    commands.push_back([out = std::move(out)](D3D11Replay& replay) {
-        replay.scissors = out;
-        replay.context->RSSetScissorRects(UINT(out.size()), out.data());
-    });
+    commands.push_back({D3D11Op::scissors, uint32_t(scissorData.size()), count});
+    for (uint32_t i = 0; i < count; ++i) scissorData.push_back({rects[i].left, rects[i].top, rects[i].right, rects[i].bottom});
 }
 
 void D3D11CommandList::setFramebuffer(const RenderFramebuffer* framebuffer) {
-    const auto* target = static_cast<const D3D11Framebuffer*>(framebuffer);
-    commands.push_back([target](D3D11Replay& replay) {
-        replay.framebuffer = target;
-        if (!target) {
-            replay.context->OMSetRenderTargets(0, nullptr, nullptr);
-            return;
+    D3D11Command command{D3D11Op::framebuffer};
+    command.p = framebuffer;
+    commands.push_back(command);
+}
+
+void D3D11Replay::run(const D3D11CommandList& list) {
+    for (const auto& command : list.commands) {
+        switch (command.op) {
+        case D3D11Op::draw:
+            if (!pipeline || !pipeline->valid) break;
+            draw("vertices", command.a, [&] {
+                if (command.b == 1 && command.d == 0) context->Draw(command.a, command.c);
+                else context->DrawInstanced(command.a, command.b, command.c, command.d);
+            });
+            break;
+        case D3D11Op::drawIndexed:
+            if (!pipeline || !pipeline->valid) break;
+            draw("indices", command.a, [&] {
+                if (command.b == 1 && command.d == 0) context->DrawIndexed(command.a, command.c, command.e);
+                else context->DrawIndexedInstanced(command.a, command.b, command.c, command.e, command.d);
+            });
+            break;
+        case D3D11Op::pipeline:
+            pipeline = static_cast<const D3D11GraphicsPipeline*>(command.p);
+            stencilOverride = false;
+            applyPipeline();
+            break;
+        case D3D11Op::stencilReference:
+            stencilReference = command.a;
+            stencilOverride = true;
+            applyPipeline();
+            break;
+        case D3D11Op::pushConstants: {
+            auto* buffer = static_cast<ID3D11Buffer*>(const_cast<void*>(command.p));
+            context->UpdateSubresource(buffer, 0, nullptr, list.bytes.data() + command.b, 0, 0);
+            for (int stage = 0; stage < 3; ++stage) setConstants(stage, command.a, buffer, 0, 0);
+            break;
         }
-        // The runtime unbinds views of these textures that shaders read.
-        std::array<ID3D11RenderTargetView*, 8> colors{};
-        for (size_t i = 0; i < target->colors.size() && i < colors.size(); ++i) colors[i] = target->colors[i].Get();
-        replay.context->OMSetRenderTargets(UINT(target->colors.size()), colors.data(), target->depth.Get());
-    });
+        case D3D11Op::descriptorSet: {
+            const auto* set = static_cast<const D3D11DescriptorSet*>(command.p);
+            for (const auto& entry : set->entries) {
+                if (entry.type == RenderDescriptorRangeType::TEXTURE && entry.reg < D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT) {
+                    ID3D11ShaderResourceView* view = entry.srv.Get();
+                    setViews(0, entry.reg, 1, &view);
+                    setViews(1, entry.reg, 1, &view);
+                } else if (entry.type == RenderDescriptorRangeType::SAMPLER && entry.reg < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT) {
+                    ID3D11SamplerState* sampler = entry.sampler.Get();
+                    setSamplers(0, entry.reg, 1, &sampler);
+                    setSamplers(1, entry.reg, 1, &sampler);
+                }
+            }
+            break;
+        }
+        case D3D11Op::xenosTextures: {
+            const auto* textureSet = static_cast<const D3D11DescriptorSet*>(command.p);
+            const auto* samplerSet = static_cast<const D3D11DescriptorSet*>(command.q);
+            const uint16_t* indices = list.slots.data() + command.a;
+            std::array<ID3D11ShaderResourceView*, 48> views;
+            std::array<ID3D11SamplerState*, 16> states;
+            for (uint32_t i = 0; i < 48; ++i)
+                views[i] = indices[i] < textureSet->entries.size() ? textureSet->entries[indices[i]].srv.Get() : nullptr;
+            for (uint32_t i = 0; i < 16; ++i)
+                states[i] = indices[48 + i] < samplerSet->entries.size() ? samplerSet->entries[indices[48 + i]].sampler.Get()
+                                                                         : nullptr;
+            setViews(0, 0, 48, views.data());
+            setViews(1, 0, 48, views.data());
+            setSamplers(0, 0, 16, states.data());
+            setSamplers(1, 0, 16, states.data());
+            break;
+        }
+        case D3D11Op::rootDescriptor: {
+            auto* buffer = static_cast<D3D11Buffer*>(const_cast<void*>(command.p));
+            ID3D11Buffer* constants = buffer->constantBuffer();
+            setConstants(0, command.a, constants, command.b, command.c);
+            setConstants(2, command.a, constants, command.b, command.c);
+            break;
+        }
+        case D3D11Op::indexBuffer: {
+            const auto* buffer = static_cast<const D3D11Buffer*>(command.p);
+            setIndexBuffer(buffer ? buffer->gpu.Get() : nullptr, DXGI_FORMAT(command.b), command.a);
+            break;
+        }
+        case D3D11Op::vertexBuffers:
+            for (uint32_t i = 0; i < command.b; ++i) {
+                const auto& binding = list.vertexBindings[command.c + i];
+                setVertexBuffer(command.a + i, binding.buffer ? binding.buffer->gpu.Get() : nullptr, binding.stride,
+                                binding.offset);
+            }
+            break;
+        case D3D11Op::viewports:
+            setViewports(list.viewportData.data() + command.a, command.b);
+            break;
+        case D3D11Op::scissors:
+            setScissors(list.scissorData.data() + command.a, command.b);
+            break;
+        case D3D11Op::framebuffer:
+            setFramebuffer(static_cast<const D3D11Framebuffer*>(command.p));
+            break;
+        case D3D11Op::callback:
+            list.callbacks[command.a](*this);
+            break;
+        }
+    }
 }
 
 void D3D11CommandList::clearColor(uint32_t attachmentIndex, RenderColor color, const RenderRect* rects, uint32_t rectCount) {
     std::vector<D3D11_RECT> out(rectCount);
     for (uint32_t i = 0; i < rectCount; ++i) out[i] = {rects[i].left, rects[i].top, rects[i].right, rects[i].bottom};
-    commands.push_back([attachmentIndex, color, out = std::move(out)](D3D11Replay& replay) {
+    callback([attachmentIndex, color, out = std::move(out)](D3D11Replay& replay) {
         if (!replay.framebuffer || attachmentIndex >= replay.framebuffer->colors.size()) return;
         ID3D11RenderTargetView* target = replay.framebuffer->colors[attachmentIndex].Get();
         if (out.empty()) replay.context->ClearRenderTargetView(target, color.rgba);
@@ -1063,7 +1362,7 @@ void D3D11CommandList::clearDepthStencil(bool clearDepth, bool clearStencil, flo
                                          const RenderRect* rects, uint32_t rectCount) {
     std::vector<D3D11_RECT> out(rectCount);
     for (uint32_t i = 0; i < rectCount; ++i) out[i] = {rects[i].left, rects[i].top, rects[i].right, rects[i].bottom};
-    commands.push_back([=, out = std::move(out)](D3D11Replay& replay) {
+    callback([=, out = std::move(out)](D3D11Replay& replay) {
         if (!replay.framebuffer || !replay.framebuffer->depth) return;
         const auto* target = replay.framebuffer;
         const bool whole = out.empty() || std::any_of(out.begin(), out.end(), [&](const D3D11_RECT& r) {
@@ -1091,27 +1390,32 @@ void D3D11CommandList::clearDepthStencil(bool clearDepth, bool clearStencil, flo
                                               D3D11_COMPARISON_ALWAYS};
             device->d3d->CreateDepthStencilState(&desc, &state);
         }
+        auto* context = replay.context;
         const float constants[4] = {depthValue, 0, 0, 0};
-        replay.context->UpdateSubresource(device->clearConstants.Get(), 0, nullptr, constants, 0, 0);
-        ID3D11Buffer* buffer = device->clearConstants.Get();
-        replay.context->VSSetConstantBuffers(13, 1, &buffer);
-        replay.context->VSSetShader(device->clearVertexShader.Get(), nullptr, 0);
-        replay.context->GSSetShader(nullptr, nullptr, 0);
-        replay.context->PSSetShader(nullptr, nullptr, 0);
-        replay.context->IASetInputLayout(nullptr);
-        replay.context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        replay.context->RSSetState(device->clearRasterizer.Get());
-        const float factor[4] = {1, 1, 1, 1};
-        replay.context->OMSetBlendState(device->clearBlend.Get(), factor, 0xFFFFFFFFu);
-        replay.context->OMSetDepthStencilState(state.Get(), UINT8(stencilValue));
+        context->UpdateSubresource(device->clearConstants.Get(), 0, nullptr, constants, 0, 0);
+        replay.setConstants(0, 13, device->clearConstants.Get(), 0, 0);
+        // The clear's own state, then the list's back (as far as it is set).
+        auto& bound = replay.bound;
+        bound.forgetPipeline();
+        context->VSSetShader(device->clearVertexShader.Get(), nullptr, 0);
+        context->GSSetShader(nullptr, nullptr, 0);
+        context->PSSetShader(nullptr, nullptr, 0);
+        context->IASetInputLayout(nullptr);
+        context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        context->RSSetState(device->clearRasterizer.Get());
+        const float factor[4] = {0, 0, 0, 0};
+        context->OMSetBlendState(device->clearBlend.Get(), factor, 0xFFFFFFFFu);
+        context->OMSetDepthStencilState(state.Get(), UINT8(stencilValue));
         const D3D11_VIEWPORT whole_viewport{0, 0, float(target->width), float(target->height), 0, 1};
-        replay.context->RSSetViewports(1, &whole_viewport);
+        context->RSSetViewports(1, &whole_viewport);
         for (const auto& rect : out) {
-            replay.context->RSSetScissorRects(1, &rect);
-            replay.context->Draw(3, 0);
+            context->RSSetScissorRects(1, &rect);
+            context->Draw(3, 0);
         }
-        if (!replay.viewports.empty()) replay.context->RSSetViewports(UINT(replay.viewports.size()), replay.viewports.data());
-        if (!replay.scissors.empty()) replay.context->RSSetScissorRects(UINT(replay.scissors.size()), replay.scissors.data());
+        if (!replay.viewports.empty()) context->RSSetViewports(UINT(replay.viewports.size()), replay.viewports.data());
+        else bound.viewportsKnown = false;
+        if (!replay.scissors.empty()) context->RSSetScissorRects(UINT(replay.scissors.size()), replay.scissors.data());
+        else bound.scissorsKnown = false;
         replay.applyPipeline();
     });
 }
@@ -1120,7 +1424,7 @@ void D3D11CommandList::copyBufferRegion(RenderBufferReference dst, RenderBufferR
     auto* target = const_cast<D3D11Buffer*>(static_cast<const D3D11Buffer*>(dst.ref));
     auto* source = const_cast<D3D11Buffer*>(static_cast<const D3D11Buffer*>(src.ref));
     const uint64_t dstOffset = dst.offset, srcOffset = src.offset;
-    commands.push_back([=](D3D11Replay& replay) {
+    callback([=](D3D11Replay& replay) {
         if (!source->cpu.empty() && target->gpu) {
             const D3D11_BOX box{UINT(dstOffset), 0, 0, UINT(dstOffset + size), 1, 1};
             replay.context->UpdateSubresource(target->gpu.Get(), 0, &box, source->cpu.data() + srcOffset, 0, 0);
@@ -1149,7 +1453,7 @@ void D3D11CommandList::copyTextureRegion(const RenderTextureCopyLocation& dstLoc
     const RenderTextureCopyLocation dst = dstLocation, src = srcLocation;
     const bool hasBox = srcBox != nullptr;
     const RenderBox box = hasBox ? *srcBox : RenderBox();
-    commands.push_back([=](D3D11Replay& replay) {
+    callback([=](D3D11Replay& replay) {
         auto* context = replay.context;
         if (dst.type == RenderTextureCopyType::SUBRESOURCE && src.type == RenderTextureCopyType::PLACED_FOOTPRINT) {
             // Into a texture from an upload buffer's memory.
@@ -1234,7 +1538,7 @@ void D3D11CommandList::copyBuffer(const RenderBuffer* dstBuffer, const RenderBuf
 void D3D11CommandList::copyTexture(const RenderTexture* dstTexture, const RenderTexture* srcTexture) {
     const auto* target = static_cast<const D3D11Texture*>(dstTexture);
     const auto* source = static_cast<const D3D11Texture*>(srcTexture);
-    commands.push_back([target, source](D3D11Replay& replay) {
+    callback([target, source](D3D11Replay& replay) {
         if (target->d3d && source->d3d) replay.context->CopyResource(target->d3d.Get(), source->d3d.Get());
     });
 }
@@ -1242,7 +1546,7 @@ void D3D11CommandList::copyTexture(const RenderTexture* dstTexture, const Render
 void D3D11CommandList::resolveTexture(const RenderTexture* dstTexture, const RenderTexture* srcTexture) {
     const auto* target = static_cast<const D3D11Texture*>(dstTexture);
     const auto* source = static_cast<const D3D11Texture*>(srcTexture);
-    commands.push_back([target, source](D3D11Replay& replay) {
+    callback([target, source](D3D11Replay& replay) {
         if (!target->d3d || !source->d3d) return;
         if (source->desc.multisampling.sampleCount > 1)
             replay.context->ResolveSubresource(target->d3d.Get(), 0, source->d3d.Get(), 0, toDXGI(target->desc.format));
@@ -1257,7 +1561,7 @@ void D3D11CommandList::resolveTextureRegion(const RenderTexture* dstTexture, uin
     const auto* source = static_cast<const D3D11Texture*>(srcTexture);
     const bool hasRect = srcRect != nullptr;
     const RenderRect rect = hasRect ? *srcRect : RenderRect();
-    commands.push_back([=](D3D11Replay& replay) {
+    callback([=](D3D11Replay& replay) {
         if (!target->d3d || !source->d3d) return;
         if (source->desc.multisampling.sampleCount > 1) {
             replay.context->ResolveSubresource(target->d3d.Get(), 0, source->d3d.Get(), 0, toDXGI(target->desc.format));
@@ -1371,45 +1675,80 @@ void D3D11CommandQueue::executeCommandLists(const RenderCommandList** commandLis
                                             RenderCommandSemaphore**, uint32_t, RenderCommandSemaphore**, uint32_t,
                                             RenderCommandFence* signalFence) {
     std::lock_guard guard(device->contextMutex);
+    const auto started = std::chrono::steady_clock::now();
     auto* context = device->context.Get();
-    // Upload memory the lists read: copied up first, merged per buffer.
-    std::map<std::pair<D3D11Buffer*, bool>, std::pair<uint64_t, uint64_t>> ranges;
-    for (uint32_t l = 0; l < commandListCount; ++l)
-        for (const auto& use : static_cast<const D3D11CommandList*>(commandLists[l])->uses) {
-            const auto key = std::make_pair(use.buffer, use.constants);
-            auto [it, made] = ranges.try_emplace(key, use.begin, use.end);
-            if (!made) {
-                it->second.first = std::min(it->second.first, use.begin);
-                it->second.second = std::max(it->second.second, use.end);
+    // Upload memory the lists read: copied up first. Each buffer's ranges
+    // are sorted and merged (a draw's constants window overlaps the next
+    // draw's data in a ring), then go up once into its GPU copy; the ranges
+    // read as constants are copied on from there into its constant buffer
+    // (which takes part of itself only by a copy: a partial UpdateSubresource
+    // of a constant buffer is an optional D3D11.1 feature).
+    auto& uses = device->uploadUses;
+    uses.clear();
+    for (uint32_t l = 0; l < commandListCount; ++l) {
+        const auto& listUses = static_cast<const D3D11CommandList*>(commandLists[l])->uses;
+        uses.insert(uses.end(), listUses.begin(), listUses.end());
+    }
+    std::sort(uses.begin(), uses.end(), [](const D3D11BufferUse& x, const D3D11BufferUse& y) {
+        return x.buffer != y.buffer ? std::less<>()(x.buffer, y.buffer) : x.begin < y.begin;
+    });
+    uint64_t uploaded = 0;
+    // Ranges closer than this are copied as one.
+    constexpr uint64_t gap = 4096;
+    const auto copyUp = [&](D3D11Buffer* buffer, uint64_t begin, uint64_t end, bool constants) {
+        begin &= ~uint64_t(15);
+        end = std::min((end + 15) & ~uint64_t(15), buffer->desc.size);
+        if (end <= begin || !buffer->gpu) return;
+        const D3D11_BOX box{UINT(begin), 0, 0, UINT(end), 1, 1};
+        if (!constants) {
+            uploaded += end - begin;
+            context->UpdateSubresource(buffer->gpu.Get(), 0, &box, buffer->cpu.data() + begin, 0, 0);
+        } else if (ID3D11Buffer* target = buffer->constantBuffer()) {
+            context->CopySubresourceRegion(target, 0, UINT(begin), 0, 0, buffer->gpu.Get(), 0, &box);
+        }
+    };
+    for (size_t first = 0; first < uses.size();) {
+        auto* buffer = uses[first].buffer;
+        size_t last = first;
+        bool constants = false;
+        while (last < uses.size() && uses[last].buffer == buffer) constants |= uses[last++].constants;
+        if (buffer->writeOnce) {
+            if (!buffer->copiedOnce) {
+                copyUp(buffer, 0, buffer->desc.size, false);
+                if (constants) copyUp(buffer, 0, buffer->desc.size, true);
+                buffer->copiedOnce = true;
+            }
+        } else if (!buffer->mapCount) {
+            // Written once and unmapped: all of it, once.
+            if (buffer->dirty) {
+                copyUp(buffer, 0, buffer->desc.size, false);
+                if (constants) copyUp(buffer, 0, buffer->desc.size, true);
+                buffer->dirty = false;
+            }
+        } else {
+            for (const bool pass : {false, true}) {
+                if (pass && !constants) break;
+                uint64_t begin = 0, end = 0;
+                bool open = false;
+                for (size_t i = first; i < last; ++i) {
+                    const auto& use = uses[i];
+                    if (pass && !use.constants) continue;
+                    if (open && use.begin <= end + gap) {
+                        end = std::max(end, use.end);
+                        continue;
+                    }
+                    if (open) copyUp(buffer, begin, end, pass);
+                    begin = use.begin;
+                    end = use.end;
+                    open = true;
+                }
+                if (open) copyUp(buffer, begin, end, pass);
             }
         }
-    for (auto& [key, range] : ranges) {
-        auto* buffer = key.first;
-        if (!buffer->mapCount) {
-            // Written once and unmapped: all of it, once.
-            if (!buffer->dirty) continue;
-            range = {0, buffer->desc.size};
-        }
-        ID3D11Buffer* target = key.second ? buffer->constantBuffer() : buffer->gpu.Get();
-        if (!target) continue;
-        uint64_t begin = range.first & ~uint64_t(15), end = std::min((range.second + 15) & ~uint64_t(15), buffer->desc.size);
-        if (end <= begin) continue;
-        if (key.second) {
-            // A constant buffer takes part of itself only by a copy (partial
-            // UpdateSubresource of one is an optional D3D11.1 feature): the
-            // range goes up into the other copy first.
-            const D3D11_BOX box{UINT(begin), 0, 0, UINT(end), 1, 1};
-            if (!buffer->gpu) continue;
-            context->UpdateSubresource(buffer->gpu.Get(), 0, &box, buffer->cpu.data() + begin, 0, 0);
-            context->CopySubresourceRegion(target, 0, UINT(begin), 0, 0, buffer->gpu.Get(), 0, &box);
-        } else {
-            D3D11_BOX box{UINT(begin), 0, 0, UINT(end), 1, 1};
-            context->UpdateSubresource(target, 0, &box, buffer->cpu.data() + begin, 0, 0);
-        }
+        first = last;
     }
-    for (auto& [key, range] : ranges)
-        if (!key.first->mapCount) key.first->dirty = false;
-    D3D11Replay replay{device, context, device->context1.Get()};
+    const auto copied = std::chrono::steady_clock::now();
+    D3D11Replay replay(device, context, device->context1.Get());
     {
         static const long trace_at = [] {
             const char* setting = std::getenv("SFR_D3D11_TRACE");
@@ -1426,14 +1765,46 @@ void D3D11CommandQueue::executeCommandLists(const RenderCommandList** commandLis
             }
         }
     }
-    for (uint32_t l = 0; l < commandListCount; ++l)
-        for (const auto& command : static_cast<const D3D11CommandList*>(commandLists[l])->commands) command(replay);
+    for (uint32_t l = 0; l < commandListCount; ++l) replay.run(*static_cast<const D3D11CommandList*>(commandLists[l]));
     if (signalFence) {
         auto* fence = static_cast<D3D11CommandFence*>(signalFence);
         context->End(fence->query.Get());
         fence->pending = true;
     }
     context->Flush();
+    if (replay.draws) {
+        const auto now = std::chrono::steady_clock::now();
+        device->noteReplay({std::chrono::duration<float, std::milli>(now - started).count(),
+                            std::chrono::duration<float, std::milli>(copied - started).count(), replay.draws, replay.calls,
+                            replay.skipped, uploaded});
+    }
+}
+
+void D3D11Device::noteReplay(const D3D11ReplayStats& stats) {
+    // NATIVE_D3D11_REPLAY: every 600 submissions that draw, how long putting
+    // them on the immediate context took (ms: copies up, replay and flush;
+    // upload_ms: the copies up alone), the draws, the binding calls made and
+    // those skipped as bound already, and the upload bytes copied up.
+    replayStats.push_back(stats);
+    if (replayStats.size() < 600) return;
+    const size_t count = replayStats.size();
+    std::vector<float> sorted;
+    double total = 0, upload = 0, draws = 0, calls = 0, skipped = 0, bytes = 0;
+    for (const auto& item : replayStats) {
+        sorted.push_back(item.milliseconds);
+        total += item.milliseconds;
+        upload += item.uploadMilliseconds;
+        draws += item.draws;
+        calls += item.calls;
+        skipped += item.skipped;
+        bytes += double(item.uploadBytes);
+    }
+    std::sort(sorted.begin(), sorted.end());
+    std::cerr << "NATIVE_D3D11_REPLAY submissions=" << count << " draws_mean=" << draws / count << " ms_mean=" << total / count
+              << " ms_median=" << sorted[count / 2] << " ms_p95=" << sorted[count * 95 / 100] << " ms_max=" << sorted.back()
+              << " upload_ms_mean=" << upload / count << " upload_kb_mean=" << bytes / count / 1024
+              << " calls_mean=" << calls / count << " skipped_mean=" << skipped / count << '\n';
+    replayStats.clear();
 }
 
 void D3D11CommandQueue::waitForCommandFence(RenderCommandFence* signalFence) {
