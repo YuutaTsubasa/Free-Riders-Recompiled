@@ -1,5 +1,6 @@
 #include "d3d11_shader_source.h"
 
+#include <algorithm>
 #include <cctype>
 #include <regex>
 #include <set>
