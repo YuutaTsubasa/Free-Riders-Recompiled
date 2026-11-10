@@ -1324,7 +1324,8 @@ if(WIN32 OR UNIX)
             # the Windows SDK's FXC from a copy without register spaces.
             set(dxbc_header "${SFR_EMBEDDED_SHADERS}/${name}_dxbc.h")
             get_filename_component(source_name "${source}" NAME)
-            set(sm5_source "${SFR_EMBEDDED_SHADERS}/sm5/${source_name}")
+            # One copy per output: entries of one file build in parallel.
+            set(sm5_source "${SFR_EMBEDDED_SHADERS}/sm5/${name}/${source_name}")
             string(REGEX REPLACE "_6_0$" "_5_0" sm5_profile "${profile}")
             add_custom_command(OUTPUT "${dxbc_header}"
                 COMMAND ${CMAKE_COMMAND} "-DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/${source}" "-DOUTPUT=${sm5_source}"
