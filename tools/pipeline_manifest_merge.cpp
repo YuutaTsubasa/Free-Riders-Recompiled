@@ -1,4 +1,8 @@
-// sfr_pipeline_manifest_merge <d3d12|vulkan> <output> <input>...
+// sfr_pipeline_manifest_merge <d3d12|vulkan|d3d11> <output> <input>...
+//
+// For d3d11 an input may be named vulkan:<path>: a Vulkan list read as a
+// D3D11 one (both specialize per pipeline and record the same recipes;
+// D3D12 links its specializations, so its lists do not carry over).
 //
 // Joins recorded pipeline lists (data/pipeline-manifests, or a player's
 // pipeline-cache/<backend>.manifest) into one, through the runtime's own
@@ -10,20 +14,21 @@
 #include <cstdio>
 #include <exception>
 #include <set>
+#include <string>
 #include <string_view>
 #include <vector>
 
 int main(int argc, char** argv) {
     if (argc < 4) {
-        std::fprintf(stderr, "usage: %s <d3d12|vulkan> <output> <input>...\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <d3d12|vulkan|d3d11> <output> [vulkan:]<input>...\n", argv[0]);
         return 2;
     }
     const std::string_view name = argv[1];
-    if (name != "d3d12" && name != "vulkan") {
-        std::fprintf(stderr, "backend must be d3d12 or vulkan\n");
+    if (name != "d3d12" && name != "vulkan" && name != "d3d11") {
+        std::fprintf(stderr, "backend must be d3d12, vulkan or d3d11\n");
         return 2;
     }
-    const uint32_t backend = name == "vulkan" ? 1u : 0u;
+    const uint32_t backend = name == "vulkan" ? 1u : name == "d3d11" ? 2u : 0u;
     try {
         // Duplicates are dropped while reading: the encoder takes at most
         // pipeline_manifest_max_recipes, before it removes them itself.
@@ -31,7 +36,13 @@ int main(int argc, char** argv) {
         std::set<std::vector<uint8_t>> seen;
         size_t read = 0;
         for (int i = 3; i < argc; ++i) {
-            const auto recipes = sfr::load_pipeline_manifest_file(argv[i], backend);
+            std::string_view path = argv[i];
+            uint32_t from = backend;
+            if (backend == 2 && path.starts_with("vulkan:")) {
+                path.remove_prefix(7);
+                from = 1;
+            }
+            const auto recipes = sfr::load_pipeline_manifest_file(std::string(path), from);
             std::printf("%s: %zu recipes\n", argv[i], recipes.size());
             read += recipes.size();
             for (const auto& recipe : recipes)

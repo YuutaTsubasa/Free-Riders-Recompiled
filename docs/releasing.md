@@ -30,6 +30,18 @@ it meets to `out/shaders/runtime`), and run it under Vulkan too
 holds SPIR-V for shaders a Vulkan run compiled. Linux and Android have no
 shader translator: what the pack lacks, they cannot draw.
 
+For Direct3D 11 (experimental, docs/d3d11.md), make its shaders from the
+release's `shaders.pack`, beside it, in the checkout (it runs the translator,
+about a minute):
+
+```powershell
+out/build/host/sfr_d3d11_shader_pack.exe <dir>/shaders.pack <dir>/shaders-d3d11.pack
+```
+
+The Windows package takes `shaders-d3d11.pack` when it is beside the pack it
+is given (and says so when it is not), with `pipelines-d3d11.manifest` from
+`data/pipeline-manifests`.
+
 Linux (WSL is fine), then Android:
 
 ```bash

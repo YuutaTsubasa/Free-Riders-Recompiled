@@ -60,7 +60,15 @@ the ultrawide screen-space mapping). As for ABI 10 and 11, only the ABI field
 and checksum changed; the records are byte for byte those of ABI 11 (455
 Vulkan, 465 D3D12).
 
-To join several recorded lists, use `sfr_pipeline_manifest_merge <d3d12|vulkan>
+2026-11-11: `pipelines-d3d11.manifest` for Direct3D 11 (experimental, Issue
+#359, docs/d3d11.md) is the Vulkan list's 455 records read as D3D11's: both
+specialize per pipeline, so a draw records the same recipe on either (D3D12
+links its specializations and records them differently). Made with
+`sfr_pipeline_manifest_merge d3d11 pipelines-d3d11.manifest
+vulkan:pipelines-vulkan.manifest`; make it again so whenever the Vulkan list
+changes.
+
+To join several recorded lists, use `sfr_pipeline_manifest_merge <d3d12|vulkan|d3d11>
 <output> <input>...` (tools/pipeline_manifest_merge.cpp). It decodes each input
 with the runtime's own validation, drops duplicates and keeps the first-seen
 order, so give the current list first.

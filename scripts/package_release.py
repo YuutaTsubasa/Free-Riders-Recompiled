@@ -119,7 +119,19 @@ def desktop_files(platform, build, pack):
         sys.exit('a Linux or macOS release needs --pack')
     if pack:
         files.append(('shaders.pack', checked_shader_pack(need(pack))))
-        for backend in ('vulkan', 'd3d12'):
+        backends = ['vulkan', 'd3d12']
+        if platform == 'windows':
+            # Direct3D 11 (experimental, Issue #359): its shaders made ahead
+            # of time from this pack (sfr_d3d11_shader_pack, docs/d3d11.md),
+            # when they are beside it. Without them the game translates and
+            # compiles those shaders on the player's PC.
+            d3d11_pack = pack.parent / 'shaders-d3d11.pack'
+            if d3d11_pack.is_file():
+                files.append(('shaders-d3d11.pack', d3d11_pack))
+            else:
+                print(f'note: no {d3d11_pack}; Direct3D 11 will compile its shaders on first use')
+            backends.append('d3d11')
+        for backend in backends:
             manifest = pack.parent / ('pipelines-' + backend + '.manifest')
             if not manifest.is_file():
                 manifest = ROOT / 'data/pipeline-manifests' / manifest.name

@@ -237,6 +237,10 @@ int main(int argc, char** argv) {
                     "shipped D3D12 list loads");
             require(!sfr::load_pipeline_manifest_file(shipped / "pipelines-vulkan.manifest", 1).empty(),
                     "shipped Vulkan list loads");
+            // Direct3D 11's is the Vulkan list read as its own (Issue #359).
+            require(sfr::load_pipeline_manifest_file(shipped / "pipelines-d3d11.manifest", 2).size() ==
+                        sfr::load_pipeline_manifest_file(shipped / "pipelines-vulkan.manifest", 1).size(),
+                    "shipped D3D11 list loads, as long as the Vulkan one");
         }
         std::cout << "pipeline manifest regression passed\n";
     } catch (const std::exception& error) {
