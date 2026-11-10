@@ -9,6 +9,11 @@
 #include "overlay_ps_dxil.h"
 #include "overlay_vs_spirv.h"
 #include "overlay_ps_spirv.h"
+#ifdef _WIN32
+#include <windows.h>
+#include "overlay_vs_dxbc.h"
+#include "overlay_ps_dxbc.h"
+#endif
 
 namespace sfr {
 struct ScreenOverlayRenderer::Impl {
@@ -46,6 +51,11 @@ struct ScreenOverlayRenderer::Impl {
         if (backend == GraphicsBackend::vulkan) {
             vertex = device.createShader(overlay_vs_spirv, sizeof(overlay_vs_spirv), "vertexMain", plume::RenderShaderFormat::SPIRV);
             pixel = device.createShader(overlay_ps_spirv, sizeof(overlay_ps_spirv), "pixelMain", plume::RenderShaderFormat::SPIRV);
+#ifdef _WIN32
+        } else if (backend == GraphicsBackend::d3d11) {
+            vertex = device.createShader(overlay_vs_dxbc, sizeof(overlay_vs_dxbc), "vertexMain", plume::RenderShaderFormat::DXIL);
+            pixel = device.createShader(overlay_ps_dxbc, sizeof(overlay_ps_dxbc), "pixelMain", plume::RenderShaderFormat::DXIL);
+#endif
         } else {
             vertex = device.createShader(overlay_vs_dxil, sizeof(overlay_vs_dxil), "vertexMain", plume::RenderShaderFormat::DXIL);
             pixel = device.createShader(overlay_ps_dxil, sizeof(overlay_ps_dxil), "pixelMain", plume::RenderShaderFormat::DXIL);

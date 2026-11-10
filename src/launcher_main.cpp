@@ -2405,11 +2405,15 @@ struct Launcher {
 #ifdef _WIN32  // elsewhere the game always draws with Vulkan
         setting_row(tr(GraphicsBackendLabel), tr(GraphicsBackendHint), combo_width, scale, [&] {
             ImGui::SetNextItemWidth(combo_width);
-            if (ImGui::BeginCombo("##graphics_backend", settings.vulkan ? "Vulkan" : "D3D12")) {
-                for (const bool vulkan : {true, false}) {
-                    const bool chosen = settings.vulkan == vulkan;
-                    if (ImGui::Selectable(vulkan ? "Vulkan" : "D3D12", chosen)) {
-                        settings.vulkan = vulkan;
+            // Direct3D 11 (Issue #359) is for GPUs with neither driver.
+            const char* const names[] = {"Vulkan", "D3D12", "Direct3D 11 (experimental)"};
+            const int current = settings.d3d11 ? 2 : settings.vulkan ? 0 : 1;
+            if (ImGui::BeginCombo("##graphics_backend", names[current])) {
+                for (int choice = 0; choice < 3; ++choice) {
+                    const bool chosen = current == choice;
+                    if (ImGui::Selectable(names[choice], chosen)) {
+                        settings.d3d11 = choice == 2;
+                        if (choice < 2) settings.vulkan = choice == 0;
                         ::play(sfr::UiSound::confirm);
                     }
                     if (chosen) ImGui::SetItemDefaultFocus();

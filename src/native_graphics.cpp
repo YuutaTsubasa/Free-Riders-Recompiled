@@ -3,6 +3,7 @@
 #include "plume_vulkan.h"
 
 #ifdef _WIN32
+#include "plume_d3d11.h"
 #include "plume_d3d12.h"
 #endif
 #include "plume_render_interface.h"
@@ -132,6 +133,7 @@ GraphicsBackend selected_graphics_backend() {
 #ifdef _WIN32
         const char* text = std::getenv("SFR_GRAPHICS");
         if (text && std::strcmp(text, "vulkan") == 0) return GraphicsBackend::vulkan;
+        if (text && std::strcmp(text, "d3d11") == 0) return GraphicsBackend::d3d11;
         // Chosen before anything is drawn, so the shader cache prepares
         // Vulkan's bytecode from the start when D3D12 cannot run.
         if (!d3d12_usable()) {
@@ -147,13 +149,13 @@ GraphicsBackend selected_graphics_backend() {
 }
 
 const char* graphics_backend_name(GraphicsBackend backend) {
-    return backend == GraphicsBackend::vulkan ? "Vulkan" : "D3D12";
+    return backend == GraphicsBackend::vulkan ? "Vulkan" : backend == GraphicsBackend::d3d11 ? "D3D11" : "D3D12";
 }
 
 std::string graphics_driver_version(GraphicsBackend backend, uint32_t vendor_id, uint64_t packed) {
     if (!packed) return "unknown";
     std::ostringstream text;
-    if (backend == GraphicsBackend::d3d12)
+    if (backend == GraphicsBackend::d3d12 || backend == GraphicsBackend::d3d11)
         text << ((packed >> 48) & 0xFFFF) << '.' << ((packed >> 32) & 0xFFFF) << '.' << ((packed >> 16) & 0xFFFF)
              << '.' << (packed & 0xFFFF);
     else if (vendor_id == 0x10DE)
@@ -278,7 +280,9 @@ void NativeGraphics::initialize() {
         if (enabled) debug->EnableDebugLayer();
         std::cerr << "NATIVE_D3D12_DEBUG layer=" << enabled << '\n';
     }
-    auto render_interface = backend == GraphicsBackend::vulkan ? plume::CreateVulkanInterface() : plume::CreateD3D12Interface();
+    auto render_interface = backend == GraphicsBackend::vulkan ? plume::CreateVulkanInterface()
+                            : backend == GraphicsBackend::d3d11 ? plume::CreateD3D11Interface()
+                                                                : plume::CreateD3D12Interface();
 #else
 #if defined(__ANDROID__) || defined(SFR_IOS)
     // Landscape only, as the launcher asks (launcher_main.cpp). Without the
@@ -768,8 +772,8 @@ void NativeGraphics::wait_idle(const std::function<bool()>& cancelled) {
     if (cancelled && cancelled())
         throw std::runtime_error("native graphics idle wait was cancelled before queue synchronization");
 
-    if (impl_->backend == GraphicsBackend::vulkan) {
-        // Work is submitted in order: an empty list completing means
+    if (impl_->backend != GraphicsBackend::d3d12) {
+        // Vulkan and D3D11: work is submitted in order: an empty list completing means
         // everything before it has.
         impl_->idle_list->begin();
         impl_->idle_list->end();

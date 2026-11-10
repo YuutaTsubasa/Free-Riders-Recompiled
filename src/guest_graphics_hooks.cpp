@@ -1320,6 +1320,7 @@ static bool native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     const auto& vs=shaders.get(shaders.handle_of(vs_object));
     const auto& ps=shaders.get(shaders.handle_of(ps_object));
     const bool vulkan=sfr::selected_graphics_backend()==sfr::GraphicsBackend::vulkan;
+    const bool per_pipeline=sfr::specializes_per_pipeline(sfr::selected_graphics_backend());
     if(vs.entry->code(vulkan).empty() || ps.entry->code(vulkan).empty()) {
         // The pinned translator rejected one of the shaders (see RUNTIME_SHADER).
         static std::set<std::array<uint32_t,3>> reported;
@@ -1340,12 +1341,12 @@ static bool native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     // Vulkan creates every pixel shader and specializes its pipeline; D3D12
     // links a specialized shader per constant value.
     draw.pixel_shader=ps.shader?ps.shader.get():graphics().renderer().specialized(*ps.entry,alpha_test?2u:0u);
-    draw.pixel_spec_constants=vulkan?(alpha_test?2u:0u)&ps.entry->specialization_mask:0u;
+    draw.pixel_spec_constants=per_pipeline?(alpha_test?2u:0u)&ps.entry->specialization_mask:0u;
     draw.vertex_entry=vs.entry;
     draw.pixel_entry=ps.entry;
     draw.vertex_constant_runs=vs.constant_runs?&*vs.constant_runs:nullptr;
     draw.pixel_constant_runs=ps.constant_runs?&*ps.constant_runs:nullptr;
-    draw.pixel_link_constants=vulkan?0u:(alpha_test?2u:0u)&ps.entry->specialization_mask;
+    draw.pixel_link_constants=per_pipeline?0u:(alpha_test?2u:0u)&ps.entry->specialization_mask;
 
     // Skinning palette: a vertex shader that fetches bone matrices reads them
     // from the buffer SetStreamSource bound to stream 1 (vertex fetch constant

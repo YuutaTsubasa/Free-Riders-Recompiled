@@ -139,6 +139,7 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         else if (key == "fps_inset") read_number(value, 0, 20, settings.fps_inset);
         else if (key == "ui_sounds") read_flag(value, settings.ui_sounds);
         else if (key == "vulkan") read_flag(value, settings.vulkan);
+        else if (key == "d3d11") read_flag(value, settings.d3d11);
         else if (key == "touch_controls") read_flag(value, settings.touch_controls);
         else if (key == "touch_labels") read_flag(value, settings.touch_labels);
         else if (key == "tilt") read_flag(value, settings.tilt);
@@ -241,6 +242,7 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "fps_inset=" << s.fps_inset << '\n'
         << "ui_sounds=" << s.ui_sounds << '\n'
         << "vulkan=" << s.vulkan << '\n'
+        << "d3d11=" << s.d3d11 << '\n'
         << "touch_controls=" << s.touch_controls << '\n'
         << "touch_labels=" << s.touch_labels << '\n'
         << "tilt=" << s.tilt << '\n'
@@ -434,7 +436,11 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
 #endif
         {"SFR_VSYNC", s.vsync ? "1" : "0"},
         {"SFR_PRESENT_FILTER", s.sharp_scaling ? "nearest" : "linear"},
+#ifdef _WIN32
+        {"SFR_GRAPHICS", s.d3d11 ? "d3d11" : s.vulkan ? "vulkan" : "d3d12"},
+#else
         {"SFR_GRAPHICS", s.vulkan ? "vulkan" : "d3d12"},
+#endif
         // "off" leaves the camera alone; "picture" opens it for the image the
         // title shows; "motion" also drives the Kinect player's body with it;
         // "kinect" is a real sensor tracking the players (kinect_sensor.h):

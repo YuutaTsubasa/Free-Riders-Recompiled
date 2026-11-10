@@ -208,7 +208,7 @@ int main(int argc, char** argv) {
         const auto vertex_id_bytes = sfr::encode_pipeline_manifest(std::span(&vertex_id, 1), 0);
         require(sfr::pipeline_recipe_key(sfr::decode_pipeline_manifest(vertex_id_bytes, 0).at(0)) ==
                 sfr::pipeline_recipe_key(vertex_id), "SV_VertexID pipeline needs no vertex stream");
-        rejects([&] { sfr::encode_pipeline_manifest(one, 2); }, "invalid backend rejected");
+        rejects([&] { sfr::encode_pipeline_manifest(one, 3); }, "invalid backend rejected");  // 2 is D3D11
         require(sfr::decode_pipeline_manifest(sfr::encode_pipeline_manifest({}, 0), 0).empty(), "empty manifest supported");
         const auto temporary = std::filesystem::temp_directory_path() /
             ("sfr-pipeline-manifest-test-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));

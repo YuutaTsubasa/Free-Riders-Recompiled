@@ -57,7 +57,10 @@ uint32_t NativeShaders::create(ShaderStage stage, uint32_t container) {
     // current ABI pack/runtime on both backends, including its resolved-texture
     // metadata helpers; an older prepared DXIL stage cannot consume them.
     const bool vulkan=impl_->graphics.backend()==GraphicsBackend::vulkan;
-    const auto cache=(vulkan || runtime_shader_translation)?std::span<const ShaderCacheEntry>():compiled_shader_cache();
+    // D3D11 (Issue #359): shader model 5.0 HLSL where the DXIL would be,
+    // every shader made once and specialized per pipeline as SPIR-V is.
+    const bool per_pipeline=specializes_per_pipeline(impl_->graphics.backend());
+    const auto cache=(per_pipeline || runtime_shader_translation)?std::span<const ShaderCacheEntry>():compiled_shader_cache();
     const auto prepared=std::find_if(cache.begin(),cache.end(),[&](const auto& entry) {
         return entry.stage==stage && std::ranges::equal(entry.source,source);
     });
@@ -100,7 +103,7 @@ uint32_t NativeShaders::create(ShaderStage stage, uint32_t container) {
         bounded=impl_->graphics.shader_code(code,&vertex_inputs);
         code=bounded;
     }
-    if(!code.empty() && (vulkan || !found->specialization_mask)) {
+    if(!code.empty() && (per_pipeline || !found->specialization_mask)) {
         next->shader=impl_->graphics.device().createShader(code.data(),code.size(),"shaderMain",
             vulkan?plume::RenderShaderFormat::SPIRV:plume::RenderShaderFormat::DXIL);
         if(!next->shader) unsupported(container,"native shader bytecode ownership failed");

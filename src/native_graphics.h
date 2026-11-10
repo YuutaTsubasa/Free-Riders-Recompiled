@@ -22,8 +22,15 @@ namespace sfr {
 // backend elsewhere than Windows); a machine where no adapter can make
 // Plume's D3D12 device falls back to Vulkan. Chosen once per process: the
 // shader cache prepares bytecode for this backend.
-enum class GraphicsBackend { d3d12, vulkan };
+// SFR_GRAPHICS=d3d11 (Windows, experimental, Issue #359) selects Direct3D 11
+// for GPUs with neither Vulkan nor D3D12 drivers (plume_d3d11.h): the D3D12
+// renderer's layout, with shaders as shader model 5.0 HLSL
+// (d3d11_shader_source.h) compiled per pipeline like Vulkan's SPIR-V.
+enum class GraphicsBackend { d3d12, vulkan, d3d11 };
 GraphicsBackend selected_graphics_backend();
+// Whether every shader is made once and its specialization constant given
+// per pipeline (Vulkan, D3D11), not linked per value (D3D12's DXIL libraries).
+inline bool specializes_per_pipeline(GraphicsBackend backend) { return backend != GraphicsBackend::d3d12; }
 const char* graphics_backend_name(GraphicsBackend backend);
 // The driver version a backend reports, the way its vendor prints it: D3D12's
 // user-mode driver version is four 16-bit parts (31.0.21912.14); Vulkan packs

@@ -964,6 +964,11 @@ add_test(NAME portable_waitables COMMAND sfr_portable_waitables_test)
 add_executable(sfr_vulkan_shader_source_test tests/vulkan_shader_source_test.cpp src/vulkan_shader_source.cpp)
 target_include_directories(sfr_vulkan_shader_source_test PRIVATE src)
 add_test(NAME vulkan_shader_source COMMAND sfr_vulkan_shader_source_test)
+# Translated shaders as shader model 5.0 for Direct3D 11 (Issue #359); on
+# Windows also compiled with d3dcompiler_47.
+add_executable(sfr_d3d11_shader_source_test tests/d3d11_shader_source_test.cpp src/d3d11_shader_source.cpp)
+target_include_directories(sfr_d3d11_shader_source_test PRIVATE src)
+add_test(NAME d3d11_shader_source COMMAND sfr_d3d11_shader_source_test)
 add_executable(sfr_spirv_bounded_descriptors_test tests/spirv_bounded_descriptors_test.cpp)
 target_include_directories(sfr_spirv_bounded_descriptors_test PRIVATE src)
 add_test(NAME spirv_bounded_descriptors COMMAND sfr_spirv_bounded_descriptors_test)
@@ -1233,7 +1238,10 @@ if(WIN32 OR UNIX)
     add_library(sfr_native_graphics STATIC src/native_graphics.cpp src/native_pipeline_cache.cpp src/pipeline_cache_file.cpp)
     target_include_directories(sfr_native_graphics PUBLIC src)
     if(WIN32)
-        target_link_libraries(sfr_native_graphics PUBLIC plume PRIVATE d3d12 dxgi Threads::Threads)
+        # Direct3D 11 (experimental, Issue #359): a Plume backend of the
+        # port's own (src/plume_d3d11.h). d3dcompiler_47 is loaded at run time.
+        target_sources(sfr_native_graphics PRIVATE src/plume_d3d11.cpp)
+        target_link_libraries(sfr_native_graphics PUBLIC plume PRIVATE d3d12 d3d11 dxgi Threads::Threads)
     else()
         target_link_libraries(sfr_native_graphics PUBLIC plume SDL2::SDL2 PRIVATE Threads::Threads)
         # The game window's icon on Linux (native_graphics.cpp).
@@ -1245,7 +1253,7 @@ if(WIN32 OR UNIX)
     else()
         set(SFR_SHADER_CACHE_DATA src/shader_cache_empty.cpp)
     endif()
-    add_library(sfr_native_shaders STATIC src/native_shaders.cpp src/runtime_shader_cache.cpp src/vulkan_shader_source.cpp src/vertex_palette.cpp src/shader_constant_use.cpp src/loop_constants.cpp src/shader_inputs.cpp ${SFR_SHADER_CACHE_DATA})
+    add_library(sfr_native_shaders STATIC src/native_shaders.cpp src/runtime_shader_cache.cpp src/vulkan_shader_source.cpp src/d3d11_shader_source.cpp src/vertex_palette.cpp src/shader_constant_use.cpp src/loop_constants.cpp src/shader_inputs.cpp ${SFR_SHADER_CACHE_DATA})
     target_link_libraries(sfr_native_shaders PUBLIC sfr_native_graphics)
     add_executable(sfr_runtime_shader_pack_test tests/runtime_shader_pack_test.cpp src/guest_memory.cpp)
     target_link_libraries(sfr_runtime_shader_pack_test PRIVATE sfr_native_shaders)
@@ -1310,8 +1318,27 @@ if(WIN32 OR UNIX)
         add_custom_command(OUTPUT "${spirv_header}"
             COMMAND ${SFR_DXC} -T ${profile} -E ${entry} -HV 2021 -spirv -fvk-use-dx-layout ${invert} -Qstrip_debug -Fh "${spirv_header}" -Vn ${name}_spirv "${CMAKE_CURRENT_SOURCE_DIR}/${source}"
             DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${source}" ${SFR_SHADER_INCLUDES} VERBATIM)
-        set(SFR_EMBEDDED_SHADER_HEADERS ${SFR_EMBEDDED_SHADER_HEADERS} "${header}" "${spirv_header}" PARENT_SCOPE)
+        set(dxbc_header)
+        if(WIN32)
+            # Direct3D 11's DXBC (shader model 5.0, Issue #359), compiled with
+            # the Windows SDK's FXC from a copy without register spaces.
+            set(dxbc_header "${SFR_EMBEDDED_SHADERS}/${name}_dxbc.h")
+            get_filename_component(source_name "${source}" NAME)
+            set(sm5_source "${SFR_EMBEDDED_SHADERS}/sm5/${source_name}")
+            string(REGEX REPLACE "_6_0$" "_5_0" sm5_profile "${profile}")
+            add_custom_command(OUTPUT "${dxbc_header}"
+                COMMAND ${CMAKE_COMMAND} "-DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}/${source}" "-DOUTPUT=${sm5_source}"
+                        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/sm5_shader_source.cmake"
+                COMMAND "${SFR_FXC}" /nologo /T ${sm5_profile} /E ${entry} /O3 /I "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders"
+                        /Fh "${dxbc_header}" /Vn ${name}_dxbc "${sm5_source}"
+                DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${source}" ${SFR_SHADER_INCLUDES}
+                        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/sm5_shader_source.cmake" VERBATIM)
+        endif()
+        set(SFR_EMBEDDED_SHADER_HEADERS ${SFR_EMBEDDED_SHADER_HEADERS} "${header}" "${spirv_header}" ${dxbc_header} PARENT_SCOPE)
     endfunction()
+    if(WIN32)
+        find_program(SFR_FXC fxc HINTS "$ENV{WindowsSdkVerBinPath}x64" REQUIRED)
+    endif()
     sfr_embed_shader(src/shaders/blit.hlsl vertexMain vs_6_0 blit_vs)
     sfr_embed_shader(src/shaders/blit.hlsl pixelMain ps_6_0 blit_ps)
     sfr_embed_shader(src/shaders/model.hlsl vertexMain vs_6_0 model_vs)

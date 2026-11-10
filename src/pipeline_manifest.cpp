@@ -129,7 +129,8 @@ void validate(const PipelineRecipe& recipe) {
         }
     }
 }
-void validate_backend(uint32_t backend) { check(backend <= 1, "unsupported pipeline manifest backend"); }
+// 0 D3D12, 1 Vulkan, 2 D3D11 (GraphicsBackend).
+void validate_backend(uint32_t backend) { check(backend <= 2, "unsupported pipeline manifest backend"); }
 PipelineRecipe read_recipe(std::span<const uint8_t> bytes) {
     Reader in{bytes};
     PipelineRecipe recipe;
