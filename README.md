@@ -292,11 +292,14 @@ with [docs/progress.md](docs/progress.md).
   After skipping the intro movie and logos, the game no longer shows a blank loading screen for several seconds before the title; story scenes in World Grand Prix can be skipped with START after a race too; the Linux game window has the Free Riders icon (#365). Mali phones and tablets also keep BC1 textures compressed as ASTC (#176).
 - [v0.10.52 — Smoother loading screens on phones](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.52)
   Loading screens no longer load the same textures again every frame, which made them slow on phones (#365). On wide screens, a Damage Survival race's gauge keeps its frame around its fill (#365). Shadow maps are no longer copied each frame, which saves GPU time at high render scales (#176).
+- [v0.10.53 — Direct3D 11 for older graphics chips (experimental)](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.53)
+  PCs whose graphics chip has neither a Vulkan nor a Direct3D 12 driver, such as laptops with Intel HD Graphics 4000 or 4600, can now try **Graphics › Graphics backend › Direct3D 11 (experimental)** in the launcher; its shaders come prepared in the Windows download. It has not yet run on a real HD 4000 or 4600 (#359).
 
 ## System Requirements
 
 - **Windows**: Windows 10 or 11 (x64), a CPU with AVX, a GPU with Direct3D 12
-  (or Vulkan 1.2).
+  (or Vulkan 1.2). Since 0.10.53, older integrated GPUs with only Direct3D 11
+  (such as Intel HD Graphics 4000/4600) can try the experimental Direct3D 11 backend.
 - **Linux**: x86-64 with AVX and a Vulkan 1.2 driver (tested on Ubuntu 22.04).
 - **macOS**: macOS 14 or later on Apple Silicon (tested on an M1 Mac mini); since 0.10.39, for the camera motion input's runtime.
   The Vulkan driver (MoltenVK) is inside the app. Experimental: menus run at
