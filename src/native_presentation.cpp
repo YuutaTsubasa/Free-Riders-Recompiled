@@ -48,6 +48,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <condition_variable>
 #include <future>
 #include <memory>
@@ -276,6 +277,16 @@ struct NativePresentation::Impl {
         uint32_t width = 0, height = 0;  // pixels
         std::unique_ptr<plume::RenderTexture> color, depth;
         std::unique_ptr<plume::RenderFramebuffer> framebuffer;
+        // Asking side: textures a clear swapped out (replace_target_attachment)
+        // and a framebuffer for each pairing of colour and depth used.
+        std::vector<std::unique_ptr<plume::RenderTexture>> spare_color, spare_depth;
+        std::map<std::pair<const plume::RenderTexture*, const plume::RenderTexture*>,
+                 std::unique_ptr<plume::RenderFramebuffer>> framebuffers;
+        // Recording side: the framebuffer of what is attached now.
+        plume::RenderFramebuffer* recording_framebuffer = nullptr;
+        // Asking side: a draw or clear has used the stencil since creation
+        // (until then it holds the zeros it started with).
+        bool stencil_used = false;
         bool prepared = false;  // recording side: its first barriers are in a list
         // Asking side: colour (1) and depth (2) laid out for sampling.
         uint8_t reading = 0;
@@ -286,6 +297,10 @@ struct NativePresentation::Impl {
     // copies out what was resolved from it and makes it writable again. The
     // copies are queued in order, ahead of the write.
     uint32_t non_writing = 0;
+    // Asking side, during a clear: what it overwrites in all of the current
+    // target (1 colour, 2 depth and stencil), so a resolve aliased to that
+    // part needs no copy (replace_target_attachment).
+    uint8_t write_replaces = 0;
     void prepare_write() {
         if (non_writing || !target || !target->reading) return;
         SurfaceTarget* const surface = target;
@@ -326,13 +341,14 @@ struct NativePresentation::Impl {
                     plume::RenderTextureBarrier(next->color.get(), plume::RenderTextureLayout::COLOR_WRITE),
                     plume::RenderTextureBarrier(next->depth.get(), plume::RenderTextureLayout::DEPTH_WRITE)};
                 command_list->barriers(plume::RenderBarrierStage::GRAPHICS, barriers.data(), uint32_t(barriers.size()));
-                command_list->setFramebuffer(next->framebuffer.get());
+                next->recording_framebuffer = next->framebuffer.get();
+                command_list->setFramebuffer(next->recording_framebuffer);
                 // A new surface's depth holds nothing until the title clears it;
                 // start it at the far plane rather than undefined bytes.
                 command_list->clearDepthStencil(true, true, 1.0f, 0);
                 next->prepared = true;
             }
-            command_list->setFramebuffer(next->framebuffer.get());
+            command_list->setFramebuffer(next->recording_framebuffer);
         } else {
             command_list->setFramebuffer(framebuffer.get());
         }
@@ -1705,6 +1721,21 @@ void NativePresentation::clear(const NativeClear& clear, std::span<const plume::
             static_cast<uint32_t>(rect.right) > logical_width || static_cast<uint32_t>(rect.bottom) > logical_height)
             throw std::invalid_argument("clear rectangle is empty or outside the presentation bounds");
     if (!clear.color && !clear.depth && !clear.stencil) return;
+    NativeClear effective = clear;
+    uint8_t replaces = 0;
+    if (auto* surface = impl_->target) {
+        const bool whole = rectangles.empty() || std::any_of(rectangles.begin(), rectangles.end(), [&, w = logical_width, h = logical_height](const auto& r) {
+            return r.left <= 0 && r.top <= 0 && uint32_t(r.right) >= w && uint32_t(r.bottom) >= h;
+        });
+        if (clear.stencil) surface->stencil_used = true;
+        // A stencil nothing has used still holds zeros: clearing it to zero
+        // with the depth changes nothing, and lets the clear replace both.
+        if (whole && clear.depth && !clear.stencil && !surface->stencil_used) {
+            effective.stencil = true;
+            effective.stencil_value = 0;
+        }
+        if (whole) replaces = (effective.color ? 1 : 0) | (effective.depth && effective.stencil ? 2 : 0);
+    }
 
     impl_->drain();
     std::vector<plume::RenderRect> scaled;
@@ -1720,17 +1751,19 @@ void NativePresentation::clear(const NativeClear& clear, std::span<const plume::
         rectangles = scaled;
     }
 
+    impl_->write_replaces = replaces;
     impl_->prepare_write();
+    impl_->write_replaces = 0;
     impl_->drain();
     impl_->ensure_open();
     impl_->bind(impl_->target);
     impl_->apply_raster();
-    if (clear.color) {
-        const auto& c = clear.color_value;
+    if (effective.color) {
+        const auto& c = effective.color_value;
         impl_->command_list->clearColor(0, plume::RenderColor(c[0], c[1], c[2], c[3]), rectangles.data(), static_cast<uint32_t>(rectangles.size()));
     }
-    if (clear.depth || clear.stencil)
-        impl_->command_list->clearDepthStencil(clear.depth, clear.stencil, clear.depth_value, clear.stencil_value,
+    if (effective.depth || effective.stencil)
+        impl_->command_list->clearDepthStencil(effective.depth, effective.stencil, effective.depth_value, effective.stencil_value,
                                                 rectangles.data(), static_cast<uint32_t>(rectangles.size()));
 }
 
@@ -1879,6 +1912,64 @@ void NativePresentation::mark_target_read(bool color, bool depth) {
 void NativePresentation::prepare_surface_write() {
     impl_->refuse_during_gpu_wait();
     impl_->prepare_write();
+}
+
+uint8_t NativePresentation::write_replaces() const noexcept { return impl_->write_replaces; }
+
+void NativePresentation::note_stencil_use() noexcept {
+    if (impl_->target) impl_->target->stencil_used = true;
+}
+
+bool NativePresentation::replace_target_attachment(bool depth, const std::function<bool(const plume::RenderTexture*)>& in_use) {
+    auto* surface = impl_->target;
+    if (!surface) return false;
+    auto& attached = depth ? surface->depth : surface->color;
+    auto& spares = depth ? surface->spare_depth : surface->spare_color;
+    // Three in all: the attachment and two spares cover a surface resolved
+    // twice a frame (the shadow pass), each resolve sampled until the next.
+    constexpr size_t most_spares = 2;
+    auto free = std::find_if(spares.begin(), spares.end(), [&](const auto& spare) { return !in_use(spare.get()); });
+    if (free == spares.end()) {
+        if (spares.size() >= most_spares) return false;
+        auto& device = impl_->graphics->device();
+        auto made = depth ? device.createTexture(plume::RenderTextureDesc::DepthTarget(surface->width, surface->height,
+                                                                                       impl_->graphics->depth_format()))
+                          : device.createTexture(plume::RenderTextureDesc::ColorTarget(surface->width, surface->height,
+                                                                                       plume::RenderFormat::B8G8R8A8_UNORM));
+        if (!made) return false;
+        spares.push_back(std::move(made));
+        free = spares.end() - 1;
+    }
+    std::swap(attached, *free);
+    auto& framebuffer = surface->framebuffers[{surface->color.get(), surface->depth.get()}];
+    if (!framebuffer) {
+        const plume::RenderTexture* color = surface->color.get();
+        framebuffer = impl_->graphics->device().createFramebuffer(plume::RenderFramebufferDesc(&color, 1, surface->depth.get()));
+        if (!framebuffer) throw std::runtime_error("render surface framebuffer creation failed");
+    }
+    // Both attachments writable before they are bound (D3D12 checks a
+    // framebuffer's layouts when it is set): a spare is new or was sampled,
+    // and the other attachment may be laid out for a resolve of its own.
+    // The texture taken off stays sampled: an earlier swap of the other
+    // attachment may have made it writable.
+    struct Attach {
+        Impl::SurfaceTarget* surface;
+        plume::RenderFramebuffer* framebuffer;
+        plume::RenderTexture* color;
+        plume::RenderTexture* depth;
+        plume::RenderTexture* released;
+        void operator()(plume::RenderCommandList& list, uint64_t) const {
+            const std::array<plume::RenderTextureBarrier, 3> barriers{
+                plume::RenderTextureBarrier(color, plume::RenderTextureLayout::COLOR_WRITE),
+                plume::RenderTextureBarrier(depth, plume::RenderTextureLayout::DEPTH_WRITE),
+                plume::RenderTextureBarrier(released, plume::RenderTextureLayout::SHADER_READ)};
+            list.barriers(plume::RenderBarrierStage::GRAPHICS, barriers.data(), uint32_t(barriers.size()));
+            surface->recording_framebuffer = framebuffer;
+            list.setFramebuffer(framebuffer);
+        }
+    };
+    impl_->enqueue_body(Attach{surface, framebuffer.get(), surface->color.get(), surface->depth.get(), free->get()});
+    return true;
 }
 
 void NativePresentation::set_before_surface_write(std::function<void(const void*)> callback) {

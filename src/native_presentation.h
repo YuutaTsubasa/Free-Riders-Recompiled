@@ -89,6 +89,16 @@ public:
     // what was resolved out of it, and the surface is made writable again.
     void mark_target_read(bool color, bool depth);
     void set_before_surface_write(std::function<void(const void* surface)> callback);
+    // From before_surface_write during a clear: what the clear overwrites in
+    // all of the current surface (1 colour, 2 depth and stencil), or 0.
+    [[nodiscard]] uint8_t write_replaces() const noexcept;
+    // Gives the current surface a fresh colour or depth texture (a spare not
+    // in_use, made when there is none), keeping the one it had alive for the
+    // resolves that sample it: no copy, where the next write replaces all of
+    // it. False when no spare is free.
+    bool replace_target_attachment(bool depth, const std::function<bool(const plume::RenderTexture*)>& in_use);
+    // A draw into the current surface tests or writes its stencil.
+    void note_stencil_use() noexcept;
     // What the first record of a draw does, done before the draw looks up
     // its textures: a draw back into a surface it has just resolved out of
     // then samples the copy rather than the surface it writes.

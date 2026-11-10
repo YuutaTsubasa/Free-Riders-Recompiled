@@ -577,7 +577,7 @@ struct NativeRenderer::Impl {
     uint32_t draws = 0;
     uint32_t pipelines_created = 0;
     double pipeline_ms = 0;
-    uint32_t ring_flushes = 0, textures_uploaded = 0, resolve_copies = 0;
+    uint32_t ring_flushes = 0, textures_uploaded = 0, resolve_copies = 0, resolve_swaps = 0;
     double texture_ms = 0;
     // Two upload rings: while the GPU renders one frame from one, the next
     // frame fills the other (NativePresentation::after_flush).
@@ -1453,6 +1453,7 @@ NativeRenderer::PipelineWork NativeRenderer::take_pipeline_work() noexcept {
     work.constant_saved_bytes = impl_->constant_saved_bytes;
     impl_->constant_saved_bytes = 0;
     work.resolve_copies = impl_->resolve_copies;
+    work.resolve_swaps = impl_->resolve_swaps;
     work.texture_bytes = impl_->texture_bytes;
     if (auto* bounded = impl_->bounded.get()) {
         work.descriptor_sets = bounded->frame_sets;
@@ -1462,7 +1463,7 @@ NativeRenderer::PipelineWork NativeRenderer::take_pipeline_work() noexcept {
         bounded->frame_sets = bounded->frame_writes = 0;
         bounded->frame_ms = 0;
     }
-    impl_->resolve_copies = 0;
+    impl_->resolve_copies = impl_->resolve_swaps = 0;
     impl_->pipelines_created = 0;
     impl_->pipeline_ms = 0;
     impl_->ring_flushes = 0;
@@ -1747,18 +1748,45 @@ void NativeRenderer::materialize_aliases(const void* surface) {
     if (found == impl_->pending_aliases.end()) return;
     const auto aliases = std::move(found->second);
     impl_->pending_aliases.erase(found);
-    for (const auto& alias : aliases) {
-        const auto view = impl_->surface_views.find(alias.source);
-        const auto current = impl_->resolved_targets.find(alias.physical);
-        // Dropped (its memory freed) or resolved again since: nothing to keep.
-        if (view == impl_->surface_views.end() || current == impl_->resolved_targets.end() ||
-            current->second != view->second) continue;
+    // A clear about to overwrite all of the colour or the depth: the surface
+    // takes a spare texture instead, and the resolves keep sampling the one it
+    // had (SFR_RESOLVE_SWAP=0 copies them out, as before).
+    static const bool swap = [] { const char* t = std::getenv("SFR_RESOLVE_SWAP"); return !t || *t != '0'; }();
+    const uint8_t replaces = swap ? impl_->presentation.write_replaces() : 0;
+    const auto in_use = [&](const plume::RenderTexture* texture) {
+        const auto view = impl_->surface_views.find(texture);
+        if (view == impl_->surface_views.end()) return false;
+        for (const auto& [physical, index] : impl_->resolved_targets)
+            if (index == view->second) return true;
+        return false;
+    };
+    const auto copy_out = [&](const Impl::Alias& alias, std::map<uint32_t, uint32_t>::iterator current) {
         const uint32_t index = own_resolve(*impl_, alias.physical, alias.width, alias.height, alias.format, alias.depth);
         current->second = index;
         ++impl_->texture_generation;
         ++impl_->resolve_copies;
         impl_->presentation.record_async(ResolveCopy{alias.source, impl_->texture_objects[index - first_texture].get(),
                                                      plume::RenderTextureLayout::SHADER_READ, &impl_->presentation});
+    };
+    // Copies first, swaps after: a swap binds the surface's attachments in
+    // their write layouts, the last thing done to them before the write.
+    std::vector<std::pair<const Impl::Alias*, std::map<uint32_t, uint32_t>::iterator>> to_swap[2];
+    for (const auto& alias : aliases) {
+        const auto view = impl_->surface_views.find(alias.source);
+        const auto current = impl_->resolved_targets.find(alias.physical);
+        // Dropped (its memory freed) or resolved again since: nothing to keep.
+        if (view == impl_->surface_views.end() || current == impl_->resolved_targets.end() ||
+            current->second != view->second) continue;
+        if (replaces & (alias.depth ? 2 : 1)) to_swap[alias.depth ? 1 : 0].push_back({&alias, current});
+        else copy_out(alias, current);
+    }
+    for (int depth = 0; depth < 2; ++depth) {
+        if (to_swap[depth].empty()) continue;
+        if (impl_->presentation.replace_target_attachment(depth != 0, in_use)) {
+            impl_->resolve_swaps += uint32_t(to_swap[depth].size());
+            continue;
+        }
+        for (const auto& [alias, current] : to_swap[depth]) copy_out(*alias, current);
     }
 }
 
@@ -2189,6 +2217,7 @@ uint32_t NativeRenderer::sampler(const FetchWords& words) {
 
 void NativeRenderer::draw(const NativeDraw& draw) {
     auto& device = impl_->graphics.device();
+    if (draw.stencil_enabled) impl_->presentation.note_stencil_use();
     static const bool bulk_key = [] {
         const char* value = std::getenv("SFR_PIPELINE_KEY_BULK");
         return !value || *value != '0';
