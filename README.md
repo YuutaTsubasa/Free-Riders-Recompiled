@@ -290,6 +290,8 @@ with [docs/progress.md](docs/progress.md).
   Textures now load the smaller copies (mip levels) the game stores beside them, as on the console, so distant surfaces shimmer less and the GPU reads less memory; on a Galaxy Tab S12 Ultra a race frame takes about 12 ms of GPU time instead of 12.7. Test options › Graphics › Texture mip levels › Off is the old way (#176). Also new, for testing: Test options › Gameplay › Race step rate runs races at 80 to 144 steps a second on screens faster than 60 Hz.
 - [v0.10.51 — Shorter wait after skipping the intro, and story scenes skip after a race](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.51)
   After skipping the intro movie and logos, the game no longer shows a blank loading screen for several seconds before the title; story scenes in World Grand Prix can be skipped with START after a race too; the Linux game window has the Free Riders icon (#365). Mali phones and tablets also keep BC1 textures compressed as ASTC (#176).
+- [v0.10.52 — Smoother loading screens on phones](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.52)
+  Loading screens no longer load the same textures again every frame, which made them slow on phones (#365). On wide screens, a Damage Survival race's gauge keeps its frame around its fill (#365). Shadow maps are no longer copied each frame, which saves GPU time at high render scales (#176).
 
 ## System Requirements
 
