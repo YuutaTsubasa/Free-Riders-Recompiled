@@ -551,6 +551,11 @@ struct D3D11Replay {
         for (UINT i = 0; i < count; ++i) colors[i] = target->colors[i].Get();
         context->OMSetRenderTargets(count, colors.data(), target->depth.Get());
     }
+    // Clearing rectangles by drawing: a full-screen triangle scissored to
+    // each, with this pixel shader (none: depth and stencil only) and blend
+    // state, writing depth and stencil as asked. The list's state comes back.
+    void clearRectangles(const std::vector<D3D11_RECT>& rects, ID3D11PixelShader* pixelShader, ID3D11BlendState* blend,
+                         bool depth, bool stencil, float depthValue, UINT8 stencilValue, const float* color);
     void run(const D3D11CommandList& list);
 };
 
@@ -630,9 +635,15 @@ D3D11Device::D3D11Device(D3D11Interface* renderInterface, ComPtr<IDXGIAdapter1> 
         constantBufferOffsets = options.ConstantBufferOffsetting && context1;
     // SFR_D3D11_NO_CB_OFFSET=1: as a driver without constant buffer offsets
     // (the copying fallback), to test it on one that has them.
+    // ClearView (clearing rectangles of a colour target): reported with
+    // offsets by D3D11.1 drivers, and missing with them on older ones.
+    clearView = options.ClearView && context1;
+    // SFR_D3D11_NO_CB_OFFSET=1: as a driver without constant buffer offsets
+    // or ClearView (the fallbacks), to test them on one that has them.
     if (const char* setting = std::getenv("SFR_D3D11_NO_CB_OFFSET"); setting && *setting == '1')
-        constantBufferOffsets = false;
+        constantBufferOffsets = clearView = false;
     std::cerr << "NATIVE_D3D11_OPTIONS offsetting=" << options.ConstantBufferOffsetting
+              << " clear_view=" << options.ClearView
               << " partial_update=" << options.ConstantBufferPartialUpdate
               << " map_default_buffer=" << options.MapNoOverwriteOnDynamicConstantBuffer << '\n';
     ComPtr<IDXGIDevice> dxgiDevice;
@@ -656,24 +667,45 @@ D3D11Device::D3D11Device(D3D11Interface* renderInterface, ComPtr<IDXGIAdapter1> 
     capabilities.maxTextureSize = D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION;
     std::cerr << "NATIVE_D3D11 feature_level=" << std::hex << unsigned(featureLevel) << std::dec
               << " warp=" << (adapter == nullptr) << " constant_buffer_offsets=" << constantBufferOffsets
-              << " clear_view=" << (context1 != nullptr) << '\n';
+              << " clear_view=" << clearView << '\n';
     // The renderer's constants are ranges of its upload ring: without
     // offsets each draw's are copied into buffers of their own.
     if (!constantBufferOffsets) std::cerr << "NATIVE_D3D11 constant_windows=copied\n";
 
-    // Clearing part of a depth target (clearDepthStencil with rectangles).
+    // Clearing part of a depth target (clearDepthStencil with rectangles),
+    // or of a colour target without ClearView (the pixel shader, which
+    // writes the colour to every target; the blend state masks all but one).
     static const char clear_source[] = R"(
-cbuffer SfrClear : register(b13) { float4 sfrClearDepth; };
+cbuffer SfrClear : register(b13) { float4 sfrClearDepth; float4 sfrClearColor; };
 float4 main(uint index : SV_VertexID) : SV_Position {
     const float2 corner = float2((index << 1) & 2, index & 2);
     return float4(corner * float2(2.0, -2.0) + float2(-1.0, 1.0), sfrClearDepth.x, 1.0);
+}
+void color(float4 position : SV_Position, out float4 o0 : SV_Target0, out float4 o1 : SV_Target1,
+           out float4 o2 : SV_Target2, out float4 o3 : SV_Target3, out float4 o4 : SV_Target4,
+           out float4 o5 : SV_Target5, out float4 o6 : SV_Target6, out float4 o7 : SV_Target7) {
+    o0 = o1 = o2 = o3 = o4 = o5 = o6 = o7 = sfrClearColor;
 }
 )";
     std::string errors;
     const auto clear_code = compile(clear_source, "main", "vs_5_0", {}, &errors);
     if (clear_code.empty() || FAILED(d3d->CreateVertexShader(clear_code.data(), clear_code.size(), nullptr, &clearVertexShader)))
         std::cerr << "NATIVE_D3D11 clear_shader=unavailable " << errors << '\n';
-    D3D11_BUFFER_DESC constants{16, D3D11_USAGE_DEFAULT, D3D11_BIND_CONSTANT_BUFFER, 0, 0, 0};
+    const auto color_code = compile(clear_source, "color", "ps_5_0", {}, &errors);
+    if (color_code.empty() || FAILED(d3d->CreatePixelShader(color_code.data(), color_code.size(), nullptr, &clearPixelShader)))
+        std::cerr << "NATIVE_D3D11 clear_color_shader=unavailable " << errors << '\n';
+    for (UINT i = 0; i < clearColorBlends.size(); ++i) {
+        D3D11_BLEND_DESC desc{};
+        desc.IndependentBlendEnable = TRUE;
+        for (auto& target : desc.RenderTarget) {
+            target.SrcBlend = target.SrcBlendAlpha = D3D11_BLEND_ONE;
+            target.DestBlend = target.DestBlendAlpha = D3D11_BLEND_ZERO;
+            target.BlendOp = target.BlendOpAlpha = D3D11_BLEND_OP_ADD;
+        }
+        desc.RenderTarget[i].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+        d3d->CreateBlendState(&desc, &clearColorBlends[i]);
+    }
+    D3D11_BUFFER_DESC constants{32, D3D11_USAGE_DEFAULT, D3D11_BIND_CONSTANT_BUFFER, 0, 0, 0};
     d3d->CreateBuffer(&constants, nullptr, &clearConstants);
     D3D11_RASTERIZER_DESC rasterizer{};
     rasterizer.FillMode = D3D11_FILL_SOLID;
@@ -1438,8 +1470,20 @@ void D3D11CommandList::clearColor(uint32_t attachmentIndex, RenderColor color, c
     callback([attachmentIndex, color, out = std::move(out)](D3D11Replay& replay) {
         if (!replay.framebuffer || attachmentIndex >= replay.framebuffer->colors.size()) return;
         ID3D11RenderTargetView* target = replay.framebuffer->colors[attachmentIndex].Get();
-        if (out.empty()) replay.context->ClearRenderTargetView(target, color.rgba);
-        else replay.context1->ClearView(target, color.rgba, out.data(), UINT(out.size()));
+        const auto* framebuffer = replay.framebuffer;
+        const bool whole = out.empty() || std::any_of(out.begin(), out.end(), [&](const D3D11_RECT& r) {
+            return r.left <= 0 && r.top <= 0 && r.right >= LONG(framebuffer->width) && r.bottom >= LONG(framebuffer->height);
+        });
+        if (whole) replay.context->ClearRenderTargetView(target, color.rgba);
+        else if (replay.device->clearView) replay.context1->ClearView(target, color.rgba, out.data(), UINT(out.size()));
+        else if (attachmentIndex < replay.device->clearColorBlends.size() && replay.device->clearPixelShader) {
+            // Without ClearView: the colour drawn into each rectangle of this target.
+            static std::atomic<uint32_t> drawn{0};
+            if (const uint32_t count = ++drawn; count == 1 || count % 1000 == 0)
+                std::cerr << "NATIVE_D3D11 clear_color=drawn count=" + std::to_string(count) + '\n';
+            replay.clearRectangles(out, replay.device->clearPixelShader.Get(),
+                                   replay.device->clearColorBlends[attachmentIndex].Get(), false, false, 0.0f, 0, color.rgba);
+        }
     });
 }
 
@@ -1461,48 +1505,55 @@ void D3D11CommandList::clearDepthStencil(bool clearDepth, bool clearStencil, flo
         // Part of the target: a full-screen triangle at that depth, scissored
         // to each rectangle, writing depth and stencil and no colour.
         auto* device = replay.device;
-        if (!device->clearVertexShader) return;
-        const uint32_t key = (clearDepth ? 1u : 0u) | (clearStencil ? 2u : 0u);
-        auto& state = device->clearDepthStates[key];
-        if (!state) {
-            D3D11_DEPTH_STENCIL_DESC desc{};
-            desc.DepthEnable = clearDepth;
-            desc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
-            desc.DepthFunc = D3D11_COMPARISON_ALWAYS;
-            desc.StencilEnable = clearStencil;
-            desc.StencilReadMask = desc.StencilWriteMask = 0xFF;
-            desc.FrontFace = desc.BackFace = {D3D11_STENCIL_OP_REPLACE, D3D11_STENCIL_OP_REPLACE, D3D11_STENCIL_OP_REPLACE,
-                                              D3D11_COMPARISON_ALWAYS};
-            device->d3d->CreateDepthStencilState(&desc, &state);
-        }
-        auto* context = replay.context;
-        const float constants[4] = {depthValue, 0, 0, 0};
-        context->UpdateSubresource(device->clearConstants.Get(), 0, nullptr, constants, 0, 0);
-        replay.setConstants(0, 13, device->clearConstants.Get(), 0, 0);
-        // The clear's own state, then the list's back (as far as it is set).
-        auto& bound = replay.bound;
-        bound.forgetPipeline();
-        context->VSSetShader(device->clearVertexShader.Get(), nullptr, 0);
-        context->GSSetShader(nullptr, nullptr, 0);
-        context->PSSetShader(nullptr, nullptr, 0);
-        context->IASetInputLayout(nullptr);
-        context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        context->RSSetState(device->clearRasterizer.Get());
-        const float factor[4] = {0, 0, 0, 0};
-        context->OMSetBlendState(device->clearBlend.Get(), factor, 0xFFFFFFFFu);
-        context->OMSetDepthStencilState(state.Get(), UINT8(stencilValue));
-        const D3D11_VIEWPORT whole_viewport{0, 0, float(target->width), float(target->height), 0, 1};
-        context->RSSetViewports(1, &whole_viewport);
-        for (const auto& rect : out) {
-            context->RSSetScissorRects(1, &rect);
-            context->Draw(3, 0);
-        }
-        if (!replay.viewports.empty()) context->RSSetViewports(UINT(replay.viewports.size()), replay.viewports.data());
-        else bound.viewportsKnown = false;
-        if (!replay.scissors.empty()) context->RSSetScissorRects(UINT(replay.scissors.size()), replay.scissors.data());
-        else bound.scissorsKnown = false;
-        replay.applyPipeline();
+        replay.clearRectangles(out, nullptr, device->clearBlend.Get(), clearDepth, clearStencil, depthValue,
+                               UINT8(stencilValue), nullptr);
     });
+}
+
+void D3D11Replay::clearRectangles(const std::vector<D3D11_RECT>& rects, ID3D11PixelShader* pixelShader,
+                                  ID3D11BlendState* blend, bool depth, bool stencil, float depthValue, UINT8 stencilValue,
+                                  const float* color) {
+    if (!device->clearVertexShader || !framebuffer) return;
+    const uint32_t key = (depth ? 1u : 0u) | (stencil ? 2u : 0u);
+    auto& state = device->clearDepthStates[key];
+    if (!state) {
+        D3D11_DEPTH_STENCIL_DESC desc{};
+        desc.DepthEnable = depth;
+        desc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
+        desc.DepthFunc = D3D11_COMPARISON_ALWAYS;
+        desc.StencilEnable = stencil;
+        desc.StencilReadMask = desc.StencilWriteMask = 0xFF;
+        desc.FrontFace = desc.BackFace = {D3D11_STENCIL_OP_REPLACE, D3D11_STENCIL_OP_REPLACE, D3D11_STENCIL_OP_REPLACE,
+                                          D3D11_COMPARISON_ALWAYS};
+        device->d3d->CreateDepthStencilState(&desc, &state);
+    }
+    float constants[8] = {depthValue, 0, 0, 0, 0, 0, 0, 0};
+    if (color) std::memcpy(constants + 4, color, 4 * sizeof(float));
+    context->UpdateSubresource(device->clearConstants.Get(), 0, nullptr, constants, 0, 0);
+    setConstants(0, 13, device->clearConstants.Get(), 0, 0);
+    if (pixelShader) setConstants(2, 13, device->clearConstants.Get(), 0, 0);
+    // The clear's own state, then the list's back (as far as it is set).
+    bound.forgetPipeline();
+    context->VSSetShader(device->clearVertexShader.Get(), nullptr, 0);
+    context->GSSetShader(nullptr, nullptr, 0);
+    context->PSSetShader(pixelShader, nullptr, 0);
+    context->IASetInputLayout(nullptr);
+    context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    context->RSSetState(device->clearRasterizer.Get());
+    const float factor[4] = {0, 0, 0, 0};
+    context->OMSetBlendState(blend, factor, 0xFFFFFFFFu);
+    context->OMSetDepthStencilState(state.Get(), stencilValue);
+    const D3D11_VIEWPORT whole_viewport{0, 0, float(framebuffer->width), float(framebuffer->height), 0, 1};
+    context->RSSetViewports(1, &whole_viewport);
+    for (const auto& rect : rects) {
+        context->RSSetScissorRects(1, &rect);
+        context->Draw(3, 0);
+    }
+    if (!viewports.empty()) context->RSSetViewports(UINT(viewports.size()), viewports.data());
+    else bound.viewportsKnown = false;
+    if (!scissors.empty()) context->RSSetScissorRects(UINT(scissors.size()), scissors.data());
+    else bound.scissorsKnown = false;
+    applyPipeline();
 }
 
 void D3D11CommandList::copyBufferRegion(RenderBufferReference dst, RenderBufferReference src, uint64_t size) {

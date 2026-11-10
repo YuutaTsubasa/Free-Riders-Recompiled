@@ -375,6 +375,12 @@ struct D3D11Device : RenderDevice {
     ComPtr<ID3D11Buffer> clearConstants;
     ComPtr<ID3D11RasterizerState> clearRasterizer;
     ComPtr<ID3D11BlendState> clearBlend;
+    // Clearing part of a colour target where the driver lacks ClearView
+    // (D3D11_OPTIONS::ClearView, false wherever constant buffer offsets
+    // are): the same triangle, writing the colour into that target only.
+    bool clearView = false;
+    ComPtr<ID3D11PixelShader> clearPixelShader;
+    std::array<ComPtr<ID3D11BlendState>, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT> clearColorBlends;
     std::unordered_map<uint32_t, ComPtr<ID3D11DepthStencilState>> clearDepthStates;
     // Compiled shaders by source hash, entry, profile and specialization:
     // done, or being compiled (by a pipeline or the prewarm threads), so
