@@ -893,6 +893,7 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
               << " ring_flushes=" << pipeline_work.ring_flushes
               << " resolve_copies=" << pipeline_work.resolve_copies
               << " resolve_swaps=" << pipeline_work.resolve_swaps
+              << " texture_rewrites_same=" << pipeline_work.texture_rewrites_same
               << " descriptor_sets=" << pipeline_work.descriptor_sets
               << " descriptor_writes=" << pipeline_work.descriptor_writes
               << " descriptor_binds=" << pipeline_work.descriptor_binds

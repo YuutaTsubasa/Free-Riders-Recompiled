@@ -3045,3 +3045,13 @@ the configure output for `SFR_PGO: optimising with .../android-arm64.profdata.gz
 `-DSFR_PGO=off` builds without it. The profile is unpacked into
 `<build>/pgo/profile-<hash>.profdata`; a new profile changes every compile
 command, so Ninja rebuilds what it affects without a clean build.
+
+## 2026-11-10: Textures loaded again on loading screens (Issue #365)
+
+A Pixel 10a (0.10.51, `SFR_FRAME_METRICS=1`) on the Omochao loading screen before a World Grand Prix mission drew a frame every 52–67 ms: each frame uploaded the same 17 textures again (`textures=17`, `texture_ms` 52–55) while the texture memory stayed at 29.55 MB. The AYN Thor's release route shows the same before a race (about 270 frames with 40 uploads each).
+
+A texture is watched for writes to its pages (movie frames are rewritten in place without a lock). The title also writes other data that shares a page with some textures, and on a loading screen it does so every frame, so every frame counted as a rewrite. Without native BC (phones), an upload decodes the blocks on the CPU, about 3 ms a texture there.
+
+`SFR_TEXTURE_SAME_CHECK` (on by default; Test options › Graphics › Keep unchanged textures, Off for the old way): when the pages report a write, the texture's bytes are hashed and compared with the hash taken when it was loaded (it covers the mips when they follow the base, the usual layout; a texture with its mips elsewhere is loaded again as before). Unchanged bytes keep the texture. `texture_rewrites_same=` in the frame log counts them.
+
+Windows, the release route to present 15600 (through the Omochao screen into a race): 24,581 uploads and 310 frames with 10 or more → 744 and 10, texture time 3.27 → 2.66 s; the screen at present 15000 shows the same picture.

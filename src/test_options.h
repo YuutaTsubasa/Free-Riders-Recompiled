@@ -185,6 +185,14 @@ inline constexpr TestOption table[] = {
       "測試用：遊戲從自己的繪製表面（陰影貼圖）取出畫面、接著清除該表面時，改給表面一張備用貼圖繼續畫，"
       "原本的畫面留在原處，不必複製。關閉是舊的做法（複製），用來比較畫面與 GPU 時間。"},
      off, "#176"},
+    {"SFR_TEXTURE_SAME_CHECK", TestGroup::graphics, test_platform::all,
+     {"Keep unchanged textures", "保留沒變的貼圖"},
+     {"For testing: when the game writes to memory next to a texture, the texture is compared with what it was "
+      "and only loaded again if it changed. Loading screens do this every frame, which made them slow on phones. "
+      "Off loads it again at every such write, as before, for comparing.",
+      "測試用：遊戲寫入貼圖旁邊的記憶體時，先比對貼圖內容，有變才重新載入。讀取畫面每一格都會這樣寫，"
+      "以前在手機上因此變慢。關閉是舊的做法（每次都重新載入），用來比較。"},
+     off, "#365"},
     // ---- processor
     {"SFR_CORE_PLAN", TestGroup::processor, test_platform::android,
      {"Core placement", "核心配置"},
