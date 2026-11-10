@@ -4,6 +4,11 @@
 #include "loop_constants.h"
 #include "native_graphics.h"
 #include "vulkan_shader_source.h"
+#include "d3d11_shader_source.h"
+#include "d3d11_shader_pack.h"
+#ifdef _WIN32
+#include "plume_d3d11.h"
+#endif
 #include "shader_inputs.h"
 #include "shader_pack_format.h"
 #include "resolution_shader_source.h"
@@ -266,9 +271,84 @@ const PackedShader* find_packed_shader(ShaderStage stage, std::span<const uint8_
         if (it->second.stage == stage && std::ranges::equal(it->second.source, source)) return &it->second;
     return nullptr;
 }
+
+// shaders-d3d11.pack (d3d11_shader_pack.h), beside shaders.pack or at
+// SFR_D3D11_SHADER_PACK: the D3D11 backend's HLSL by source, and its DXBC
+// by the key the backend compiles under (plume::D3D11ShaderKey). Optional:
+// an absent, outdated or damaged one is left out with a line in game.log.
+struct D3D11Pack {
+    std::unordered_multimap<uint64_t, D3D11PackedShader> shaders;
+    std::unordered_map<std::string, std::vector<uint8_t>> dxbc;
+};
+
+D3D11Pack load_d3d11_pack() {
+    D3D11Pack pack;
+    const char* named = std::getenv("SFR_D3D11_SHADER_PACK");
+    const fs::path path = named && *named ? fs::path(named)
+                                          : setting("SFR_SHADER_PACK", "out/shaders/shaders.pack").parent_path() /
+                                                "shaders-d3d11.pack";
+    const auto bytes = read_file(path);
+    if (bytes.empty()) {
+        std::cerr << "RUNTIME_D3D11_SHADER_PACK path=" << path.string() << " missing=1\n";
+        return pack;
+    }
+    try {
+        for (auto& shader : decode_d3d11_shader_pack(bytes)) {
+#ifdef _WIN32
+            const char* profile = shader.stage == 0 ? "vs_5_0" : "ps_5_0";
+            for (auto& variant : shader.variants)
+                pack.dxbc.emplace(plume::D3D11ShaderKey(shader.hlsl, "shaderMain", profile, variant.spec),
+                                  std::move(variant.dxbc));
+#endif
+            shader.variants.clear();
+            const uint64_t hash = fnv1a(shader.source);
+            pack.shaders.emplace(hash, std::move(shader));
+        }
+    } catch (const std::invalid_argument& error) {
+        std::cerr << "RUNTIME_D3D11_SHADER_PACK path=" << path.string() << " ignored=" << error.what() << '\n';
+        return {};
+    }
+    std::cerr << "RUNTIME_D3D11_SHADER_PACK path=" << path.string() << " shaders=" << pack.shaders.size()
+              << " compiled=" << pack.dxbc.size() << '\n';
+    return pack;
+}
+
+const D3D11Pack& d3d11_pack() {
+    static const D3D11Pack pack = load_d3d11_pack();
+    return pack;
+}
+
+const D3D11PackedShader* find_d3d11_shader(ShaderStage stage, std::span<const uint8_t> source, uint64_t hash) {
+    const auto [first, last] = d3d11_pack().shaders.equal_range(hash);
+    for (auto it = first; it != last; ++it)
+        if (it->second.stage == uint32_t(stage) && std::ranges::equal(it->second.source, source)) return &it->second;
+    return nullptr;
+}
+
+#ifdef _WIN32
+const std::vector<uint8_t>* precompiled_d3d11_shader(const std::string& key) {
+    const auto& dxbc = d3d11_pack().dxbc;
+    const auto found = dxbc.find(key);
+    return found == dxbc.end() ? nullptr : &found->second;
+}
+// The backend asks before compiling (only a D3D11 run loads the pack).
+const bool precompiled_d3d11_hook = (plume::D3D11PrecompiledShader = &precompiled_d3d11_shader, true);
+#endif
 }
 
 const ShaderCacheEntry* packed_pipeline_shader(ShaderStage stage, uint64_t hash, uint32_t source_size) {
+    if (selected_graphics_backend() == GraphicsBackend::d3d11) {
+        // From shaders-d3d11.pack, which has the HLSL (shaders.pack has none).
+        const auto [first, last] = d3d11_pack().shaders.equal_range(hash);
+        const D3D11PackedShader* match = nullptr;
+        for (auto it = first; it != last; ++it) {
+            const auto& shader = it->second;
+            if (shader.stage != uint32_t(stage) || shader.source.size() != source_size) continue;
+            if (match && match->source != shader.source) return nullptr;
+            match = &shader;
+        }
+        return match ? &runtime_shader(stage, match->source) : nullptr;
+    }
     const auto& pack = packed_shaders();
     const auto [first, last] = pack.equal_range(hash);
     const PackedShader* match = nullptr;
@@ -298,7 +378,8 @@ const ShaderCacheEntry& runtime_shader(ShaderStage stage, std::span<const uint8_
 
     // A packed shader (scripts/pack_shaders.py) needs no translator or DXC.
     const bool vulkan_backend = selected_graphics_backend() == GraphicsBackend::vulkan;
-    if (const PackedShader* packed = find_packed_shader(stage, source, hash)) {
+    const bool d3d11_backend = selected_graphics_backend() == GraphicsBackend::d3d11;
+    if (const PackedShader* packed = d3d11_backend ? nullptr : find_packed_shader(stage, source, hash)) {
         const auto& code = vulkan_backend ? packed->spirv : packed->dxil;
         if (!code.empty()) {
             auto& owned = shaders.emplace_back();
@@ -311,6 +392,20 @@ const ShaderCacheEntry& runtime_shader(ShaderStage stage, std::span<const uint8_
             return owned.entry;
         }
     }
+
+    // D3D11's HLSL from shaders-d3d11.pack: no translator, and the backend
+    // finds its DXBC there too.
+    if (d3d11_backend)
+        if (const D3D11PackedShader* packed = find_d3d11_shader(stage, source, hash)) {
+            auto& owned = shaders.emplace_back();
+            owned.source.assign(source.begin(), source.end());
+            by_hash[hash].push_back(shaders.size() - 1);
+            owned.dxil = packed->hlsl;
+            const auto palette = vertex_palette(rename_high_texcoords(source));
+            owned.entry = ShaderCacheEntry{owned.source, owned.dxil, stage, packed->mask,
+                                           palette ? palette->entry_float4s : 0, owned.spirv};
+            return owned.entry;
+        }
 
     char name[32];
     // "v2" added the screen-space mapping to vertex shaders; "v3" renames
@@ -334,13 +429,14 @@ const ShaderCacheEntry& runtime_shader(ShaderStage stage, std::span<const uint8_
                    spirv = folder / "shader.spv";
     // Vulkan builds its SPIR-V from the translated HLSL; D3D12 needs the DXIL.
     const bool vulkan = selected_graphics_backend() == GraphicsBackend::vulkan;
+    const bool d3d11 = selected_graphics_backend() == GraphicsBackend::d3d11;
     std::error_code error;
     fs::create_directories(folder, error);
     if (error) failed("cannot create " + folder.string());
 
     const fs::path failure_file = folder / "untranslatable.txt";
     const bool same_source = read_file(original) == std::vector<uint8_t>(source.begin(), source.end());
-    const bool cached = same_source && fs::exists(vulkan ? hlsl : dxil) && fs::exists(mask_file);
+    const bool cached = same_source && fs::exists(vulkan || d3d11 ? hlsl : dxil) && fs::exists(mask_file);
     auto& owned = shaders.emplace_back();
     owned.source.assign(source.begin(), source.end());
     by_hash[hash].push_back(shaders.size() - 1);
@@ -389,7 +485,7 @@ const ShaderCacheEntry& runtime_shader(ShaderStage stage, std::span<const uint8_
         mask = uint32_t(std::stoul(text.substr(marker + 20)));
         const bool vertex_reported = text.find("vertex HLSL") != std::string::npos;
         if (vertex_reported != (stage == ShaderStage::vertex)) failed("translator stage differs from container stage");
-        if (!vulkan) {
+        if (!vulkan && !d3d11) {
         // Same profile as scripts/prepare_shaders.py: specialized shaders stay libraries.
         std::vector<fs::path> compile{setting("SFR_DXC", default_dxc)};
         if (mask) {
@@ -408,7 +504,25 @@ const ShaderCacheEntry& runtime_shader(ShaderStage stage, std::span<const uint8_
         return untranslatable(reason);
     }
 
-    if (vulkan) {
+    if (d3d11) {
+        // Shader model 5.0 HLSL from the translated HLSL's D3D branch
+        // (d3d11_shader_source.h); the D3D11 backend compiles it with
+        // d3dcompiler_47 per pipeline (its specialization constant is a macro).
+        // It stands where the DXIL would.
+        const auto bytes = read_file(hlsl);
+        std::string why;
+        const auto text = d3d11_shader_source(std::string(bytes.begin(), bytes.end()), &why);
+        if (!text) {
+            owned.failure = "D3D11 shader source: " + why;
+            owned.entry = ShaderCacheEntry{owned.source, {}, stage, 0};
+            std::cerr << "RUNTIME_SHADER stage=" << (stage == ShaderStage::vertex ? "vertex" : "pixel")
+                      << " source_bytes=" << source.size() << " untranslatable=1 key=" << name
+                      << " reason=" << owned.failure << '\n';
+            return owned.entry;
+        }
+        owned.dxil.assign(text->begin(), text->end());
+        write_file(folder / "shader.d3d11.hlsl", owned.dxil);
+    } else if (vulkan) {
         // SPIR-V, compiled once from the HLSL with XenosRecomp's dxc-bin; the
         // specialization constant stays a constant (set per pipeline).
         if (!fs::exists(spirv)) try {

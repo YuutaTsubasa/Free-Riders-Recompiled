@@ -76,6 +76,7 @@ struct LauncherSettings {
 #endif
     bool ui_sounds = true;           // the launcher's own sounds
     bool vulkan = true;             // legacy settings key; selects Vulkan or D3D12
+    bool d3d11 = false;             // Direct3D 11 (experimental, Windows, Issue #359), over `vulkan`
     bool touch_controls = true;      // SFR_TOUCH_CONTROLS (Android, iOS)
     bool touch_labels = true;        // SFR_TOUCH_LABELS: the buttons' names on them (Issue #236)
     bool tilt = true;                // SFR_TILT: tilt to steer (Android, iOS)

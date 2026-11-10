@@ -11,6 +11,7 @@
 #include <thread>
 #include <exception>
 #ifdef _WIN32
+#include "plume_d3d11.h"
 #include "plume_d3d12.h"
 #endif
 #include "plume_vulkan.h"
@@ -236,6 +237,9 @@ std::unique_ptr<plume::RenderPipeline> create_draw_pipeline(plume::RenderDevice&
             if (static_cast<plume::VulkanGraphicsPipeline*>(pipeline.get())->vk == VK_NULL_HANDLE) return {};
         }
 #ifdef _WIN32
+        else if (backend == GraphicsBackend::d3d11) {
+            if (!static_cast<plume::D3D11GraphicsPipeline*>(pipeline.get())->valid) return {};
+        }
         else if (!static_cast<plume::D3D12GraphicsPipeline*>(pipeline.get())->d3d) return {};
 #endif
         return pipeline;
@@ -944,7 +948,7 @@ void NativeRenderer::prepare_pipelines() {
     if (impl_->preparation_started) return;
     impl_->preparation_started = true;
     const uint32_t backend = uint32_t(impl_->graphics.backend());
-    const char* name = backend == 1 ? "vulkan" : "d3d12";
+    const char* name = backend == 1 ? "vulkan" : backend == 2 ? "d3d11" : "d3d12";
     const auto path_setting = [](const char* key, std::filesystem::path fallback) {
         const char* value = std::getenv(key);
         return value && *value ? std::filesystem::path(reinterpret_cast<const char8_t*>(value)) : fallback;
@@ -1243,7 +1247,9 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
     // four: Mali-G57 reports maxBoundDescriptorSets=4, and its driver crashed
     // making this layout (Issue #1). No SPIR-V in the pack uses a set past 3,
     // so Vulkan leaves it out; D3D12 has no such limit and keeps it.
-    const bool survey_set = graphics.backend() != GraphicsBackend::vulkan;
+    // D3D11 (Issue #359) has no use for it either: no shader the game draws
+    // with writes it, and a UAV in a vertex shader needs feature level 11_1.
+    const bool survey_set = graphics.backend() == GraphicsBackend::d3d12;
     if (survey_set) {
         plume::RenderDescriptorSetBuilder survey;
         survey.begin();
@@ -1265,6 +1271,13 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
     }
     layout.end();
     impl_->layout = layout.create(&device);
+#ifdef _WIN32
+    // D3D11 without constant buffer offsets copies each draw's windows:
+    // only as much as the shaders read (Impl::uniform_ranges).
+    if (impl_->layout && graphics.backend() == GraphicsBackend::d3d11)
+        static_cast<plume::D3D11PipelineLayout*>(impl_->layout.get())->rootDescriptorBytes.assign(
+            Impl::uniform_ranges.begin(), Impl::uniform_ranges.end());
+#endif
     if (!impl_->layout || !impl_->textures || !impl_->samplers || (survey_set && !impl_->survey) ||
         (vulkan && (!impl_->uniform_sets[0] || !impl_->uniform_sets[1])))
         unsupported(0, "native draw pipeline layout creation failed");
@@ -1543,6 +1556,12 @@ NativeRenderer::CachedVertices NativeRenderer::vertex_cache(GuestMemory& memory,
     if (!entry.buffer) return {};
     auto* mapped = static_cast<uint8_t*>(entry.buffer->map());
     if (!mapped) { entry.buffer.reset(); return {}; }
+#ifdef _WIN32
+    // D3D11 (Issue #359) copies host memory up at each submission: this one
+    // is filled now, before any draw reads it, and only once.
+    if (impl_->graphics.backend() == GraphicsBackend::d3d11)
+        static_cast<plume::D3D11Buffer*>(entry.buffer.get())->writeOnce = true;
+#endif
     impl_->cached_vertex_bytes += host_bytes;
     entry.size = host_bytes;
     entry.epoch = now;
@@ -2458,6 +2477,28 @@ void NativeRenderer::draw(const NativeDraw& draw) {
         }
     }
     const bool vulkan = impl_->graphics.backend() == GraphicsBackend::vulkan;
+    const bool d3d11 = impl_->graphics.backend() == GraphicsBackend::d3d11;
+    // D3D11 (Issue #359): shader model 5.0 indexes its texture arrays only
+    // with literals, so each fetch constant reads element s of 16 2D, 16 2D
+    // array and 16 cube textures and 16 samplers (d3d11_shader_source.h),
+    // which this draw binds from the slots its shared constants name.
+    // Recorded ahead of the draw (a record's body is at most 256 bytes).
+    if (d3d11) {
+        std::array<uint16_t, 64> slots{};
+        for (uint32_t s = 0; s < 16; ++s) {
+            slots[s] = uint16_t((std::min)(draw.shared.texture_2d[s] & 0x7fffffffu, 0xFFFFu));
+            slots[16 + s] = uint16_t((std::min)(draw.shared.texture_2d_array[s], 0xFFFFu));
+            slots[32 + s] = uint16_t((std::min)(draw.shared.texture_cube[s], 0xFFFFu));
+            slots[48 + s] = uint16_t((std::min)(draw.shared.sampler[s], 0xFFFFu));
+        }
+#ifdef _WIN32
+        impl_->presentation.record_async([impl = impl_.get(), slots](plume::RenderCommandList& list, uint64_t) {
+            std::array<uint32_t, 64> indices;
+            std::copy(slots.begin(), slots.end(), indices.begin());
+            static_cast<plume::D3D11CommandList&>(list).setXenosTextures(impl->textures.get(), impl->samplers.get(), indices);
+        });
+#endif
+    }
     // Only the entries the palette holds are written. The rest of the
     // allocation keeps whatever an earlier draw left, which a clamped index
     // may read but never reaches past the ring; zeroing sixteen kilobytes for
@@ -2521,6 +2562,7 @@ void NativeRenderer::draw(const NativeDraw& draw) {
     impl_->presentation.record_async([impl = impl_.get(), pipeline = pipeline.get(), set_stages, palette_bound, stencil_enabled,
                                       stencil_reference, stride, vertex_count, vertex_view_bytes, vertex_buffer,
                                       index_count, base_vertex_location, index_bytes, index_buffer, vulkan,
+                                      d3d11,
                                       upload, base_offset, vs_offset, ps_offset,
                                       palette_rel, loop_rel, index_rel, shared_offset](plume::RenderCommandList& list,
                                                                                    uint64_t generation) {
@@ -2536,7 +2578,7 @@ void NativeRenderer::draw(const NativeDraw& draw) {
                     list.setGraphicsDescriptorSet(impl->textures.get(), 0);
                     list.setGraphicsDescriptorSet(impl->samplers.get(), 1);
                 }
-            } else {
+            } else if (!d3d11) {
                 for (uint32_t space = 0; space < 3; ++space) list.setGraphicsDescriptorSet(impl->textures.get(), space);
                 list.setGraphicsDescriptorSet(impl->samplers.get(), 3);
                 if (impl->survey) list.setGraphicsDescriptorSet(impl->survey.get(), 4);
@@ -2582,7 +2624,8 @@ void NativeRenderer::draw(const NativeDraw& draw) {
         // so it is always 0: a HUD gauge's mask wrote 0 and its fill (drawn
         // where the stencil equals 1) covered the whole gauge. Set it here.
         // (Vulkan keeps it in the pipeline.)
-        if (stencil_enabled && !vulkan)
+        // (D3D11's backend keeps it with the pipeline too.)
+        if (stencil_enabled && !vulkan && !d3d11)
             static_cast<plume::D3D12CommandList&>(list).d3d->OMSetStencilRef(stencil_reference);
 #endif
         if (vulkan) {

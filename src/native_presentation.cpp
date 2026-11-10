@@ -18,6 +18,7 @@
 #include <chrono>
 #include "title_stats.h"
 #ifdef _WIN32
+#include "plume_d3d11.h"
 #include "plume_d3d12.h"
 #endif
 #include "plume_vulkan.h"
@@ -76,6 +77,14 @@
 #include "depth_flip_point_gs_dxil.h"
 #include "depth_flip_line_gs_dxil.h"
 #include "depth_flip_triangle_gs_dxil.h"
+// Direct3D 11's (shader model 5.0, Issue #359).
+#include "blit_vs_dxbc.h"
+#include "blit_ps_dxbc.h"
+#include "model_vs_dxbc.h"
+#include "model_ps_dxbc.h"
+#include "depth_flip_point_gs_dxbc.h"
+#include "depth_flip_line_gs_dxbc.h"
+#include "depth_flip_triangle_gs_dxbc.h"
 #endif
 
 namespace {
@@ -607,7 +616,7 @@ struct NativePresentation::Impl {
                 // consumes it; waiting a second time would block forever.
                 const auto* fence = static_cast<plume::D3D12CommandFence*>(target);
                 if (WaitForSingleObjectEx(fence->fenceEvent, 0, FALSE) == WAIT_OBJECT_0) return;
-            } else
+            } else if (graphics->backend() == sfr::GraphicsBackend::vulkan)
 #endif
             {
                 const auto* fence = static_cast<plume::VulkanCommandFence*>(target);
@@ -1099,6 +1108,11 @@ void NativePresentation::Impl::build_blit() {
     if (graphics->backend() == sfr::GraphicsBackend::vulkan) {
         blit_vertex = device.createShader(blit_vs_spirv, sizeof(blit_vs_spirv), "vertexMain", plume::RenderShaderFormat::SPIRV);
         blit_pixel = device.createShader(blit_ps_spirv, sizeof(blit_ps_spirv), "pixelMain", plume::RenderShaderFormat::SPIRV);
+#ifdef _WIN32
+    } else if (graphics->backend() == sfr::GraphicsBackend::d3d11) {
+        blit_vertex = device.createShader(blit_vs_dxbc, sizeof(blit_vs_dxbc), "vertexMain", plume::RenderShaderFormat::DXIL);
+        blit_pixel = device.createShader(blit_ps_dxbc, sizeof(blit_ps_dxbc), "pixelMain", plume::RenderShaderFormat::DXIL);
+#endif
     } else {
         blit_vertex = device.createShader(blit_vs_dxil, sizeof(blit_vs_dxil), "vertexMain", plume::RenderShaderFormat::DXIL);
         blit_pixel = device.createShader(blit_ps_dxil, sizeof(blit_ps_dxil), "pixelMain", plume::RenderShaderFormat::DXIL);
@@ -1274,6 +1288,11 @@ void NativePresentation::Impl::build_model() {
     if (graphics->backend() == sfr::GraphicsBackend::vulkan) {
         model_vertex = device.createShader(model_vs_spirv, sizeof(model_vs_spirv), "vertexMain", plume::RenderShaderFormat::SPIRV);
         model_pixel = device.createShader(model_ps_spirv, sizeof(model_ps_spirv), "pixelMain", plume::RenderShaderFormat::SPIRV);
+#ifdef _WIN32
+    } else if (graphics->backend() == sfr::GraphicsBackend::d3d11) {
+        model_vertex = device.createShader(model_vs_dxbc, sizeof(model_vs_dxbc), "vertexMain", plume::RenderShaderFormat::DXIL);
+        model_pixel = device.createShader(model_ps_dxbc, sizeof(model_ps_dxbc), "pixelMain", plume::RenderShaderFormat::DXIL);
+#endif
     } else {
         model_vertex = device.createShader(model_vs_dxil, sizeof(model_vs_dxil), "vertexMain", plume::RenderShaderFormat::DXIL);
         model_pixel = device.createShader(model_ps_dxil, sizeof(model_ps_dxil), "pixelMain", plume::RenderShaderFormat::DXIL);
@@ -1536,11 +1555,15 @@ NativePresentation::NativePresentation(NativeGraphics& graphics, uint32_t width,
     step("raster_state");
     implementation->raster_state = std::make_unique<NativeRasterState>(graphics, width, height);
 #ifdef _WIN32
-    if (graphics.backend() == GraphicsBackend::d3d12 && !implementation->raster_state->inverted_depth_supported()) {
+    if (graphics.backend() != GraphicsBackend::vulkan && !implementation->raster_state->inverted_depth_supported()) {
+        const bool d3d11 = graphics.backend() == GraphicsBackend::d3d11;
         const std::array<std::pair<const unsigned char*, size_t>, 3> code{{
-            {depth_flip_point_gs_dxil, sizeof(depth_flip_point_gs_dxil)},
-            {depth_flip_line_gs_dxil, sizeof(depth_flip_line_gs_dxil)},
-            {depth_flip_triangle_gs_dxil, sizeof(depth_flip_triangle_gs_dxil)}}};
+            d3d11 ? std::pair<const unsigned char*, size_t>{depth_flip_point_gs_dxbc, sizeof(depth_flip_point_gs_dxbc)}
+                  : std::pair<const unsigned char*, size_t>{depth_flip_point_gs_dxil, sizeof(depth_flip_point_gs_dxil)},
+            d3d11 ? std::pair<const unsigned char*, size_t>{depth_flip_line_gs_dxbc, sizeof(depth_flip_line_gs_dxbc)}
+                  : std::pair<const unsigned char*, size_t>{depth_flip_line_gs_dxil, sizeof(depth_flip_line_gs_dxil)},
+            d3d11 ? std::pair<const unsigned char*, size_t>{depth_flip_triangle_gs_dxbc, sizeof(depth_flip_triangle_gs_dxbc)}
+                  : std::pair<const unsigned char*, size_t>{depth_flip_triangle_gs_dxil, sizeof(depth_flip_triangle_gs_dxil)}}};
         const char* entries[] = {"pointMain", "lineMain", "triangleMain"};
         for (size_t i = 0; i < code.size(); ++i) {
             implementation->depth_flip_shaders[i] = graphics.device().createShader(
@@ -2022,6 +2045,27 @@ std::vector<uint8_t> NativePresentation::readback_color() {
 #ifndef _WIN32
     throw std::logic_error("native presentation readback: no D3D12 here");
 #else
+    if (impl_->graphics->backend() == GraphicsBackend::d3d11) {
+        // Plume's own copy into a readback footprint (the backend maps a
+        // staging texture as it replays the list).
+        const uint64_t row_pitch = uint64_t(impl_->render_width) * bytes_per_pixel;
+        auto buffer = impl_->graphics->device().createBuffer(plume::RenderBufferDesc::ReadbackBuffer(row_pitch * impl_->render_height));
+        if (!buffer) unavailable("readback buffer");
+        impl_->flush();
+        impl_->begin_list();
+        impl_->command_list->copyTextureRegion(
+            plume::RenderTextureCopyLocation::PlacedFootprint(buffer.get(), plume::RenderFormat::B8G8R8A8_UNORM,
+                                                              impl_->render_width, impl_->render_height, 1,
+                                                              impl_->render_width),
+            plume::RenderTextureCopyLocation::Subresource(impl_->color.get()));
+        impl_->end_list();
+        impl_->execute();
+        const auto* mapped = static_cast<const uint8_t*>(buffer->map());
+        if (!mapped) unavailable("mapped readback buffer");
+        std::vector<uint8_t> result(mapped, mapped + row_pitch * impl_->render_height);
+        buffer->unmap();
+        return result;
+    }
     const auto resource_desc = static_cast<plume::D3D12Texture*>(impl_->color.get())->d3d->GetDesc();
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
     UINT row_count = 0;

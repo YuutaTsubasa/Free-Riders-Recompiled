@@ -29,7 +29,11 @@ NativeRasterState::NativeRasterState(NativeGraphics& graphics, uint32_t target_w
         throw std::invalid_argument("native raster target dimensions must be between 1 and 8192");
 
     // Vulkan allows minDepth above maxDepth; D3D12 reports whether it does.
-    bool inverted_depth = true;
+    // D3D11 (Issue #359) flips depth in the geometry shader D3D12 falls back to.
+    // SFR_D3D11_INVERTED_DEPTH=1 (an experiment) hands D3D11 the inverted
+    // viewports as they are instead.
+    bool inverted_depth = graphics.backend() != GraphicsBackend::d3d11;
+    if (const char* forced = std::getenv("SFR_D3D11_INVERTED_DEPTH"); forced && *forced == '1') inverted_depth = true;
 #ifdef _WIN32
     if (graphics.backend() == GraphicsBackend::d3d12) {
         auto* native_device = static_cast<plume::D3D12Device*>(&graphics.device());

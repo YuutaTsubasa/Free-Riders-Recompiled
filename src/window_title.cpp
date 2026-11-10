@@ -56,7 +56,8 @@ char body_source() {
 // "Vulkan 100%": the graphics the frames are drawn with, as the launcher
 // chose them (native_presentation.cpp reads the same scale).
 std::wstring graphics_label() {
-    std::wstring label = selected_graphics_backend() == GraphicsBackend::vulkan ? L"Vulkan" : L"D3D12";
+    const GraphicsBackend backend = selected_graphics_backend();
+    std::wstring label = backend == GraphicsBackend::vulkan ? L"Vulkan" : backend == GraphicsBackend::d3d11 ? L"D3D11" : L"D3D12";
     // Any whole percent render_scale.h accepts; the frame may lower it to
     // fit the largest target side (NATIVE_RENDER_SCALE in the log says so).
     label += L' ';

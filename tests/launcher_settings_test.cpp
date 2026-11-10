@@ -944,6 +944,13 @@ void environment_follows_settings() {
     require(value_of(settings, "SFR_GRAPHICS") == "vulkan", "the Vulkan setting selects Vulkan");
     settings.vulkan = false;
     require(value_of(settings, "SFR_GRAPHICS") == "d3d12", "the D3D12 choice is explicit");
+#ifdef _WIN32
+    // Direct3D 11 (experimental, Issue #359) wins over the legacy key, and is saved.
+    settings.d3d11 = true;
+    require(value_of(settings, "SFR_GRAPHICS") == "d3d11", "the D3D11 choice selects D3D11");
+    require(sfr::parse_launcher_settings(sfr::format_launcher_settings(settings)).d3d11, "the D3D11 choice is saved");
+    settings.d3d11 = false;
+#endif
     require(value_of(settings, "SFR_FULLSCREEN") == "1" && value_of(settings, "SFR_PARALLEL_WORKER") == "all" &&
             value_of(settings, "SFR_WINDOW_HEIGHT") == "1440" && value_of(settings, "SFR_SKIP_MOVIES") == "1" &&
             value_of(settings, "SFR_AUDIO") == "0", "the environment carries the player's choices");
