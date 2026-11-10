@@ -57,7 +57,8 @@ Kinect v2 目前屬實驗性支援，仍待實機驗證。
 ## 系統需求
 
 - **Windows**：Windows 10 或 11（x64），支援 AVX 的 CPU，支援 Direct3D 12（或 Vulkan 1.2）的
-  顯示卡。
+  顯示卡。0.10.53 起，只支援 Direct3D 11 的舊內建顯示晶片（例如 Intel HD Graphics 4000／4600）
+  可以試用實驗性的 Direct3D 11 繪圖後端（#359）。
 - **Linux**：支援 AVX 的 x86-64 與 Vulkan 1.2 驅動程式（在 Ubuntu 22.04 上測試）。
 - **Android**：Android 9 以上、arm64-v8a、Vulkan 1.1；安裝需約 2 GB 可用空間。
 - 建置所需工具見 [docs/building.md](docs/building.md)。
