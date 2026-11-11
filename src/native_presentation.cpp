@@ -333,7 +333,13 @@ struct NativePresentation::Impl {
     bool carry_enabled() const {
         static const bool on = [this] {
             const char* t = std::getenv("SFR_CARRY_RESOLVES");
-            const bool enabled = graphics->backend() == GraphicsBackend::vulkan && (!t || *t != '0');
+#ifdef __APPLE__
+            // Not tried through MoltenVK yet: only when asked for.
+            const bool wanted = t && *t == '1';
+#else
+            const bool wanted = !t || *t != '0';
+#endif
+            const bool enabled = graphics->backend() == GraphicsBackend::vulkan && wanted;
             std::cerr << "NATIVE_CARRY_RESOLVES enabled=" << enabled << '\n';
             return enabled;
         }();
