@@ -313,13 +313,30 @@ void NativeGraphics::initialize() {
     if (!window) throw std::runtime_error(std::string("failed to create the SDL window: ") + SDL_GetError());
 #if !defined(__ANDROID__) && !defined(__APPLE__)
     {
-        // The launcher's icon on the game window too. Without it X11 and
-        // Wayland desktops showed their default icon for the game (Issue #365).
+        // The launcher's icon on the game window too. Without it X11
+        // desktops showed their default icon for the game (Issue #365).
+        // SDL 2's Wayland driver has no window icons (a Wayland desktop
+        // takes it from the .desktop file of the window's app ID).
         auto pixels = sfr::render_icon(64);
         if (SDL_Surface* icon = SDL_CreateRGBSurfaceWithFormatFrom(pixels.data(), 64, 64, 32, 64 * 4, SDL_PIXELFORMAT_ARGB8888)) {
             SDL_SetWindowIcon(window, icon);
             SDL_FreeSurface(icon);
         }
+    }
+    {
+        // Which window system the game draws into (video_driver.h): the
+        // surface extensions are the ones SDL names for this window, which
+        // its Vulkan surface (made by SDL for Plume) is created with.
+        std::string extensions;
+        unsigned count = 0;
+        if (SDL_Vulkan_GetInstanceExtensions(window, &count, nullptr) && count) {
+            std::vector<const char*> names(count);
+            if (SDL_Vulkan_GetInstanceExtensions(window, &count, names.data()))
+                for (unsigned i = 0; i < count; ++i) extensions += (i ? "," : "") + std::string(names[i]);
+        }
+        const char* driver = SDL_GetCurrentVideoDriver();
+        std::cerr << "NATIVE_WINDOW video_driver=" << (driver ? driver : "?")
+                  << " surface_extensions=" << (extensions.empty() ? "?" : extensions) << '\n';
     }
 #endif
 #if defined(__ANDROID__) || defined(__APPLE__)

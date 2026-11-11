@@ -47,6 +47,7 @@
 #include "launcher_screen_fit.h"
 #include "launcher_screen_keyboard.h"
 #include "test_options.h"
+#include "video_driver.h"
 #ifdef SFR_IOS
 #include "disc_image_search.h"
 #include "ios_screen.h"
@@ -4496,6 +4497,14 @@ int main(int argc, char** argv) {
     SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
 #elif defined(__APPLE__)
     sfr::skip_window_restore_prompt();
+#elif defined(__linux__)
+    {
+        // Wayland first, then X11, as the game (video_driver.h); the Test
+        // option "Use X11" holds for the launcher too, from its next start.
+        const auto saved = sfr::load_launcher_settings(sfr::launcher::launcher_directory() / "settings.ini");
+        const auto x11 = saved.test_options.find("SFR_TEST_X11");
+        sfr::choose_linux_video_driver(x11 == saved.test_options.end() ? nullptr : x11->second.c_str());
+    }
 #endif
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS) != 0) {
         std::fprintf(stderr, "SDL is not available: %s\n", SDL_GetError());

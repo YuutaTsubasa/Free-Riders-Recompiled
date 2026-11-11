@@ -1,6 +1,8 @@
 #include "launcher_settings.h"
 #include "render_scale.h"
 #include "test_options.h"
+#define SFR_VIDEO_DRIVER_RULE_ONLY
+#include "video_driver.h"
 
 #include <cstring>
 #include <map>
@@ -517,6 +519,29 @@ void test_option_table() {
                     sfr::find_test_choice(*option, "0") && !sfr::find_test_choice(*option, "1"),
                 "the #176 render pass options are options that turn off");
     }
+}
+
+// Linux asks SDL for Wayland, then X11 (video_driver.h, Issue #365).
+void linux_video_driver_choice() {
+    // Versions as SDL_VERSIONNUM gives them: 2.32.8 is 5208, 2.24.0 4400, 2.0.20 2020.
+    const auto hint = [](const char* player, const char* x11, int version) {
+        const char* chosen = sfr::linux_video_driver_hint(player, x11, version);
+        return std::string(chosen ? chosen : "(SDL's own)");
+    };
+    require(hint(nullptr, nullptr, 5208) == "wayland,x11", "Wayland first, X11 after it, with a current SDL");
+    require(hint("", nullptr, 4400) == "wayland,x11", "an empty SDL_VIDEODRIVER is not the player's choice");
+    require(hint("x11", nullptr, 5208) == "(SDL's own)" && hint("wayland", "1", 5208) == "(SDL's own)",
+            "the player's own SDL_VIDEODRIVER wins");
+    require(hint(nullptr, "1", 5208) == "x11" && hint(nullptr, "1", 2020) == "x11", "the Test option asks for X11");
+    require(hint(nullptr, "0", 5208) == "wayland,x11", "only On asks for X11");
+    require(hint(nullptr, nullptr, 2020) == "(SDL's own)" && hint(nullptr, nullptr, 2022) == "(SDL's own)" &&
+                hint(nullptr, nullptr, 4301) == "(SDL's own)",
+            "SDL before 2.24 (no driver list) is left to choose, as before");
+    const auto* option = sfr::find_test_option("SFR_TEST_X11");
+    require(option && sfr::test_option_applies(*option, sfr::test_platform::linux_desktop) &&
+                !sfr::test_option_applies(*option, sfr::test_platform::windows) &&
+                !sfr::test_option_applies(*option, sfr::test_platform::android) && sfr::find_test_choice(*option, "1"),
+            "Use X11 is a Linux option that turns on");
 }
 
 void test_option_settings() {
@@ -1061,6 +1086,7 @@ int main() {
         race_frameskip_settings();
         test_option_table();
         test_option_settings();
+        linux_video_driver_choice();
         avatar_model_settings();
         malformed_values_keep_defaults();
         display_mode_defaults_to_borderless();

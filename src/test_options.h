@@ -202,6 +202,14 @@ inline constexpr TestOption table[] = {
       "測試用：遊戲寫入貼圖旁邊的記憶體時，先比對貼圖內容，有變才重新載入。讀取畫面每一格都會這樣寫，"
       "以前在手機上因此變慢。關閉是舊的做法（每次都重新載入），用來比較。"},
      off, "#365"},
+    {"SFR_TEST_X11", TestGroup::graphics, test_platform::linux_desktop,
+     {"Use X11", "使用 X11"},
+     {"For testing: opens the game's window through X11 (XWayland on a Wayland desktop) instead of Wayland, as "
+      "earlier versions did. Try On if on a Wayland desktop the window does not appear, cannot be resized or made "
+      "full screen, or misbehaves otherwise. The launcher uses it too from its next start.",
+      "測試用：遊戲視窗改用 X11 開啟（在 Wayland 桌面上會經過 XWayland），而不是 Wayland，與先前的版本相同。"
+      "若在 Wayland 桌面上視窗沒有出現、無法調整大小或全螢幕，或有其他異常，可試著開啟。啟動器下次開啟時也會使用。"},
+     on, "#365"},
     // ---- processor
     {"SFR_CORE_PLAN", TestGroup::processor, test_platform::android,
      {"Core placement", "核心配置"},

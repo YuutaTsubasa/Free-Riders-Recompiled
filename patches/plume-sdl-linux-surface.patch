@@ -1,0 +1,21 @@
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index 9ca7c81..1a25745 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -85,11 +85,15 @@ namespace plume {
+         VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
+ #   elif defined(__ANDROID__)
+         VK_KHR_ANDROID_SURFACE_EXTENSION_NAME,
+-#   elif defined(__linux__)
++#   elif defined(__linux__) && !defined(SDL_VULKAN_ENABLED)
+         VK_KHR_XLIB_SURFACE_EXTENSION_NAME,
+ #   elif defined(__APPLE__)
+         VK_EXT_METAL_SURFACE_EXTENSION_NAME,
+ #   endif
++        // With SDL on Linux the surface extension is the one SDL names for
++        // the window (VulkanInterface's constructor): VK_KHR_wayland_surface
++        // under SDL's Wayland driver, VK_KHR_xlib_surface under its X11 one.
++        // Requiring Xlib's too refused a Wayland-only loader or driver.
+     };
+ 
+     static const std::unordered_set<std::string> OptionalInstanceExtensions = {

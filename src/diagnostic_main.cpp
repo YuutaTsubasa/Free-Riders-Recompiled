@@ -74,6 +74,7 @@
 #include "guest_printf.h"
 #include "native_presentation.h"
 #include "test_options.h"
+#include "video_driver.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -4726,6 +4727,10 @@ int sfr_graphics_selftest();
 #endif
 
 int main(int argc, char** argv) {
+#if defined(__linux__) && !defined(__ANDROID__)
+    // Wayland first, then X11, before anything starts SDL video (video_driver.h).
+    const char* video_driver = sfr::choose_game_video_driver();
+#endif
 #if !defined(__ANDROID__) && !(defined(__APPLE__) && TARGET_OS_IPHONE)
     // The graphics self test (graphics_selftest.cpp) in place of the game, as
     // Android's GraphicsTestActivity runs it.
@@ -4745,6 +4750,16 @@ int main(int argc, char** argv) {
     // The launcher's Test options (and the same variables set by hand) this
     // run started with, once, so a bug report's game.log shows them.
     std::cerr << sfr::describe_test_options([](const char* name) -> const char* { return std::getenv(name); }) << '\n';
+#if defined(__linux__) && !defined(__ANDROID__)
+    {
+        SDL_version linked{};
+        SDL_GetVersion(&linked);
+        const char* player = std::getenv("SDL_VIDEODRIVER");
+        std::cerr << "VIDEO_DRIVER asked=" << (video_driver ? video_driver : player && *player ? "player" : "sdl-default")
+                  << " SDL_VIDEODRIVER=" << (player && *player ? player : "-") << " sdl=" << int(linked.major) << '.'
+                  << int(linked.minor) << '.' << int(linked.patch) << '\n';
+    }
+#endif
     if (test_cpus) std::cerr << "TEST_CPUS mask=0x" << std::hex << test_cpus << std::dec << '\n';
     struct TraceFlush { ~TraceFlush() { std::cerr.flush(); std::fflush(stderr); } } trace_flush;
 #if defined(__APPLE__)
