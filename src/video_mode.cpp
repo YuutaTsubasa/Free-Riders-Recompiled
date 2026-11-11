@@ -17,8 +17,11 @@ VideoMode::VideoMode(GuestMemory& memory, DisplayMode mode) : memory_(memory), m
 }
 
 std::array<uint32_t, 12> VideoMode::snapshot() const {
-    const bool widescreen = uint64_t(mode_.width) * 3 > uint64_t(mode_.height) * 4;
-    return {mode_.width, mode_.height, 0, widescreen ? 1u : 0u, mode_.height >= 720 ? 1u : 0u,
+    // Always widescreen, whatever the display's shape. On a 4:3 television
+    // the title has the console's scaler letterbox its races (Device::Reset
+    // with a scaler source rectangle and output size) and uses the 4:3 pixel
+    // aspect. The native presentation letterboxes the 16:9 picture itself.
+    return {mode_.width, mode_.height, 0, 1, mode_.height >= 720 ? 1u : 0u,
             std::bit_cast<uint32_t>(mode_.refresh_hz), 1, 0x4a, 1, 0, 0, 0};
 }
 

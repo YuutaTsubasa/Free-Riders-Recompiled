@@ -49,13 +49,17 @@ static void exact_protocol_layout() {
 
 static void derived_flags() {
     sfr::GuestMemory memory;
-    for (auto value : std::array<std::pair<sfr::DisplayMode, std::array<uint32_t, 2>>, 4>{
-             std::pair{sfr::DisplayMode{640, 480, 60.0f, false}, std::array<uint32_t, 2>{0, 0}},
-             std::pair{sfr::DisplayMode{1024, 768, 75.0f, false}, std::array<uint32_t, 2>{0, 1}},
+    // Widescreen whatever the display's shape (4:3, 5:4, portrait): the
+    // title's 4:3 path resets the device with scaler parameters (issue #365).
+    for (auto value : std::array<std::pair<sfr::DisplayMode, std::array<uint32_t, 2>>, 6>{
+             std::pair{sfr::DisplayMode{640, 480, 60.0f, false}, std::array<uint32_t, 2>{1, 0}},
+             std::pair{sfr::DisplayMode{1024, 768, 75.0f, false}, std::array<uint32_t, 2>{1, 1}},
              std::pair{sfr::DisplayMode{1280, 720, 120.0f, false}, std::array<uint32_t, 2>{1, 1}},
-             std::pair{sfr::DisplayMode{1280, 960, 30.0f, false}, std::array<uint32_t, 2>{0, 1}}}) {
+             std::pair{sfr::DisplayMode{1280, 960, 30.0f, false}, std::array<uint32_t, 2>{1, 1}},
+             std::pair{sfr::DisplayMode{1280, 1024, 60.0f, false}, std::array<uint32_t, 2>{1, 1}},
+             std::pair{sfr::DisplayMode{1080, 2424, 60.0f, false}, std::array<uint32_t, 2>{1, 1}}}) {
         const auto words = sfr::VideoMode(memory, value.first).snapshot();
-        require(words[3] == value.second[0] && words[4] == value.second[1], "aspect and HD flags use exact boundaries");
+        require(words[3] == value.second[0] && words[4] == value.second[1], "always widescreen; HD flag uses its exact boundary");
         require(words[5] == std::bit_cast<uint32_t>(value.first.refresh_hz), "refresh keeps exact float bits");
     }
 }
