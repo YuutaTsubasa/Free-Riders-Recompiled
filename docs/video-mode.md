@@ -16,7 +16,7 @@ The output is twelve big-endian words:
 | --- | --- |
 | 0,4 | Current host width,height |
 | 8 | Interlaced (currently only progressive0 accepted) |
-| 12 | Widescreen: host pixel aspect strictly wider than4:3 |
+| 12 | Widescreen: always1 (see "Always widescreen" below) |
 | 16 | High definition: host height at least720 pixels |
 | 20 | Host refresh frequency encoded as IEEE754 float |
 | 24 | Video standard1 |
@@ -24,6 +24,10 @@ The output is twelve big-endian words:
 | 36,40,44 | Reserved zero |
 
 Standard1 and the two compatibility words retain the reference guest protocol profile; they do not report detected TV circuitry or establish the semantics of undocumented fields. Aspect/HD classification is an explicit native policy. Dimensions must be1..16384 and refresh finite, greater than1 and at most1000Hz. This is current-display information, not a claim that a guest render target or swap chain has been created. A future presentation backend must account for target-monitor selection and mode changes consistently.
+
+## Always widescreen
+
+The widescreen word is always 1, whatever the host display's shape (issue #365). With 0, `sub_82211288` fills the title's race presentation parameters with a scaler source rectangle of 880x720 and an output size of width x width*9/16, so that the console's scaler letterboxes the race on a 4:3 television, and `sub_82818C20` picks the 4:3 pixel aspect. The native device has no such scaler: its `Device::Reset` stopped the game at the start of a race (`STOP native-graphics-reset`, `word=26 wanted=0x370`) on any display not wider than 4:3, such as 1024x768, 1280x1024 or a portrait panel. The native presentation letterboxes the 16:9 picture in a window of another shape itself, so the title only ever needs its widescreen path.
 
 The exact name/address handler executes after the existing reservation guard. The void import preserves every PPC register, including r3. A full48-byte checked-write preflight occurs before output stores, so mapping, read-only, import guard and reservation failures cannot partially update the buffer. Null output stops. Unknown imports still stop.
 
