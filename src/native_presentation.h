@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -97,6 +98,21 @@ public:
     // resolves that sample it: no copy, where the next write replaces all of
     // it. False when no spare is free.
     bool replace_target_attachment(bool depth, const std::function<bool(const plume::RenderTexture*)>& in_use);
+    // Gives the current target (a surface or the framebuffer) fresh colour
+    // and/or depth textures (spares not in_use) and draws what the old ones
+    // hold into them as the first draw of its next pass, keeping the old ones
+    // for the resolves that sample them: where a copy would follow, without
+    // one (SFR_CARRY_RESOLVES, Vulkan). False, with nothing done, when it
+    // cannot: no free spare, or a depth whose stencil may hold anything but
+    // zeros, or that is not a float depth.
+    // release, when every spare is read: frees one of them (by copying out
+    // the resolves that read it) and returns its index, or -1.
+    using SpareRelease = std::function<int(const std::vector<const plume::RenderTexture*>& spares)>;
+    bool carry_target_attachments(bool color, bool depth, const std::function<bool(const plume::RenderTexture*)>& in_use,
+                                  const SpareRelease& release = {});
+    // What a resolve out of the current target aliases: the surface, or the
+    // framebuffer when its resolves are carried; null when they are copied at once.
+    [[nodiscard]] const void* resolve_identity() const noexcept;
     // A draw into the current surface tests or writes its stencil.
     void note_stencil_use() noexcept;
     // What the first record of a draw does, done before the draw looks up
@@ -106,11 +122,19 @@ public:
     // Records made between these (a resolve's own barriers and copies) do
     // not write the current surface, so they leave its resolves aliased.
     // SFR_GPU_TIMING=2, from inside a record: a resolve's copy starts here
-    // (copy), or the current target's next render pass does (!copy).
-    void mark_gpu_pass(bool copy);
+    // (copy names it; empty: by the target bound), or the current target's
+    // next render pass does (null).
+    void mark_gpu_pass(const char* copy);
     void begin_non_writing_records() noexcept;
     void end_non_writing_records() noexcept;
     [[nodiscard]] std::pair<uint32_t, uint32_t> target_size() const noexcept;
+    // SFR_PASS_TRACE=<present>: that present's draws, clears and resolves,
+    // one PASS_TRACE line each, to see which pass reads what (Issue #176).
+    // pass_trace_frame is told each present's number.
+    [[nodiscard]] static bool pass_trace_active() noexcept;
+    static void pass_trace_frame(uint32_t present) noexcept;
+    // "fb", or the current surface's pixel size and identity.
+    [[nodiscard]] std::string target_trace_name() const;
     // Tightly packed BGRA at render_width() x render_height().
     [[nodiscard]] std::vector<uint8_t> readback_color();
     // Presents the framebuffer. When the frame only drew into the top-left

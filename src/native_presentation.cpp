@@ -70,6 +70,10 @@
 #include "blit_ps_dxil.h"
 #include "blit_vs_spirv.h"
 #include "blit_ps_spirv.h"
+#include "carry_vs_spirv.h"
+#include "carry_color_ps_spirv.h"
+#include "carry_depth_ps_spirv.h"
+#include "carry_both_ps_spirv.h"
 #include "model_vs_spirv.h"
 #include "model_ps_spirv.h"
 #ifdef _WIN32
@@ -304,6 +308,50 @@ struct NativePresentation::Impl {
         uint8_t reading = 0;
         uint16_t pass_category = 0;  // SFR_GPU_TIMING=2
     };
+    // The framebuffer's side of the same (its textures are color and depth
+    // below): spares, a framebuffer per pairing, what is being read and
+    // whether its stencil may hold anything but zeros. Its identity names the
+    // framebuffer to the renderer's resolves (resolve_identity).
+    SurfaceTarget fb_state;
+    // Asking side: the framebuffer of the framebuffer's textures attached now.
+    plume::RenderFramebuffer* fb_current = nullptr;
+    SurfaceTarget& state_of(SurfaceTarget* surface) { return surface ? *surface : fb_state; }
+    std::unique_ptr<plume::RenderTexture>& color_of(SurfaceTarget* surface) { return surface ? surface->color : color; }
+    std::unique_ptr<plume::RenderTexture>& depth_of(SurfaceTarget* surface) { return surface ? surface->depth : depth; }
+    // The layout the framebuffer's colour rests in between passes: sampled
+    // while a resolve reads it in place.
+    plume::RenderTextureLayout color_rest_layout() const {
+        return (fb_state.reading & 1) ? plume::RenderTextureLayout::SHADER_READ : plume::RenderTextureLayout::COLOR_WRITE;
+    }
+    // SFR_CARRY_RESOLVES (on unless 0; Vulkan only, Issue #176): when a
+    // target is written again while a resolve still reads its colour or depth
+    // in place, the target takes a fresh texture and the first draw of its
+    // next pass draws the old one into it (carry_target_attachments), instead
+    // of a copy out to the resolve's own texture and the pass loading the old
+    // one again. A race frame's scene colour and depth, and its colour before
+    // the bloom, were copied that way at full size each frame.
+    bool carry_enabled() const {
+        static const bool on = [this] {
+            const char* t = std::getenv("SFR_CARRY_RESOLVES");
+            const bool enabled = graphics->backend() == GraphicsBackend::vulkan && (!t || *t != '0');
+            std::cerr << "NATIVE_CARRY_RESOLVES enabled=" << enabled << '\n';
+            return enabled;
+        }();
+        return on;
+    }
+    std::unique_ptr<plume::RenderShader> carry_vertex;
+    std::array<std::unique_ptr<plume::RenderShader>, 3> carry_pixel;
+    std::unique_ptr<plume::RenderPipelineLayout> carry_layout;
+    // Colour, depth, both: index (1 colour | 2 depth) - 1.
+    std::array<std::unique_ptr<plume::RenderPipeline>, 3> carry_pipelines;
+    plume::RenderDescriptorSetBuilder carry_color_builder, carry_depth_builder;
+    // A view and a set for each texture carried from, made once.
+    std::map<const plume::RenderTexture*, std::pair<std::unique_ptr<plume::RenderTextureView>,
+                                                    std::unique_ptr<plume::RenderDescriptorSet>>> carry_sets;
+    bool carry_tried = false;
+    bool build_carry();
+    plume::RenderFramebuffer* attached_framebuffer(SurfaceTarget* surface);
+    plume::RenderDescriptorSet* carry_set(plume::RenderTexture* texture, bool depth_aspect);
     std::function<void(const void*)> before_surface_write;
     // Asking side, before a draw or clear records into the current target:
     // copies out what was resolved from it and makes it writable again. The
@@ -313,9 +361,52 @@ struct NativePresentation::Impl {
     // target (1 colour, 2 depth and stencil), so a resolve aliased to that
     // part needs no copy (replace_target_attachment).
     uint8_t write_replaces = 0;
+    // SFR_DEFER_CLEARS (on unless 0, Issue #176): a clear of the whole
+    // framebuffer waits for the framebuffer's next use. A race frame clears it
+    // first and then draws its shadows into a surface of their own: recorded
+    // at once, that clear was a render pass of its own that a tiling GPU
+    // (Mali) wrote out to memory in full, only for the scene's pass to read it
+    // all back. Waiting, it is the scene pass's first clear, and with
+    // SFR_CLEAR_LOAD_OPS that pass's load operation.
+    static bool defer_clears() {
+        static const bool on = [] {
+            const char* t = std::getenv("SFR_DEFER_CLEARS");
+            const bool enabled = !t || *t != '0';
+            std::cerr << "NATIVE_DEFER_CLEARS enabled=" << enabled << '\n';
+            return enabled;
+        }();
+        return on;
+    }
+    std::optional<NativeClear> deferred_clear;
+    // Asking side: records the waiting clear into the framebuffer, ahead of
+    // whatever uses the framebuffer next.
+    void emit_deferred_clear() {
+        if (!deferred_clear) return;
+        const NativeClear clear = *deferred_clear;
+        deferred_clear.reset();
+        SurfaceTarget* const current = target;
+        target = nullptr;
+        // A resolve still reading the framebuffer in place: what the clear
+        // replaces needs no copy (replace_target_attachment).
+        write_replaces = (clear.color ? 1 : 0) | (clear.depth && clear.stencil ? 2 : 0);
+        prepare_write();
+        write_replaces = 0;
+        drain();
+        ensure_open();
+        bind(nullptr);
+        apply_raster();
+        if (clear.color) {
+            const auto& c = clear.color_value;
+            command_list->clearColor(0, plume::RenderColor(c[0], c[1], c[2], c[3]), nullptr, 0);
+        }
+        if (clear.depth || clear.stencil)
+            command_list->clearDepthStencil(clear.depth, clear.stencil, clear.depth_value, clear.stencil_value, nullptr, 0);
+        target = current;
+    }
     void prepare_write() {
-        if (non_writing || !target || !target->reading) return;
-        SurfaceTarget* const surface = target;
+        if (non_writing) return;
+        SurfaceTarget* const surface = &state_of(target);
+        if (!surface->reading) return;
         const uint8_t reading = surface->reading;
         surface->reading = 0;
         if (before_surface_write) before_surface_write(surface);
@@ -330,7 +421,7 @@ struct NativePresentation::Impl {
                 if (gpu_pass_timing()) impl->mark_pass(impl->bound_category());
             }
         };
-        const Writable writable{(reading & 1) ? surface->color.get() : nullptr, (reading & 2) ? surface->depth.get() : nullptr, this};
+        const Writable writable{(reading & 1) ? color_of(target).get() : nullptr, (reading & 2) ? depth_of(target).get() : nullptr, this};
         enqueue_body(writable);
     }
     template <class Body> void enqueue_body(const Body& body) {
@@ -362,7 +453,7 @@ struct NativePresentation::Impl {
             }
             command_list->setFramebuffer(next->recording_framebuffer);
         } else {
-            command_list->setFramebuffer(framebuffer.get());
+            command_list->setFramebuffer(fb_state.recording_framebuffer);
         }
         bound = next;
         if (gpu_pass_timing()) mark_pass(bound_category());
@@ -536,6 +627,27 @@ struct NativePresentation::Impl {
     void read_touch_controls();
 #endif
     std::unique_ptr<plume::RenderDescriptorSet> blit_texture, blit_sampler;
+    // The present samples whichever texture is the framebuffer's colour now
+    // (carry_target_attachments swaps it): a set for each, made once, since
+    // a set the frame in flight uses cannot be written.
+    const plume::RenderTexture* blit_color = nullptr;
+    std::map<const plume::RenderTexture*, std::pair<std::unique_ptr<plume::RenderTextureView>,
+                                                    std::unique_ptr<plume::RenderDescriptorSet>>> blit_sets;
+    plume::RenderDescriptorSet* blit_set() {
+        if (color.get() == blit_color) return blit_texture.get();
+        auto& entry = blit_sets[color.get()];
+        if (!entry.second) {
+            entry.first = color->createTextureView(plume::RenderTextureViewDesc::Texture2D(plume::RenderFormat::B8G8R8A8_UNORM));
+            plume::RenderDescriptorSetBuilder textures;
+            textures.begin();
+            textures.addTexture(0);
+            textures.end();
+            entry.second = textures.create(&graphics->device());
+            if (!entry.first || !entry.second) unavailable("blit texture set");
+            entry.second->setTexture(0, color.get(), plume::RenderTextureLayout::SHADER_READ, entry.first.get());
+        }
+        return entry.second.get();
+    }
     std::unique_ptr<plume::RenderSampler> blit_sampler_object;
     std::unique_ptr<plume::RenderTextureView> blit_view;
     std::vector<std::unique_ptr<plume::RenderFramebuffer>> blit_targets;
@@ -578,7 +690,14 @@ struct NativePresentation::Impl {
         blit_vertex.reset();
         blit_pixel.reset();
         surfaces.clear();
+        carry_pipelines = {};
+        carry_layout.reset();
+        carry_sets.clear();
+        blit_sets.clear();
+        fb_state.framebuffers.clear();
         framebuffer.reset();
+        fb_state.spare_color.clear();
+        fb_state.spare_depth.clear();
         depth.reset();
         color.reset();
 #ifdef _WIN32
@@ -856,6 +975,7 @@ struct NativePresentation::Impl {
         render_thread.join();
     }
     void enqueue(NativePresentation::RecordFunction function, const void* payload, size_t bytes) {
+        if (!target) emit_deferred_clear();
         prepare_write();
         if (!render_thread_enabled()) {
             ensure_open();
@@ -952,13 +1072,32 @@ struct NativePresentation::Impl {
         timing.pool->queryResults();
         const uint64_t* r = timing.pool->getResults();
         if (!r) return;
+        // The framebuffer's passes one by one (fb1, fb2...), in the list's
+        // order: a race splits it at each resolve (Issue #176).
+        std::array<uint16_t, 8> numbered{};
+        for (size_t i = 0; i < numbered.size(); ++i) numbered[i] = pass_category("fb" + std::to_string(i + 1));
         std::lock_guard lock(pass_mutex);
+        size_t framebuffer_spans = 0;
         for (uint32_t i = 0; i < timing.used; ++i) {
             if (r[i + 1] < r[i]) continue;
-            pass_ms[timing.category[i]] += double(r[i + 1] - r[i]) / 1e6;
-            ++pass_spans[timing.category[i]];
+            uint16_t category = timing.category[i];
+            if (category == fb_category) category = numbered[(std::min)(framebuffer_spans++, numbered.size() - 1)];
+            pass_ms[category] += double(r[i + 1] - r[i]) / 1e6;
+            ++pass_spans[category];
         }
         if (++pass_lists < 120) return;
+        // This list's passes in order, as a race's frame runs them.
+        std::string spans = "GPU_PASS_ORDER";
+        size_t framebuffer_order = 0;
+        for (uint32_t i = 0; i < timing.used; ++i) {
+            if (r[i + 1] < r[i]) continue;
+            uint16_t category = timing.category[i];
+            if (category == fb_category) category = numbered[(std::min)(framebuffer_order++, numbered.size() - 1)];
+            char span[96];
+            std::snprintf(span, sizeof span, " %s=%.2f", pass_names[category].c_str(), double(r[i + 1] - r[i]) / 1e6);
+            spans += span;
+        }
+        std::cerr << spans << char(10);
         std::vector<size_t> order(pass_names.size());
         for (size_t i = 0; i < order.size(); ++i) order[i] = i;
         std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return pass_ms[a] > pass_ms[b]; });
@@ -1054,11 +1193,15 @@ struct NativePresentation::Impl {
     void ensure_open() {
         if (open) return;
         begin_list();
+        // What a resolve reads in place stays sampled (prepare_write makes it
+        // writable before the framebuffer's next write).
         std::array<plume::RenderTextureBarrier, 2> barriers{
-            plume::RenderTextureBarrier(color.get(), plume::RenderTextureLayout::COLOR_WRITE),
-            plume::RenderTextureBarrier(depth.get(), plume::RenderTextureLayout::DEPTH_WRITE)};
+            plume::RenderTextureBarrier(color.get(), color_rest_layout()),
+            plume::RenderTextureBarrier(depth.get(), (fb_state.reading & 2) ? plume::RenderTextureLayout::SHADER_READ
+                                                                            : plume::RenderTextureLayout::DEPTH_WRITE)};
         command_list->barriers(plume::RenderBarrierStage::GRAPHICS, barriers.data(), 2);
-        command_list->setFramebuffer(framebuffer.get());
+        fb_state.recording_framebuffer = fb_current;
+        command_list->setFramebuffer(fb_current);
         bound = nullptr;
         open = true;
         if (gpu_pass_timing()) mark_pass(fb_category);
@@ -1158,6 +1301,7 @@ void NativePresentation::Impl::build_blit() {
     if (!blit_sampler_object || !blit_view) unavailable("blit sampler");
     blit_sampler->setSampler(0, blit_sampler_object.get());
     blit_texture->setTexture(0, color.get(), plume::RenderTextureLayout::SHADER_READ, blit_view.get());
+    blit_color = color.get();
 
     plume::RenderGraphicsPipelineDesc pipeline_desc;
     pipeline_desc.pipelineLayout = blit_layout.get();
@@ -1700,6 +1844,11 @@ NativePresentation::NativePresentation(NativeGraphics& graphics, uint32_t width,
     implementation->spare_fence = graphics.device().createCommandFence();
     if (!implementation->spare_list || !implementation->spare_fence) unavailable("spare command list");
     if (!implementation->framebuffer) unavailable("framebuffer");
+    implementation->fb_current = implementation->fb_state.recording_framebuffer = implementation->framebuffer.get();
+    implementation->fb_state.width = implementation->render_width;
+    implementation->fb_state.height = implementation->render_height;
+    // Never cleared yet: its stencil holds whatever the memory did.
+    implementation->fb_state.stencil_used = true;
     if (implementation->framebuffer->getWidth() != implementation->render_width || implementation->framebuffer->getHeight() != implementation->render_height)
         unavailable("framebuffer");
     if (!implementation->command_list) unavailable("command list");
@@ -1749,10 +1898,20 @@ void NativePresentation::clear(const NativeClear& clear, std::span<const plume::
     if (!clear.color && !clear.depth && !clear.stencil) return;
     NativeClear effective = clear;
     uint8_t replaces = 0;
+    const bool whole = rectangles.empty() || std::any_of(rectangles.begin(), rectangles.end(), [&, w = logical_width, h = logical_height](const auto& r) {
+        return r.left <= 0 && r.top <= 0 && uint32_t(r.right) >= w && uint32_t(r.bottom) >= h;
+    });
+    if (!impl_->target) {
+        // The framebuffer's stencil holds only zeros after a whole clear to zero.
+        auto& state = impl_->fb_state;
+        if (clear.stencil) state.stencil_used = !(whole && clear.stencil_value == 0);
+        if (whole && clear.depth && !clear.stencil && !state.stencil_used) {
+            effective.stencil = true;
+            effective.stencil_value = 0;
+        }
+        if (whole) replaces = (effective.color ? 1 : 0) | (effective.depth && effective.stencil ? 2 : 0);
+    }
     if (auto* surface = impl_->target) {
-        const bool whole = rectangles.empty() || std::any_of(rectangles.begin(), rectangles.end(), [&, w = logical_width, h = logical_height](const auto& r) {
-            return r.left <= 0 && r.top <= 0 && uint32_t(r.right) >= w && uint32_t(r.bottom) >= h;
-        });
         if (clear.stencil) surface->stencil_used = true;
         // A stencil nothing has used still holds zeros: clearing it to zero
         // with the depth changes nothing, and lets the clear replace both.
@@ -1761,6 +1920,20 @@ void NativePresentation::clear(const NativeClear& clear, std::span<const plume::
             effective.stencil_value = 0;
         }
         if (whole) replaces = (effective.color ? 1 : 0) | (effective.depth && effective.stencil ? 2 : 0);
+    } else if (whole && Impl::defer_clears()) {
+        // All of the framebuffer: kept for its next use (defer_clears), on
+        // top of what an earlier waiting clear does.
+        auto& waiting = impl_->deferred_clear;
+        if (!waiting) waiting.emplace();
+        if (effective.color) { waiting->color = true; waiting->color_value = effective.color_value; }
+        if (effective.depth) { waiting->depth = true; waiting->depth_value = effective.depth_value; }
+        if (effective.stencil) { waiting->stencil = true; waiting->stencil_value = effective.stencil_value; }
+        if (pass_trace_active())
+            std::cerr << "PASS_TRACE clear target=fb deferred color=" << effective.color << " depth=" << effective.depth
+                      << " stencil=" << effective.stencil << '\n';
+        return;
+    } else {
+        impl_->emit_deferred_clear();
     }
 
     impl_->drain();
@@ -1777,6 +1950,10 @@ void NativePresentation::clear(const NativeClear& clear, std::span<const plume::
         rectangles = scaled;
     }
 
+    if (pass_trace_active())
+        std::cerr << "PASS_TRACE clear target=" << target_trace_name() << " color=" << effective.color
+                  << " depth=" << effective.depth << " stencil=" << effective.stencil << " rects=" << rectangles.size()
+                  << " whole=" << whole << " replaces=" << int(replaces) << '\n';
     impl_->write_replaces = replaces;
     impl_->prepare_write();
     impl_->write_replaces = 0;
@@ -1800,6 +1977,7 @@ void NativePresentation::record_async_raw(RecordFunction function, const void* p
 
 void NativePresentation::record(const std::function<void(plume::RenderCommandList&)>& body) {
     impl_->refuse_during_gpu_wait();
+    if (!impl_->target) impl_->emit_deferred_clear();
     impl_->prepare_write();
     impl_->drain();
     impl_->ensure_open();
@@ -1906,11 +2084,15 @@ plume::RenderTexture& NativePresentation::target_depth() {
 
 const void* NativePresentation::target_identity() const noexcept { return impl_->target; }
 
-void NativePresentation::mark_gpu_pass(bool copy) {
+void NativePresentation::mark_gpu_pass(const char* copy) {
     if (!Impl::gpu_pass_timing()) return;
     const uint16_t bound = impl_->bound_category();
     if (!copy) {
         impl_->mark_pass(bound);
+        return;
+    }
+    if (*copy) {
+        impl_->mark_pass(impl_->pass_category(copy));
         return;
     }
     // Charged to the target bound at the copy: the framebuffer's own copies
@@ -1932,7 +2114,12 @@ void NativePresentation::begin_non_writing_records() noexcept { ++impl_->non_wri
 void NativePresentation::end_non_writing_records() noexcept { --impl_->non_writing; }
 
 void NativePresentation::mark_target_read(bool color, bool depth) {
-    if (impl_->target) impl_->target->reading |= (color ? 1 : 0) | (depth ? 2 : 0);
+    impl_->state_of(impl_->target).reading |= (color ? 1 : 0) | (depth ? 2 : 0);
+}
+
+const void* NativePresentation::resolve_identity() const noexcept {
+    if (impl_->target) return impl_->target;
+    return impl_->carry_enabled() ? &impl_->fb_state : nullptr;
 }
 
 void NativePresentation::prepare_surface_write() {
@@ -1943,43 +2130,72 @@ void NativePresentation::prepare_surface_write() {
 uint8_t NativePresentation::write_replaces() const noexcept { return impl_->write_replaces; }
 
 void NativePresentation::note_stencil_use() noexcept {
-    if (impl_->target) impl_->target->stencil_used = true;
+    impl_->state_of(impl_->target).stencil_used = true;
+}
+
+namespace {
+// A texture of the target's spares that no resolve reads (in_use), made when
+// there is none and fewer than most_spares (spares_for). Null when none is free.
+std::unique_ptr<plume::RenderTexture>* free_spare(sfr::NativeGraphics& graphics,
+                                                  std::vector<std::unique_ptr<plume::RenderTexture>>& spares, bool depth,
+                                                  uint32_t width, uint32_t height, size_t most_spares,
+                                                  const std::function<bool(const plume::RenderTexture*)>& in_use,
+                                                  const NativePresentation::SpareRelease* release = nullptr) {
+    auto free = std::find_if(spares.begin(), spares.end(), [&](const auto& spare) { return !in_use(spare.get()); });
+    if (free != spares.end()) return &*free;
+    if (spares.size() >= most_spares) {
+        // All read: the caller may free one (copying out what reads it).
+        if (!release || !*release) return nullptr;
+        std::vector<const plume::RenderTexture*> textures;
+        for (const auto& spare : spares) textures.push_back(spare.get());
+        const int freed = (*release)(textures);
+        return freed < 0 ? nullptr : &spares[size_t(freed)];
+    }
+    auto& device = graphics.device();
+    auto made = depth ? device.createTexture(plume::RenderTextureDesc::DepthTarget(width, height, graphics.depth_format()))
+                      : device.createTexture(plume::RenderTextureDesc::ColorTarget(width, height, plume::RenderFormat::B8G8R8A8_UNORM));
+    if (!made) return nullptr;
+    spares.push_back(std::move(made));
+    return &spares.back();
+}
+}
+
+// The framebuffer of the target's textures attached now (asking side), made
+// the first time that pairing is attached.
+// Three textures in all cover the framebuffer and the shadow surface, each
+// resolved twice before either resolve is done with (the scene colour, then the
+// colour before the bloom; the two shadow maps). The bloom's small surfaces
+// keep up to eight of their resolves at once (a race's 110x90 one).
+static size_t spares_for(const void* surface) { return surface ? 8 : 2; }
+
+plume::RenderFramebuffer* NativePresentation::Impl::attached_framebuffer(SurfaceTarget* surface) {
+    auto& state = state_of(surface);
+    auto& framebuffer = state.framebuffers[{color_of(surface).get(), depth_of(surface).get()}];
+    if (!framebuffer) {
+        const plume::RenderTexture* attachment = color_of(surface).get();
+        framebuffer = graphics->device().createFramebuffer(plume::RenderFramebufferDesc(&attachment, 1, depth_of(surface).get()));
+        if (!framebuffer) throw std::runtime_error("render target framebuffer creation failed");
+    }
+    if (!surface) fb_current = framebuffer.get();
+    return framebuffer.get();
 }
 
 bool NativePresentation::replace_target_attachment(bool depth, const std::function<bool(const plume::RenderTexture*)>& in_use) {
     auto* surface = impl_->target;
-    if (!surface) return false;
-    auto& attached = depth ? surface->depth : surface->color;
-    auto& spares = depth ? surface->spare_depth : surface->spare_color;
-    // Three in all: the attachment and two spares cover a surface resolved
-    // twice a frame (the shadow pass), each resolve sampled until the next.
-    constexpr size_t most_spares = 2;
-    auto free = std::find_if(spares.begin(), spares.end(), [&](const auto& spare) { return !in_use(spare.get()); });
-    if (free == spares.end()) {
-        if (spares.size() >= most_spares) return false;
-        auto& device = impl_->graphics->device();
-        auto made = depth ? device.createTexture(plume::RenderTextureDesc::DepthTarget(surface->width, surface->height,
-                                                                                       impl_->graphics->depth_format()))
-                          : device.createTexture(plume::RenderTextureDesc::ColorTarget(surface->width, surface->height,
-                                                                                       plume::RenderFormat::B8G8R8A8_UNORM));
-        if (!made) return false;
-        spares.push_back(std::move(made));
-        free = spares.end() - 1;
-    }
+    auto& state = impl_->state_of(surface);
+    auto& attached = depth ? impl_->depth_of(surface) : impl_->color_of(surface);
+    auto* free = free_spare(*impl_->graphics, depth ? state.spare_depth : state.spare_color, depth, state.width,
+                            state.height, spares_for(surface), in_use);
+    if (!free) return false;
     std::swap(attached, *free);
-    auto& framebuffer = surface->framebuffers[{surface->color.get(), surface->depth.get()}];
-    if (!framebuffer) {
-        const plume::RenderTexture* color = surface->color.get();
-        framebuffer = impl_->graphics->device().createFramebuffer(plume::RenderFramebufferDesc(&color, 1, surface->depth.get()));
-        if (!framebuffer) throw std::runtime_error("render surface framebuffer creation failed");
-    }
+    plume::RenderFramebuffer* const framebuffer = impl_->attached_framebuffer(surface);
     // Both attachments writable before they are bound (D3D12 checks a
     // framebuffer's layouts when it is set): a spare is new or was sampled,
     // and the other attachment may be laid out for a resolve of its own.
     // The texture taken off stays sampled: an earlier swap of the other
     // attachment may have made it writable.
     struct Attach {
-        Impl::SurfaceTarget* surface;
+        Impl::SurfaceTarget* state;
         plume::RenderFramebuffer* framebuffer;
         plume::RenderTexture* color;
         plume::RenderTexture* depth;
@@ -1990,16 +2206,174 @@ bool NativePresentation::replace_target_attachment(bool depth, const std::functi
                 plume::RenderTextureBarrier(depth, plume::RenderTextureLayout::DEPTH_WRITE),
                 plume::RenderTextureBarrier(released, plume::RenderTextureLayout::SHADER_READ)};
             list.barriers(plume::RenderBarrierStage::GRAPHICS, barriers.data(), uint32_t(barriers.size()));
-            surface->recording_framebuffer = framebuffer;
+            state->recording_framebuffer = framebuffer;
             list.setFramebuffer(framebuffer);
         }
     };
-    impl_->enqueue_body(Attach{surface, framebuffer.get(), surface->color.get(), surface->depth.get(), free->get()});
+    impl_->enqueue_body(Attach{&state, framebuffer, impl_->color_of(surface).get(), impl_->depth_of(surface).get(), free->get()});
+    return true;
+}
+
+bool NativePresentation::Impl::build_carry() {
+    if (carry_tried) return bool(carry_pipelines[2]);
+    carry_tried = true;
+    auto& device = graphics->device();
+    carry_vertex = device.createShader(carry_vs_spirv, sizeof(carry_vs_spirv), "vertexMain", plume::RenderShaderFormat::SPIRV);
+    carry_pixel[0] = device.createShader(carry_color_ps_spirv, sizeof(carry_color_ps_spirv), "colorMain", plume::RenderShaderFormat::SPIRV);
+    carry_pixel[1] = device.createShader(carry_depth_ps_spirv, sizeof(carry_depth_ps_spirv), "depthMain", plume::RenderShaderFormat::SPIRV);
+    carry_pixel[2] = device.createShader(carry_both_ps_spirv, sizeof(carry_both_ps_spirv), "bothMain", plume::RenderShaderFormat::SPIRV);
+    if (!carry_vertex || !carry_pixel[0] || !carry_pixel[1] || !carry_pixel[2]) return false;
+    plume::RenderPipelineLayoutBuilder layout;
+    layout.begin(false, true);
+    carry_color_builder.begin();
+    carry_color_builder.addTexture(0);
+    carry_color_builder.end();
+    layout.addDescriptorSet(carry_color_builder);
+    carry_depth_builder.begin();
+    carry_depth_builder.addTexture(1);
+    carry_depth_builder.end();
+    layout.addDescriptorSet(carry_depth_builder);
+    layout.end();
+    carry_layout = layout.create(&device);
+    if (!carry_layout) return false;
+    for (int aspects = 1; aspects <= 3; ++aspects) {
+        plume::RenderGraphicsPipelineDesc desc;
+        desc.pipelineLayout = carry_layout.get();
+        desc.vertexShader = carry_vertex.get();
+        desc.pixelShader = carry_pixel[aspects - 1].get();
+        desc.primitiveTopology = plume::RenderPrimitiveTopology::TRIANGLE_LIST;
+        desc.cullMode = plume::RenderCullMode::NONE;
+        desc.renderTargetCount = 1;
+        desc.renderTargetFormat[0] = plume::RenderFormat::B8G8R8A8_UNORM;
+        desc.renderTargetBlend[0] = plume::RenderBlendDesc::Copy();
+        if (!(aspects & 1)) desc.renderTargetBlend[0].renderTargetWriteMask = 0;
+        desc.depthTargetFormat = graphics->depth_format();
+        desc.depthEnabled = desc.depthWriteEnabled = (aspects & 2) != 0;
+        desc.depthFunction = plume::RenderComparisonFunction::ALWAYS;
+        carry_pipelines[aspects - 1] = device.createGraphicsPipeline(desc);
+        if (!carry_pipelines[aspects - 1]) return false;
+    }
+    std::cerr << "NATIVE_CARRY_RESOLVES pipelines=3\n";
+    return true;
+}
+
+plume::RenderDescriptorSet* NativePresentation::Impl::carry_set(plume::RenderTexture* texture, bool depth_aspect) {
+    auto& entry = carry_sets[texture];
+    if (!entry.second) {
+        entry.first = texture->createTextureView(plume::RenderTextureViewDesc::Texture2D(
+            depth_aspect ? graphics->depth_format() : plume::RenderFormat::B8G8R8A8_UNORM));
+        entry.second = (depth_aspect ? carry_depth_builder : carry_color_builder).create(&graphics->device());
+        if (!entry.first || !entry.second) return nullptr;
+        entry.second->setTexture(0, texture, plume::RenderTextureLayout::SHADER_READ, entry.first.get());
+    }
+    return entry.second.get();
+}
+
+bool NativePresentation::carry_target_attachments(bool color, bool depth,
+                                                  const std::function<bool(const plume::RenderTexture*)>& in_use,
+                                                  const SpareRelease& release) {
+    if ((!color && !depth) || !impl_->carry_enabled()) return false;
+    auto* surface = impl_->target;
+    auto& state = impl_->state_of(surface);
+    // The depth is drawn back alone: the stencil starts the pass at zero, which
+    // is what it holds only when nothing has drawn or cleared to it since.
+    // Only a float depth comes back exactly.
+    const auto refused = [&](const char* why) {
+        if (pass_trace_active())
+            std::cerr << "PASS_TRACE carry target=" << target_trace_name() << " refused=" << why << '\n';
+        return false;
+    };
+    if (depth && state.stencil_used) return refused("stencil");
+    if (depth && impl_->graphics->depth_format() != plume::RenderFormat::D32_FLOAT_S8_UINT) return refused("depth-format");
+    if (!impl_->build_carry()) return false;
+    auto& graphics = *impl_->graphics;
+    std::unique_ptr<plume::RenderTexture>* color_spare =
+        color ? free_spare(graphics, state.spare_color, false, state.width, state.height, spares_for(surface), in_use, &release) : nullptr;
+    if (color && !color_spare) return refused("no-color-spare");
+    std::unique_ptr<plume::RenderTexture>* depth_spare =
+        depth ? free_spare(graphics, state.spare_depth, true, state.width, state.height, spares_for(surface), in_use, &release) : nullptr;
+    if (depth && !depth_spare) return refused("no-depth-spare");
+    plume::RenderTexture* old_color = nullptr;
+    plume::RenderTexture* old_depth = nullptr;
+    if (color_spare) { std::swap(impl_->color_of(surface), *color_spare); old_color = color_spare->get(); }
+    if (depth_spare) { std::swap(impl_->depth_of(surface), *depth_spare); old_depth = depth_spare->get(); }
+    plume::RenderDescriptorSet* const color_set = old_color ? impl_->carry_set(old_color, false) : nullptr;
+    plume::RenderDescriptorSet* const depth_set = old_depth ? impl_->carry_set(old_depth, true) : nullptr;
+    if ((old_color && !color_set) || (old_depth && !depth_set)) throw std::runtime_error("carry descriptor set creation failed");
+    plume::RenderFramebuffer* const framebuffer = impl_->attached_framebuffer(surface);
+    // Recorded as the first thing of the target's next pass: the fresh
+    // textures are cleared by the pass's load operation (a tiling GPU reads
+    // nothing for them) and the old ones drawn in, pixel for pixel.
+    struct Carry {
+        Impl* impl;
+        Impl::SurfaceTarget* state;
+        plume::RenderFramebuffer* framebuffer;
+        plume::RenderTexture* color;
+        plume::RenderTexture* depth;
+        plume::RenderTexture* old_color;
+        plume::RenderTexture* old_depth;
+        plume::RenderDescriptorSet* color_set;
+        plume::RenderDescriptorSet* depth_set;
+        plume::RenderPipeline* pipeline;
+        uint32_t width, height;
+        void operator()(plume::RenderCommandList& list, uint64_t) const {
+            std::array<plume::RenderTextureBarrier, 4> barriers{};
+            uint32_t count = 0;
+            barriers[count++] = plume::RenderTextureBarrier(color, plume::RenderTextureLayout::COLOR_WRITE);
+            barriers[count++] = plume::RenderTextureBarrier(depth, plume::RenderTextureLayout::DEPTH_WRITE);
+            if (old_color) barriers[count++] = plume::RenderTextureBarrier(old_color, plume::RenderTextureLayout::SHADER_READ);
+            if (old_depth) barriers[count++] = plume::RenderTextureBarrier(old_depth, plume::RenderTextureLayout::SHADER_READ);
+            list.barriers(plume::RenderBarrierStage::GRAPHICS, barriers.data(), count);
+            state->recording_framebuffer = framebuffer;
+            list.setFramebuffer(framebuffer);
+            // As load operations whether or not SFR_CLEAR_LOAD_OPS is on: the
+            // draw below replaces all of what they clear.
+            auto& vulkan = static_cast<plume::VulkanDevice&>(impl->graphics->device());
+            const bool folding = vulkan.foldClearsIntoLoadOps;
+            vulkan.foldClearsIntoLoadOps = true;
+            if (old_color) list.clearColor(0, plume::RenderColor(0.0f, 0.0f, 0.0f, 0.0f));
+            if (old_depth) list.clearDepthStencil(true, true, 1.0f, 0);
+            vulkan.foldClearsIntoLoadOps = folding;
+            const plume::RenderViewport viewport(0.0f, 0.0f, float(width), float(height));
+            const plume::RenderRect scissor(0, 0, int32_t(width), int32_t(height));
+            list.setViewports(&viewport, 1);
+            list.setScissors(&scissor, 1);
+            list.setGraphicsPipelineLayout(impl->carry_layout.get());
+            list.setPipeline(pipeline);
+            if (color_set) list.setGraphicsDescriptorSet(color_set, 0);
+            if (depth_set) list.setGraphicsDescriptorSet(depth_set, 1);
+            list.drawInstanced(3, 1, 0, 0);
+        }
+    };
+    const int aspects = (old_color ? 1 : 0) | (old_depth ? 2 : 0);
+    impl_->enqueue_body(Carry{impl_.get(), &state, framebuffer, impl_->color_of(surface).get(), impl_->depth_of(surface).get(),
+                              old_color, old_depth, color_set, depth_set, impl_->carry_pipelines[aspects - 1].get(),
+                              state.width, state.height});
+    // The title's next draw binds its own layout, sets and pipeline again.
+    ++impl_->list_generation;
+    if (pass_trace_active())
+        std::cerr << "PASS_TRACE carry target=" << target_trace_name() << " color=" << bool(old_color)
+                  << " depth=" << bool(old_depth) << '\n';
     return true;
 }
 
 void NativePresentation::set_before_surface_write(std::function<void(const void*)> callback) {
     impl_->before_surface_write = std::move(callback);
+}
+
+namespace {
+std::atomic<bool> pass_trace_on{false};
+}
+bool NativePresentation::pass_trace_active() noexcept { return pass_trace_on.load(std::memory_order_relaxed); }
+void NativePresentation::pass_trace_frame(uint32_t present) noexcept {
+    static const uint32_t traced = [] { const char* t = std::getenv("SFR_PASS_TRACE"); return t ? uint32_t(std::strtoul(t, nullptr, 10)) : 0u; }();
+    pass_trace_on.store(traced && present == traced, std::memory_order_relaxed);
+}
+std::string NativePresentation::target_trace_name() const {
+    if (!impl_->target) return "fb";
+    char name[64];
+    std::snprintf(name, sizeof name, "s%ux%u@%p", impl_->target->width, impl_->target->height, static_cast<const void*>(impl_->target));
+    return name;
 }
 
 std::pair<uint32_t, uint32_t> NativePresentation::target_size() const noexcept {
@@ -2014,6 +2388,7 @@ std::pair<uint32_t, uint32_t> NativePresentation::presented_area() const noexcep
 }
 
 std::vector<uint8_t> NativePresentation::readback_color() {
+    impl_->emit_deferred_clear();
     constexpr uint32_t bytes_per_pixel = 4;
     if (impl_->graphics->backend() == GraphicsBackend::vulkan) {
         // Plume copies buffers into textures only; the other way is native.
@@ -2033,7 +2408,7 @@ std::vector<uint8_t> NativePresentation::readback_color() {
                                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                static_cast<plume::VulkanBuffer*>(buffer.get())->vk, 1, &region);
         impl_->command_list->barriers(plume::RenderBarrierStage::GRAPHICS,
-            plume::RenderTextureBarrier(impl_->color.get(), plume::RenderTextureLayout::COLOR_WRITE));
+            plume::RenderTextureBarrier(impl_->color.get(), impl_->color_rest_layout()));
         impl_->end_list();
         impl_->execute();
         const auto* mapped = static_cast<const uint8_t*>(buffer->map());
@@ -2097,7 +2472,7 @@ std::vector<uint8_t> NativePresentation::readback_color() {
     static_cast<plume::D3D12CommandList*>(impl_->command_list.get())->d3d->CopyTextureRegion(
         &destination, 0, 0, 0, &source, nullptr);
     impl_->command_list->barriers(plume::RenderBarrierStage::GRAPHICS,
-        plume::RenderTextureBarrier(impl_->color.get(), plume::RenderTextureLayout::COLOR_WRITE));
+        plume::RenderTextureBarrier(impl_->color.get(), impl_->color_rest_layout()));
     impl_->end_list();
     impl_->execute();
 
@@ -2216,6 +2591,7 @@ void NativePresentation::draw_player_model(const AvatarFrameTransform& frame) {
     impl_->refuse_during_gpu_wait();
     impl_->build_model();
     if (!impl_->model_pipeline) return;
+    impl_->emit_deferred_clear();
     impl_->drain();
     impl_->ensure_open();
     impl_->apply_raster();
@@ -2245,6 +2621,7 @@ std::pair<uint32_t, uint32_t> primary_display_size() {
 
 void NativePresentation::present(uint32_t area_width, uint32_t area_height, float display_aspect) {
     impl_->refuse_during_gpu_wait();
+    impl_->emit_deferred_clear();
     impl_->drain();
 
 #if defined(__ANDROID__) || defined(SFR_IOS)
@@ -2418,7 +2795,7 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
         impl_->command_list->setScissors(&scissor, 1);
         impl_->command_list->setGraphicsPipelineLayout(impl_->blit_layout.get());
         impl_->command_list->setPipeline(impl_->blit_pipeline.get());
-        impl_->command_list->setGraphicsDescriptorSet(impl_->blit_texture.get(), 0);
+        impl_->command_list->setGraphicsDescriptorSet(impl_->blit_set(), 0);
         impl_->command_list->setGraphicsDescriptorSet(impl_->blit_sampler.get(), 1);
         // The shown part of the framebuffer (all of it when the game names no
         // area: 0 here would sample its corner texel over the whole window).
@@ -2511,7 +2888,7 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
     impl_->command_list->barriers(plume::RenderBarrierStage::NONE,
         plume::RenderTextureBarrier(swap_texture, plume::RenderTextureLayout::PRESENT));
     impl_->command_list->barriers(plume::RenderBarrierStage::GRAPHICS,
-        plume::RenderTextureBarrier(impl_->color.get(), plume::RenderTextureLayout::COLOR_WRITE));
+        plume::RenderTextureBarrier(impl_->color.get(), impl_->color_rest_layout()));
     impl_->end_list();
     impl_->wait_semaphore = acquired;
     impl_->signal_semaphore = rendered;

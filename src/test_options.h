@@ -71,6 +71,7 @@ namespace test_option_detail {
 inline constexpr TestChoice on[] = {{"1", {"On", "開啟"}}};
 inline constexpr TestChoice off[] = {{"0", {"Off", "關閉"}}};
 inline constexpr TestChoice on_off[] = {{"1", {"On", "開啟"}}, {"0", {"Off", "關閉"}}};
+inline constexpr TestChoice gpu_timing[] = {{"1", {"Frames", "畫格"}}, {"2", {"Frames and passes", "畫格與各 pass"}}};
 inline constexpr TestChoice step_rates[] = {
     {"80", {"80 Hz", "80 Hz"}}, {"90", {"90 Hz", "90 Hz"}}, {"120", {"120 Hz", "120 Hz"}}, {"144", {"144 Hz", "144 Hz"}},
 };
@@ -156,11 +157,29 @@ inline constexpr TestOption table[] = {
     {"SFR_CLEAR_LOAD_OPS", TestGroup::graphics, test_platform::all,
      {"Clear passes at their start", "在繪製階段開始時清除"},
      {"For testing (Vulkan): a clear of a whole target at the start of a render pass is done by the pass itself, "
-      "so a phone GPU does not first read that target from memory. A performance experiment for Mali GPUs at "
-      "high render sizes; compare the GPU timing with it On and at Default.",
+      "so a phone GPU does not first read that target from memory. Off clears after reading it, as before, for "
+      "comparing the picture and the GPU timing.",
       "測試用（Vulkan）：在繪製階段（render pass）開始時清除整個目標，改由該階段本身完成，手機 GPU 就不必先從記憶體讀回該目標。"
-      "這是針對 Mali GPU 在高渲染解析度下的效能實驗；請比較開啟與預設時的 GPU 時間。"},
-     on, "#176"},
+      "關閉是舊的做法（先讀回再清除），用來比較畫面與 GPU 時間。"},
+     off, "#176"},
+    {"SFR_DEFER_CLEARS", TestGroup::graphics, test_platform::all,
+     {"Clear the frame when it is drawn", "畫面要畫時才清除"},
+     {"For testing: when the game clears the whole picture and then first draws something else (the shadows), "
+      "the clear waits for the picture's next drawing instead of being a step of its own that a phone GPU writes "
+      "out in full and reads back. Off clears at once, as before, for comparing the picture and the GPU timing.",
+      "測試用：遊戲清除整個畫面、接著先畫別的東西（陰影）時，清除改等到下一次畫這個畫面時才做，"
+      "不再是單獨一步（手機 GPU 會把它整個寫出再讀回）。關閉是舊的做法（立刻清除），用來比較畫面與 GPU 時間。"},
+     off, "#176"},
+    {"SFR_CARRY_RESOLVES", TestGroup::graphics, test_platform::all,
+     {"Carry copied pictures over", "直接沿用取出的畫面"},
+     {"For testing (Vulkan): when the game copies the picture out to read it and then draws on, the picture stays "
+      "where it was and the drawing goes on in a fresh texture that starts as a copy of it, made in the same step. "
+      "A phone GPU then skips a full copy and a full read of the picture. Off copies it as before, for comparing "
+      "the picture and the GPU timing.",
+      "測試用（Vulkan）：遊戲把畫面取出來讀、接著繼續畫的時候，畫面留在原處，接下來改畫在一張新貼圖上，"
+      "新貼圖在同一步裡先填入原來的畫面。手機 GPU 因此少做一次完整複製和一次完整讀取。"
+      "關閉是舊的做法（複製），用來比較畫面與 GPU 時間。"},
+     off, "#176"},
     {"SFR_TEXTURE_MIPS", TestGroup::graphics, test_platform::all,
      {"Texture mip levels", "貼圖的 mip 層級"},
      {"For testing: textures also get the smaller copies (mip levels) the game stores beside them, so distant "
@@ -276,7 +295,7 @@ inline constexpr TestOption table[] = {
      {"GPU timing", "GPU 時間"},
      {"For testing: writes the GPU's time for the frames into game.log.",
       "測試用：把 GPU 繪製畫格所花的時間寫進 game.log。"},
-     on, "#134"},
+     gpu_timing, "#134, #176"},
     {"SFR_AUDIO_CUES", TestGroup::logging, test_platform::all,
      {"Sound cue IDs", "音效 cue ID"},
      {"For testing: writes every sound and voice line the game asks for into game.log, to report a wrong one.",

@@ -212,6 +212,7 @@ public:
         uint32_t resolve_copies = 0;
         // Resolves left in the texture a full clear swapped out instead.
         uint32_t resolve_swaps = 0;
+        uint32_t resolve_carries = 0;  // carried into the next pass (carry_target_attachments)
         // Textures whose pages were written with their bytes left as they were.
         uint32_t texture_rewrites_same = 0;
         // The bounded descriptor layout (Vulkan without descriptor indexing):
