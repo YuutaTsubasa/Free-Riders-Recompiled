@@ -294,6 +294,8 @@ with [docs/progress.md](docs/progress.md).
   Loading screens no longer load the same textures again every frame, which made them slow on phones (#365). On wide screens, a Damage Survival race's gauge keeps its frame around its fill (#365). Shadow maps are no longer copied each frame, which saves GPU time at high render scales (#176).
 - [v0.10.53 — Direct3D 11 for older graphics chips (experimental)](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.53)
   PCs whose graphics chip has neither a Vulkan nor a Direct3D 12 driver, such as laptops with Intel HD Graphics 4000 or 4600, can now try **Graphics › Graphics backend › Direct3D 11 (experimental)** in the launcher; its shaders come prepared in the Windows download. It has not yet run on a real HD 4000 or 4600 (#359).
+- [v0.10.54 — Less GPU work per race frame on phones](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.54)
+  A race frame no longer clears the whole picture as a step of its own that a phone GPU writes out and reads back; the clear now happens as part of the next drawing. On a Mali tablet this cuts the GPU time per race frame by about 12% at 2.0x render size and about 8% at 1.0x. Both changes can be turned off in the launcher's **Test options › Graphics** (#176).
 
 ## System Requirements
 
