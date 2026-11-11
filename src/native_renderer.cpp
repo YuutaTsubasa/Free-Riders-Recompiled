@@ -488,12 +488,6 @@ struct NativeRenderer::Impl {
     };
     // By surface: destinations still sampling it.
     std::unordered_map<const void*, std::vector<Alias>> pending_aliases;
-    // Each aliased destination's source, and when each destination was last
-    // resolved (resolve_clock): a target short of spares copies out the
-    // resolves of the one read longest ago (materialize_aliases).
-    std::map<uint32_t, Alias> alias_of;
-    std::map<uint32_t, uint64_t> resolved_when;
-    uint64_t resolve_clock = 0;
     uint32_t take_texture_index() {
         uint32_t index;
         if (!free_texture_indices.empty()) {
@@ -587,7 +581,7 @@ struct NativeRenderer::Impl {
     uint32_t draws = 0;
     uint32_t pipelines_created = 0;
     double pipeline_ms = 0;
-    uint32_t ring_flushes = 0, textures_uploaded = 0, resolve_copies = 0, resolve_swaps = 0, resolve_carries = 0, texture_rewrites_same = 0;
+    uint32_t ring_flushes = 0, textures_uploaded = 0, resolve_copies = 0, resolve_swaps = 0, texture_rewrites_same = 0;
     double texture_ms = 0;
     // Two upload rings: while the GPU renders one frame from one, the next
     // frame fills the other (NativePresentation::after_flush).
@@ -1473,7 +1467,6 @@ NativeRenderer::PipelineWork NativeRenderer::take_pipeline_work() noexcept {
     impl_->constant_saved_bytes = 0;
     work.resolve_copies = impl_->resolve_copies;
     work.resolve_swaps = impl_->resolve_swaps;
-    work.resolve_carries = impl_->resolve_carries;
     work.texture_rewrites_same = impl_->texture_rewrites_same;
     work.texture_bytes = impl_->texture_bytes;
     if (auto* bounded = impl_->bounded.get()) {
@@ -1484,7 +1477,7 @@ NativeRenderer::PipelineWork NativeRenderer::take_pipeline_work() noexcept {
         bounded->frame_sets = bounded->frame_writes = 0;
         bounded->frame_ms = 0;
     }
-    impl_->resolve_copies = impl_->resolve_swaps = impl_->resolve_carries = impl_->texture_rewrites_same = 0;
+    impl_->resolve_copies = impl_->resolve_swaps = impl_->texture_rewrites_same = 0;
     impl_->pipelines_created = 0;
     impl_->pipeline_ms = 0;
     impl_->ring_flushes = 0;
@@ -1710,7 +1703,7 @@ uint32_t NativeRenderer::adopt_resolved_target(uint32_t physical, bool depth) {
     const auto format = depth ? impl_->graphics.depth_format() : plume::RenderFormat::B8G8R8A8_UNORM;
     auto* source = depth ? &presentation.target_depth() : &presentation.target_color();
     NonWritingRecords records(presentation);
-    if (const void* surface = presentation.resolve_identity(); surface && aliased_resolves()) {
+    if (const void* surface = presentation.target_identity(); surface && aliased_resolves()) {
         auto& view = impl_->surface_views[source];
         if (!view) {
             view = impl_->take_texture_index();
@@ -1734,8 +1727,6 @@ uint32_t NativeRenderer::adopt_resolved_target(uint32_t physical, bool depth) {
         auto& aliases = impl_->pending_aliases[surface];
         std::erase_if(aliases, [&](const Impl::Alias& alias) { return alias.physical == physical; });
         aliases.push_back({physical, source, width, height, format, depth});
-        impl_->alias_of[physical] = aliases.back();
-        impl_->resolved_when[physical] = ++impl_->resolve_clock;
         impl_->resolve_to(physical, view);
         return view;
     }
@@ -1805,12 +1796,9 @@ void NativeRenderer::materialize_aliases(const void* surface) {
                                                      plume::RenderTextureLayout::SHADER_READ, &impl_->presentation,
                                                      alias.physical, alias.depth});
     };
-    // Copies first, swaps and carries after: they bind the surface's
-    // attachments in their write layouts, the last thing done to them before
-    // the write. What the write does not replace is carried into a fresh
-    // texture by the next pass (carry_target_attachments) where it can be,
-    // and copied out otherwise (SFR_CARRY_RESOLVES=0 copies, as before).
-    std::vector<std::pair<const Impl::Alias*, std::map<uint32_t, uint32_t>::iterator>> to_swap[2], to_carry[2];
+    // Copies first, swaps after: a swap binds the surface's attachments in
+    // their write layouts, the last thing done to them before the write.
+    std::vector<std::pair<const Impl::Alias*, std::map<uint32_t, uint32_t>::iterator>> to_swap[2];
     for (const auto& alias : aliases) {
         const auto view = impl_->surface_views.find(alias.source);
         const auto current = impl_->resolved_targets.find(alias.physical);
@@ -1818,53 +1806,7 @@ void NativeRenderer::materialize_aliases(const void* surface) {
         if (view == impl_->surface_views.end() || current == impl_->resolved_targets.end() ||
             current->second != view->second) continue;
         if (replaces & (alias.depth ? 2 : 1)) to_swap[alias.depth ? 1 : 0].push_back({&alias, current});
-        else to_carry[alias.depth ? 1 : 0].push_back({&alias, current});
-    }
-    // A spare to carry into when all of the target's are read: the one whose
-    // newest resolve is the oldest, freed by copying out its resolves (a
-    // destination the title resolved once and still samples would otherwise
-    // keep one for good).
-    const NativePresentation::SpareRelease release = [&](const std::vector<const plume::RenderTexture*>& spares) {
-        int oldest = -1;
-        uint64_t oldest_when = ~uint64_t(0);
-        for (size_t i = 0; i < spares.size(); ++i) {
-            const auto view = impl_->surface_views.find(spares[i]);
-            if (view == impl_->surface_views.end()) continue;
-            uint64_t newest = 0;
-            for (const auto& [physical, index] : impl_->resolved_targets)
-                if (index == view->second) {
-                    const auto when = impl_->resolved_when.find(physical);
-                    newest = (std::max)(newest, when == impl_->resolved_when.end() ? uint64_t(1) : when->second);
-                }
-            if (newest && newest < oldest_when) { oldest = int(i); oldest_when = newest; }
-        }
-        if (oldest < 0) return -1;
-        const uint32_t view = impl_->surface_views[spares[size_t(oldest)]];
-        for (auto it = impl_->resolved_targets.begin(); it != impl_->resolved_targets.end(); ++it) {
-            if (it->second != view) continue;
-            const auto alias = impl_->alias_of.find(it->first);
-            if (alias == impl_->alias_of.end() || alias->second.source != spares[size_t(oldest)]) return -1;
-            copy_out(alias->second, it);
-        }
-        return oldest;
-    };
-    // A carry is tried first so that a copy, when it cannot be, still comes
-    // ahead of every swap.
-    if (!to_carry[0].empty() || !to_carry[1].empty()) {
-        if (impl_->presentation.carry_target_attachments(!to_carry[0].empty(), !to_carry[1].empty(), in_use, release)) {
-            impl_->resolve_carries += uint32_t(to_carry[0].size() + to_carry[1].size());
-        } else if (!to_carry[0].empty() && !to_carry[1].empty()) {
-            // The depth cannot be carried (its stencil): copied, and the
-            // colour still carried if it can be.
-            for (const auto& [alias, current] : to_carry[1]) copy_out(*alias, current);
-            if (impl_->presentation.carry_target_attachments(true, false, in_use, release))
-                impl_->resolve_carries += uint32_t(to_carry[0].size());
-            else
-                for (const auto& [alias, current] : to_carry[0]) copy_out(*alias, current);
-        } else {
-            for (int depth = 0; depth < 2; ++depth)
-                for (const auto& [alias, current] : to_carry[depth]) copy_out(*alias, current);
-        }
+        else copy_out(alias, current);
     }
     if (NativePresentation::pass_trace_active())
         std::cerr << "PASS_TRACE materialize target=" << impl_->presentation.target_trace_name() << " aliases="
@@ -2336,7 +2278,7 @@ void NativeRenderer::draw(const NativeDraw& draw) {
     auto& device = impl_->graphics.device();
     if (NativePresentation::pass_trace_active()) {
         // Which resolves this draw may sample (every slot's descriptor that
-        // is one), and what it writes.
+        // is one; a slot may be stale), what it writes and where it lands.
         std::string sampled;
         for (uint32_t s = 0; s < 16; ++s) {
             const uint32_t descriptor = draw.shared.texture_2d[s] & 0x7fffffffu;
@@ -2348,26 +2290,15 @@ void NativeRenderer::draw(const NativeDraw& draw) {
             std::snprintf(text, sizeof text, " t%u=%x%s", s, physical, impl_->alias_indices.count(descriptor) ? "a" : "");
             sampled += text;
         }
+        const auto viewport = impl_->presentation.raster_state().device_viewport();
+        const auto& scissor = impl_->presentation.raster_state().scissor();
         std::cerr << "PASS_TRACE draw target=" << impl_->presentation.target_trace_name() << " mask=0x" << std::hex
                   << int(draw.write_mask) << std::dec << " depth=" << draw.depth_enabled << draw.depth_write
                   << " stencil=" << draw.stencil_enabled << " blend=" << draw.blend.blendEnabled
                   << " vertices=" << draw.vertex_count << " indices=" << (draw.index_buffer ? draw.index_count : draw.indices.size())
-                  << sampled;
-        const auto vp = impl_->presentation.raster_state().device_viewport();
-        const auto& sc = impl_->presentation.raster_state().scissor();
-        std::cerr << " topology=" << int(draw.topology) << " viewport=" << vp.x << ',' << vp.y << ',' << vp.width << ','
-                  << vp.height << " scissor=" << sc.left << ',' << sc.top << ',' << sc.right << ',' << sc.bottom
-                  << " screen=" << draw.shared.screen_space_scale[0] << ',' << draw.shared.screen_space_scale[1]
-                  << " alpha=" << draw.shared.alpha_threshold;
-        if (!draw.vertex_buffer && draw.stride >= 8 && !draw.elements.empty() && draw.vertex_count <= 8) {
-            std::cerr << " element0=" << int(draw.elements[0].format) << '@' << draw.elements[0].alignedByteOffset << " xy=";
-            for (uint32_t v = 0; v < draw.vertex_count && (v + 1) * draw.stride <= draw.vertices.size(); ++v) {
-                float xy[2];
-                std::memcpy(xy, draw.vertices.data() + v * draw.stride + draw.elements[0].alignedByteOffset, 8);
-                std::cerr << xy[0] << ',' << xy[1] << ';';
-            }
-        }
-        std::cerr << '\n';
+                  << sampled << " topology=" << int(draw.topology) << " viewport=" << viewport.x << ',' << viewport.y << ','
+                  << viewport.width << ',' << viewport.height << " scissor=" << scissor.left << ',' << scissor.top << ','
+                  << scissor.right << ',' << scissor.bottom << '\n';
     }
     if (draw.stencil_enabled) impl_->presentation.note_stencil_use();
     static const bool bulk_key = [] {

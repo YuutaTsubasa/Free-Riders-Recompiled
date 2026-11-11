@@ -168,10 +168,6 @@ float4 shaderMain() : SV_Target {
         sfr::NativeClear clear{};
         clear.color = true; clear.color_value = {1,0,0,1};
         presentation.clear(clear);
-        // Carried (SFR_CARRY_RESOLVES, Vulkan): the resolve samples the
-        // framebuffer's own texture through its permanent view, which is
-        // never handed back as an ordinary texture's.
-        const bool aliased = presentation.resolve_identity() != nullptr;
         const uint32_t old = renderer.adopt_resolved_target(physical);
         const uint32_t unrelated = renderer.adopt_resolved_target(other);
         clear.color_value = {0,0,0,0}; presentation.clear(clear);
@@ -214,7 +210,7 @@ float4 shaderMain() : SV_Target {
         // The dimension channel detects a resolved-index bit left on that slot.
         memory.store<uint32_t>(0xA0106000, 0xFF00FF00);
         const uint32_t recycled = renderer.texture(memory, fetch(0x106000));
-        require(aliased || recycled == old, "completed resolve descriptor is reclaimed");
+        require(recycled == old, "completed resolve descriptor is reclaimed");
         memory.store<uint32_t>(0xA0107000, 0xFF0000FF);
         require(renderer.texture(memory, fetch(0x107000)) != recycled, "repeated invalidation never recycles one slot twice");
         draw.shared.texture_2d[0] = recycled;

@@ -170,16 +170,6 @@ inline constexpr TestOption table[] = {
       "測試用：遊戲清除整個畫面、接著先畫別的東西（陰影）時，清除改等到下一次畫這個畫面時才做，"
       "不再是單獨一步（手機 GPU 會把它整個寫出再讀回）。關閉是舊的做法（立刻清除），用來比較畫面與 GPU 時間。"},
      off, "#176"},
-    {"SFR_CARRY_RESOLVES", TestGroup::graphics, test_platform::all,
-     {"Carry copied pictures over", "直接沿用取出的畫面"},
-     {"For testing (Vulkan): when the game copies the picture out to read it and then draws on, the picture stays "
-      "where it was and the drawing goes on in a fresh texture that starts as a copy of it, made in the same step. "
-      "A phone GPU then skips a full copy and a full read of the picture. Off copies it as before, for comparing "
-      "the picture and the GPU timing.",
-      "測試用（Vulkan）：遊戲把畫面取出來讀、接著繼續畫的時候，畫面留在原處，接下來改畫在一張新貼圖上，"
-      "新貼圖在同一步裡先填入原來的畫面。手機 GPU 因此少做一次完整複製和一次完整讀取。"
-      "關閉是舊的做法（複製），用來比較畫面與 GPU 時間。"},
-     off, "#176"},
     {"SFR_TEXTURE_MIPS", TestGroup::graphics, test_platform::all,
      {"Texture mip levels", "貼圖的 mip 層級"},
      {"For testing: textures also get the smaller copies (mip levels) the game stores beside them, so distant "

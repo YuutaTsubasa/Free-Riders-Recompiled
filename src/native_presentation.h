@@ -98,21 +98,6 @@ public:
     // resolves that sample it: no copy, where the next write replaces all of
     // it. False when no spare is free.
     bool replace_target_attachment(bool depth, const std::function<bool(const plume::RenderTexture*)>& in_use);
-    // Gives the current target (a surface or the framebuffer) fresh colour
-    // and/or depth textures (spares not in_use) and draws what the old ones
-    // hold into them as the first draw of its next pass, keeping the old ones
-    // for the resolves that sample them: where a copy would follow, without
-    // one (SFR_CARRY_RESOLVES, Vulkan). False, with nothing done, when it
-    // cannot: no free spare, or a depth whose stencil may hold anything but
-    // zeros, or that is not a float depth.
-    // release, when every spare is read: frees one of them (by copying out
-    // the resolves that read it) and returns its index, or -1.
-    using SpareRelease = std::function<int(const std::vector<const plume::RenderTexture*>& spares)>;
-    bool carry_target_attachments(bool color, bool depth, const std::function<bool(const plume::RenderTexture*)>& in_use,
-                                  const SpareRelease& release = {});
-    // What a resolve out of the current target aliases: the surface, or the
-    // framebuffer when its resolves are carried; null when they are copied at once.
-    [[nodiscard]] const void* resolve_identity() const noexcept;
     // A draw into the current surface tests or writes its stencil.
     void note_stencil_use() noexcept;
     // What the first record of a draw does, done before the draw looks up
