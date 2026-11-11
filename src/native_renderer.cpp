@@ -1669,8 +1669,12 @@ struct ResolveCopy {
     plume::RenderTexture* target;
     plume::RenderTextureLayout from_layout;
     NativePresentation* presentation;  // for SFR_GPU_TIMING=2
+    uint32_t physical = 0;
+    bool depth = false;
     void operator()(plume::RenderCommandList& list, uint64_t) const {
-        presentation->mark_gpu_pass(true);
+        char name[40];
+        std::snprintf(name, sizeof name, "copy-%s-%x", depth ? "depth" : "color", physical);
+        presentation->mark_gpu_pass(name);
         const std::array<plume::RenderTextureBarrier, 2> before{
             plume::RenderTextureBarrier(source, plume::RenderTextureLayout::COPY_SOURCE),
             plume::RenderTextureBarrier(target, plume::RenderTextureLayout::COPY_DEST)};
@@ -1680,7 +1684,7 @@ struct ResolveCopy {
             plume::RenderTextureBarrier(target, plume::RenderTextureLayout::SHADER_READ),
             plume::RenderTextureBarrier(source, from_layout)};
         list.barriers(plume::RenderBarrierStage::GRAPHICS, after.data(), uint32_t(after.size()));
-        presentation->mark_gpu_pass(false);
+        presentation->mark_gpu_pass(nullptr);
     }
 };
 }
@@ -1692,6 +1696,9 @@ static uint32_t own_resolve(NativeRenderer::Impl& impl, uint32_t physical, uint3
 
 uint32_t NativeRenderer::adopt_resolved_target(uint32_t physical, bool depth) {
     auto& presentation = impl_->presentation;
+    if (NativePresentation::pass_trace_active())
+        std::cerr << "PASS_TRACE resolve target=" << presentation.target_trace_name() << " to=" << std::hex << physical
+                  << std::dec << " depth=" << depth << '\n';
     const auto [width, height] = presentation.target_size();
     const auto format = depth ? impl_->graphics.depth_format() : plume::RenderFormat::B8G8R8A8_UNORM;
     auto* source = depth ? &presentation.target_depth() : &presentation.target_color();
@@ -1731,7 +1738,7 @@ uint32_t NativeRenderer::adopt_resolved_target(uint32_t physical, bool depth) {
     impl_->resolve_to(physical, index);
     ++impl_->resolve_copies;
     presentation.record_async(ResolveCopy{source, impl_->texture_objects[index - first_texture].get(),
-        depth ? plume::RenderTextureLayout::DEPTH_WRITE : plume::RenderTextureLayout::COLOR_WRITE, &presentation});
+        depth ? plume::RenderTextureLayout::DEPTH_WRITE : plume::RenderTextureLayout::COLOR_WRITE, &presentation, physical, depth});
     return index;
 }
 
@@ -1786,7 +1793,8 @@ void NativeRenderer::materialize_aliases(const void* surface) {
         ++impl_->texture_generation;
         ++impl_->resolve_copies;
         impl_->presentation.record_async(ResolveCopy{alias.source, impl_->texture_objects[index - first_texture].get(),
-                                                     plume::RenderTextureLayout::SHADER_READ, &impl_->presentation});
+                                                     plume::RenderTextureLayout::SHADER_READ, &impl_->presentation,
+                                                     alias.physical, alias.depth});
     };
     // Copies first, swaps after: a swap binds the surface's attachments in
     // their write layouts, the last thing done to them before the write.
@@ -1800,6 +1808,10 @@ void NativeRenderer::materialize_aliases(const void* surface) {
         if (replaces & (alias.depth ? 2 : 1)) to_swap[alias.depth ? 1 : 0].push_back({&alias, current});
         else copy_out(alias, current);
     }
+    if (NativePresentation::pass_trace_active())
+        std::cerr << "PASS_TRACE materialize target=" << impl_->presentation.target_trace_name() << " aliases="
+                  << aliases.size() << " swap_color=" << to_swap[0].size() << " swap_depth=" << to_swap[1].size()
+                  << " replaces=" << int(replaces) << '\n';
     for (int depth = 0; depth < 2; ++depth) {
         if (to_swap[depth].empty()) continue;
         if (impl_->presentation.replace_target_attachment(depth != 0, in_use)) {
@@ -2264,6 +2276,30 @@ uint32_t NativeRenderer::sampler(const FetchWords& words) {
 
 void NativeRenderer::draw(const NativeDraw& draw) {
     auto& device = impl_->graphics.device();
+    if (NativePresentation::pass_trace_active()) {
+        // Which resolves this draw may sample (every slot's descriptor that
+        // is one; a slot may be stale), what it writes and where it lands.
+        std::string sampled;
+        for (uint32_t s = 0; s < 16; ++s) {
+            const uint32_t descriptor = draw.shared.texture_2d[s] & 0x7fffffffu;
+            if (descriptor >= texture_capacity || !impl_->resolved_texture_indices.test(descriptor)) continue;
+            uint32_t physical = 0;
+            for (const auto& [address, index] : impl_->resolved_targets)
+                if (index == descriptor) physical = address;
+            char text[48];
+            std::snprintf(text, sizeof text, " t%u=%x%s", s, physical, impl_->alias_indices.count(descriptor) ? "a" : "");
+            sampled += text;
+        }
+        const auto viewport = impl_->presentation.raster_state().device_viewport();
+        const auto& scissor = impl_->presentation.raster_state().scissor();
+        std::cerr << "PASS_TRACE draw target=" << impl_->presentation.target_trace_name() << " mask=0x" << std::hex
+                  << int(draw.write_mask) << std::dec << " depth=" << draw.depth_enabled << draw.depth_write
+                  << " stencil=" << draw.stencil_enabled << " blend=" << draw.blend.blendEnabled
+                  << " vertices=" << draw.vertex_count << " indices=" << (draw.index_buffer ? draw.index_count : draw.indices.size())
+                  << sampled << " topology=" << int(draw.topology) << " viewport=" << viewport.x << ',' << viewport.y << ','
+                  << viewport.width << ',' << viewport.height << " scissor=" << scissor.left << ',' << scissor.top << ','
+                  << scissor.right << ',' << scissor.bottom << '\n';
+    }
     if (draw.stencil_enabled) impl_->presentation.note_stencil_use();
     static const bool bulk_key = [] {
         const char* value = std::getenv("SFR_PIPELINE_KEY_BULK");

@@ -275,8 +275,8 @@ Plume 的每個 render pass 對顏色與深度都用 `LOAD_OP_LOAD`／`STORE_OP_
 開始後的 `vkCmdClearAttachments`。分塊（tile-based）GPU 因此會先把整個目標從記憶體讀回再清掉。
 `patches/plume-clear-load-ops.patch` 讓 pass 開始前錄下、涵蓋整個目標的清除，改由 pass 自己的
 `LOAD_OP_CLEAR` 完成（同一 framebuffer 的相容 render pass 變體，依清除的附件快取）；同一個
-framebuffer 在 pass 開始前再設定一次時不再結束什麼。`SFR_CLEAR_LOAD_OPS=1` 開啟（啟動器測試選項
-「在繪製階段開始時清除」），預設關閉。`SFR_GPU_TIMING` 的 `GPU_TIMING` 行在 Vulkan 上另有每份清單的
+framebuffer 在 pass 開始前再設定一次時不再結束什麼。2026-11-11 起預設開啟，`SFR_CLEAR_LOAD_OPS=0`
+關閉（啟動器測試選項「在繪製階段開始時清除」→ 關閉）；Mali 上的量測見下面「整張清除等到下一次用」。`SFR_GPU_TIMING` 的 `GPU_TIMING` 行在 Vulkan 上另有每份清單的
 `passes=`（開始的 render pass 數）與 `clearing_passes=`（以 load op 清除的）。
 
 一格比賽（Dolphin Resort，1080 行）約 27 個 render pass：framebuffer 第一個 pass（全清，127 個繪製）、
@@ -295,8 +295,7 @@ framebuffer 在 pass 開始前再設定一次時不再結束什麼。`SFR_CLEAR_
 | 開 + `SFR_TEST_DEPTH_D24S8=1` | 12.97 |
 
 在 Adreno 上都在 10% 以內：load op 沒有差別；RGBA8 貼圖不比 BC 慢，所以轉成 ASTC／ETC2 不會省 GPU
-時間；DXC 預設已跑過 spirv-opt 的效能 pass，`-O` 只改了幾個窺孔（SPIR-V 大小 0.999 倍）。Mali 上
-尚未量測，所以這個開關留給 Mali 的玩家比較。
+時間；DXC 預設已跑過 spirv-opt 的效能 pass，`-O` 只改了幾個窺孔（SPIR-V 大小 0.999 倍）。
 
 ### 貼圖的 mip 層級（`SFR_TEXTURE_MIPS`，Issue #176）
 
@@ -389,6 +388,61 @@ ABBA：BC1 513 張中 492 張轉成 ASTC；GPU 每格中位數開 14.2／14.8 ms
 | 複製（`SFR_RESOLVE_SWAP=0`） | 37.8／35.8 ms | 1.76／1.68 ms | 2.12／2.09 ms |
 
 陰影的複製整個消失，陰影 pass 沒有變慢；整格的差距比雜訊（同設定兩場差到 2 ms）小，平均約 1 ms。截圖上圓頂鋼架的影子照常落在賽道上。
+
+### 整張清除等到下一次用（`SFR_DEFER_CLEARS`，Issue #176）
+
+比賽每一格一開始先整張清除 framebuffer（顏色、深度、stencil），接著去畫陰影 surface，再回來畫主場景。
+清除當下就錄的話，它是 framebuffer 單獨的一個 render pass：分塊 GPU 把清好的整張寫回記憶體（2.0x 是
+6566×3694 的顏色加 D32S8），主場景的 pass 再整張讀回來。現在 framebuffer 的整張清除先記著
+（`NativePresentation::Impl::deferred_clear`，同一個清除之後的整張清除疊上去），等 framebuffer 下一次
+被用到（任何錄進 framebuffer 的東西：繪製、非整張清除、resolve、present、讀回、`flush`）才錄，於是成為
+主場景 pass 開頭的清除；配上 `SFR_CLEAR_LOAD_OPS` 就是那個 pass 的 `LOAD_OP_CLEAR`。surface 的清除不受影響。
+`SFR_DEFER_CLEARS=0` 關閉（啟動器測試選項「畫面要畫時才清除」→ 關閉）。
+
+量法：`SFR_GPU_TIMING=2`（啟動器「GPU 時間」→「畫格與各 pass」）的 `GPU_PASSES` 把 framebuffer 的 pass
+依順序編成 fb1、fb2…，每個 resolve 的複製標出顏色或深度與目的位址（`copy-depth-f8f9000`），每 120 份清單
+另印一行 `GPU_PASS_ORDER`（一格的 pass 依序與各自的毫秒）。`SFR_PASS_TRACE=<present 編號>` 把那一格的每個
+繪製（寫到哪、遮罩、深度、混色、可能取樣哪些 resolve）、清除與 resolve 各記一行 `PASS_TRACE`。
+
+Tab S12 Ultra（Mali-G1-Ultra）Dolphin Resort，同一個 APK，每場前等 SKIN 降到 39°C 以下，順序 ABBA。
+`SFR_GPU_TIMING=2` 的 `GPU_PASSES`，只取整個視窗都是比賽畫面的（`s768x768` 每格 3 段），平均，毫秒／格：
+
+| 2.0x（6566×3694） | 舊（`SFR_DEFER_CLEARS=0 SFR_CLEAR_LOAD_OPS=0`） | 新（預設） |
+| --- | --- | --- |
+| 整格（各 pass 加總） | 34.1／35.1 | 30.1／30.9 |
+| `GPU_TIMING` 中位數 | 32.7／33.7 | 29.6／30.3 |
+| framebuffer 第一個 pass（只有清除） | 2.1／2.2 | 0 |
+| 陰影 surface（深度清除變成 load op） | 2.3／2.4 | 0.8／1.1 |
+| 主場景 | 11.2／12.0 | 10.7／11.1 |
+| 比賽 7800 格中跳過 | 3835／4131 | 3707／3581 |
+
+| 1.0x（3290×1850） | 舊 | 新 |
+| --- | --- | --- |
+| 整格（各 pass 加總） | 13.3／13.2 | 11.5／12.8 |
+| `GPU_TIMING` 中位數 | 12.6／13.3 | 11.3／13.2 |
+| framebuffer 第一個 pass | 0.8／0.8 | 0 |
+| 陰影 surface | 0.7／0.7 | 0.3／0.5 |
+| 比賽 7800 格中跳過 | 216／177 | 23／90 |
+
+2.0x 每格少約 4 ms（12%），1.0x 約 1 ms（8%）。copy 與 bloom 不變；Windows（Vulkan＋驗證層）整場 0 錯誤、
+速度 1.00023，`SFR_RACE_FRAMESKIP=0` 的同一格（第 15500 格，有 25 次 resolve）新舊截圖逐像素相同；
+D3D11、D3D12 的比賽照常；AYN Thor（Adreno 740）速度 0.9986。
+
+前一批（同一天、另一個 APK）只開 `SFR_CLEAR_LOAD_OPS` 時，第一個 pass 從約 10 ms 降到 3–5 ms（那批整個
+平板比較慢，整格約 60 ms，只能看同批相對值）；兩個一起開，第一個 pass 就沒了。
+
+#### 試過、沒採用：把 resolve 帶進下一個 pass
+
+場景顏色 `18d05000`、場景深度 `f8f9000` 和 bloom 前的顏色 `18105000` 每格各整張複製一次（2.0x 共約
+6 ms）。試過的做法：framebuffer 的 resolve 也像 surface 一樣原地取樣，等 framebuffer 下一次被寫時換一張
+備用貼圖，下一個 pass 以 load op 清除開頭，再用一個全畫面繪製把舊貼圖逐像素畫進來（顏色 `Load`，深度經
+`SV_Depth`，stencil 只在確定全是 0 時才行），bloom 的小 surface 也一樣。Windows 驗證層 0 錯誤、同一格
+截圖逐像素相同，但平板 2.0x ABCCBA：複製確實不見了（約 −5.8 ms），畫回來的那一步卻花一樣多（整格開
+31.9／31.0 ms，只延後清除 31.7／31.4 ms）。Mali 的整張複製大概直接搬壓縮過的 AFBC 區塊，而取樣再畫回去
+要解壓縮，所以沒有省。已拿掉（分支 `claude/issue-176-render-target-copies` 的前幾個 commit 有完整實作）。
+
+同一天也比了啟動器的「小型材質組」（`SFR_TEST_NO_DESCRIPTOR_INDEXING=1`）：2.0x ABBA 整格開 64.7／60.8 ms、
+關 63.8／59.1 ms（那批平板整體較慢），沒有好處。
 
 ## 著色器包
 

@@ -816,6 +816,7 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
     }
     // Consume counters even in quiet mode so observation never changes their
     // frame boundaries. Only detailed mode formats the large diagnostic line.
+    sfr::NativePresentation::pass_trace_frame(sfr::present_count.load()+1);
     const auto pipeline_work=graphics().renderer().take_pipeline_work();
     const auto execution_work=sfr::take_guest_execution_timings();
     const auto queued_ns=sfr::GuestExecution::main_thread_ready_wait_ns.exchange(0,std::memory_order_relaxed);

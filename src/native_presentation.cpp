@@ -313,6 +313,43 @@ struct NativePresentation::Impl {
     // target (1 colour, 2 depth and stencil), so a resolve aliased to that
     // part needs no copy (replace_target_attachment).
     uint8_t write_replaces = 0;
+    // SFR_DEFER_CLEARS (on unless 0, Issue #176): a clear of the whole
+    // framebuffer waits for the framebuffer's next use. A race frame clears it
+    // first and then draws its shadows into a surface of their own: recorded
+    // at once, that clear was a render pass of its own that a tiling GPU
+    // (Mali) wrote out to memory in full, only for the scene's pass to read it
+    // all back. Waiting, it is the scene pass's first clear, and with
+    // SFR_CLEAR_LOAD_OPS that pass's load operation.
+    static bool defer_clears() {
+        static const bool on = [] {
+            const char* t = std::getenv("SFR_DEFER_CLEARS");
+            const bool enabled = !t || *t != '0';
+            std::cerr << "NATIVE_DEFER_CLEARS enabled=" << enabled << '\n';
+            return enabled;
+        }();
+        return on;
+    }
+    std::optional<NativeClear> deferred_clear;
+    // Asking side: records the waiting clear into the framebuffer, ahead of
+    // whatever uses the framebuffer next.
+    void emit_deferred_clear() {
+        if (!deferred_clear) return;
+        const NativeClear clear = *deferred_clear;
+        deferred_clear.reset();
+        SurfaceTarget* const current = target;
+        target = nullptr;
+        drain();
+        ensure_open();
+        bind(nullptr);
+        apply_raster();
+        if (clear.color) {
+            const auto& c = clear.color_value;
+            command_list->clearColor(0, plume::RenderColor(c[0], c[1], c[2], c[3]), nullptr, 0);
+        }
+        if (clear.depth || clear.stencil)
+            command_list->clearDepthStencil(clear.depth, clear.stencil, clear.depth_value, clear.stencil_value, nullptr, 0);
+        target = current;
+    }
     void prepare_write() {
         if (non_writing || !target || !target->reading) return;
         SurfaceTarget* const surface = target;
@@ -856,6 +893,7 @@ struct NativePresentation::Impl {
         render_thread.join();
     }
     void enqueue(NativePresentation::RecordFunction function, const void* payload, size_t bytes) {
+        if (!target) emit_deferred_clear();
         prepare_write();
         if (!render_thread_enabled()) {
             ensure_open();
@@ -952,13 +990,32 @@ struct NativePresentation::Impl {
         timing.pool->queryResults();
         const uint64_t* r = timing.pool->getResults();
         if (!r) return;
+        // The framebuffer's passes one by one (fb1, fb2...), in the list's
+        // order: a race splits it at each resolve (Issue #176).
+        std::array<uint16_t, 8> numbered{};
+        for (size_t i = 0; i < numbered.size(); ++i) numbered[i] = pass_category("fb" + std::to_string(i + 1));
         std::lock_guard lock(pass_mutex);
+        size_t framebuffer_spans = 0;
         for (uint32_t i = 0; i < timing.used; ++i) {
             if (r[i + 1] < r[i]) continue;
-            pass_ms[timing.category[i]] += double(r[i + 1] - r[i]) / 1e6;
-            ++pass_spans[timing.category[i]];
+            uint16_t category = timing.category[i];
+            if (category == fb_category) category = numbered[(std::min)(framebuffer_spans++, numbered.size() - 1)];
+            pass_ms[category] += double(r[i + 1] - r[i]) / 1e6;
+            ++pass_spans[category];
         }
         if (++pass_lists < 120) return;
+        // This list's passes in order, as a race's frame runs them.
+        std::string spans = "GPU_PASS_ORDER";
+        size_t framebuffer_order = 0;
+        for (uint32_t i = 0; i < timing.used; ++i) {
+            if (r[i + 1] < r[i]) continue;
+            uint16_t category = timing.category[i];
+            if (category == fb_category) category = numbered[(std::min)(framebuffer_order++, numbered.size() - 1)];
+            char span[96];
+            std::snprintf(span, sizeof span, " %s=%.2f", pass_names[category].c_str(), double(r[i + 1] - r[i]) / 1e6);
+            spans += span;
+        }
+        std::cerr << spans << char(10);
         std::vector<size_t> order(pass_names.size());
         for (size_t i = 0; i < order.size(); ++i) order[i] = i;
         std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return pass_ms[a] > pass_ms[b]; });
@@ -1749,10 +1806,10 @@ void NativePresentation::clear(const NativeClear& clear, std::span<const plume::
     if (!clear.color && !clear.depth && !clear.stencil) return;
     NativeClear effective = clear;
     uint8_t replaces = 0;
+    const bool whole = rectangles.empty() || std::any_of(rectangles.begin(), rectangles.end(), [&, w = logical_width, h = logical_height](const auto& r) {
+        return r.left <= 0 && r.top <= 0 && uint32_t(r.right) >= w && uint32_t(r.bottom) >= h;
+    });
     if (auto* surface = impl_->target) {
-        const bool whole = rectangles.empty() || std::any_of(rectangles.begin(), rectangles.end(), [&, w = logical_width, h = logical_height](const auto& r) {
-            return r.left <= 0 && r.top <= 0 && uint32_t(r.right) >= w && uint32_t(r.bottom) >= h;
-        });
         if (clear.stencil) surface->stencil_used = true;
         // A stencil nothing has used still holds zeros: clearing it to zero
         // with the depth changes nothing, and lets the clear replace both.
@@ -1761,6 +1818,20 @@ void NativePresentation::clear(const NativeClear& clear, std::span<const plume::
             effective.stencil_value = 0;
         }
         if (whole) replaces = (effective.color ? 1 : 0) | (effective.depth && effective.stencil ? 2 : 0);
+    } else if (whole && Impl::defer_clears()) {
+        // All of the framebuffer: kept for its next use (defer_clears), on
+        // top of what an earlier waiting clear does.
+        auto& waiting = impl_->deferred_clear;
+        if (!waiting) waiting.emplace();
+        if (effective.color) { waiting->color = true; waiting->color_value = effective.color_value; }
+        if (effective.depth) { waiting->depth = true; waiting->depth_value = effective.depth_value; }
+        if (effective.stencil) { waiting->stencil = true; waiting->stencil_value = effective.stencil_value; }
+        if (pass_trace_active())
+            std::cerr << "PASS_TRACE clear target=fb deferred color=" << effective.color << " depth=" << effective.depth
+                      << " stencil=" << effective.stencil << '\n';
+        return;
+    } else {
+        impl_->emit_deferred_clear();
     }
 
     impl_->drain();
@@ -1777,6 +1848,10 @@ void NativePresentation::clear(const NativeClear& clear, std::span<const plume::
         rectangles = scaled;
     }
 
+    if (pass_trace_active())
+        std::cerr << "PASS_TRACE clear target=" << target_trace_name() << " color=" << effective.color
+                  << " depth=" << effective.depth << " stencil=" << effective.stencil << " rects=" << rectangles.size()
+                  << " whole=" << whole << " replaces=" << int(replaces) << '\n';
     impl_->write_replaces = replaces;
     impl_->prepare_write();
     impl_->write_replaces = 0;
@@ -1800,6 +1875,7 @@ void NativePresentation::record_async_raw(RecordFunction function, const void* p
 
 void NativePresentation::record(const std::function<void(plume::RenderCommandList&)>& body) {
     impl_->refuse_during_gpu_wait();
+    if (!impl_->target) impl_->emit_deferred_clear();
     impl_->prepare_write();
     impl_->drain();
     impl_->ensure_open();
@@ -1808,7 +1884,11 @@ void NativePresentation::record(const std::function<void(plume::RenderCommandLis
     body(*impl_->command_list);
 }
 
-void NativePresentation::flush() { impl_->flush(); }
+void NativePresentation::flush() {
+    // What was asked for is submitted, a waiting clear too.
+    impl_->emit_deferred_clear();
+    impl_->flush();
+}
 
 uint64_t NativePresentation::list_generation() const { return impl_->list_generation; }
 
@@ -1906,11 +1986,15 @@ plume::RenderTexture& NativePresentation::target_depth() {
 
 const void* NativePresentation::target_identity() const noexcept { return impl_->target; }
 
-void NativePresentation::mark_gpu_pass(bool copy) {
+void NativePresentation::mark_gpu_pass(const char* copy) {
     if (!Impl::gpu_pass_timing()) return;
     const uint16_t bound = impl_->bound_category();
     if (!copy) {
         impl_->mark_pass(bound);
+        return;
+    }
+    if (*copy) {
+        impl_->mark_pass(impl_->pass_category(copy));
         return;
     }
     // Charged to the target bound at the copy: the framebuffer's own copies
@@ -2002,6 +2086,21 @@ void NativePresentation::set_before_surface_write(std::function<void(const void*
     impl_->before_surface_write = std::move(callback);
 }
 
+namespace {
+std::atomic<bool> pass_trace_on{false};
+}
+bool NativePresentation::pass_trace_active() noexcept { return pass_trace_on.load(std::memory_order_relaxed); }
+void NativePresentation::pass_trace_frame(uint32_t present) noexcept {
+    static const uint32_t traced = [] { const char* t = std::getenv("SFR_PASS_TRACE"); return t ? uint32_t(std::strtoul(t, nullptr, 10)) : 0u; }();
+    pass_trace_on.store(traced && present == traced, std::memory_order_relaxed);
+}
+std::string NativePresentation::target_trace_name() const {
+    if (!impl_->target) return "fb";
+    char name[64];
+    std::snprintf(name, sizeof name, "s%ux%u@%p", impl_->target->width, impl_->target->height, static_cast<const void*>(impl_->target));
+    return name;
+}
+
 std::pair<uint32_t, uint32_t> NativePresentation::target_size() const noexcept {
     return impl_->target ? std::pair{impl_->target->width, impl_->target->height}
                          : std::pair{impl_->render_width, impl_->render_height};
@@ -2014,6 +2113,7 @@ std::pair<uint32_t, uint32_t> NativePresentation::presented_area() const noexcep
 }
 
 std::vector<uint8_t> NativePresentation::readback_color() {
+    impl_->emit_deferred_clear();
     constexpr uint32_t bytes_per_pixel = 4;
     if (impl_->graphics->backend() == GraphicsBackend::vulkan) {
         // Plume copies buffers into textures only; the other way is native.
@@ -2216,6 +2316,7 @@ void NativePresentation::draw_player_model(const AvatarFrameTransform& frame) {
     impl_->refuse_during_gpu_wait();
     impl_->build_model();
     if (!impl_->model_pipeline) return;
+    impl_->emit_deferred_clear();
     impl_->drain();
     impl_->ensure_open();
     impl_->apply_raster();
@@ -2245,6 +2346,7 @@ std::pair<uint32_t, uint32_t> primary_display_size() {
 
 void NativePresentation::present(uint32_t area_width, uint32_t area_height, float display_aspect) {
     impl_->refuse_during_gpu_wait();
+    impl_->emit_deferred_clear();
     impl_->drain();
 
 #if defined(__ANDROID__) || defined(SFR_IOS)

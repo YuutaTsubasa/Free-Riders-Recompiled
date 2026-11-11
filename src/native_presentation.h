@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -106,11 +107,19 @@ public:
     // Records made between these (a resolve's own barriers and copies) do
     // not write the current surface, so they leave its resolves aliased.
     // SFR_GPU_TIMING=2, from inside a record: a resolve's copy starts here
-    // (copy), or the current target's next render pass does (!copy).
-    void mark_gpu_pass(bool copy);
+    // (copy names it; empty: by the target bound), or the current target's
+    // next render pass does (null).
+    void mark_gpu_pass(const char* copy);
     void begin_non_writing_records() noexcept;
     void end_non_writing_records() noexcept;
     [[nodiscard]] std::pair<uint32_t, uint32_t> target_size() const noexcept;
+    // SFR_PASS_TRACE=<present>: that present's draws, clears and resolves,
+    // one PASS_TRACE line each, to see which pass reads what (Issue #176).
+    // pass_trace_frame is told each present's number.
+    [[nodiscard]] static bool pass_trace_active() noexcept;
+    static void pass_trace_frame(uint32_t present) noexcept;
+    // "fb", or the current surface's pixel size and identity.
+    [[nodiscard]] std::string target_trace_name() const;
     // Tightly packed BGRA at render_width() x render_height().
     [[nodiscard]] std::vector<uint8_t> readback_color();
     // Presents the framebuffer. When the frame only drew into the top-left
