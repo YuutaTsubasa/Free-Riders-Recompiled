@@ -61,6 +61,7 @@
 #include <thread>
 #include <utility>
 #include <string>
+#include <string_view>
 #include <iostream>
 
 // The blit shaders, compiled at build time (CMakeLists.txt, sfr_embed_shader).
@@ -441,6 +442,9 @@ struct NativePresentation::Impl {
     std::atomic<bool> close_requested{false};  // set from the window's thread too
     bool shown = false;
     bool start_fullscreen = false;
+    // SDL's Wayland driver (video_driver.h): the window is shown before its
+    // first frame there (present).
+    bool wayland = false;
     bool ready = false;
     std::unique_ptr<NativeRasterState> raster_state;
     // Made only where the device cannot invert viewport depth: points, lines, triangles.
@@ -572,6 +576,7 @@ struct NativePresentation::Impl {
     std::vector<BriefTouch> brief_touches;
     void read_touch_controls();
 #endif
+    void show_window();  // and full screen, when the game starts so
     std::unique_ptr<plume::RenderDescriptorSet> blit_texture, blit_sampler;
     std::unique_ptr<plume::RenderSampler> blit_sampler_object;
     std::unique_ptr<plume::RenderTextureView> blit_view;
@@ -1661,6 +1666,8 @@ NativePresentation::NativePresentation(NativeGraphics& graphics, uint32_t width,
     if (implementation->window) {
         SDL_SetWindowSize(implementation->window, int(window_width), int(window_height));
         SDL_SetWindowPosition(implementation->window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+        const char* driver = SDL_GetCurrentVideoDriver();
+        implementation->wayland = driver && std::string_view(driver) == "wayland";
     }
 #endif
     if (!implementation->window) unavailable("window");
@@ -2404,6 +2411,14 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
         std::cerr << "NATIVE_PRESENTATION resized images=" << impl_->swap_chain->getTextureCount()
                   << " size=" << impl_->swap_chain->getWidth() << 'x' << impl_->swap_chain->getHeight() << '\n';
     }
+#ifndef _WIN32
+    // Wayland maps a window only once it is shown, and a frame presented
+    // into a window not yet mapped is never shown on screen: Mesa's Wayland
+    // swap chain then waited for it for good, and the game stopped at its
+    // first frame. There the window is shown first; elsewhere after the
+    // first frame, as before (no empty window flashes up).
+    if (!impl_->shown && impl_->wayland) impl_->show_window();
+#endif
     uint32_t texture_index = 0;
     plume::RenderCommandSemaphore* acquired = nullptr;
     plume::RenderCommandSemaphore* rendered = nullptr;
@@ -2639,19 +2654,21 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
         impl_->present_failures = 0;
         impl_->suboptimal_kept = false;
     }
-    if (!impl_->shown) {
+    if (!impl_->shown) impl_->show_window();
+}
+
+void NativePresentation::Impl::show_window() {
 #ifdef _WIN32
-        ShowWindow(impl_->window, SW_SHOWNORMAL);
-        UpdateWindow(impl_->window);
-        // Come to the front: the launcher allowed this process to take the
-        // foreground, and a game that opens behind other windows is easy to miss.
-        SetForegroundWindow(impl_->window);
+    ShowWindow(window, SW_SHOWNORMAL);
+    UpdateWindow(window);
+    // Come to the front: the launcher allowed this process to take the
+    // foreground, and a game that opens behind other windows is easy to miss.
+    SetForegroundWindow(window);
 #else
-        SDL_ShowWindow(impl_->window);
+    SDL_ShowWindow(window);
 #endif
-        if (impl_->start_fullscreen) set_fullscreen(impl_->window, true);
-        impl_->shown = true;
-    }
+    if (start_fullscreen) set_fullscreen(window, true);
+    shown = true;
 }
 
 // Small built-in 5x7 glyphs keep the startup screen independent of font
