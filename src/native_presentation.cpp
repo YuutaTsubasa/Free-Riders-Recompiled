@@ -1986,7 +1986,11 @@ void NativePresentation::record(const std::function<void(plume::RenderCommandLis
     body(*impl_->command_list);
 }
 
-void NativePresentation::flush() { impl_->flush(); }
+void NativePresentation::flush() {
+    // What was asked for is submitted, a waiting clear too.
+    impl_->emit_deferred_clear();
+    impl_->flush();
+}
 
 uint64_t NativePresentation::list_generation() const { return impl_->list_generation; }
 
