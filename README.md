@@ -298,6 +298,8 @@ with [docs/progress.md](docs/progress.md).
   A race frame no longer clears the whole picture as a step of its own that a phone GPU writes out and reads back; the clear now happens as part of the next drawing. On a Mali tablet this cuts the GPU time per race frame by about 12% at 2.0x render size and about 8% at 1.0x. Both changes can be turned off in the launcher's **Test options › Graphics** (#176).
 - [v0.10.55 — Native Wayland windows on Linux](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.55)
   On a Wayland desktop, the Linux launcher and game now open native Wayland windows instead of going through XWayland, when the system's SDL is 2.24 or newer. If the window misbehaves, the launcher's **Test options › Graphics › Use X11** goes back to X11 (#365).
+- [v0.10.56 — Races start on 4:3, 5:4 and portrait displays](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.56)
+  On a display whose mode is not wider than 4:3 (for example 1024x768 or 1280x1024, or a monitor turned upright), the game stopped with a `native-graphics-reset` message when a race was about to start. Races now start there, and the 16:9 picture is letterboxed as in any window of another shape (#365).
 
 ## System Requirements
 
