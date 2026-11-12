@@ -435,6 +435,14 @@ void title_stats_settings() {
     require(!quiet.achievement_notifications && value_of(quiet, "SFR_ACHIEVEMENT_NOTIFICATIONS") == "0" &&
                 sfr::format_launcher_settings(quiet).find("achievement_notifications=0\n") != std::string::npos,
             "turned off, the notification stays off and the game is told");
+    // Super Sonic on his board (Issue #379): off, so the original flying form, unless chosen.
+    require(!defaults.super_sonic_stay_on_board && value_of(defaults, "SFR_SUPER_SONIC_STAY_ON_BOARD") == "0" &&
+                sfr::format_launcher_settings(defaults).find("super_sonic_stay_on_board=0\n") != std::string::npos,
+            "Super Sonic keeps the flying form by default");
+    const auto board = sfr::parse_launcher_settings("super_sonic_stay_on_board=1\n");
+    require(board.super_sonic_stay_on_board && value_of(board, "SFR_SUPER_SONIC_STAY_ON_BOARD") == "1" &&
+                sfr::format_launcher_settings(board).find("super_sonic_stay_on_board=1\n") != std::string::npos,
+            "turned on, Super Sonic stays on the board and the game is told");
 }
 
 void race_frameskip_settings() {

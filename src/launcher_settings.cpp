@@ -128,6 +128,7 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         else if (key == "volume") read_number(value, 0, 100, settings.volume);
         else if (key == "skip_movies") read_flag(value, settings.skip_movies);
         else if (key == "skip_logos") read_flag(value, settings.skip_logos);
+        else if (key == "super_sonic_stay_on_board") read_flag(value, settings.super_sonic_stay_on_board);
         else if (key == "vertex_cache") read_flag(value, settings.vertex_cache);
         else if (key == "gpu_pipeline") read_flag(value, settings.gpu_pipeline);
         else if (key == "race_render_every") read_number(value, 1, 4, settings.race_render_every);
@@ -232,6 +233,7 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "volume=" << s.volume << '\n'
         << "skip_movies=" << s.skip_movies << '\n'
         << "skip_logos=" << s.skip_logos << '\n'
+        << "super_sonic_stay_on_board=" << s.super_sonic_stay_on_board << '\n'
         << "vertex_cache=" << s.vertex_cache << '\n'
         << "gpu_pipeline=" << s.gpu_pipeline << '\n'
         << "race_render_every=" << s.race_render_every << '\n'
@@ -419,6 +421,7 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         {"SFR_VOLUME", std::to_string(s.volume)},
         {"SFR_SKIP_MOVIES", s.skip_movies ? "1" : ""},
         {"SFR_SKIP_LOGOS", s.skip_logos ? "1" : ""},
+        {"SFR_SUPER_SONIC_STAY_ON_BOARD", s.super_sonic_stay_on_board ? "1" : "0"},
         {"SFR_WINDOW_WIDTH", std::to_string(window_width)},
         {"SFR_WINDOW_HEIGHT", std::to_string(window_height)},
         // The resolution scale of the output height, as the game's percent

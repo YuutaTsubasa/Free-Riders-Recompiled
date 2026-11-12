@@ -53,6 +53,9 @@ struct LauncherSettings {
     uint32_t volume = 100;           // percent
     bool skip_movies = false;
     bool skip_logos = false;         // SFR_SKIP_LOGOS: the startup SEGA/Sonic Team/rating screens
+    // SFR_SUPER_SONIC_STAY_ON_BOARD: with the Chaos Emeralds, a kick dash does
+    // not turn Super Sonic into the flying form (super_sonic_board.h, Issue #379).
+    bool super_sonic_stay_on_board = false;
     bool vertex_cache = true;        // SFR_VERTEX_CACHE
     bool gpu_pipeline = true;        // SFR_GPU_PIPELINE
     uint32_t race_render_every = 1;  // SFR_RENDER_EVERY
