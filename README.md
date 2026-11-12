@@ -300,6 +300,8 @@ with [docs/progress.md](docs/progress.md).
   On a Wayland desktop, the Linux launcher and game now open native Wayland windows instead of going through XWayland, when the system's SDL is 2.24 or newer. If the window misbehaves, the launcher's **Test options › Graphics › Use X11** goes back to X11 (#365).
 - [v0.10.56 — Races start on 4:3, 5:4 and portrait displays](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.56)
   On a display whose mode is not wider than 4:3 (for example 1024x768 or 1280x1024, or a monitor turned upright), the game stopped with a `native-graphics-reset` message when a race was about to start. Races now start there, and the 16:9 picture is letterboxed as in any window of another shape (#365).
+- [v0.10.57 — Super Sonic can stay on his board](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.57)
+  With the Chaos Emeralds gear, a kick dash turns Super Sonic into his flying form, which loses rings over time. The launcher's new **General › Gameplay › Super Sonic: stay on the board** option keeps him on his board: the kick dash stays an ordinary kick dash. It is off by default (#379).
 
 ## System Requirements
 
