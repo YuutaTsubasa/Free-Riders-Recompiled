@@ -422,6 +422,10 @@ add_test(NAME unselected_users COMMAND sfr_unselected_users_test)
 add_executable(sfr_content_files_test tests/content_files_test.cpp src/content_files.cpp src/guest_memory.cpp)
 target_include_directories(sfr_content_files_test PRIVATE src)
 add_test(NAME content_files COMMAND sfr_content_files_test)
+# The sound library's heap in a larger block (Issue #385).
+add_executable(sfr_sound_heap_test tests/sound_heap_test.cpp src/sound_heap.cpp)
+target_include_directories(sfr_sound_heap_test PRIVATE src)
+add_test(NAME sound_heap COMMAND sfr_sound_heap_test)
 add_executable(sfr_achievements_test tests/achievements_test.cpp src/achievements.cpp)
 target_include_directories(sfr_achievements_test PRIVATE src)
 target_link_libraries(sfr_achievements_test PRIVATE Threads::Threads)
@@ -1666,7 +1670,7 @@ if(SFR_BUILD_DIAGNOSTIC)
     # The title's NuiTransformSmooth and the SFR_NUI_ANALYSIS_TRACE observations (docs/kinect-sensor.md).
     target_sources(sfr_cpu_diagnostic PRIVATE src/nui_smooth_hooks.cpp src/nui_transform_smooth_guest.cpp src/nui_analysis_hooks.cpp)
     # The title's heap on o1heap (SFR_HOST_HEAP=1; docs/architecture-migration.md, phase 2).
-    target_sources(sfr_cpu_diagnostic PRIVATE src/heap_hooks.cpp src/guest_heap.cpp)
+    target_sources(sfr_cpu_diagnostic PRIVATE src/heap_hooks.cpp src/guest_heap.cpp src/sound_heap.cpp)
     target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_o1heap)
     target_sources(sfr_cpu_diagnostic PRIVATE src/native_winsock.cpp)
     # Xbox LIVE on this project's own service (SFR_LIVE_SERVER; server/live_server.py).

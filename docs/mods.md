@@ -46,6 +46,17 @@ the same paths, so that `sound/...` sits next to `mod.ini`.
   applies when the game's language matches the files it replaces. The
   [Traditional Chinese mod](https://github.com/YuutaTsubasa/Free-Riders-Recompiled-Traditional-Chinese-Mod)
   replaces the Japanese files, so it needs the game language set to Japanese.
+- **Larger voice files (Issue #385):** the game loads every racer's voice
+  bank into one sound heap of a fixed size, 18,979,226 bytes set in the
+  executable (`src/sound_heap.h`), and Super Sonic's `SRN_Eact_SP.csb` as well
+  when Sonic rides the Chaos Emeralds. A voice pack with larger files, such as
+  GameBanana's Zero Gravity Voice Pack (7.9 MB of voices in a Chaos Emeralds
+  race against the original 5.8 MB), then no longer fits: the last bank's
+  allocation fails and the race waits for it on the "Now Loading" screen
+  forever. The heap has the same size on the console, so the same files
+  should not fit there either (not tried on a console or Xenia). Here the heap
+  is made in a 32 MiB block instead (`game.log`:
+  `GAME_PATCH sound_heap ... moved=1`), so such packs load.
 - **Not applicable:** patches to the original executable (`default.xex`),
   such as the No Kinect Patch, and Xenia-specific patches.
 
