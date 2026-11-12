@@ -62,3 +62,27 @@ ctest --test-dir out/build/host -R "content_files|achievements"
 同樣建立存檔。
 
 有存檔之後，按 START 會直接進主選單（不再出現 Omochao 的對話框），輸入腳本要跟著調整。
+
+## 測試用：解鎖裝備與其他項目（Issue #385）
+
+要重現需要「已解鎖」內容的問題（例如 Chaos Emeralds＝超級索尼克），不必先玩到 100%：
+
+- 玩家紀錄 S 的位址：`SFR_ACHIEVEMENT_TRACE=<檔案>` 每 1200 個 present 印出
+  `ACHIEVEMENT_PROGRESS ... record=0x...`，並把 S 的前 `0x1A40` bytes 寫進那個檔案。
+  Windows 與 Linux（WSL）上從空存檔或測試存檔跑發版路線，都是 `0x70137d70`。
+- 各個集合的位移見 [achievements.md](achievements.md)；每一格一個 byte，1＝有。
+  **已擁有的裝備**是 `S+0x09D8` 起 46 格，**第 38 格是 Chaos Emeralds**（`S+0x09FE`）：
+  設成 1，Sonic 的裝備圓環就出現 Chaos Emeralds（Blue Star 往「right」一步），比賽讀 `gr38`。
+  空存檔的預設是 0、1、2、4、5、6、17、18、39..43 這幾格。
+- `scripts/unlock_pokes.py <record.bin> <位址> <present> [emeralds|gears|parts|tutorials|licenses|all]`
+  從上次執行的 S 算出 `SFR_POKE` 的值（只改有變動的 word，其他 bytes 保持遊戲原本的值），
+  在角色圓環之前（發版路線約 present 11000）寫入即可。
+- `SfrAllData.sav` 有檢查碼（檔頭 `+4` 的 word；`+8` 是每次存檔加一的計數），直接改檔案裡的
+  bytes，遊戲會當成沒有存檔而用預設值。要一份「已解鎖」的存檔：讀入一份正常存檔
+  （`SFR_PROFILE_NAME` 要跟存檔的 XUID 對得上），在選單裡用 `SFR_POKE` 改 S，再進任一個會存檔的畫面
+  （例如 World Grand Prix），遊戲會用正確的檢查碼寫回。
+
+有存檔時按 START 直接進主選單：Free Race 的路線是
+`SFR_SAY=start@3400,ok@3800,left@4600,ok@5400,ok@6200,ok@7000,ok@7800,right@8200,ok@8600`
+（Offline Mode → Free Race → Normal Race → Dolphin Resort → SONIC → Chaos Emeralds），
+並清掉 `SFR_INPUT_SCRIPT`（它的 B 是回答沒有存檔時標題的 Omochao 問題，有存檔時會退回標題）。

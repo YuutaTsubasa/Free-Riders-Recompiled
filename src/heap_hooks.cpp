@@ -10,7 +10,9 @@
 // With SFR_HOST_HEAP=0 every hook runs the original.
 #include "diagnostic_hooks.h"
 #include "guest_heap.h"
+#include "sound_heap.h"
 #include "ppc_recomp_shared.h"
+#include <functional>
 #include <iostream>
 
 namespace {
@@ -71,4 +73,22 @@ SFR_CONCURRENT_HOOK(sub_824E01C8) {
     sfr::enter_function(ctx,"sub_824E01C8",0x824E01C8);
     if(sfr::active_heap && ctx.r3.u32) sfr::active_heap->destroy(ctx.r3.u32);
     __imp__sub_824E01C8(ctx,base);
+}
+
+PPC_FUNC_IMPL(__imp__sub_827E2450);
+// The sound library's heap constructor (buffer, size) -> heap. The title's
+// one sound heap is made in a larger block of the host heap (sound_heap.h,
+// Issue #385), so voice mods with larger banks still load.
+SFR_CONCURRENT_HOOK(sub_827E2450) {
+    sfr::enter_function(ctx,"sub_827E2450",0x827E2450);
+    const uint32_t buffer=ctx.r3.u32, size=ctx.r4.u32;
+    const auto region=sfr::sound_heap_region(buffer,size,sfr::active_heap
+        ? std::function<uint32_t(uint32_t)>([](uint32_t bytes) { return sfr::active_heap->allocate(sfr::sound_heap_tag,bytes,false); })
+        : std::function<uint32_t(uint32_t)>());
+    ctx.r3.u64=region.buffer;
+    ctx.r4.u64=region.size;
+    __imp__sub_827E2450(ctx,base);
+    if(buffer==sfr::sound_heap_console_buffer)
+        std::cerr << "GAME_PATCH sound_heap buffer=0x" << std::hex << region.buffer << " size=0x" << region.size
+                  << std::dec << " moved=" << region.moved << '\n';
 }
