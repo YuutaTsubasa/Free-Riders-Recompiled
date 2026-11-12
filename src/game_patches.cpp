@@ -11,6 +11,7 @@
 #include "job_lifetime.h"
 #include "stream_reader_gate.h"
 #include "touch_controls.h"
+#include "super_sonic_board.h"
 #include <mutex>
 #include <algorithm>
 #include <bit>
@@ -1524,4 +1525,21 @@ SFR_CONCURRENT_HOOK(sub_824DE650) {
         line<<(b<16?"0":"")<<b;
     }
     std::ofstream(directory+"/index.txt",std::ios::app)<<line.str()<<'\n';
+}
+
+PPC_FUNC_IMPL(__imp__sub_823D9970);
+
+// Super Sonic's ability update (Chaos Emeralds gear, super_sonic_board.h).
+// With SFR_SUPER_SONIC_STAY_ON_BOARD=1 (launcher General › Gameplay) a kick
+// dash on the board no longer starts the flying form: the board phase runs as
+// the phase before it, which keeps the ring check and only moves on to the
+// board phase again. Off, the original runs unchanged.
+SFR_CONCURRENT_HOOK(sub_823D9970) {
+    static const bool stay_on_board=[]{ const char* t=std::getenv("SFR_SUPER_SONIC_STAY_ON_BOARD"); return t && *t=='1'; }();
+    if(stay_on_board) {
+        const uint32_t phase=sfr::active_memory->load<uint32_t>(ctx.r3.u32+20);
+        const uint32_t run=sfr::super_sonic::update_phase(phase,true);
+        if(run!=phase) sfr::active_memory->store<uint32_t>(ctx.r3.u32+20,run);
+    }
+    __imp__sub_823D9970(ctx,base);
 }
