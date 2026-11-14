@@ -304,6 +304,8 @@ with [docs/progress.md](docs/progress.md).
   With the Chaos Emeralds gear, a kick dash turns Super Sonic into his flying form, which loses rings over time. The launcher's new **General › Gameplay › Super Sonic: stay on the board** option keeps him on his board: the kick dash stays an ordinary kick dash. It is off by default (#379).
 - [v0.10.58 — Voice mods with larger files load Super Sonic's race](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.58)
   With a voice mod whose files are larger than the original ones (for example GameBanana's Zero Gravity Voice Pack), choosing the Chaos Emeralds left the race on "Now Loading" forever. The game now gives its sounds more memory, so the race starts (#385).
+- [v0.10.59 — Android asks for a faster screen for races above 60 Hz](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.59)
+  With **Test options › Gameplay › Race step rate** above 60 (for example 120 or 144), Android kept the screen at 60 Hz, so races still showed only about 60 frames a second and the FPS counter said 60. The game now asks Android for a screen mode fast enough for the chosen rate. Whether the screen really switches still depends on the phone's own refresh-rate setting (#392).
 
 ## System Requirements
 
