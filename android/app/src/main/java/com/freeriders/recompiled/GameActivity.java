@@ -77,7 +77,8 @@ public class GameActivity extends SDLActivity {
     // than 60 frames a second, but a phone shows an app at 60 Hz unless the
     // app asks for more (issue #392: a 144 Hz phone still showed 60). Ask for
     // the display mode of the same size whose refresh rate is the lowest that
-    // reaches the step rate, or else the fastest one.
+    // reaches the step rate, or else the fastest one; none if no mode is
+    // faster than 60 Hz.
     private void preferDisplayRate() {
         int rate;
         try {
@@ -92,7 +93,9 @@ public class GameActivity extends SDLActivity {
         Display.Mode chosen = chooseMode(display.getSupportedModes(), current, rate);
         Log.i("FreeRiders", "DISPLAY_RATE step_rate=" + rate + " current=" + current.getRefreshRate()
             + " chosen=" + (chosen == null ? "none" : chosen.getModeId() + "@" + chosen.getRefreshRate()));
-        if (chosen == null || chosen.getModeId() == current.getModeId()) return;
+        // Set even when the display already runs at that rate: it may be
+        // fast only for now (a touch, the launcher) and drop back to 60.
+        if (chosen == null) return;
         WindowManager.LayoutParams attributes = getWindow().getAttributes();
         attributes.preferredDisplayModeId = chosen.getModeId();
         getWindow().setAttributes(attributes);
@@ -108,7 +111,7 @@ public class GameActivity extends SDLActivity {
             if (hz >= rate - 0.5f && (reaching == null || hz < reaching.getRefreshRate())) reaching = mode;
         }
         Display.Mode chosen = reaching != null ? reaching : fastest;
-        return chosen != null && chosen.getRefreshRate() > current.getRefreshRate() + 0.5f ? chosen : null;
+        return chosen != null && chosen.getRefreshRate() > 60.5f ? chosen : null;
     }
 
     private static void readEnvironment(File file) {
