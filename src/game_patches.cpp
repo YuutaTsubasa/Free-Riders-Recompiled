@@ -1533,13 +1533,45 @@ PPC_FUNC_IMPL(__imp__sub_823D9970);
 // With SFR_SUPER_SONIC_STAY_ON_BOARD=1 (launcher General › Gameplay) a kick
 // dash on the board no longer starts the flying form: the board phase runs as
 // the phase before it, which keeps the ring check and only moves on to the
-// board phase again. Off, the original runs unchanged.
+// board phase again. With SFR_SUPER_SONIC_ALL_TYPES=1 as well, a player's
+// Super Sonic on his board also has all three types, like the Omnipotence
+// gear (Issue #393). Neither applies online (SFR_LIVE_HOST/SFR_LIVE_SERVER).
+// Off, the original runs unchanged.
+namespace {
+bool local_player_racer(uint32_t racer) {
+    const auto racers=sfr::avatar_state_detail::local_racers(*sfr::active_memory);
+    if(!racers) return false;
+    const uint32_t count=std::min(racers->populated_count,racers->local_count);
+    for(uint32_t slot=0;slot<count;++slot)
+        if(sfr::active_memory->load<uint32_t>(uint64_t(racers->begin)+slot*4)==racer) return true;
+    return false;
+}
+}
+
 SFR_CONCURRENT_HOOK(sub_823D9970) {
-    static const bool stay_on_board=[]{ const char* t=std::getenv("SFR_SUPER_SONIC_STAY_ON_BOARD"); return t && *t=='1'; }();
-    if(stay_on_board) {
-        const uint32_t phase=sfr::active_memory->load<uint32_t>(ctx.r3.u32+20);
-        const uint32_t run=sfr::super_sonic::update_phase(phase,true);
-        if(run!=phase) sfr::active_memory->store<uint32_t>(ctx.r3.u32+20,run);
-    }
+    static const sfr::super_sonic::Options options=[]{
+        const auto on=[](const char* name){ const char* t=std::getenv(name); return t && *t=='1'; };
+        using sfr::super_sonic::switch_set;
+        return sfr::super_sonic::Options{on("SFR_SUPER_SONIC_STAY_ON_BOARD"),on("SFR_SUPER_SONIC_ALL_TYPES"),
+            !sfr::super_sonic::options_apply(switch_set(std::getenv("SFR_LIVE_HOST")),switch_set(std::getenv("SFR_LIVE_SERVER")))};
+    }();
+    if(!sfr::super_sonic::stays_on_board(options)) { __imp__sub_823D9970(ctx,base); return; }
+    const uint32_t ability=ctx.r3.u32;
+    const uint32_t phase=sfr::active_memory->load<uint32_t>(ability+20);
+    const uint32_t run=sfr::super_sonic::update_phase(phase,true);
+    if(run!=phase) sfr::active_memory->store<uint32_t>(ability+20,run);
     __imp__sub_823D9970(ctx,base);
+    if(!options.all_types) return;
+    const uint32_t after=sfr::active_memory->load<uint32_t>(ability+20);
+    const uint32_t racer=sfr::active_memory->load<uint32_t>(ability+232);
+    if(!racer || !sfr::super_sonic::gets_all_types(options,after,local_player_racer(racer))) return;
+    const uint32_t gear=sfr::active_memory->load<uint32_t>(racer+3216);
+    if(!gear) return;
+    const uint32_t mask=sfr::active_memory->load<uint32_t>(gear+168);
+    const uint32_t all=sfr::super_sonic::type_mask(mask,true);
+    if(all!=mask) {
+        sfr::active_memory->store<uint32_t>(gear+168,all);
+        static const bool trace=[]{ const char* t=std::getenv("SFR_TRACE_SUPER_SONIC_TYPES"); return t && *t=='1'; }();
+        if(trace) std::fprintf(stderr,"SUPER_SONIC_TYPES racer=0x%08x gear=0x%08x phase=%u mask=0x%x->0x%x\n",racer,gear,after,mask,all);
+    }
 }

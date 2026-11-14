@@ -11,6 +11,9 @@ void require(bool condition, const char* message) {
 }
 
 using sfr::super_sonic::update_phase;
+using sfr::super_sonic::Options;
+using sfr::super_sonic::gets_all_types;
+using sfr::super_sonic::type_mask;
 
 // The ability update's switch (823D9970): what each phase does with the
 // option off. Phase 3 only moves on to phase 4; phase 4 can start a flight.
@@ -41,6 +44,32 @@ int main() try {
     // flight that was already under way (5, 7), are left alone.
     for (uint32_t phase : {0u, 1u, 2u, 3u, 5u, 6u, 7u})
         require(update_phase(phase, true) == phase, "on, only the board phase changes");
+
+    // Online (Issue #393): neither option applies, whatever the launcher says.
+    using sfr::super_sonic::options_apply;
+    using sfr::super_sonic::stays_on_board;
+    using sfr::super_sonic::switch_set;
+    require(options_apply(switch_set(nullptr), switch_set("")), "offline, the options apply");
+    require(!options_apply(switch_set("1"), switch_set("")), "hosting a LIVE session, they do not");
+    require(!options_apply(switch_set(nullptr), switch_set("192.168.1.2:3074")), "joining a server, they do not");
+    require(stays_on_board(Options{true, false, false}), "offline, stay on the board applies");
+    require(!stays_on_board(Options{true, true, true}), "online, Super Sonic flies as in the original");
+
+    // All types (Issue #393): only with both options, offline, for a player's
+    // Super Sonic on his board.
+    const Options all{true, true, false};
+    require(gets_all_types(all, 4, true), "on the board, a player's Super Sonic gets all types");
+    require(gets_all_types(all, 3, true), "settling on the board, too");
+    require(!gets_all_types(all, 4, false), "a computer Super Sonic keeps the gear's types");
+    for (uint32_t phase : {0u, 1u, 2u, 5u, 6u, 7u})
+        require(!gets_all_types(all, phase, true), "Sonic, the transformation and a flight keep the gear's types");
+    require(!gets_all_types(Options{false, true, false}, 4, true), "all types needs stay on the board");
+    require(!gets_all_types(Options{true, false, false}, 4, true), "off, the gear's types stay");
+    require(!gets_all_types(Options{true, true, true}, 4, true), "online, the gear's types stay");
+
+    // The Chaos Emeralds have no type (0); Omnipotence has all three (7).
+    require(type_mask(0, true) == 7 && type_mask(0, false) == 0, "all types sets speed, fly and power");
+    require(type_mask(0x10, true) == 0x17, "other bits of the mask stay");
 
     std::cout << "super_sonic_board: ok\n";
     return 0;
