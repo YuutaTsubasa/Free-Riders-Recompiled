@@ -1,8 +1,11 @@
 package com.freeriders.recompiled;
 
+import android.os.Bundle;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.util.Log;
+import android.view.Display;
+import android.view.WindowManager;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
@@ -62,6 +65,50 @@ public class GameActivity extends SDLActivity {
             }
         }
         super.loadLibraries();
+    }
+
+    @Override
+    protected void onCreate(Bundle state) {
+        super.onCreate(state);
+        preferDisplayRate();
+    }
+
+    // Race step rate (SFR_RACE_STEP_RATE, a Test option) draws races at more
+    // than 60 frames a second, but a phone shows an app at 60 Hz unless the
+    // app asks for more (issue #392: a 144 Hz phone still showed 60). Ask for
+    // the display mode of the same size whose refresh rate is the lowest that
+    // reaches the step rate, or else the fastest one.
+    private void preferDisplayRate() {
+        int rate;
+        try {
+            String text = Os.getenv("SFR_RACE_STEP_RATE");
+            rate = text == null ? 0 : Integer.parseInt(text.trim());
+        } catch (NumberFormatException error) {
+            return;
+        }
+        if (rate <= 60) return;
+        Display display = getWindowManager().getDefaultDisplay();
+        Display.Mode current = display.getMode();
+        Display.Mode chosen = chooseMode(display.getSupportedModes(), current, rate);
+        Log.i("FreeRiders", "DISPLAY_RATE step_rate=" + rate + " current=" + current.getRefreshRate()
+            + " chosen=" + (chosen == null ? "none" : chosen.getModeId() + "@" + chosen.getRefreshRate()));
+        if (chosen == null || chosen.getModeId() == current.getModeId()) return;
+        WindowManager.LayoutParams attributes = getWindow().getAttributes();
+        attributes.preferredDisplayModeId = chosen.getModeId();
+        getWindow().setAttributes(attributes);
+    }
+
+    static Display.Mode chooseMode(Display.Mode[] modes, Display.Mode current, int rate) {
+        Display.Mode reaching = null, fastest = null;
+        for (Display.Mode mode : modes) {
+            if (mode.getPhysicalWidth() != current.getPhysicalWidth()
+                || mode.getPhysicalHeight() != current.getPhysicalHeight()) continue;
+            float hz = mode.getRefreshRate();
+            if (fastest == null || hz > fastest.getRefreshRate()) fastest = mode;
+            if (hz >= rate - 0.5f && (reaching == null || hz < reaching.getRefreshRate())) reaching = mode;
+        }
+        Display.Mode chosen = reaching != null ? reaching : fastest;
+        return chosen != null && chosen.getRefreshRate() > current.getRefreshRate() + 0.5f ? chosen : null;
     }
 
     private static void readEnvironment(File file) {
