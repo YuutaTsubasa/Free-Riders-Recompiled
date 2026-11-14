@@ -158,7 +158,7 @@ enum Text {
     HideKinectUi, HideKinectUiHint,
     SectionGestures, GesturesHint, ButtonPrompts, ButtonPromptsHint,
     GestureMove, GestureController, GestureKeyboard, GestureTouch, GesturesOf,
-    SectionGameplay, SuperSonicBoard, SuperSonicBoardHint,
+    SectionGameplay, SuperSonicBoard, SuperSonicBoardHint, SuperSonicAllTypes, SuperSonicAllTypesHint,
     TextCount
 };
 
@@ -595,8 +595,11 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Show the buttons of", "顯示誰的按鍵"},
     {"Gameplay", "遊戲玩法"},
     {"Super Sonic: stay on the board", "超級索尼克：維持踩板型態"},
-    {"With the Chaos Emeralds, Super Sonic keeps riding his board: a kick dash no longer turns him into the flying form, which uses up a ring every third of a second. Off, the game behaves as the original.",
-     "使用 Chaos Emeralds 時，超級索尼克會一直踩著板子：踢地加速（Kick Dash）不會再讓他變成飛行型態（飛行型態每三分之一秒消耗一個 Ring）。關閉時與原版相同。"},
+    {"With the Chaos Emeralds, Super Sonic keeps riding his board: a kick dash no longer turns him into the flying form, which uses up a ring every third of a second. Online races are left as the original. Off, the game behaves as the original.",
+     "使用 Chaos Emeralds 時，超級索尼克會一直踩著板子：踢地加速（Kick Dash）不會再讓他變成飛行型態（飛行型態每三分之一秒消耗一個 Ring）。線上對戰時不會套用。關閉時與原版相同。"},
+    {"Super Sonic: all types on the board", "超級索尼克：踩板時擁有全部類型"},
+    {"While he stays on the board, Super Sonic can also grind rails, fly through the flight rings and break objects, as with the Omnipotence gear. Only for players, not computer racers, and off in online races.",
+     "維持踩板型態時，超級索尼克也能像使用 Omnipotence 一樣滑鐵軌、穿過飛行圈與撞破物件。只有玩家有效，電腦對手不會；線上對戰時不會套用。"},
 }};
 
 int language = 0;
@@ -2519,6 +2522,9 @@ struct Launcher {
         settings_section(SectionGameplay);
         setting_row(tr(SuperSonicBoard), tr(SuperSonicBoardHint), switch_width, scale,
                     [&] { toggle("##super_sonic_board", &settings.super_sonic_stay_on_board); });
+        if (settings.super_sonic_stay_on_board)
+            setting_row(tr(SuperSonicAllTypes), tr(SuperSonicAllTypesHint), switch_width, scale,
+                        [&] { toggle("##super_sonic_all_types", &settings.super_sonic_all_types); });
         settings_section(SectionOnline);
         setting_row(tr(OnlineLabel), tr(OnlineHint), switch_width, scale, [&] { toggle("##online", &settings.online); });
         if (settings.online) {

@@ -443,6 +443,17 @@ void title_stats_settings() {
     require(board.super_sonic_stay_on_board && value_of(board, "SFR_SUPER_SONIC_STAY_ON_BOARD") == "1" &&
                 sfr::format_launcher_settings(board).find("super_sonic_stay_on_board=1\n") != std::string::npos,
             "turned on, Super Sonic stays on the board and the game is told");
+    // All types on the board (Issue #393): off by default, and only with stay on the board.
+    require(!defaults.super_sonic_all_types && value_of(defaults, "SFR_SUPER_SONIC_ALL_TYPES") == "0" &&
+                sfr::format_launcher_settings(defaults).find("super_sonic_all_types=0\n") != std::string::npos,
+            "Super Sonic keeps the gear's types by default");
+    const auto all = sfr::parse_launcher_settings("super_sonic_stay_on_board=1\nsuper_sonic_all_types=1\n");
+    require(all.super_sonic_all_types && value_of(all, "SFR_SUPER_SONIC_ALL_TYPES") == "1" &&
+                sfr::format_launcher_settings(all).find("super_sonic_all_types=1\n") != std::string::npos,
+            "turned on with stay on the board, Super Sonic gets all types and the game is told");
+    const auto alone = sfr::parse_launcher_settings("super_sonic_all_types=1\n");
+    require(alone.super_sonic_all_types && value_of(alone, "SFR_SUPER_SONIC_ALL_TYPES") == "0",
+            "without stay on the board, the game is not told to give all types");
 }
 
 void race_frameskip_settings() {

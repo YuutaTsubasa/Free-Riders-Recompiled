@@ -56,6 +56,9 @@ struct LauncherSettings {
     // SFR_SUPER_SONIC_STAY_ON_BOARD: with the Chaos Emeralds, a kick dash does
     // not turn Super Sonic into the flying form (super_sonic_board.h, Issue #379).
     bool super_sonic_stay_on_board = false;
+    // SFR_SUPER_SONIC_ALL_TYPES: with stay_on_board as well, a player's Super
+    // Sonic on his board has the speed, fly and power types (Issue #393).
+    bool super_sonic_all_types = false;
     bool vertex_cache = true;        // SFR_VERTEX_CACHE
     bool gpu_pipeline = true;        // SFR_GPU_PIPELINE
     uint32_t race_render_every = 1;  // SFR_RENDER_EVERY
