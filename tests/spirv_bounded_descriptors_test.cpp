@@ -186,6 +186,118 @@ void rewrites_the_heaps(bool non_uniform) {
     require(twice.has_value() && *twice == *rewritten, "the rewrite is idempotent");
 }
 
+// A shader's sampling as the translator writes it: the 2D texture index is
+// shared constant row 1 .z (2D fetch constant 6), masked, the sampler index
+// row 13 .y (sampler 5); or, with sampler_from_texture_row, the sampler is
+// indexed with the texture's row, which no constant can stand for.
+Module sampling(bool sampler_from_texture_row) {
+    Module m;
+    m.op(17, {Shader});
+    m.op(17, {RuntimeDescriptorArray});
+    m.op(17, {ImageQuery});
+    m.op_string(10, {}, "SPV_EXT_descriptor_indexing");
+    m.op(14, {0, 1});
+    m.op_string(15, {4, 1}, "main");
+    m.op(16, {1, 7});
+    m.op(71, {40, 34, 0});
+    m.op(71, {40, 33, 0});
+    m.op(71, {43, 34, 1});
+    m.op(71, {43, 33, 0});
+    m.op(71, {44, 34, 2});
+    m.op(71, {44, 33, 2});
+    m.op(19, {2});
+    m.op(33, {3, 2});
+    m.op(22, {5, 32});
+    m.op(21, {6, 32, 0});
+    m.op(43, {6, 70, 0});
+    m.op(43, {6, 71, 1});
+    m.op(43, {6, 72, 2});
+    m.op(43, {6, 73, 13});
+    m.op(43, {6, 74, 0x7fffffffu});
+    m.op(43, {6, 75, 32});
+    m.op(23, {76, 6, 4});                // uvec4
+    m.op(28, {77, 76, 75});              // uvec4[32]
+    m.op(30, {78, 77});
+    m.op(32, {79, 2, 78});
+    m.op(32, {80, 2, 6});
+    m.op(25, {10, 5, 1, 2, 0, 0, 1, 0});
+    m.op(26, {13});
+    m.op(29, {20, 10});
+    m.op(29, {23, 13});
+    m.op(32, {30, 0, 20});
+    m.op(32, {33, 0, 23});
+    m.op(32, {81, 0, 10});
+    m.op(32, {82, 0, 13});
+    m.op(59, {30, 40, 0});
+    m.op(59, {33, 43, 0});
+    m.op(59, {79, 44, 2});
+    m.op(54, {2, 1, 0, 3});
+    m.op(248, {50});
+    m.op(65, {80, 90, 44, 70, 71, 72});  // the 2D index: shared row 1 .z
+    m.op(61, {6, 91, 90});
+    m.op(199, {6, 92, 91, 74});          // & 0x7fffffff
+    m.op(65, {81, 93, 40, 92});
+    m.op(65, {80, 94, 44, 70, 73, 71});  // the sampler index: shared row 13 .y
+    m.op(61, {6, 95, 94});
+    m.op(65, {82, 96, 43, sampler_from_texture_row ? 91u : 95u});
+    m.op(253, {});
+    m.op(56, {});
+    return m;
+}
+
+uint32_t constant_value(const Parsed& module, uint32_t id) {
+    for (const auto& in : module.of(43))
+        if (in[2] == id) return in[3];
+    return ~0u;
+}
+
+// Constant indices (Mali, Issue #406): each heap index becomes its fetch
+// constant's number and the module declares no dynamic indexing.
+void indexes_the_heaps_with_constants() {
+    std::string why;
+    const auto out = sfr::bounded_descriptor_spirv(sampling(false).bytes(), &why, {}, true);
+    require(out.has_value(), "the sampling is rewritten with constant indices: " + why);
+    const Parsed parsed = parse(*out);
+    std::vector<uint32_t> capabilities;
+    for (const auto& in : parsed.of(17)) capabilities.push_back(in[1]);
+    require(capabilities == std::vector<uint32_t>{Shader, ImageQuery}, "capabilities are Shader and ImageQuery");
+    std::map<uint32_t, uint32_t> indices;
+    for (const auto& in : parsed.of(65))
+        if (in[3] == 40 || in[3] == 43) indices[in[3]] = constant_value(parsed, in[4]);
+    require(indices == std::map<uint32_t, uint32_t>{{40, 6}, {43, 5}}, "2D fetch constant 6 and sampler 5");
+    for (const auto& in : parsed.of(43))
+        if (in[3] == 5 || in[3] == 6) require(in[1] == 6, "the new constants are uints");
+    size_t function = 0;
+    while ((parsed.instructions[function][0] & 0xffff) != 54) ++function;
+    for (const auto& in : parsed.of(65))
+        if (in[3] == 40 || in[3] == 43)
+            require(parsed.position(in[4]) < function, "each index constant is declared before the function");
+    const auto again = sfr::bounded_descriptor_spirv(*out, &why, {}, true);
+    require(again.has_value() && *again == *out, "the rewrite with constant indices is idempotent");
+    // Without the preference the indices and the capability stay.
+    const auto dynamic = sfr::bounded_descriptor_spirv(sampling(false).bytes(), &why);
+    require(dynamic.has_value(), "the sampling is rewritten: " + why);
+    capabilities.clear();
+    for (const auto& in : parse(*dynamic).of(17)) capabilities.push_back(in[1]);
+    require(capabilities == std::vector<uint32_t>{Shader, SampledImageArrayDynamicIndexing, ImageQuery},
+            "the dynamic indexing capability is declared");
+    // An index that is not its own kind's shared constant, or the compact
+    // layout: the dynamic indices and the capability stay.
+    for (const bool compact : {false, true}) {
+        const auto lengths = compact ? *sfr::bounded_lengths(16) : sfr::BoundedLengths{};
+        const auto kept = sfr::bounded_descriptor_spirv(sampling(!compact).bytes(), &why, lengths, true);
+        require(kept.has_value(), "the sampling is rewritten: " + why);
+        const Parsed k = parse(*kept);
+        bool declared = false;
+        for (const auto& in : k.of(17)) declared |= in[1] == SampledImageArrayDynamicIndexing;
+        require(declared, compact ? "the compact layout keeps dynamic indices" : "an unknown index keeps them");
+        for (const auto& in : k.of(65)) {
+            if (in[3] == 40) require(in[4] == 92, "the 2D index stays dynamic");
+            if (in[3] == 43) require(in[4] == (compact ? 95u : 91u), "the sampler index stays dynamic");
+        }
+    }
+}
+
 // The compact layout of a driver with 16 textures a stage: 14 2D textures,
 // one 2D array and one cube, and still 16 samplers.
 void rewrites_the_heaps_compact() {
@@ -362,6 +474,7 @@ int main() {
         rewrites_the_heaps(false);
         rewrites_the_heaps(true);
         rewrites_the_heaps_compact();
+        indexes_the_heaps_with_constants();
         adds_a_uint_type_when_missing();
         leaves_a_module_without_heaps();
         refuses_what_it_does_not_know();

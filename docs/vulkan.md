@@ -85,6 +85,20 @@ Set 0 與 set 1 是只填了一部分的 4096 張貼圖與 256 個取樣器陣�
   2D 貼圖，共用常數的 2D 索引改寫成元素編號；超過 13 張時其餘讀到 0，並記一次
   `NATIVE_DESCRIPTORS bounded_overflow`（實際比賽沒有出現）。每個 stage 少於 10 張就停止。
   `SFR_TEST_BOUNDED_TEXTURES=<n>` 把每個 stage 的貼圖上限當成 n，在其他顯示卡上測試這個佈局。
+- ARM（Mali，vendor `0x13b5`）的驅動程式在完整佈局下改用常數索引：貼圖與取樣器陣列的索引原本是
+  共用常數（2D 貼圖第 0–15 個、2D array 16–31、cube 32–47、取樣器 48–63，經常數索引讀出，貼圖的還
+  會 `& 0x7fffffff`），而渲染器在完整佈局放的就是 fetch constant 的編號 s，所以改寫直接把索引換成常數
+  s，不再宣告 `SampledImageArrayDynamicIndexing`（原本有的也拿掉）。每次取樣不多任何指令（讀共用常數
+  的 load／and 變成沒人用的程式碼）。認不出的索引，或緊湊佈局（2D 索引是元素編號，不是 fetch constant），
+  就照舊動態索引並宣告這個能力，`game.log` 記一次 `NATIVE_DESCRIPTORS dynamic_indices_kept=1`；著色器
+  包的 179 個用到貼圖的模組全部認得出來（1227 處）。原因：Galaxy A05／A06（Mali-G52 MC2，驅動程式 r49，
+  Vulkan 1.3.278，沒有 descriptor indexing，Issue #406）建立每一條宣告這個能力的管線都回
+  `VK_ERROR_INITIALIZATION_FAILED`（455 條只成功 71 條，就是不取樣的那些），logcat 沒有任何訊息；
+  `SFR_TEST_BOUNDED_TEXTURES=47/16/10`、`SFR_TEST_VULKAN_1_1=1`，以及在著色器包裡改掉 `OpTypeImage`
+  的 depth、`ImageQuery`、改成常數索引與 explicit LOD（能力仍宣告），都還是 71 條；不宣告能力的 glslang
+  取樣著色器能建立也能畫。只拿掉能力（索引仍動態，Vulkan 不允許）就 455 條全部建立。`game.log` 的
+  `NATIVE_DESCRIPTORS mode=bounded ...` 記 `constant_indices=0|1`；`SFR_TEST_BOUNDED_CONSTANT_INDICES=1`
+  在任何裝置上用常數索引，`=0` 在任何裝置上都不用。
 - `SFR_TEST_NO_DESCRIPTOR_INDEXING=1` 讓 Plume 建立裝置時不開 descriptor indexing 功能
   （`patches/plume-descriptor-indexing-test-switch.patch`），在有這些功能的顯示卡上也走有界佈局；
   搭配 `-DSFR_VULKAN_VALIDATION=ON` 與驗證層，可檢查是否還用到裝置沒開的功能。
