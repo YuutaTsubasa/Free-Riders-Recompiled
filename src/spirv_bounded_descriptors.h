@@ -63,16 +63,18 @@ inline std::optional<BoundedLengths> bounded_lengths(uint32_t textures_per_stage
 // shader indexes with. Empty, with the reason in why, for a module this does
 // not understand; anything else is copied as it is.
 //
-// Without declare_dynamic_indexing the module declares no
-// SampledImageArrayDynamicIndexing capability either (one it had is dropped)
-// and still indexes the arrays as before, as glslang's output for the same
-// GLSL does. A Mali-G52's driver (r49, Issue #406) failed every pipeline
-// whose pixel shader declared the capability with VK_ERROR_INITIALIZATION_FAILED
-// and made the same sampling, written without it, at once.
+// With prefer_constant_indices (the full layout only) each index into a heap
+// that is the shared constant of its fetch constant becomes that fetch
+// constant's number, a constant, and the module declares no
+// SampledImageArrayDynamicIndexing (one it had is dropped). A Mali-G52's
+// driver (r49, Issue #406) failed every pipeline whose pixel shader declared
+// the capability with VK_ERROR_INITIALIZATION_FAILED; with constant indices
+// the module needs no such capability. A module with any other index keeps
+// its dynamic indices and the capability.
 inline std::optional<std::vector<uint8_t>> bounded_descriptor_spirv(std::span<const uint8_t> code,
                                                                     std::string* why = nullptr,
                                                                     const BoundedLengths& lengths = {},
-                                                                    bool declare_dynamic_indexing = true) {
+                                                                    bool prefer_constant_indices = false) {
     const auto refuse = [&](const std::string& reason) -> std::optional<std::vector<uint8_t>> {
         if (why) *why = reason;
         return std::nullopt;
@@ -224,16 +226,133 @@ inline std::optional<std::vector<uint8_t>> bounded_descriptor_spirv(std::span<co
         }
     const bool new_uint = !bounded.empty() && !uint_type;
     if (new_uint) uint_type = bound++;
+
+    // Constant indices (see above): every index into a heap must be the
+    // shared constant of its own kind (2D, 2D array, cube, sampler: elements
+    // 0-15, 16-31, 32-47, 48-63 of the block in set 2 binding 2), loaded
+    // through constant indices and perhaps masked with 0x7fffffff. The
+    // renderer puts fetch constant s there as s, so the index is s itself.
+    // Anything else, or the compact layout (whose 2D indices are not the
+    // fetch constants), keeps the dynamic indices and the capability.
+    std::unordered_map<size_t, uint32_t> constant_index_at;  // word of an index -> constant id
+    std::vector<std::pair<uint32_t, uint32_t>> slot_constants;  // value, new constant id
+    bool constant_indices = false;
+    if (prefer_constant_indices && !lengths.compact() && uint_type) {
+        constexpr uint32_t op_load = 61, op_access_chain = 65, op_bitwise_and = 199;
+        constexpr uint32_t storage_uniform = 2;
+        std::unordered_map<uint32_t, uint32_t> int_constants, uint_constants, loads;  // id -> value; load -> pointer
+        std::unordered_map<uint32_t, std::pair<uint32_t, uint32_t>> ands;
+        std::unordered_map<uint32_t, size_t> chains;  // access chain result -> instruction index
+        std::unordered_set<uint32_t> ints;
+        uint32_t shared = 0;
+        for (size_t index = 0; index < instructions.size(); ++index) {
+            const auto& in = instructions[index];
+            const uint32_t* w = &words[in.at];
+            if (in.opcode == op_type_int && in.count >= 4 && w[2] == 32) ints.insert(w[1]);
+            else if (in.opcode == op_constant && in.count == 4 && ints.contains(w[1])) {
+                int_constants[w[2]] = w[3];
+                if (w[1] == uint_type) uint_constants.emplace(w[2], w[3]);
+            } else if (in.opcode == op_variable && in.count >= 4 && w[3] == storage_uniform) {
+                const auto set = sets.find(w[2]);
+                const auto binding = binding_at.find(w[2]);
+                if (set != sets.end() && set->second == 2 && binding != binding_at.end() && words[binding->second] == 2)
+                    shared = w[2];
+            } else if (in.opcode == op_load && in.count >= 4) loads[w[2]] = w[3];
+            else if (in.opcode == op_bitwise_and && in.count == 5) ands[w[2]] = {w[3], w[4]};
+            else if (in.opcode == op_access_chain && in.count >= 4) chains[w[2]] = index;
+        }
+        // Each heap variable's kind, from its element type.
+        std::unordered_map<uint32_t, uint32_t> kinds;
+        for (const auto& [pointer, id] : variables) {
+            const auto pointee = pointers.find(pointer);
+            if (pointee == pointers.end()) continue;
+            const auto runtime = runtime_arrays.find(pointee->second);
+            const auto fixed = fixed_arrays.find(pointee->second);
+            const uint32_t element = runtime != runtime_arrays.end() ? runtime->second :
+                                     fixed != fixed_arrays.end() ? fixed->second : 0;
+            if (samplers.contains(element)) kinds[id] = 3;
+            else if (const auto image = images.find(element); image != images.end())
+                kinds[id] = image->second.dim == dim_cube ? 2 : image->second.arrayed ? 1 : 0;
+        }
+        const auto slot_of = [&](uint32_t value, uint32_t kind) -> std::optional<uint32_t> {
+            if (const auto constant = int_constants.find(value); constant != int_constants.end())
+                return constant->second < bounded_descriptor_count ? std::optional(constant->second) : std::nullopt;
+            if (const auto masked = ands.find(value); masked != ands.end()) {
+                const auto& [a, b] = masked->second;
+                const auto mask = [&](uint32_t id) {
+                    const auto c = int_constants.find(id);
+                    return c != int_constants.end() && c->second == 0x7fffffffu;
+                };
+                value = mask(b) ? a : mask(a) ? b : 0;
+            }
+            const auto load = loads.find(value);
+            if (load == loads.end() || !shared) return std::nullopt;
+            const auto chain = chains.find(load->second);
+            if (chain == chains.end()) return std::nullopt;
+            const auto& in = instructions[chain->second];
+            const uint32_t* w = &words[in.at];
+            if (in.count != 7 || w[3] != shared) return std::nullopt;
+            const auto member = int_constants.find(w[4]), row = int_constants.find(w[5]), column = int_constants.find(w[6]);
+            if (member == int_constants.end() || row == int_constants.end() || column == int_constants.end() ||
+                member->second != 0 || column->second > 3)
+                return std::nullopt;
+            const uint32_t element = row->second * 4 + column->second;
+            if (element / bounded_descriptor_count != kind) return std::nullopt;
+            return element % bounded_descriptor_count;
+        };
+        constant_indices = true;
+        bool any = false;
+        for (const auto& in : instructions) {
+            const uint32_t* w = &words[in.at];
+            if (in.opcode != op_access_chain || in.count < 4) continue;
+            const auto kind = kinds.find(w[3]);
+            if (kind == kinds.end()) continue;
+            const auto slot = in.count == 5 ? slot_of(w[4], kind->second) : std::nullopt;
+            if (!slot) {
+                constant_indices = false;
+                break;
+            }
+            any = true;
+            uint32_t id = 0;
+            for (const auto& [constant, value] : uint_constants)
+                if (value == *slot && (!id || constant < id)) id = constant;
+            if (!id) {
+                const auto made = std::find_if(slot_constants.begin(), slot_constants.end(),
+                                               [&](const auto& c) { return c.first == *slot; });
+                if (made != slot_constants.end()) id = made->second;
+                else slot_constants.emplace_back(*slot, id = bound++);
+            }
+            constant_index_at[in.at + 4] = id;
+        }
+        if (!constant_indices || !any) {
+            // Ids taken for constants that will not be emitted are left
+            // unused; the bound only has to exceed every id.
+            constant_index_at.clear();
+            slot_constants.clear();
+        }
+    }
+
     std::vector<uint32_t> out(words.begin(), words.begin() + 5);
     out.reserve(words.size() + 16);
     bool capability_added = has_dynamic_indexing || bounded.empty(), length_emitted = false, uint_emitted = false;
-    if (!declare_dynamic_indexing) capability_added = true;
+    if (constant_indices) capability_added = true;
+    bool slots_emitted = slot_constants.empty();
     for (size_t index = 0; index < instructions.size(); ++index) {
         const auto& in = instructions[index];
         const uint32_t* w = &words[in.at];
-        if (!declare_dynamic_indexing && in.opcode == op_capability &&
+        if (constant_indices && in.opcode == op_capability &&
             w[1] == capability_sampled_image_array_dynamic_indexing)
             continue;
+        if (!slots_emitted && in.opcode == 54) {  // OpFunction: the new constants go before the first
+            for (const auto& [value, id] : slot_constants)
+                out.insert(out.end(), {(4u << 16) | op_constant, uint_type, id, value});
+            slots_emitted = true;
+        }
+        if (in.opcode == 65 && constant_index_at.contains(in.at + 4)) {  // OpAccessChain into a heap
+            out.insert(out.end(), w, w + in.count);
+            out[out.size() - 1] = constant_index_at.at(in.at + 4);
+            continue;
+        }
         if (in.opcode == op_capability &&
             (w[1] == capability_runtime_descriptor_array || w[1] == capability_shader_non_uniform)) {
             if (!capability_added) {
