@@ -224,3 +224,65 @@ name = "RaceWholeFramesMidAsmHook"
 address = 0x824B0CCC
 registers = ["f0"]
 after_instruction = true
+
+# A racer carried by a course object (state 0, +2376) moves without the step:
+# 822A9F58 multiplies the motion by it only in the other states (822AA298).
+# With mode 0 (+2392) the motion is the racer's own speed per frame, so a short
+# step moved it 2.4 times as far a second at 144 Hz, and Forgotten Tomb's
+# launcher after the falling pillars threw it past the landing (#401).
+[[midasm_hook]]
+name = "RaceCarriedMotionMidAsmHook"
+address = 0x822AA2D0
+registers = ["r1", "r30"]
+
+# Grab poles (822EB1F0, Final Factory's reach-up pole): the pole moves its
+# racer along by a fixed distance each update (+84 added to the position at
+# 822EB3B8, 822EB498, 822EB530). Scaled to the short step.
+[[midasm_hook]]
+name = "RaceShortStepScaleMidAsmHook"
+address = 0x822EB3B8
+registers = ["f13"]
+
+[[midasm_hook]]
+name = "RaceShortStepScaleMidAsmHook"
+address = 0x822EB498
+registers = ["f13"]
+
+[[midasm_hook]]
+name = "RaceShortStepScaleMidAsmHook"
+address = 0x822EB530
+registers = ["f13"]
+
+# 822EBA98 brings the racer to a grab pole: forward by its speed (+1916) and
+# sideways by 0.5 each update. Both scaled to the short step.
+[[midasm_hook]]
+name = "RaceShortStepScaleMidAsmHook"
+address = 0x822EC688
+registers = ["f0"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RaceShortStepScaleMidAsmHook"
+address = 0x822EC910
+registers = ["f0"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RaceShortStepMoveMidAsmHook"
+address = 0x822EC664
+registers = ["f13", "f12"]
+
+[[midasm_hook]]
+name = "RaceShortStepMoveMidAsmHook"
+address = 0x822EC678
+registers = ["f13", "f12"]
+
+[[midasm_hook]]
+name = "RaceShortStepMoveMidAsmHook"
+address = 0x822EC8EC
+registers = ["f13", "f12"]
+
+[[midasm_hook]]
+name = "RaceShortStepMoveMidAsmHook"
+address = 0x822EC900
+registers = ["f13", "f12"]
