@@ -140,6 +140,21 @@ void RaceShortStepMoveMidAsmHook(PPCRegister& moved, PPCRegister& from) {
     if (step > 0) moved.f64 = double(float(from.f64 + (moved.f64 - from.f64) * step));
 }
 
+// config/freeriders.toml: accumulated += amount and accumulated -= amount, an
+// acceleration the title adds every step (Final Factory's skydive speeds its
+// racer up by 0.0062 a frame, 8239F518). Before the instruction, so that it
+// adds amount * step instead; the amount register itself is a constant the
+// loop around it reuses for every racer, so it is not touched.
+void RaceShortStepAddMidAsmHook(PPCRegister& accumulated, PPCRegister& amount) {
+    const float step = race_short_step.load(std::memory_order_relaxed);
+    if (step > 0) accumulated.f64 = double(float(accumulated.f64 + amount.f64 * (step - 1.0f)));
+}
+
+void RaceShortStepSubtractMidAsmHook(PPCRegister& accumulated, PPCRegister& amount) {
+    const float step = race_short_step.load(std::memory_order_relaxed);
+    if (step > 0) accumulated.f64 = double(float(accumulated.f64 - amount.f64 * (step - 1.0f)));
+}
+
 // config/freeriders.toml, 822A9F58 at 822AA2D0: a racer's motion for this
 // step, at r1+96. The original multiplies it by the step (822AA2B8) unless the
 // racer's state (+2376) is 0, the state in which a course object carries it
