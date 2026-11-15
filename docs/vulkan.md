@@ -89,8 +89,10 @@ Set 0 與 set 1 是只填了一部分的 4096 張貼圖與 256 個取樣器陣�
   也拿掉），陣列照樣用共用常數索引，跟 glslang 對同樣 GLSL 的輸出一樣。Galaxy A05／A06（Mali-G52 MC2，
   驅動程式 r49，Vulkan 1.3.278，沒有 descriptor indexing，Issue #406）建立每一條會取樣貼圖的管線都回
   `VK_ERROR_INITIALIZATION_FAILED`（455 條只成功 71 條，就是不取樣的那些），logcat 沒有任何訊息；
-  貼圖數（48、16+1+1、14+1+1、8+1+1）、SPIR-V 1.3、`OpTypeImage` 的 depth、`ImageQuery`、常數索引、
-  explicit LOD 都不影響，而 glslang 寫的取樣著色器（不宣告這個能力）能建立也能畫。`game.log` 的
+  `SFR_TEST_BOUNDED_TEXTURES=47/16/10`、`SFR_TEST_VULKAN_1_1=1`，以及在著色器包裡改掉 `OpTypeImage`
+  的 depth、`ImageQuery`、改成常數索引與 explicit LOD，都還是 71 條；glslang 寫的取樣著色器（不宣告
+  這個能力）能建立也能畫。只拿掉這個能力就 455 條全部建立，455 次繪製與讀回都正常；
+  `SFR_TEST_DYNAMIC_INDEXING_CAPABILITY=1` 又回到 71 條（Firebase Test Lab 的 Galaxy A06）。`game.log` 的
   `NATIVE_DESCRIPTORS mode=bounded ...` 記 `dynamic_indexing_capability=0|1`；
   `SFR_TEST_DYNAMIC_INDEXING_CAPABILITY=1` 在任何裝置上宣告它，`=0` 在任何裝置上不宣告。
 - `SFR_TEST_NO_DESCRIPTOR_INDEXING=1` 讓 Plume 建立裝置時不開 descriptor indexing 功能
