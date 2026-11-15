@@ -287,6 +287,35 @@ name = "RaceShortStepMoveMidAsmHook"
 address = 0x822EC900
 registers = ["f13", "f12"]
 
+# A path that carries a racer (8231CA00, #410: Metropolis Speedway Expert's
+# launch up the building and the drop after it). Its speed (+232) slows by a
+# fixed amount each update (8231CAD0) and speeds up by speed squared times a
+# constant (8231CB60), and the racer is pulled to the path by at most a fixed
+# distance (8231CCEC): all three scaled to the step. Where the launch starts
+# to crawl (8231CC40, the speed copied into +236), the copy waits a frame, as
+# it did at one frame a step (RaceLaunchSpeedHoldMidAsmHook).
+[[midasm_hook]]
+name = "RaceShortStepScaleMidAsmHook"
+address = 0x8231CAD0
+registers = ["f4"]
+
+[[midasm_hook]]
+name = "RaceShortStepScaleMidAsmHook"
+address = 0x8231CB60
+registers = ["f6"]
+
+[[midasm_hook]]
+name = "RaceShortStepScaleMidAsmHook"
+address = 0x8231CCEC
+registers = ["f0"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RaceLaunchSpeedHoldMidAsmHook"
+address = 0x8231CC40
+registers = ["f0", "r31"]
+after_instruction = true
+
 # Final Factory Expert's skydive (8239F518, #410) carries its racer down to a
 # point it sets, the racer's height less its fall speed (+100 of the racer's
 # slot), at 8239FC6C. The speed changes by a fixed amount each update: 0.0062
