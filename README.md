@@ -310,6 +310,8 @@ with [docs/progress.md](docs/progress.md).
   With **Super Sonic: stay on the board** on, board Super Sonic has no type, so he can't grind rails, fly through flight rings or break through obstacles. The launcher's new **General › Gameplay › Super Sonic: all types on the board** option, shown when stay-on-board is on, gives him the speed, fly and power types, like the Omnipotence gear. Only players get them, not computer racers. It is off by default. Both Super Sonic options are off in online play (#393).
 - [v0.10.61 — Board Super Sonic grinds rails, and races above 60 Hz behave](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.61)
   With **Super Sonic: stay on the board** and **Super Sonic: all types on the board** on, board Super Sonic now grinds rails; before, he rode past them (#393). With **Test options › Gameplay › Race step rate** above 60 (for example 120 or 144), computer racers no longer fly off side ramps into the sky, so the place counter is right again, and the camera now finishes moving from the starting view to the one behind the racer instead of staying stuck in between (#392, #400, #401).
+- [v0.10.62 — The Forgotten Tomb launcher and the Final Factory pole above 60 Hz](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.62)
+  With **Test options › Gameplay › Race step rate** above 60 (for example 120 or 144), the big launcher in Forgotten Tomb no longer throws you much too far, out of the course, and the pole you reach up and grab in Final Factory no longer slows you down. At the default 60 Hz nothing changes (#401).
 
 ## System Requirements
 
