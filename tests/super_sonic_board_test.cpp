@@ -71,6 +71,20 @@ int main() try {
     require(type_mask(0, true) == 7 && type_mask(0, false) == 0, "all types sets speed, fly and power");
     require(type_mask(0x10, true) == 0x17, "other bits of the mask stay");
 
+    // Rails (Issue #393): the rail check runs as for Sonic only for a
+    // player's board Super Sonic with the speed type from "all types".
+    using sfr::super_sonic::rail_check_as_sonic;
+    using sfr::super_sonic::super_sonic_flag;
+    const uint32_t super_flags = 0x00940002;  // board Super Sonic's racer +2220, logged on Dolphin Resort
+    require(super_flags & super_sonic_flag, "the logged flags carry the Super Sonic bit");
+    require(rail_check_as_sonic(all, true, 0x7, super_flags), "a player's board Super Sonic with all types can take rails");
+    require(!rail_check_as_sonic(all, false, 0x7, super_flags), "a computer Super Sonic cannot");
+    require(!rail_check_as_sonic(all, true, 0x0, super_flags), "without the speed bit (the gear's own types), he cannot");
+    require(!rail_check_as_sonic(all, true, 0x7, 0x00800010), "not Super Sonic: the check runs as it is");
+    require(!rail_check_as_sonic(Options{true, false, false}, true, 0x7, super_flags), "all types off: no rails");
+    require(!rail_check_as_sonic(Options{false, true, false}, true, 0x7, super_flags), "stay on the board off: no rails");
+    require(!rail_check_as_sonic(Options{true, true, true}, true, 0x7, super_flags), "online: no rails");
+
     std::cout << "super_sonic_board: ok\n";
     return 0;
 } catch (const std::exception& error) {

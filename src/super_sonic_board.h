@@ -67,4 +67,17 @@ constexpr bool gets_all_types(const Options& options, uint32_t phase, bool local
 
 constexpr uint32_t type_mask(uint32_t mask, bool all) { return all ? mask | all_types : mask; }
 
+// Rails (Issue #393). The speed bit alone is not enough: the rail check
+// (822BC5A0) returns before it looks for a rail while the racer's flags
+// (racer +2220, rider +2124) carry the Super Sonic bit. It runs as for Sonic
+// only for a player's board Super Sonic that has the speed type from "all
+// types" (the Chaos Emeralds have none, so the bit is ours), with both
+// options on and offline.
+inline constexpr uint32_t super_sonic_flag = 0x00100000;
+
+constexpr bool rail_check_as_sonic(const Options& options, bool local_player, uint32_t mask, uint32_t flags) {
+    return stays_on_board(options) && options.all_types && local_player && (mask & type_speed) &&
+           (flags & super_sonic_flag);
+}
+
 }  // namespace sfr::super_sonic
