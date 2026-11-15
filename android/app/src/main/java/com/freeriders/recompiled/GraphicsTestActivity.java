@@ -47,6 +47,12 @@ public class GraphicsTestActivity extends Activity {
         PREPARE + ";SFR_TEST_NO_DEVICE_ADDRESS=1",
         PREPARE + ";SFR_TEST_NO_CLIP_DISTANCE=1",
         PREPARE + ";SFR_TEST_DISPATCH_LOOP=0",
+        // Scenarios 15 and 16: the layout without descriptor indexing with
+        // and without the shaders' SampledImageArrayDynamicIndexing
+        // capability. A Mali-G52 made no pipeline that samples a texture
+        // with it (Issue #406).
+        PREPARE + ";SFR_TEST_DYNAMIC_INDEXING_CAPABILITY=1",
+        PREPARE + ";SFR_TEST_DYNAMIC_INDEXING_CAPABILITY=0",
     };
     private boolean started;
 

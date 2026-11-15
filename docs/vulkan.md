@@ -85,6 +85,14 @@ Set 0 與 set 1 是只填了一部分的 4096 張貼圖與 256 個取樣器陣�
   2D 貼圖，共用常數的 2D 索引改寫成元素編號；超過 13 張時其餘讀到 0，並記一次
   `NATIVE_DESCRIPTORS bounded_overflow`（實際比賽沒有出現）。每個 stage 少於 10 張就停止。
   `SFR_TEST_BOUNDED_TEXTURES=<n>` 把每個 stage 的貼圖上限當成 n，在其他顯示卡上測試這個佈局。
+- ARM（Mali，vendor `0x13b5`）的驅動程式改寫時不宣告 `SampledImageArrayDynamicIndexing`（原本有的
+  也拿掉），陣列照樣用共用常數索引，跟 glslang 對同樣 GLSL 的輸出一樣。Galaxy A05／A06（Mali-G52 MC2，
+  驅動程式 r49，Vulkan 1.3.278，沒有 descriptor indexing，Issue #406）建立每一條會取樣貼圖的管線都回
+  `VK_ERROR_INITIALIZATION_FAILED`（455 條只成功 71 條，就是不取樣的那些），logcat 沒有任何訊息；
+  貼圖數（48、16+1+1、14+1+1、8+1+1）、SPIR-V 1.3、`OpTypeImage` 的 depth、`ImageQuery`、常數索引、
+  explicit LOD 都不影響，而 glslang 寫的取樣著色器（不宣告這個能力）能建立也能畫。`game.log` 的
+  `NATIVE_DESCRIPTORS mode=bounded ...` 記 `dynamic_indexing_capability=0|1`；
+  `SFR_TEST_DYNAMIC_INDEXING_CAPABILITY=1` 在任何裝置上宣告它，`=0` 在任何裝置上不宣告。
 - `SFR_TEST_NO_DESCRIPTOR_INDEXING=1` 讓 Plume 建立裝置時不開 descriptor indexing 功能
   （`patches/plume-descriptor-indexing-test-switch.patch`），在有這些功能的顯示卡上也走有界佈局；
   搭配 `-DSFR_VULKAN_VALIDATION=ON` 與驗證層，可檢查是否還用到裝置沒開的功能。

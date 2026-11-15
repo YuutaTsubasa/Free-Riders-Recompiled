@@ -62,9 +62,17 @@ inline std::optional<BoundedLengths> bounded_lengths(uint32_t textures_per_stage
 // fetch-constant numbers, not heap indices, in the shared constants the
 // shader indexes with. Empty, with the reason in why, for a module this does
 // not understand; anything else is copied as it is.
+//
+// Without declare_dynamic_indexing the module declares no
+// SampledImageArrayDynamicIndexing capability either (one it had is dropped)
+// and still indexes the arrays as before, as glslang's output for the same
+// GLSL does. A Mali-G52's driver (r49, Issue #406) failed every pipeline
+// whose pixel shader declared the capability with VK_ERROR_INITIALIZATION_FAILED
+// and made the same sampling, written without it, at once.
 inline std::optional<std::vector<uint8_t>> bounded_descriptor_spirv(std::span<const uint8_t> code,
                                                                     std::string* why = nullptr,
-                                                                    const BoundedLengths& lengths = {}) {
+                                                                    const BoundedLengths& lengths = {},
+                                                                    bool declare_dynamic_indexing = true) {
     const auto refuse = [&](const std::string& reason) -> std::optional<std::vector<uint8_t>> {
         if (why) *why = reason;
         return std::nullopt;
@@ -219,9 +227,13 @@ inline std::optional<std::vector<uint8_t>> bounded_descriptor_spirv(std::span<co
     std::vector<uint32_t> out(words.begin(), words.begin() + 5);
     out.reserve(words.size() + 16);
     bool capability_added = has_dynamic_indexing || bounded.empty(), length_emitted = false, uint_emitted = false;
+    if (!declare_dynamic_indexing) capability_added = true;
     for (size_t index = 0; index < instructions.size(); ++index) {
         const auto& in = instructions[index];
         const uint32_t* w = &words[in.at];
+        if (!declare_dynamic_indexing && in.opcode == op_capability &&
+            w[1] == capability_sampled_image_array_dynamic_indexing)
+            continue;
         if (in.opcode == op_capability &&
             (w[1] == capability_runtime_descriptor_array || w[1] == capability_shader_non_uniform)) {
             if (!capability_added) {

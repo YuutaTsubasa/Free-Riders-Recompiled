@@ -224,6 +224,7 @@ struct NativeGraphics::Impl {
     std::unique_ptr<NativePipelineCache> pipeline_cache;
     bool bounded_descriptors = false;
     BoundedLengths bounded_lengths;
+    bool bounded_dynamic_indexing_capability = true;
     plume::RenderFormat depth_format = plume::RenderFormat::D32_FLOAT_S8_UINT;
     bool clips_depth = false;
     bool without_clip_distance = false;
@@ -435,6 +436,7 @@ void NativeGraphics::initialize() {
     // SFR_TEST_BOUNDED_TEXTURES=<n> takes n as the textures a stage.
     bool bounded_descriptors = false;
     BoundedLengths bounded_lengths;
+    bool bounded_dynamic_indexing_capability = true;
     if (backend == GraphicsBackend::vulkan && !render_device->getCapabilities().descriptorIndexing) {
         const VkPhysicalDevice physical = static_cast<plume::VulkanDevice*>(render_device.get())->physicalDevice;
         VkPhysicalDeviceFeatures features{};
@@ -473,10 +475,23 @@ void NativeGraphics::initialize() {
                                      "partially bound and variable-count bindings), and also what the renderer's "
                                      "fallback for that needs (" + missing + "); the GPU is not supported");
         bounded_descriptors = true;
+        // The shaders index those arrays dynamically. A Mali-G52's driver
+        // (r49, Issue #406) failed every pipeline whose pixel shader declared
+        // the SampledImageArrayDynamicIndexing capability for that, with
+        // VK_ERROR_INITIALIZATION_FAILED, so on ARM's drivers the shaders go
+        // without it, as glslang writes such indexing.
+        // SFR_TEST_DYNAMIC_INDEXING_CAPABILITY=1 declares it on any device,
+        // =0 leaves it out on any.
+        constexpr uint32_t arm_vendor = 0x13b5;
+        bounded_dynamic_indexing_capability = uint32_t(render_device->getDescription().vendor) != arm_vendor;
+        const char* capability = std::getenv("SFR_TEST_DYNAMIC_INDEXING_CAPABILITY");
+        if (capability && (std::strcmp(capability, "1") == 0 || std::strcmp(capability, "0") == 0))
+            bounded_dynamic_indexing_capability = capability[0] == '1';
         std::cerr << "NATIVE_DESCRIPTORS mode=bounded forced=" << test_no_indexing << " textures_per_stage="
                   << limits.maxPerStageDescriptorSampledImages << " samplers_per_stage="
                   << limits.maxPerStageDescriptorSamplers << " resources_per_stage=" << limits.maxPerStageResources
-                  << " compact=" << bounded_lengths.compact() << '\n';
+                  << " compact=" << bounded_lengths.compact()
+                  << " dynamic_indexing_capability=" << bounded_dynamic_indexing_capability << '\n';
     }
 
     // Every vertex shader writes a clip distance (spirv_clip_distance.h).
@@ -604,6 +619,7 @@ void NativeGraphics::initialize() {
     implementation->backend = backend;
     implementation->bounded_descriptors = bounded_descriptors;
     implementation->bounded_lengths = bounded_lengths;
+    implementation->bounded_dynamic_indexing_capability = bounded_dynamic_indexing_capability;
     implementation->depth_format = depth_format;
     implementation->clips_depth = clips_depth;
     implementation->without_clip_distance = without_clip_distance;
@@ -743,7 +759,8 @@ std::vector<uint8_t> NativeGraphics::rewritten_code(std::span<const uint8_t> cod
         result = std::move(*rewritten);
     }
     if (bounded_descriptors()) {
-        auto rewritten = bounded_descriptor_spirv(result, &why, impl_->bounded_lengths);
+        auto rewritten = bounded_descriptor_spirv(result, &why, impl_->bounded_lengths,
+                                                  impl_->bounded_dynamic_indexing_capability);
         if (!rewritten) throw std::runtime_error("a shader cannot use the bounded descriptor layout: " + why);
         result = std::move(*rewritten);
     }

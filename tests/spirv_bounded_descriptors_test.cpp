@@ -186,6 +186,40 @@ void rewrites_the_heaps(bool non_uniform) {
     require(twice.has_value() && *twice == *rewritten, "the rewrite is idempotent");
 }
 
+// Without the capability (Mali, Issue #406): the same module but for the
+// SampledImageArrayDynamicIndexing capability, which is neither added nor
+// kept.
+void rewrites_the_heaps_without_the_capability() {
+    std::string why;
+    const auto with = sfr::bounded_descriptor_spirv(heaps(false).bytes(), &why);
+    require(with.has_value(), "the heaps are rewritten: " + why);
+    const auto without = sfr::bounded_descriptor_spirv(heaps(false).bytes(), &why, {}, false);
+    require(without.has_value(), "the heaps are rewritten without the capability: " + why);
+    std::vector<uint32_t> capabilities;
+    for (const auto& in : parse(*without).of(17)) capabilities.push_back(in[1]);
+    require(capabilities == std::vector<uint32_t>{Shader, ImageQuery}, "capabilities are Shader and ImageQuery");
+    // Otherwise word for word the same: the capability's two words fewer.
+    std::vector<uint32_t> a(with->size() / 4), b(without->size() / 4);
+    std::memcpy(a.data(), with->data(), with->size());
+    std::memcpy(b.data(), without->data(), without->size());
+    const auto at = std::find(a.begin(), a.end(), (2u << 16) | 17u);
+    require(at != a.end(), "the module has capabilities");
+    auto pruned = a;
+    for (size_t i = 5; i < pruned.size();) {
+        if (pruned[i] == ((2u << 16) | 17u) && pruned[i + 1] == SampledImageArrayDynamicIndexing) {
+            pruned.erase(pruned.begin() + std::ptrdiff_t(i), pruned.begin() + std::ptrdiff_t(i) + 2);
+            break;
+        }
+        i += pruned[i] >> 16;
+    }
+    require(pruned == b, "only the capability differs");
+    // A module already declaring it loses it too, and stays the same after.
+    const auto again = sfr::bounded_descriptor_spirv(*with, &why, {}, false);
+    require(again.has_value() && *again == *without, "a declared capability is dropped");
+    const auto twice = sfr::bounded_descriptor_spirv(*without, &why, {}, false);
+    require(twice.has_value() && *twice == *without, "the rewrite without it is idempotent");
+}
+
 // The compact layout of a driver with 16 textures a stage: 14 2D textures,
 // one 2D array and one cube, and still 16 samplers.
 void rewrites_the_heaps_compact() {
@@ -362,6 +396,7 @@ int main() {
         rewrites_the_heaps(false);
         rewrites_the_heaps(true);
         rewrites_the_heaps_compact();
+        rewrites_the_heaps_without_the_capability();
         adds_a_uint_type_when_missing();
         leaves_a_module_without_heaps();
         refuses_what_it_does_not_know();
