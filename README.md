@@ -308,6 +308,8 @@ with [docs/progress.md](docs/progress.md).
   With **Test options › Gameplay › Race step rate** above 60 (for example 120 or 144), Android kept the screen at 60 Hz, so races still showed only about 60 frames a second and the FPS counter said 60. The game now asks Android for a screen mode fast enough for the chosen rate. Whether the screen really switches still depends on the phone's own refresh-rate setting (#392).
 - [v0.10.60 — Super Sonic can have all types on his board](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.60)
   With **Super Sonic: stay on the board** on, board Super Sonic has no type, so he can't grind rails, fly through flight rings or break through obstacles. The launcher's new **General › Gameplay › Super Sonic: all types on the board** option, shown when stay-on-board is on, gives him the speed, fly and power types, like the Omnipotence gear. Only players get them, not computer racers. It is off by default. Both Super Sonic options are off in online play (#393).
+- [v0.10.61 — Board Super Sonic grinds rails, and races above 60 Hz behave](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.61)
+  With **Super Sonic: stay on the board** and **Super Sonic: all types on the board** on, board Super Sonic now grinds rails; before, he rode past them (#393). With **Test options › Gameplay › Race step rate** above 60 (for example 120 or 144), computer racers no longer fly off side ramps into the sky, so the place counter is right again, and the camera now finishes moving from the starting view to the one behind the racer instead of staying stuck in between (#392, #400, #401).
 
 ## System Requirements
 
