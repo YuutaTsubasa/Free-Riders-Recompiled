@@ -17,6 +17,8 @@ thread_local bool updating_race_ui = false;
 std::atomic<int32_t> race_whole_frames{-1};
 // The unit the race clock (+20) was given for a short step, 0 when none.
 std::atomic<uint32_t> race_unit_written{0};
+// The running short step in frames, 0 when a race is not stepping short.
+std::atomic<float> race_short_step{0.0f};
 
 // Android steps the race by the time that passed (SFR_REALTIME_RACE=0 turns
 // it off), so a frame rate under 60 does not slow the race. Desktops, held
@@ -85,6 +87,7 @@ SFR_CONCURRENT_HOOK(sub_824B1588) {
     if (!step) {
         race_ui_frames.store(1.0f, std::memory_order_relaxed);
         race_whole_frames.store(-1, std::memory_order_relaxed);
+        race_short_step.store(0.0f, std::memory_order_relaxed);
         return;
     }
 
@@ -98,6 +101,7 @@ SFR_CONCURRENT_HOOK(sub_824B1588) {
     static thread_local sfr::RaceWholeFrames whole;
     if (sfr::race_step_rate() != 60) {
         race_whole_frames.store(whole.update(frames), std::memory_order_relaxed);
+        race_short_step.store(frames, std::memory_order_relaxed);
         // +20 is the clock's unit: the original makes each step a whole number
         // of units (one at 60 Hz). A few readers take it as "one step" rather
         // than +40: the race camera's smoothing (8227BB98 and 8227B5D0 scale
@@ -119,6 +123,41 @@ SFR_CONCURRENT_HOOK(sub_824B1588) {
 void RaceWholeFramesMidAsmHook(PPCRegister& truncated) {
     const int32_t whole = race_whole_frames.load(std::memory_order_relaxed);
     if (whole >= 0) truncated.u64 = uint64_t(whole);
+}
+
+// config/freeriders.toml: a distance the title moves something by every step,
+// written for steps of one frame (it is not multiplied by the step). Scaled
+// to the short step; at 60 Hz nothing changes.
+void RaceShortStepScaleMidAsmHook(PPCRegister& amount) {
+    const float step = race_short_step.load(std::memory_order_relaxed);
+    if (step > 0) amount.f64 = double(float(amount.f64 * step));
+}
+
+// config/freeriders.toml: moved = from +/- a fixed distance a step (a grab
+// pole lining its racer up); only the distance is scaled.
+void RaceShortStepMoveMidAsmHook(PPCRegister& moved, PPCRegister& from) {
+    const float step = race_short_step.load(std::memory_order_relaxed);
+    if (step > 0) moved.f64 = double(float(from.f64 + (moved.f64 - from.f64) * step));
+}
+
+// config/freeriders.toml, 822A9F58 at 822AA2D0: a racer's motion for this
+// step, at r1+96. The original multiplies it by the step (822AA2B8) unless the
+// racer's state (+2376) is 0, the state in which a course object carries it
+// (the launcher after Forgotten Tomb's falling pillars, the start's run-in):
+// at a fixed step of one frame that was the same thing. With its mode (+2392)
+// 0 the motion is the racer's own speed along its heading, per frame; left
+// unscaled, a short step moved it a whole frame's distance, 2.4 times as far
+// a second at 144 Hz. In the other modes the motion is to a point the object
+// sets (822EBA98 for grab poles), which the object's own hooks scale.
+void RaceCarriedMotionMidAsmHook(PPCRegister& r1, PPCRegister& r30) {
+    const float step = race_short_step.load(std::memory_order_relaxed);
+    if (step <= 0) return;
+    auto& memory = *sfr::active_memory;
+    if (memory.load<uint32_t>(r30.u32 + 2376) != 0 || memory.load<uint32_t>(r30.u32 + 2392) != 0) return;
+    for (const uint32_t offset : {96u, 100u, 104u}) {
+        const uint32_t address = r1.u32 + offset;
+        memory.store<uint32_t>(address, std::bit_cast<uint32_t>(std::bit_cast<float>(memory.load<uint32_t>(address)) * step));
+    }
 }
 
 PPC_FUNC_IMPL(__imp__sub_824AE2A0);
