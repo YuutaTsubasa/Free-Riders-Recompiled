@@ -213,3 +213,14 @@ name = "RaceWholeFramesMidAsmHook"
 address = 0x8223F868
 registers = ["f13"]
 after_instruction = true
+
+# The camera's blend from one view to the next (824B08C0, at the start of a
+# race and around jumps) counts its frames the same way, its step reached
+# through 82211440 rather than the global, so the search for the 19 above
+# missed it. Truncated to 0, the blend never ended: the view stayed between
+# the start camera and the racer's, behind or looking down on him.
+[[midasm_hook]]
+name = "RaceWholeFramesMidAsmHook"
+address = 0x824B0CCC
+registers = ["f0"]
+after_instruction = true

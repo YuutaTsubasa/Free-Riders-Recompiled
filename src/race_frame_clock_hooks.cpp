@@ -15,6 +15,8 @@ thread_local bool updating_race_ui = false;
 // Whole frames the running short step completed (RaceWholeFrames), -1 when
 // a race is not stepping short: guest 1 writes it, its workers read it.
 std::atomic<int32_t> race_whole_frames{-1};
+// The unit the race clock (+20) was given for a short step, 0 when none.
+std::atomic<uint32_t> race_unit_written{0};
 
 // Android steps the race by the time that passed (SFR_REALTIME_RACE=0 turns
 // it off), so a frame rate under 60 does not slow the race. Desktops, held
@@ -51,6 +53,13 @@ PPC_FUNC_IMPL(__imp__sub_824B1588);
 // elapsed time, slowing the whole race whenever rendering misses 60 FPS.
 SFR_CONCURRENT_HOOK(sub_824B1588) {
     const uint32_t clock = ctx.r3.u32;
+    // The race clock's unit (+20) as the original keeps it, 1, whenever the
+    // original runs: a short step's unit (below) lasts only until the next
+    // update, so the original, the check below and anything after a race see
+    // the clock they always did.
+    if (const uint32_t written = race_unit_written.exchange(0, std::memory_order_relaxed);
+        written && clock == 0x83E53810 && sfr::active_memory->load<uint32_t>(clock+20) == written)
+        sfr::active_memory->store<uint32_t>(clock+20, 0x3F800000);
     if (!realtime_races() || sfr::current_guest_thread_id() != 1) {
         __imp__sub_824B1588(ctx, base);
         return;
@@ -87,7 +96,17 @@ SFR_CONCURRENT_HOOK(sub_824B1588) {
     memory.store<uint8_t>(clock+91, frames > 1.0f ? 1 : 0);
     race_ui_frames.store(frames, std::memory_order_relaxed);
     static thread_local sfr::RaceWholeFrames whole;
-    if (sfr::race_step_rate() != 60) race_whole_frames.store(whole.update(frames), std::memory_order_relaxed);
+    if (sfr::race_step_rate() != 60) {
+        race_whole_frames.store(whole.update(frames), std::memory_order_relaxed);
+        // +20 is the clock's unit: the original makes each step a whole number
+        // of units (one at 60 Hz). A few readers take it as "one step" rather
+        // than +40: the race camera's smoothing (8227BB98 and 8227B5D0 scale
+        // a per-step blend by it and divide its durations in frames by it)
+        // and timers that add it each step (822D3B20, 82379B30, 82379D40).
+        // Left at 1, a short step ran all of them 60/N times too fast.
+        memory.store<uint32_t>(clock+20, std::bit_cast<uint32_t>(frames));
+        race_unit_written.store(std::bit_cast<uint32_t>(frames), std::memory_order_relaxed);
+    }
     // Keep +4 untouched: legacy controller gestures also read that setting.
     // +44/+48/+52/+92 retain the original clock's computed diagnostic values.
     if (step->clamped && step->elapsed_seconds > 0.25)

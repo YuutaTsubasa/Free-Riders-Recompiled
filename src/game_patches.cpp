@@ -881,6 +881,19 @@ static void race_track() {
         text << " r" << i << '=';
         for(uint32_t offset:{0x120u,0x124u,0x128u}) text << std::bit_cast<float>(memory.load<uint32_t>(racer+offset)) << ',';
     }
+    // The first view's camera, as race_task_hooks.cpp finds it: its position
+    // (+432) and vertical field of view (+480), to compare how it follows the
+    // racer at different step rates.
+    const uint32_t scene=memory.readable(0x83E516A0,4)?memory.load<uint32_t>(0x83E516A0):0;
+    const uint32_t cameras=scene && memory.readable(scene+116,4)?memory.load<uint32_t>(scene+116):0;
+    const uint32_t list=cameras && memory.readable(cameras+8,32)?memory.load<uint32_t>(cameras+8):0;
+    const uint32_t slot=list?list+memory.load<uint32_t>(cameras+28)*4:0;
+    const uint32_t camera=slot && memory.readable(slot,4)?memory.load<uint32_t>(slot):0;
+    if(camera && memory.readable(camera,484)) {
+        text << " camera=";
+        for(uint32_t offset:{432u,436u,440u}) text << std::bit_cast<float>(memory.load<uint32_t>(camera+offset)) << ',';
+        text << " fov=" << std::bit_cast<float>(memory.load<uint32_t>(camera+480));
+    }
     text << "\n";
     std::cerr << text.str();
 }
