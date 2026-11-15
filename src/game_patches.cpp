@@ -1546,15 +1546,20 @@ bool local_player_racer(uint32_t racer) {
         if(sfr::active_memory->load<uint32_t>(uint64_t(racers->begin)+slot*4)==racer) return true;
     return false;
 }
-}
 
-SFR_CONCURRENT_HOOK(sub_823D9970) {
+const sfr::super_sonic::Options& super_sonic_options() {
     static const sfr::super_sonic::Options options=[]{
         const auto on=[](const char* name){ const char* t=std::getenv(name); return t && *t=='1'; };
         using sfr::super_sonic::switch_set;
         return sfr::super_sonic::Options{on("SFR_SUPER_SONIC_STAY_ON_BOARD"),on("SFR_SUPER_SONIC_ALL_TYPES"),
             !sfr::super_sonic::options_apply(switch_set(std::getenv("SFR_LIVE_HOST")),switch_set(std::getenv("SFR_LIVE_SERVER")))};
     }();
+    return options;
+}
+}
+
+SFR_CONCURRENT_HOOK(sub_823D9970) {
+    const sfr::super_sonic::Options& options=super_sonic_options();
     if(!sfr::super_sonic::stays_on_board(options)) { __imp__sub_823D9970(ctx,base); return; }
     const uint32_t ability=ctx.r3.u32;
     const uint32_t phase=sfr::active_memory->load<uint32_t>(ability+20);
@@ -1574,4 +1579,31 @@ SFR_CONCURRENT_HOOK(sub_823D9970) {
         static const bool trace=[]{ const char* t=std::getenv("SFR_TRACE_SUPER_SONIC_TYPES"); return t && *t=='1'; }();
         if(trace) std::fprintf(stderr,"SUPER_SONIC_TYPES racer=0x%08x gear=0x%08x phase=%u mask=0x%x->0x%x\n",racer,gear,after,mask,all);
     }
+}
+
+PPC_FUNC_IMPL(__imp__sub_822BC5A0);
+
+// The rail check (rider r3; the rider is racer +96, so rider +2124 is racer
+// +2220 and rider +2116 is racer +2212). The racer's riding updates call it
+// while the speed type is on (rider +2116 bit 0x2, set from the gear's speed
+// bit), and it returns at once, before looking for a rail, while rider +2124
+// has 0x00100000, the Super Sonic bit. So the speed bit that PR #397 gives
+// board Super Sonic never reached a rail (Issue #393). For a player's board
+// Super Sonic with "all types" on (his gear has the speed bit, which only the
+// hook above gives him), the check runs without that bit, which is put back
+// afterwards. Everyone else, and every other check of the bit, is unchanged.
+SFR_CONCURRENT_HOOK(sub_822BC5A0) {
+    const uint32_t rider=ctx.r3.u32;
+    const uint32_t flags=sfr::active_memory->load<uint32_t>(rider+2124);
+    if(!(flags&sfr::super_sonic::super_sonic_flag)) { __imp__sub_822BC5A0(ctx,base); return; }
+    const uint32_t racer=sfr::active_memory->load<uint32_t>(rider+1680);
+    const uint32_t gear=racer?sfr::active_memory->load<uint32_t>(racer+3216):0;
+    if(!gear || !sfr::super_sonic::rail_check_as_sonic(super_sonic_options(),local_player_racer(racer),
+                                                        sfr::active_memory->load<uint32_t>(gear+168),flags)) {
+        __imp__sub_822BC5A0(ctx,base);
+        return;
+    }
+    sfr::active_memory->store<uint32_t>(rider+2124,flags&~sfr::super_sonic::super_sonic_flag);
+    __imp__sub_822BC5A0(ctx,base);
+    sfr::active_memory->store<uint32_t>(rider+2124,sfr::active_memory->load<uint32_t>(rider+2124)|sfr::super_sonic::super_sonic_flag);
 }
