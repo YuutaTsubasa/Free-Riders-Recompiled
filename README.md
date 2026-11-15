@@ -306,6 +306,8 @@ with [docs/progress.md](docs/progress.md).
   With a voice mod whose files are larger than the original ones (for example GameBanana's Zero Gravity Voice Pack), choosing the Chaos Emeralds left the race on "Now Loading" forever. The game now gives its sounds more memory, so the race starts (#385).
 - [v0.10.59 — Android asks for a faster screen for races above 60 Hz](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.59)
   With **Test options › Gameplay › Race step rate** above 60 (for example 120 or 144), Android kept the screen at 60 Hz, so races still showed only about 60 frames a second and the FPS counter said 60. The game now asks Android for a screen mode fast enough for the chosen rate. Whether the screen really switches still depends on the phone's own refresh-rate setting (#392).
+- [v0.10.60 — Super Sonic can have all types on his board](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.60)
+  With **Super Sonic: stay on the board** on, board Super Sonic has no type, so he can't grind rails, fly through flight rings or break through obstacles. The launcher's new **General › Gameplay › Super Sonic: all types on the board** option, shown when stay-on-board is on, gives him the speed, fly and power types, like the Omnipotence gear. Only players get them, not computer racers. It is off by default. Both Super Sonic options are off in online play (#393).
 
 ## System Requirements
 
