@@ -408,6 +408,17 @@ SFR_INPUT_HOOK(sub_82438930) {
                 for (int i = 0; i < 6; i += 3)
                     if (lane[i] < lane[i+1] && x >= lane[i] && x <= lane[i+1])
                         pad.thumb_lx = int16_t(std::clamp((z - lane[i+2]) * 0.1f, -1.0f, 1.0f) * 32767.0f);
+                // SFR_TEST_RACE_WEAVE=x0,x1,z0,z1,period (testing): the stick is full right,
+                // then full left, switching every period of z, while the racer is in that
+                // box (leaning one way and the other in Rocky Ridge's minecart, #410).
+                static const std::array<float,5> weave = [] {
+                    std::array<float,5> value{1,0,0,0,1};
+                    if (const char* text = std::getenv("SFR_TEST_RACE_WEAVE"))
+                        std::sscanf(text, "%f,%f,%f,%f,%f", &value[0], &value[1], &value[2], &value[3], &value[4]);
+                    return value;
+                }();
+                if (weave[0] < weave[1] && x >= weave[0] && x <= weave[1] && z >= weave[2] && z <= weave[3])
+                    pad.thumb_lx = (int(std::floor((z - weave[2]) / weave[4])) % 2) ? -32767 : 32767;
             }
         }
         race[0].update(pad, seconds);

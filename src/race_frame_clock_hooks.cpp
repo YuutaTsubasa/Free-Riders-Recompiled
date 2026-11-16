@@ -1,6 +1,7 @@
 #include "diagnostic_hooks.h"
 #include "ppc_recomp_shared.h"
 #include "race_frame_clock.h"
+#include <algorithm>
 #include <atomic>
 #include <bit>
 #include <chrono>
@@ -137,6 +138,30 @@ void RaceWholeFramesMidAsmHook(PPCRegister& truncated) {
 void RaceShortStepScaleMidAsmHook(PPCRegister& amount) {
     const float step = race_short_step.load(std::memory_order_relaxed);
     if (step > 0) amount.f64 = double(float(amount.f64 * step));
+}
+
+// config/freeriders.toml: the step (clock +40) just loaded into a register
+// for an amount the title computes once and then applies every update times
+// the step again. At one frame a step the extra factor was 1; a short step
+// applied it twice. The register gets one frame instead.
+void RaceStepAsFrameMidAsmHook(PPCRegister& step) {
+    if (race_short_step.load(std::memory_order_relaxed) > 0) step.f64 = 1.0;
+}
+
+// config/freeriders.toml, 8235AA48 at 8235AB48: a minecart's lever (Rocky
+// Ridge) turns to the side the rider leans (+352, 0.41 rad either way) over a
+// time in frames (+364: 20, or 10 back to the middle) at a speed per update
+// (+360, the angle left over the time). The time counts down by the step, but
+// each update added the whole speed: a short step turned it 60/N times as
+// far, and each lean the other way overshot more than the last, until the
+// lever hung upside down. Before the add, speed (f13) is scaled to the frames
+// this update spent of the time left (left, f11: the time after this update's
+// step, below zero on the last one).
+void RaceLeverTurnMidAsmHook(PPCRegister& speed, PPCRegister& left) {
+    const float step = race_short_step.load(std::memory_order_relaxed);
+    if (step <= 0) return;
+    const float frames = std::clamp(float(left.f64) + step, 0.0f, step);
+    speed.f64 = double(float(speed.f64 * frames));
 }
 
 // config/freeriders.toml: moved = from +/- a fixed distance a step (a grab

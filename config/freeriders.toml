@@ -346,3 +346,44 @@ registers = ["f0", "f28"]
 name = "RaceShortStepAddMidAsmHook"
 address = 0x823A01A4
 registers = ["f0", "f28"]
+
+# Rocky Ridge's minecart (8235AA48, #410, #401): its lever turns to the side
+# the rider leans over 20 frames (+364, counted down by the step) at a speed
+# per update (+360), but every update added the whole speed (8235AB48), so a
+# short step turned it 60/N times as far. Each lean the other way overshot more
+# than the last, until the lever hung upside down under the cart. The speed is
+# scaled to the frames this update spent (RaceLeverTurnMidAsmHook).
+[[midasm_hook]]
+name = "RaceLeverTurnMidAsmHook"
+address = 0x8235AB48
+registers = ["f13", "f11"]
+
+# The jump into the minecart (822B8D70) slows its racer every update by
+# speed -= step * decel (822B8E04), with decel set on entry as speed times a
+# constant times the step again (822B8FD8 to 822B9018). A short step slowed
+# the racer by step squared: it flew higher and farther, and boarded 10 units
+# off the cart instead of 3. The entry's step is taken as one frame
+# (RaceStepAsFrameMidAsmHook), as at 60 Hz.
+[[midasm_hook]]
+name = "RaceStepAsFrameMidAsmHook"
+address = 0x822B8FD8
+registers = ["f11"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RaceStepAsFrameMidAsmHook"
+address = 0x822B8FEC
+registers = ["f9"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RaceStepAsFrameMidAsmHook"
+address = 0x822B9000
+registers = ["f12"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RaceStepAsFrameMidAsmHook"
+address = 0x822B9010
+registers = ["f10"]
+after_instruction = true
