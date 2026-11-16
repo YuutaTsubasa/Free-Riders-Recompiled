@@ -314,6 +314,8 @@ with [docs/progress.md](docs/progress.md).
   With **Test options › Gameplay › Race step rate** above 60 (for example 120 or 144), the big launcher in Forgotten Tomb no longer throws you much too far, out of the course, and the pole you reach up and grab in Final Factory no longer slows you down. At the default 60 Hz nothing changes (#401).
 - [v0.10.63 — Older Mali phones no longer stop with a graphics error](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.63)
   On older phones with an ARM Mali graphics chip, like the Galaxy A05 and A06, the game no longer stops with "native graphics pipeline creation failed" (#406).
+- [v0.10.64 — Expert courses above 60 Hz: the Final Factory skydive and the Metropolis Speedway launch](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.64)
+  With **Test options › Gameplay › Race step rate** above 60 (for example 120 or 144), the skydive in Final Factory Expert no longer falls too fast or breaks the camera, and the launch up the building in Metropolis Speedway Expert no longer hangs at the top. At the default 60 Hz nothing changes (#410).
 
 ## System Requirements
 
