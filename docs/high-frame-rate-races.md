@@ -43,7 +43,8 @@ Windows 144 Hz 跑一場 Wild Canyon，12 位車手裡有 3 位飛到 y≈1650�
 再用 `-DSFR_DIAGNOSTIC_DIR` 指過去），並在產生的程式碼裡 grep `RaceWholeFramesMidAsmHook`
 確認有 20 處（#410 之後另有 `RaceCarriedMotionMidAsmHook` 1 處、`RaceShortStepScaleMidAsmHook`
 9 處、`RaceShortStepMoveMidAsmHook` 4 處、`RaceShortStepAddMidAsmHook` 2 處、
-`RaceShortStepSubtractMidAsmHook` 2 處、`RaceLaunchSpeedHoldMidAsmHook` 1 處，與
+`RaceShortStepSubtractMidAsmHook` 2 處、`RaceLaunchSpeedHoldMidAsmHook` 1 處、
+`RaceLeverTurnMidAsmHook` 1 處、`RaceStepAsFrameMidAsmHook` 4 處，與
 `config/freeriders.toml` 的條目數相同；發版技能的 `hookcount.sh` 會逐一比對）。
 
 ## 鏡頭（#392，2026-11-15）
@@ -147,8 +148,44 @@ store 前呼叫一個檢查函式）找出寫車手目標點（`+0x170`）的指
 60 Hz 不受影響：所有新 hook 在步長不是 60/N 時直接返回（見 PR 的 60 Hz 比對）。
 
 還沒處理：Metropolis 大樓頂仍比 60 Hz 長約 0.6 秒（開始爬的高度差 1.5 單位）；高空墜落時鏡頭的
-朝向在 144 Hz 看起來斜一點（距離已相同）；Expert 的舉手抓桿、Rocky Ridge 礦車、Dolphin Resort
-海豚、打石頭時鏡頭翻轉、踢擊與花式動作，無人操作時都沒重現（見 #410 的 PR）。
+朝向在 144 Hz 看起來斜一點（距離已相同）；Expert 的舉手抓桿、Dolphin Resort
+海豚、打石頭時鏡頭翻轉、踢擊與花式動作，無人操作時都沒重現（見 #410 的 PR）。Rocky Ridge 礦車
+見下一節。
+
+## Rocky Ridge 礦車（#410、#401，2026-11-16）
+
+玩家說的「礦車的搖桿倒掛在車底」（#401 說「礦車底下露出切換用的機關」）只在車手左右傾的時候
+出現，無人操作的車手不會傾，所以之前的跑法看不到。
+
+1. **礦車的搖桿（`8235AA48`）。** 礦車物件（vtable `821A3AC4`，`+0x100` 是車手）在車手往一邊傾時
+   把搖桿轉到那一邊（目標角度 `+352`，左右各 0.41 弧度），轉的時間以幀計（`+364`，轉到一邊 20 幀、
+   轉回中間 10 幀），每次更新的轉速是 `+360`（角度差除以時間）。時間每次更新減掉步長，但角度每次
+   更新加上整個轉速（`8235AB48`），沒乘步長，所以 144 Hz 時轉了 2.4 倍遠：往右傾停在 -1.00
+   （60 Hz 是 -0.41），回到中間停在 +1.51。每換一次方向就比上次超出更多（新角度 ≈ 2.4×目標 −
+   1.4×現在的角度），左右各傾兩次就轉到 -3.27（倒掛在車底），之後 5.74、-8.62。
+   修法：`RaceLeverTurnMidAsmHook` 在加之前把轉速乘上這次更新實際用掉的幀數（步長，最後一次是剩下
+   的時間），所以總共正好轉到目標。
+2. **跳上礦車的那一跳（`822B8D70`）。** 車手的速度每次更新減 `步長 × 減速度`（`822B8E04`），減速度
+   卻是在起跳時就乘過一次步長（`822B8FD8` 到 `822B9018`），所以 144 Hz 時減速只有 60 Hz 的
+   0.42²。車手飛得比較快、比較高（重力跟速度有關，也跟著變小），礦車判斷「離上車點最近」時車手
+   還在空中，離上車點 10.7（60 Hz 是 3.3），在空中就被放進車裡。修法：`RaceStepAsFrameMidAsmHook`
+   讓起跳時讀到的步長當成 1 幀，跟 60 Hz 一樣。
+
+找法：先比對 60／144 的車手資料，發現車手在礦車裡時沒有指向礦車的欄位；用掃描記憶體找出所有指向
+車手的物件，再用暫時的「各指令寫入次數」比對礦車段與前一段，找到只在礦車段跑的 `8235xxxx` 函式
+（礦車物件的狀態機），從建構函式（`82358EB8`）找到 vtable，之後每一步用 vtable 找到車手的礦車並
+存下整個物件。搖桿要轉，得讓車手在礦車裡左右傾：`SFR_TEST_RACE_WEAVE=x0,x1,z0,z1,週期` 讓搖桿在
+那個範圍裡每隔一段 z 全右、全左交替（Rocky Ridge Expert：`-470,-420,440,730,60`）。
+
+| 跑法（Rocky Ridge Expert，無人操作的 Sonic 加 `SFR_TEST_RACE_WEAVE`） | 60 Hz | 144 Hz 修正前 | 144 Hz 修正後 |
+| --- | --- | --- | --- |
+| 第一次往右傾，搖桿停在（弧度） | -0.41 | -1.00 | -0.41 |
+| 左右傾四次內，搖桿最大角度 | 0.41 | 8.62（轉了一圈多） | 0.41 |
+| 跳上礦車時離上車點（`+0x148`） | 3.2～3.3 | 10.7 | 5.0 |
+| 跳上礦車那一跳的時間 | 0.97～1.0 秒 | 0.70 秒 | 1.04 秒 |
+
+還沒處理：上車點的距離修正後是 5.0，仍比 60 Hz 的 3.3 遠一點（那一跳的弧線由 `RaceWholeFrames`
+計時，其餘沒有再查）。
 
 ## 實測結果
 
@@ -246,5 +283,6 @@ Metropolis Speedway、Frozen Forest 都沒有車手一去不回。Forgotten Tomb
   Kinect，或把跳過畫格關掉時不會套用（`race_step_rate`），game.log 開頭會有
   `RACE_STEP_RATE rate=`。
 - 測試：`SFR_RACE_TRACK=<n>` 每 n 步印出所有車手位置，`SFR_RACE_PACING=1` 印呈現間隔，
-  `SFR_TEST_RACE_HOLD`、`SFR_TEST_RACE_STEER` 在賽道固定位置按 A 與轉向。Rocky Ridge 在
+  `SFR_TEST_RACE_HOLD`、`SFR_TEST_RACE_STEER` 在賽道固定位置按 A 與轉向，`SFR_TEST_RACE_WEAVE`
+  在一段範圍裡左右交替傾（Rocky Ridge 礦車的搖桿）。Rocky Ridge 在
   選賽道畫面往左一格（`left@11300`）。
