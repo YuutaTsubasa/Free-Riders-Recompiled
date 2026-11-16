@@ -41,8 +41,10 @@ Windows 144 Hz 跑一場 Wild Canyon，12 位車手裡有 3 位飛到 y≈1650�
 128），玩家因此一直顯示第 1 名；重新產生後最高 128，名次跟 60 Hz 一樣在 5～12 名之間。
 **改了 `[[midasm_hook]]` 的版本，發版前一定要重跑 `prepare_recomp.py`**（輸出到新資料夾，
 再用 `-DSFR_DIAGNOSTIC_DIR` 指過去），並在產生的程式碼裡 grep `RaceWholeFramesMidAsmHook`
-確認有 20 處（#401 之後另有 `RaceCarriedMotionMidAsmHook` 1 處、`RaceShortStepScaleMidAsmHook`
-5 處、`RaceShortStepMoveMidAsmHook` 4 處，與 `config/freeriders.toml` 的條目數相同）。
+確認有 20 處（#410 之後另有 `RaceCarriedMotionMidAsmHook` 1 處、`RaceShortStepScaleMidAsmHook`
+9 處、`RaceShortStepMoveMidAsmHook` 4 處、`RaceShortStepAddMidAsmHook` 2 處、
+`RaceShortStepSubtractMidAsmHook` 2 處、`RaceLaunchSpeedHoldMidAsmHook` 1 處，與
+`config/freeriders.toml` 的條目數相同；發版技能的 `hookcount.sh` 會逐一比對）。
 
 ## 鏡頭（#392，2026-11-15）
 
@@ -109,6 +111,44 @@ Wild Canyon（全新存檔，選賽道畫面 `left@11300`），無人操作的 S
 還沒處理：飛行後段仍比 60 Hz 早約 1.4 秒落地（起飛那一下的彈射段也是每步固定距離，由終點
 決定）；開頭衝刺段結束的時間點是機關的更新次數（60 Hz 2.0 秒、144 Hz 0.85 秒），所有車手
 一樣，沒有處理。Final Factory 的抓桿要有解鎖的存檔才選得到（空存檔只有 6 條賽道）。
+
+## Expert 賽道（#410，2026-11-16）
+
+同一類問題（每一步固定的量，沒有乘上步長），這次在兩個機關裡：
+
+1. **Final Factory Expert 的高空墜落（`8239F518`）。** 車手是狀態 0、模式 3（走到機關給的點），
+   點是「現在的高度減掉落下速度」（`8239FC6C`），速度每次更新固定加 0.0062（`823A0118`、
+   `823A012C`、`823A01A4`），減速時每次減 0.077（`8239FB94`），都沒乘步長。144 Hz 時每秒落
+   233（60 Hz 是 97），鏡頭離車手 29（60 Hz 是 17），玩家說的「鏡頭晃、壞掉」就在這段。
+   修法：`RaceShortStepScaleMidAsmHook` 縮放下落距離，新的 `RaceShortStepAddMidAsmHook`／
+   `RaceShortStepSubtractMidAsmHook` 在加減之前把量換成「量 × 步長」（量的暫存器是迴圈外載入、
+   每位車手共用的常數，所以不能直接改它）。
+2. **Metropolis Speedway Expert 沿大樓往上衝、再掉下來的路徑（`8231CA00`）。** 這個機關讓車手
+   沿著一條路徑走：速度（`+232`）每次更新固定減一個量（`8231CAD0`），加速時加「速度平方 × 常數」
+   （`8231CB60`），車手偏離路徑時每次最多拉回固定距離（`8231CCEC`），三者都沒乘步長。
+   更關鍵的是：路徑段落（`+90`，這次更新前的值）進入課程設定的範圍時，才把減慢後的速度複製到
+   實際行進的速度（`+236`，`8231CC40`），從那裡開始慢慢爬到最高點。60 Hz 時判斷用的是上一幀的
+   段落，所以進入範圍後還會再以原速走一整幀；144 Hz 一步只走 0.42 幀，車手早了 7 單位開始爬，
+   要爬 10 單位而不是 3，所以在空中停了 4.7 秒（60 Hz 2 秒），就是玩家說的「跳下大樓很慢，像
+   掉幀又不是」。修法：前三處用 `RaceShortStepScaleMidAsmHook`；複製改由
+   `RaceLaunchSpeedHoldMidAsmHook` 等車手在範圍內滿一幀再做（在那之前讓要寫回的值等於 `+236` 原本的值），
+   跟 60 Hz 一樣。
+
+找法同 #401：每一步把車手前 8 KiB 寫到檔案比對 60／144，再用「寫入監看」（在產生碼的每個
+store 前呼叫一個檢查函式）找出寫車手目標點（`+0x170`）的指令（`8231CDFC`、`8239FC80`），再
+暫時在機關裡印出路徑位置、速度、段落。
+
+| 跑法（無人操作的 Sonic，解鎖存檔，`SFR_TEST_RAND_SEED=1`） | 60 Hz | 144 Hz 修正前 | 144 Hz 修正後 |
+| --- | --- | --- | --- |
+| Final Factory Expert 墜落速度（每秒） | 97.2 | 233.9 | 97.4 |
+| 同上，鏡頭到車手的距離 | 17.1 | 29.2 | 17.6 |
+| Metropolis Speedway Expert 大樓頂停在 y > 420 的時間 | 3.1 秒 | 5.4～5.6 秒 | 3.7 秒 |
+
+60 Hz 不受影響：所有新 hook 在步長不是 60/N 時直接返回（見 PR 的 60 Hz 比對）。
+
+還沒處理：Metropolis 大樓頂仍比 60 Hz 長約 0.6 秒（開始爬的高度差 1.5 單位）；高空墜落時鏡頭的
+朝向在 144 Hz 看起來斜一點（距離已相同）；Expert 的舉手抓桿、Rocky Ridge 礦車、Dolphin Resort
+海豚、打石頭時鏡頭翻轉、踢擊與花式動作，無人操作時都沒重現（見 #410 的 PR）。
 
 ## 實測結果
 

@@ -6,6 +6,8 @@
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
+#include <unordered_map>
+#include <mutex>
 
 namespace {
 // The race clock runs on guest 1, while UI timelines run on guest 16.
@@ -19,6 +21,9 @@ std::atomic<int32_t> race_whole_frames{-1};
 std::atomic<uint32_t> race_unit_written{0};
 // The running short step in frames, 0 when a race is not stepping short.
 std::atomic<float> race_short_step{0.0f};
+// Counts the race's steps (guest 1 writes it), for hooks that remember an
+// object from one step to the next.
+std::atomic<uint32_t> race_step_serial{0};
 
 // Android steps the race by the time that passed (SFR_REALTIME_RACE=0 turns
 // it off), so a frame rate under 60 does not slow the race. Desktops, held
@@ -102,6 +107,7 @@ SFR_CONCURRENT_HOOK(sub_824B1588) {
     if (sfr::race_step_rate() != 60) {
         race_whole_frames.store(whole.update(frames), std::memory_order_relaxed);
         race_short_step.store(frames, std::memory_order_relaxed);
+        race_step_serial.fetch_add(1, std::memory_order_relaxed);
         // +20 is the clock's unit: the original makes each step a whole number
         // of units (one at 60 Hz). A few readers take it as "one step" rather
         // than +40: the race camera's smoothing (8227BB98 and 8227B5D0 scale
@@ -138,6 +144,51 @@ void RaceShortStepScaleMidAsmHook(PPCRegister& amount) {
 void RaceShortStepMoveMidAsmHook(PPCRegister& moved, PPCRegister& from) {
     const float step = race_short_step.load(std::memory_order_relaxed);
     if (step > 0) moved.f64 = double(float(from.f64 + (moved.f64 - from.f64) * step));
+}
+
+// config/freeriders.toml: accumulated += amount and accumulated -= amount, an
+// acceleration the title adds every step (Final Factory's skydive speeds its
+// racer up by 0.0062 a frame, 8239F518). Before the instruction, so that it
+// adds amount * step instead; the amount register itself is a constant the
+// loop around it reuses for every racer, so it is not touched.
+void RaceShortStepAddMidAsmHook(PPCRegister& accumulated, PPCRegister& amount) {
+    const float step = race_short_step.load(std::memory_order_relaxed);
+    if (step > 0) accumulated.f64 = double(float(accumulated.f64 + amount.f64 * (step - 1.0f)));
+}
+
+void RaceShortStepSubtractMidAsmHook(PPCRegister& accumulated, PPCRegister& amount) {
+    const float step = race_short_step.load(std::memory_order_relaxed);
+    if (step > 0) accumulated.f64 = double(float(accumulated.f64 - amount.f64 * (step - 1.0f)));
+}
+
+// config/freeriders.toml, 8231CA00 at 8231CC40: an object that runs a racer
+// along a path (Metropolis Speedway Expert's launch up the building, the drop
+// back down) copies the speed it slowed to (+232) into the speed it travels at
+// (+236) on every update its path segment (+90, read before this update's
+// travel) is in a range the course sets. Where the range starts, the launch
+// slows to a crawl. At one frame a step the copy came after a whole frame at
+// the old speed past that point; a short step travels less in its update, and
+// at 144 Hz the racer started to crawl 7 units lower. From there it crawled 10
+// units, not 3, to the top, and stayed above y 420 for 5.5 seconds, not 3.1.
+// The copy waits until the racer has spent a frame in the range, as at 60 Hz:
+// after the load of +232 (f0), which 8231CC44 stores to +236, the hook gives
+// f0 the speed +236 already has until then.
+void RaceLaunchSpeedHoldMidAsmHook(PPCRegister& speed, PPCRegister& r31) {
+    const float step = race_short_step.load(std::memory_order_relaxed);
+    if (step <= 0) return;
+    const uint32_t serial = race_step_serial.load(std::memory_order_relaxed);
+    struct Held { uint32_t serial; float frames; };
+    static std::mutex mutex;
+    static std::unordered_map<uint32_t, Held> held;
+    std::lock_guard lock(mutex);
+    if (held.size() > 64) held.clear();
+    auto& entry = held[r31.u32];
+    // A first update in the range, or one after leaving it, starts again.
+    if (entry.serial + 1 != serial) entry.frames = 0;
+    entry.serial = serial;
+    entry.frames += step;
+    if (entry.frames < 0.999f)
+        speed.f64 = double(std::bit_cast<float>(sfr::active_memory->load<uint32_t>(r31.u32 + 236)));
 }
 
 // config/freeriders.toml, 822A9F58 at 822AA2D0: a racer's motion for this
