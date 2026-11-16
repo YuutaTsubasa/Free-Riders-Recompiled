@@ -316,6 +316,8 @@ with [docs/progress.md](docs/progress.md).
   On older phones with an ARM Mali graphics chip, like the Galaxy A05 and A06, the game no longer stops with "native graphics pipeline creation failed" (#406).
 - [v0.10.64 — Expert courses above 60 Hz: the Final Factory skydive and the Metropolis Speedway launch](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.64)
   With **Test options › Gameplay › Race step rate** above 60 (for example 120 or 144), the skydive in Final Factory Expert no longer falls too fast or breaks the camera, and the launch up the building in Metropolis Speedway Expert no longer hangs at the top. At the default 60 Hz nothing changes (#410).
+- [v0.10.65 — Rocky Ridge minecart above 60 Hz: the lever and the jump into the cart](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.65)
+  With **Test options › Gameplay › Race step rate** above 60 (for example 120 or 144), the lever of the minecart in Rocky Ridge no longer ends up hanging upside down under the cart when you lean, and the jump into the cart lands right instead of flying too far. At the default 60 Hz nothing changes (#410, #401).
 
 ## System Requirements
 
