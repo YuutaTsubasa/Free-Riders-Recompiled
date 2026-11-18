@@ -59,6 +59,10 @@ struct LauncherSettings {
     // SFR_SUPER_SONIC_ALL_TYPES: with stay_on_board as well, a player's Super
     // Sonic on his board has the speed, fly and power types (Issue #393).
     bool super_sonic_all_types = false;
+    // SFR_CPU_DIFFICULTY: how fast the computer racers ride in a Free Race,
+    // "newbie", "easy", "normal" (the original) or "hard" (cpu_difficulty.h,
+    // Issue #420).
+    std::string cpu_difficulty = "normal";
     bool vertex_cache = true;        // SFR_VERTEX_CACHE
     bool gpu_pipeline = true;        // SFR_GPU_PIPELINE
     uint32_t race_render_every = 1;  // SFR_RENDER_EVERY

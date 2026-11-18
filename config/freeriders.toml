@@ -387,3 +387,15 @@ name = "RaceStepAsFrameMidAsmHook"
 address = 0x822B9010
 registers = ["f10"]
 after_instruction = true
+
+# CPU difficulty Hard (Issue #420, cpu_difficulty.h). 8229F1C0 updates a
+# computer racer's top speed; near player 0 it stores the player's top
+# (player r3, +0x784) minus 30 km/h (following, controller r25 state 1 or 2)
+# or plus 20 km/h (passing, state 3) to the rider's +0x724 at 8229F740. Before
+# that store, f13 is the new top; with Hard in a Free Race (race r5) it becomes
+# the player's top while following and 50 km/h more while passing
+# (CpuNearPlayerTopMidAsmHook).
+[[midasm_hook]]
+name = "CpuNearPlayerTopMidAsmHook"
+address = 0x8229F740
+registers = ["f13", "r3", "r5", "r25"]

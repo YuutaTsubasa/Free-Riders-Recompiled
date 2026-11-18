@@ -12,6 +12,7 @@
 #include "stream_reader_gate.h"
 #include "touch_controls.h"
 #include "super_sonic_board.h"
+#include "cpu_difficulty.h"
 #include <mutex>
 #include <algorithm>
 #include <bit>
@@ -859,7 +860,12 @@ static void race_state_digest() {
 }
 
 // SFR_RACE_TRACK=<n>: every n-th race step, the elapsed race time and each
-// racer's position, for comparing races at different step rates.
+// racer's position, for comparing races at different step rates. After the
+// position: the racer's lap counter and place from its progress record
+// (823B75D8: [83E52F84]+4 holds the lists, racer +0xCFC picks one, its entries
+// of 0x370 bytes at +0x4C..+0x50 are keyed by racer +0x99C; +0x34C lap, 4 once
+// it finished, +0x358 place), and cpu=1 for a computer racer (controller
+// vtable 821A1EF0, racer +0x74 == 1), to read finish orders (Issue #420).
 static void race_track() {
     static const uint32_t every=[]{ const char* t=std::getenv("SFR_RACE_TRACK"); return t?uint32_t(std::strtoul(t,nullptr,10)):0u; }();
     if(!every || !sfr::active_memory) return;
@@ -880,6 +886,23 @@ static void race_track() {
         if(!racer || !memory.readable(racer,0xC00)) continue;
         text << " r" << i << '=';
         for(uint32_t offset:{0x120u,0x124u,0x128u}) text << std::bit_cast<float>(memory.load<uint32_t>(racer+offset)) << ',';
+        const uint32_t lists=memory.readable(0x83E52F84,4)?memory.load<uint32_t>(0x83E52F84):0;
+        if(lists && memory.readable(lists+4,8)) {
+            const uint32_t first=memory.load<uint32_t>(lists+4), last=memory.load<uint32_t>(lists+8);
+            const uint32_t which=memory.load<uint32_t>(racer+0xCFC), id=memory.load<uint32_t>(racer+0x99C);
+            const uint32_t list=first && last>first && which<(last-first)/4?memory.load<uint32_t>(first+which*4):0;
+            if(list && memory.readable(list+0x4C,8))
+                for(uint32_t entry=memory.load<uint32_t>(list+0x4C), end=memory.load<uint32_t>(list+0x50);
+                    entry && entry+0x370<=end && memory.readable(entry,0x370);entry+=0x370)
+                    if(memory.load<uint32_t>(entry)==id) {
+                        text << "lap=" << memory.load<uint32_t>(entry+0x34C) << ",place=" << memory.load<uint32_t>(entry+0x358) << ',';
+                        break;
+                    }
+        }
+        const uint32_t controller=memory.load<uint32_t>(racer+0xC94);
+        const bool computer=controller && memory.readable(controller,4) && memory.load<uint32_t>(controller)==0x821A1EF0u &&
+                            memory.load<uint32_t>(racer+0x74)==1;
+        text << "cpu=" << computer << ',';
     }
     // The first view's camera, as race_task_hooks.cpp finds it: its position
     // (+432) and vertical field of view (+480), to compare how it follows the
@@ -1619,4 +1642,84 @@ SFR_CONCURRENT_HOOK(sub_822BC5A0) {
     sfr::active_memory->store<uint32_t>(rider+2124,flags&~sfr::super_sonic::super_sonic_flag);
     __imp__sub_822BC5A0(ctx,base);
     sfr::active_memory->store<uint32_t>(rider+2124,sfr::active_memory->load<uint32_t>(rider+2124)|sfr::super_sonic::super_sonic_flag);
+}
+
+// CPU difficulty (Issue #420, cpu_difficulty.h): launcher General > Gameplay >
+// CPU difficulty, SFR_CPU_DIFFICULTY. Normal, the default, runs the original.
+namespace {
+sfr::cpu_difficulty::Level cpu_difficulty_level() {
+    static const sfr::cpu_difficulty::Level level=[]{
+        using sfr::super_sonic::switch_set;
+        // Online every player has to race the same computers, so it stays Normal there.
+        if(switch_set(std::getenv("SFR_LIVE_HOST")) || switch_set(std::getenv("SFR_LIVE_SERVER")))
+            return sfr::cpu_difficulty::Level::normal;
+        const auto level=sfr::cpu_difficulty::from_environment(std::getenv("SFR_CPU_DIFFICULTY"));
+        std::cerr << "GAME_PATCH cpu_difficulty=" << sfr::cpu_difficulty::name(level) << '\n';
+        return level;
+    }();
+    return level;
+}
+
+// Whether a race (the pointer at 83E52F8C) is one the difficulty changes: a
+// Free Race under the usual rules (race +0x9C, the rules at +0x50, their +0xC).
+bool cpu_difficulty_race(uint32_t race) {
+    auto& memory=*sfr::active_memory;
+    if(!race) return false;
+    const uint32_t rules=memory.load<uint32_t>(race+0x50);
+    if(!rules) return false;
+    return sfr::cpu_difficulty::applies(memory.load<uint32_t>(race+0x9C),memory.load<uint32_t>(rules+0xC),false);
+}
+
+// Whether a controller drives a computer racer: the computer controller class
+// (vtable 821A1EF0), its racer (+0xC0) a computer one (+0x74 == 1) and not one
+// of the local players (whose racer the game can hand to a computer controller
+// too). Returns that racer, or 0.
+uint32_t cpu_difficulty_racer(uint32_t controller) {
+    auto& memory=*sfr::active_memory;
+    if(!controller || memory.load<uint32_t>(controller)!=0x821A1EF0u) return 0;
+    const uint32_t racer=memory.load<uint32_t>(controller+0xC0);
+    if(!racer || memory.load<uint32_t>(racer+0x74)!=1 || local_player_racer(racer)) return 0;
+    return racer;
+}
+}
+
+PPC_FUNC_IMPL(__imp__sub_8229F1C0);
+
+// Newbie and Easy: 8229F1C0 (controller r3, rider r4) is a computer racer's
+// update of its top speed. Its riding states only accelerate up to that top,
+// but slopes, boosts and rings carry it well above, and the update brakes it
+// only 1/6 km/h a call. After the update, a computer racer in a Free Race
+// keeps at most speed_cap_ratio times its top speed: the current speed
+// (+0x71C) is lowered to that, never raised, and nothing else is touched.
+SFR_CONCURRENT_HOOK(sub_8229F1C0) {
+    const uint32_t controller=ctx.r3.u32, rider=ctx.r4.u32;
+    __imp__sub_8229F1C0(ctx,base);
+    const float ratio=sfr::cpu_difficulty::speed_cap_ratio(cpu_difficulty_level());
+    if(!(ratio>0.f) || !sfr::active_memory) return;
+    auto& memory=*sfr::active_memory;
+    const uint32_t racer=cpu_difficulty_racer(controller);
+    if(!racer || racer+0x60!=rider || !cpu_difficulty_race(memory.load<uint32_t>(0x83E52F8C))) return;
+    const float speed=std::bit_cast<float>(memory.load<uint32_t>(rider+0x71C));
+    const float capped=sfr::cpu_difficulty::capped_speed(speed,std::bit_cast<float>(memory.load<uint32_t>(rider+0x724)),
+                                                          std::bit_cast<float>(memory.load<uint32_t>(rider+0x72C)),ratio);
+    if(capped<speed) memory.store<uint32_t>(rider+0x71C,std::bit_cast<uint32_t>(capped));
+}
+
+// Hard: config/freeriders.toml, 8229F1C0 at 8229F740. When player 0 is near a
+// computer racer, the update sets the computer's top speed from the player's
+// (player r3, +0x784): 30 km/h less while it follows (controller r25, state
+// +0x754 of 1 or 2), 20 km/h more while it passes (3). f13 holds that new top
+// just before it is stored to the rider's +0x724. In a Free Race (race r5),
+// Hard makes it the player's top speed while following and 50 km/h more while
+// passing, so a computer keeps the player's pace and gets past. The game's own
+// limits on the top after the store still apply; the constants it read are
+// shared and stay as they are.
+void CpuNearPlayerTopMidAsmHook(PPCRegister& top, PPCRegister& player, PPCRegister& race, PPCRegister& controller) {
+    const auto level=cpu_difficulty_level();
+    if(level!=sfr::cpu_difficulty::Level::hard || !sfr::active_memory) return;
+    auto& memory=*sfr::active_memory;
+    if(!cpu_difficulty_racer(controller.u32) || !cpu_difficulty_race(race.u32)) return;
+    const uint32_t state=memory.load<uint32_t>(controller.u32+0x754);
+    const float player_top=std::bit_cast<float>(memory.load<uint32_t>(player.u32+0x784));
+    top.f64=double(sfr::cpu_difficulty::near_player_top(level,state,player_top,float(top.f64)));
 }
