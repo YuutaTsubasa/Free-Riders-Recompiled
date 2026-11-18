@@ -864,8 +864,9 @@ static void race_state_digest() {
 // position: the racer's lap counter and place from its progress record
 // (823B75D8: [83E52F84]+4 holds the lists, racer +0xCFC picks one, its entries
 // of 0x370 bytes at +0x4C..+0x50 are keyed by racer +0x99C; +0x34C lap, 4 once
-// it finished, +0x358 place), and cpu=1 for a computer racer (controller
-// vtable 821A1EF0, racer +0x74 == 1), to read finish orders (Issue #420).
+// it finished, +0x358 place), cpu=1 for a computer racer (controller vtable
+// 821A1EF0, racer +0x74 == 1), and its rider's state and speeds, to read
+// finish orders and what the CPU difficulty did (Issue #420).
 static void race_track() {
     static const uint32_t every=[]{ const char* t=std::getenv("SFR_RACE_TRACK"); return t?uint32_t(std::strtoul(t,nullptr,10)):0u; }();
     if(!every || !sfr::active_memory) return;
@@ -902,7 +903,13 @@ static void race_track() {
         const uint32_t controller=memory.load<uint32_t>(racer+0xC94);
         const bool computer=controller && memory.readable(controller,4) && memory.load<uint32_t>(controller)==0x821A1EF0u &&
                             memory.load<uint32_t>(racer+0x74)==1;
-        text << "cpu=" << computer << ',';
+        // The rider's state (+0x948: 7 riding, 0 carried by a course object), current and top speed (+0x71C,
+        // +0x724), and a computer controller's state (+0x754: 1 and 2 following player 0, 3 passing).
+        text << "cpu=" << computer << ",state=" << memory.load<uint32_t>(racer+0x60+0x948)
+             << ",speed=" << std::bit_cast<float>(memory.load<uint32_t>(racer+0x60+0x71C))
+             << ",top=" << std::bit_cast<float>(memory.load<uint32_t>(racer+0x60+0x724));
+        if(computer && memory.readable(controller,0x758)) text << ",near=" << memory.load<uint32_t>(controller+0x754);
+        text << ',';
     }
     // The first view's camera, as race_task_hooks.cpp finds it: its position
     // (+432) and vertical field of view (+480), to compare how it follows the
@@ -1689,8 +1696,10 @@ PPC_FUNC_IMPL(__imp__sub_8229F1C0);
 // update of its top speed. Its riding states only accelerate up to that top,
 // but slopes, boosts and rings carry it well above, and the update brakes it
 // only 1/6 km/h a call. After the update, a computer racer in a Free Race
-// keeps at most speed_cap_ratio times its top speed: the current speed
-// (+0x71C) is lowered to that, never raised, and nothing else is touched.
+// that rides on its own (rider state +0x948 of 7, caps_in_state) keeps at
+// most speed_cap_ratio times its top speed: the current speed (+0x71C) is
+// lowered to that, never raised, and nothing else is touched. A racer a
+// course object carries, or in any other state, keeps its speed.
 SFR_CONCURRENT_HOOK(sub_8229F1C0) {
     const uint32_t controller=ctx.r3.u32, rider=ctx.r4.u32;
     __imp__sub_8229F1C0(ctx,base);
@@ -1698,7 +1707,8 @@ SFR_CONCURRENT_HOOK(sub_8229F1C0) {
     if(!(ratio>0.f) || !sfr::active_memory) return;
     auto& memory=*sfr::active_memory;
     const uint32_t racer=cpu_difficulty_racer(controller);
-    if(!racer || racer+0x60!=rider || !cpu_difficulty_race(memory.load<uint32_t>(0x83E52F8C))) return;
+    if(!racer || racer+0x60!=rider || !sfr::cpu_difficulty::caps_in_state(memory.load<uint32_t>(rider+0x948)) ||
+       !cpu_difficulty_race(memory.load<uint32_t>(0x83E52F8C))) return;
     const float speed=std::bit_cast<float>(memory.load<uint32_t>(rider+0x71C));
     const float capped=sfr::cpu_difficulty::capped_speed(speed,std::bit_cast<float>(memory.load<uint32_t>(rider+0x724)),
                                                           std::bit_cast<float>(memory.load<uint32_t>(rider+0x72C)),ratio);

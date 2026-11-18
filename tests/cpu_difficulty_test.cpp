@@ -45,6 +45,10 @@ int main() try {
     require(capped_speed(2.0f, 0.0f, 0.0f, 1.08f) == 2.0f, "without a top speed the speed stays");
     require(capped_speed(-0.3f, top, 0.0f, 1.08f) == -0.3f, "a speed backwards is not touched");
 
+    // Only while riding on its own (rider state 7): a racer a course object carries (0) keeps its speed.
+    require(caps_in_state(7), "a computer riding along the course is capped");
+    require(!caps_in_state(0) && !caps_in_state(1) && !caps_in_state(8), "other rider states are not capped");
+
     // Where it applies: an offline Free Race under the usual rules.
     require(applies(0, 0, false) && applies(0, 1, false), "a Free Race changes");
     require(!applies(0, 2, false) && !applies(0, 3, false), "the other rule sets keep the original");

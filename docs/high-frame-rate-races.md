@@ -282,7 +282,7 @@ Metropolis Speedway、Frozen Forest 都沒有車手一去不回。Forgotten Tomb
 - 玩家：啟動器 → Test → 遊戲 → Race step rate（80／90／120／144 Hz）。線上、網路攝影機、
   Kinect，或把跳過畫格關掉時不會套用（`race_step_rate`），game.log 開頭會有
   `RACE_STEP_RATE rate=`。
-- 測試：`SFR_RACE_TRACK=<n>` 每 n 步印出所有車手位置（後面是圈數 `lap=`、名次 `place=`、電腦 `cpu=`，#420），`SFR_RACE_PACING=1` 印呈現間隔，
+- 測試：`SFR_RACE_TRACK=<n>` 每 n 步印出所有車手位置（後面是圈數 `lap=`、名次 `place=`、電腦 `cpu=`、車手狀態與速度 `state=`、`speed=`、`top=`，#420），`SFR_RACE_PACING=1` 印呈現間隔，
   `SFR_TEST_RACE_HOLD`、`SFR_TEST_RACE_STEER` 在賽道固定位置按 A 與轉向，`SFR_TEST_RACE_WEAVE`
   在一段範圍裡左右交替傾（Rocky Ridge 礦車的搖桿）。Rocky Ridge 在
   選賽道畫面往左一格（`left@11300`）。

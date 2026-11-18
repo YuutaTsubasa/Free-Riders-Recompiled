@@ -81,6 +81,19 @@ constexpr float speed_cap_ratio(Level level) {
     }
 }
 
+// The rider's state (+0x948) in which the cap applies: 7, riding along the
+// course under the racer's own control. Only in that state does 8229F1C0 set
+// the top speed from the computer's level and schedule (8229F4C0, 8229F574),
+// so only there is +0x724 a top speed to compare with. In the other states it
+// is left at whatever it was: state 0, for one, is a racer carried by a course
+// object (822A9F58), which moves it at the racer's own speed (Forgotten Tomb's
+// launcher after the falling pillars, the start's run-in). Capping there held
+// a Newbie computer at the launcher's entry for the rest of the race, so the
+// cap leaves every other state alone.
+inline constexpr uint32_t riding_state = 7;
+
+constexpr bool caps_in_state(uint32_t rider_state) { return rider_state == riding_state; }
+
 // The current speed after the cap: only ever lowered, never raised, and left
 // alone without a cap or a top speed.
 constexpr float capped_speed(float speed, float top, float boost_top, float ratio) {
