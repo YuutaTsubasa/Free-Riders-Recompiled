@@ -47,6 +47,7 @@
 #include "launcher_screen_fit.h"
 #include "launcher_screen_keyboard.h"
 #include "test_options.h"
+#include "cpu_difficulty.h"
 #include "video_driver.h"
 #ifdef SFR_IOS
 #include "disc_image_search.h"
@@ -159,6 +160,7 @@ enum Text {
     SectionGestures, GesturesHint, ButtonPrompts, ButtonPromptsHint,
     GestureMove, GestureController, GestureKeyboard, GestureTouch, GesturesOf,
     SectionGameplay, SuperSonicBoard, SuperSonicBoardHint, SuperSonicAllTypes, SuperSonicAllTypesHint,
+    CpuDifficulty, CpuDifficultyHint, CpuNewbie, CpuEasy, CpuNormal, CpuHard,
     TextCount
 };
 
@@ -600,6 +602,13 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Super Sonic: all types on the board", "超級索尼克：踩板時擁有全部類型"},
     {"While he stays on the board, Super Sonic can also grind rails, fly through the flight rings and break objects, as with the Omnipotence gear. Only for players, not computer racers, and off in online races.",
      "維持踩板型態時，超級索尼克也能像使用 Omnipotence 一樣滑鐵軌、穿過飛行圈與撞破物件。只有玩家有效，電腦對手不會；線上對戰時不會套用。"},
+    {"CPU difficulty", "電腦對手難度"},
+    {"How fast the computer racers ride in Free Race. Newbie and Easy keep them from riding far above their top speed, so they fall behind; Hard lets them keep your pace and pass you. Story, other modes and online races are left as the original.",
+     "自由賽中電腦對手騎得多快。新手與簡單會限制他們不能遠超過自己的最高速度，因此會落後；困難會讓他們跟上你的速度並超越你。故事模式、其他模式與線上對戰維持原版。"},
+    {"Newbie", "新手"},
+    {"Easy", "簡單"},
+    {"Normal (original)", "普通（原版）"},
+    {"Hard", "困難"},
 }};
 
 int language = 0;
@@ -2525,6 +2534,34 @@ struct Launcher {
         if (settings.super_sonic_stay_on_board)
             setting_row(tr(SuperSonicAllTypes), tr(SuperSonicAllTypesHint), switch_width, scale,
                         [&] { toggle("##super_sonic_all_types", &settings.super_sonic_all_types); });
+        {
+            // CPU difficulty (Issue #420): one of the four levels of cpu_difficulty.h.
+            using sfr::cpu_difficulty::Level;
+            const auto level_text = [](Level level) {
+                switch (level) {
+                case Level::newbie: return CpuNewbie;
+                case Level::easy: return CpuEasy;
+                case Level::hard: return CpuHard;
+                default: return CpuNormal;
+                }
+            };
+            const Level current = sfr::cpu_difficulty::from_environment(settings.cpu_difficulty.c_str());
+            const float combo_width = 300 * scale;
+            setting_row(tr(CpuDifficulty), tr(CpuDifficultyHint), combo_width, scale, [&] {
+                ImGui::SetNextItemWidth(combo_width);
+                if (ImGui::BeginCombo("##cpu_difficulty", tr(level_text(current)))) {
+                    for (const Level level : sfr::cpu_difficulty::levels) {
+                        const bool chosen = level == current;
+                        if (ImGui::Selectable(tr(level_text(level)), chosen)) {
+                            settings.cpu_difficulty = sfr::cpu_difficulty::name(level);
+                            ::play(sfr::UiSound::confirm);
+                        }
+                        if (chosen) ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+            });
+        }
         settings_section(SectionOnline);
         setting_row(tr(OnlineLabel), tr(OnlineHint), switch_width, scale, [&] { toggle("##online", &settings.online); });
         if (settings.online) {

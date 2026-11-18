@@ -454,6 +454,21 @@ void title_stats_settings() {
     const auto alone = sfr::parse_launcher_settings("super_sonic_all_types=1\n");
     require(alone.super_sonic_all_types && value_of(alone, "SFR_SUPER_SONIC_ALL_TYPES") == "0",
             "without stay on the board, the game is not told to give all types");
+    // CPU difficulty (Issue #420): Normal, the original game, by default; the four levels are kept and
+    // passed on, anything else reads as Normal.
+    require(defaults.cpu_difficulty == "normal" && value_of(defaults, "SFR_CPU_DIFFICULTY") == "normal" &&
+                sfr::format_launcher_settings(defaults).find("cpu_difficulty=normal\n") != std::string::npos,
+            "the computer racers are the original ones by default");
+    for (const char* level : {"newbie", "easy", "normal", "hard"}) {
+        const auto chosen = sfr::parse_launcher_settings(std::string("cpu_difficulty=") + level + "\n");
+        require(chosen.cpu_difficulty == level && value_of(chosen, "SFR_CPU_DIFFICULTY") == level &&
+                    sfr::format_launcher_settings(chosen).find(std::string("cpu_difficulty=") + level + "\n") !=
+                        std::string::npos,
+                "a chosen CPU difficulty is saved and the game is told");
+    }
+    const auto unknown = sfr::parse_launcher_settings("cpu_difficulty=insane\n");
+    require(unknown.cpu_difficulty == "normal" && value_of(unknown, "SFR_CPU_DIFFICULTY") == "normal",
+            "an unknown CPU difficulty reads as Normal");
 }
 
 void race_frameskip_settings() {
