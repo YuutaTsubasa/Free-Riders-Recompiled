@@ -23,6 +23,9 @@ env:
 jobs:
   image:
     name: Build${{ github.event_name == 'release' && ' and push' || '' }}
+    # Only version releases (v0.10.65): a dependency mirror release such as deps-onnxruntime-1.30.0
+    # must not push an image or move :latest.
+    if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'v')
     runs-on: ubuntu-24.04
     permissions:
       contents: read
