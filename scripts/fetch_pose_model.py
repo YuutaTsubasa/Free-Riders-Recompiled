@@ -23,6 +23,7 @@ from pathlib import Path
 import shutil
 import sys
 import tarfile
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -32,9 +33,15 @@ TOOLS = ROOT / 'tools/onnx'
 # ONNX Runtime is MIT; the OpenCV Zoo MediaPipe models and RTMPose are Apache 2.0.
 OPENCV_ZOO_COMMIT = '47534e27c9851bb1128ccc0102f1145e27f23f98'
 OPENCV_ZOO_MODELS = f'https://media.githubusercontent.com/media/opencv/opencv_zoo/{OPENCV_ZOO_COMMIT}/models'
+# Copies of ONNX Runtime's GitHub release archives, byte for byte the files pinned below, kept as
+# assets of this repository's deps-onnxruntime-1.30.0 pre-release. Microsoft's onnxruntime
+# repository on GitHub went 404 on 2026-11-18, taking its release downloads with it. The SHA-256
+# pins are unchanged, so a mirrored file is only used if it is exactly the original.
+ONNXRUNTIME_MIRROR = 'https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/download/deps-onnxruntime-1.30.0'
 DOWNLOADS = {
     'onnxruntime-win-x64.zip': {
         'url': 'https://github.com/microsoft/onnxruntime/releases/download/v1.30.0/onnxruntime-win-x64-1.30.0.zip',
+        'mirrors': [f'{ONNXRUNTIME_MIRROR}/onnxruntime-win-x64-1.30.0.zip'],
         'sha256': 'c6ba983baf5681af108599675d2a89c2d145512d02de28aed0bff177cd0ba949',
     },
     'rtmpose-t.zip': {
@@ -56,6 +63,7 @@ DOWNLOADS = {
     },
     'onnxruntime-linux-x64.tgz': {
         'url': 'https://github.com/microsoft/onnxruntime/releases/download/v1.30.0/onnxruntime-linux-x64-1.30.0.tgz',
+        'mirrors': [f'{ONNXRUNTIME_MIRROR}/onnxruntime-linux-x64-1.30.0.tgz'],
         'sha256': 'a5ed5a3cac51fbb2e90da632ae43d19212faaa20e76484e62bcb7c23ddb3b3fd',
     },
     # The Android package is an AAR: headers/ and jni/<abi>/libonnxruntime.so.
@@ -66,6 +74,7 @@ DOWNLOADS = {
     },
     'onnxruntime-osx-arm64.tgz': {
         'url': 'https://github.com/microsoft/onnxruntime/releases/download/v1.30.0/onnxruntime-osx-arm64-1.30.0.tgz',
+        'mirrors': [f'{ONNXRUNTIME_MIRROR}/onnxruntime-osx-arm64-1.30.0.tgz'],
         'sha256': '6ebb5062a934537c352937821f9fe9718e7de1a2db1122a93dd363ffd53a7012',
     },
     # The archive the onnxruntime-c CocoaPod points at (its podspec gives no
@@ -103,14 +112,24 @@ def fetch(name, entry, verify_only):
     if verify_only:
         raise SystemExit(f'missing or altered download: {archive}')
     archive.parent.mkdir(parents=True, exist_ok=True)
-    print(f'fetching {entry["url"]}')
     partial = archive.with_suffix(archive.suffix + '.partial')
-    with urllib.request.urlopen(entry['url']) as response, partial.open('wb') as out:
-        shutil.copyfileobj(response, out)
-    actual = digest(partial)
-    if actual != entry['sha256']:
+    problems = []
+    for url in [entry['url']] + entry.get('mirrors', []):
+        print(f'fetching {url}')
+        try:
+            with urllib.request.urlopen(url) as response, partial.open('wb') as out:
+                shutil.copyfileobj(response, out)
+        except (urllib.error.URLError, OSError) as error:
+            problems.append(f'{url}: {error}')
+            partial.unlink(missing_ok=True)
+            continue
+        actual = digest(partial)
+        if actual == entry['sha256']:
+            break
         partial.unlink()
-        raise SystemExit(f'{name}: sha256 is {actual}, not the pinned {entry["sha256"]}')
+        problems.append(f'{url}: sha256 is {actual}, not the pinned {entry["sha256"]}')
+    else:
+        raise SystemExit(f'{name}: no source gave the pinned file\n  ' + '\n  '.join(problems))
     partial.replace(archive)
     return archive
 
