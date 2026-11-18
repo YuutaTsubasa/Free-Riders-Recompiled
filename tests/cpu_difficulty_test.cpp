@@ -73,6 +73,17 @@ int main() try {
                 near_player_top(Level::hard, 3, player, pass) > pass,
             "Hard is faster than the original in both states");
 
+    // Hard away from the player: only a computer behind the player and outside the radius is raised, to at
+    // least the player's top + 20 km/h; never lowered.
+    const float far = player + 20 * km_per_hour;
+    require(far_behind_top(Level::hard, false, 5, 2, player, 0.7f) == far, "Hard: a computer far behind is raised");
+    require(far_behind_top(Level::hard, false, 5, 2, player, 1.5f) == 1.5f, "Hard: a faster computer is not slowed");
+    require(far_behind_top(Level::hard, false, 1, 2, player, 0.7f) == 0.7f, "Hard: a computer ahead is not touched");
+    require(far_behind_top(Level::hard, false, 2, 2, player, 0.7f) == 0.7f, "Hard: the player's own place is not behind");
+    require(far_behind_top(Level::hard, true, 5, 2, player, 0.7f) == 0.7f, "Hard: near the player the near rule decides");
+    for (const Level level : {Level::newbie, Level::easy, Level::normal})
+        require(far_behind_top(level, false, 5, 2, player, 0.7f) == 0.7f, "only Hard raises a far computer");
+
     std::cout << "cpu_difficulty: ok\n";
     return 0;
 } catch (const std::exception& error) {

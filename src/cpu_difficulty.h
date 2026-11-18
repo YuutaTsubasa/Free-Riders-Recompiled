@@ -128,4 +128,30 @@ constexpr float near_player_top(Level level, uint32_t state, float player_top, f
     return game_top;
 }
 
+// Hard, away from the player. The near-player rule above only runs within its
+// radius (about 100 units): a player who breaks away leaves every computer to
+// its own level and schedule, which is Normal. So with Hard, a riding computer
+// (rider state 7) outside the radius and behind player 0 in the race order
+// (its place, +0x358 of its progress entry, after the player's) gets at least
+// the player's top speed plus hard_far_margin, the 20 km/h the original gives
+// a computer passing the player. It is applied where the game is done with
+// the top speed and before its brake (8229F764, so the brake and the state-3
+// boost that follow see it), as the near rule's value is.
+//
+// This was chosen over scaling the game's own behind-schedule catch-up (the
+// offset at controller +0x798 that 822A2900 adds to the level's speed): that
+// catch-up follows the course's reference schedule, not the player, and
+// 822A2900 clamps its result at 0.926 (200 km/h), so a fast player stays out
+// of reach whatever it is scaled by. The player's own top speed is what the
+// near rule already uses. It only raises the top, never lowers it, so a
+// computer that is ahead, or already faster, is not touched; positions are
+// never changed.
+inline constexpr float hard_far_margin = 20.0f * km_per_hour;
+
+constexpr float far_behind_top(Level level, bool near_player, uint32_t place, uint32_t player_place, float player_top,
+                               float game_top) {
+    if (level != Level::hard || near_player || place <= player_place) return game_top;
+    return std::max(game_top, player_top + hard_far_margin);
+}
+
 }  // namespace sfr::cpu_difficulty

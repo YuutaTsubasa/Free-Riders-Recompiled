@@ -399,3 +399,19 @@ after_instruction = true
 name = "CpuNearPlayerTopMidAsmHook"
 address = 0x8229F740
 registers = ["f13", "r3", "r5", "r25"]
+
+# CPU difficulty Hard away from the player (Issue #420, cpu_difficulty.h
+# far_behind_top). 8229F648 is the first instruction of the near-player rule,
+# reached only within its radius (CpuNearPlayerMidAsmHook notes that). At
+# 8229F764 every path of the top-speed update meets before the brake reads the
+# rider's (r23) top; there a riding computer (controller r25) behind player 0
+# (r3) and away from it gets at least the player's top speed plus 20 km/h
+# (CpuFarBehindTopMidAsmHook).
+[[midasm_hook]]
+name = "CpuNearPlayerMidAsmHook"
+address = 0x8229F648
+
+[[midasm_hook]]
+name = "CpuFarBehindTopMidAsmHook"
+address = 0x8229F764
+registers = ["r3", "r23", "r25"]
