@@ -322,6 +322,8 @@ with [docs/progress.md](docs/progress.md).
   A new launcher option, **General › Gameplay › CPU difficulty**: Newbie, Easy, Normal (the original game, the default) and Hard. It changes only the computer racers in an offline Free Race. Newbie and Easy keep them from riding far above their top speed; Hard makes them keep pace with you and catch up if you break away (#420).
 - [v0.10.67 — Hold to skip story scenes and movies](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.67)
   Story scenes now skip only while you hold START (or keep a finger on the screen on Android) until the circle fills, so a tap or an accidental touch no longer skips them. Movies need START, A, B or Back held for half a second. The startup logos still skip with a press (#426).
+- [v0.10.68 — Dolphin Resort water ski above 60 Hz](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.68)
+  With **Test options › Gameplay › Race step rate** above 60 (for example 120 or 144), the racer no longer turns round and rides backwards behind the boat on the Dolphin Resort water ski, so the camera no longer looks at the racer's face and swings low beside them. At the default 60 Hz nothing changes (#410).
 
 ## System Requirements
 
