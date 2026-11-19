@@ -891,18 +891,32 @@ SFR_INPUT_HOOK(sub_827707B0) {
     // it takes its turn through relay_swap below.
     const bool relay=sfr::active_memory->load<uint8_t>(0x83E515E7)==3;
     const auto second=relay ? std::optional<sfr::GamepadState>{} : sfr::nui_second_gamepad(1u, racing);
-    // START in a story scene (no menu page, no dialog, not racing): the World
-    // Grand Prix scenes end through a SKIP button that only a hand resting on
-    // it presses, and a parked hand never reaches it. The hand moves to the
-    // centre where that button is, as a nudge of the right stick does; a
-    // hand a race lowered is raised first (Issue #365).
+    // START held in a story scene (no menu page, no dialog, not racing): the
+    // World Grand Prix scenes end through a SKIP button that only a hand
+    // resting on it presses, and a parked hand never reaches it. While START
+    // is held the hand rests on that button in the centre and its gauge
+    // fills; a hand a race lowered is raised first (Issue #365). Letting go
+    // before the gauge is full puts the hand back where it was, and the scene
+    // goes on (Issue #426): the hand used to stay on SKIP after a press, so
+    // one brief touch on a phone (START there, touch_controls.h) skipped the
+    // scene a second later.
     {
         static bool start_held=false;
+        static sfr::NuiSkeletonEmulation* holding=nullptr;
         const bool start=(first.buttons & sfr::gamepad_button::start)!=0;
-        if(start && !start_held && !racing && !use_camera &&
-           input_frames-menu_page_frame>30 && !(dialog_seen && input_frames-dialog_frame<=30)) {
+        const bool scene=!racing && !use_camera && input_frames-menu_page_frame>30 &&
+                         !(dialog_seen && input_frames-dialog_frame<=30);
+        if(start && !start_held && scene) {
             auto& own=player_routing.reversed()?second_skeleton:skeleton;
-            if(own.centre_cursor()) std::cerr << "NUI_SCENE_SKIP_CURSOR frame=" << input_frames << '\n';
+            if(own.hold_skip()) {
+                holding=&own;
+                std::cerr << "NUI_SCENE_SKIP_CURSOR frame=" << input_frames << '\n';
+            }
+        }
+        if(holding && (!start || !scene)) {
+            holding->release_skip();
+            holding=nullptr;
+            std::cerr << "NUI_SCENE_SKIP_RELEASE frame=" << input_frames << (scene ? "" : " scene_over") << '\n';
         }
         start_held=start;
     }
@@ -1173,7 +1187,8 @@ PPC_FUNC_IMPL(__imp__sub_8244C7A8);
 // fade ends (8244C710), then 0, and 1 removes the object; the title screen
 // follows as soon as its own loading allows. SFR_SKIP_LOGOS=1 (the launcher's
 // Skip logos) goes straight to the end; without it A, B, START or BACK ends
-// the logos, as they end a movie; so does a touch, which is START there.
+// the logos at once (a movie wants them held, Issue #426: the logos are a few
+// seconds the player has seen before); so does a touch, which is START there.
 SFR_CONCURRENT_HOOK(sub_8244C7A8) {
     sfr::enter_function(ctx,"sub_8244C7A8",0x8244C7A8);
     static const bool skip_all=[]{ const char* t=std::getenv("SFR_SKIP_LOGOS"); return t && *t && *t!='0'; }();

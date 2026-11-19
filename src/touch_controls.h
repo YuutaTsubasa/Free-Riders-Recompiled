@@ -44,9 +44,11 @@ namespace sfr {
 // title screen a touch away from the controls is START.
 //
 // A movie or a story scene (Issue #274) needs no controls and they hid the
-// picture, so none are drawn there: a touch anywhere is START, which ends a
-// movie and brings the hand to a story scene's SKIP, as START on a pad does
-// (scene below). SFR_TOUCH_IN_SCENES=1 keeps them as in the menus.
+// picture, so none are drawn there: a touch anywhere is START for as long as
+// the finger stays down, as START held on a pad. Held half a second it ends a
+// movie; held in a story scene it keeps the hand on SKIP until that button's
+// gauge fills (Issue #426: a brief touch skips neither). SFR_TOUCH_IN_SCENES=1
+// keeps them as in the menus.
 enum class TouchScene { menu, race, title, scene };
 
 struct TouchPoint {
