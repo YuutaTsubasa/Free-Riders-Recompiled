@@ -42,9 +42,9 @@ Windows 144 Hz 跑一場 Wild Canyon，12 位車手裡有 3 位飛到 y≈1650�
 **改了 `[[midasm_hook]]` 的版本，發版前一定要重跑 `prepare_recomp.py`**（輸出到新資料夾，
 再用 `-DSFR_DIAGNOSTIC_DIR` 指過去），並在產生的程式碼裡 grep `RaceWholeFramesMidAsmHook`
 確認有 20 處（#410 之後另有 `RaceCarriedMotionMidAsmHook` 1 處、`RaceShortStepScaleMidAsmHook`
-9 處、`RaceShortStepMoveMidAsmHook` 4 處、`RaceShortStepAddMidAsmHook` 2 處、
+10 處、`RaceShortStepMoveMidAsmHook` 4 處、`RaceShortStepAddMidAsmHook` 3 處、
 `RaceShortStepSubtractMidAsmHook` 2 處、`RaceLaunchSpeedHoldMidAsmHook` 1 處、
-`RaceLeverTurnMidAsmHook` 1 處、`RaceStepAsFrameMidAsmHook` 4 處，與
+`RaceLeverTurnMidAsmHook` 1 處、`RaceStepAsFrameMidAsmHook` 6 處，與
 `config/freeriders.toml` 的條目數相同；發版技能的 `hookcount.sh` 會逐一比對）。
 
 ## 鏡頭（#392，2026-11-15）
@@ -148,8 +148,7 @@ store 前呼叫一個檢查函式）找出寫車手目標點（`+0x170`）的指
 60 Hz 不受影響：所有新 hook 在步長不是 60/N 時直接返回（見 PR 的 60 Hz 比對）。
 
 還沒處理：Metropolis 大樓頂仍比 60 Hz 長約 0.6 秒（開始爬的高度差 1.5 單位）；高空墜落時鏡頭的
-朝向在 144 Hz 看起來斜一點（距離已相同）；Expert 的舉手抓桿、Dolphin Resort
-海豚、打石頭時鏡頭翻轉、踢擊與花式動作，無人操作時都沒重現（見 #410 的 PR）。Rocky Ridge 礦車
+朝向在 144 Hz 看起來斜一點（距離已相同）；Expert 的舉手抓桿、打石頭時鏡頭翻轉、踢擊與花式動作，無人操作時都沒重現（見 #410 的 PR；Dolphin Resort 滑水見後面）。Rocky Ridge 礦車
 見下一節。
 
 ## Rocky Ridge 礦車（#410、#401，2026-11-16）
@@ -186,6 +185,39 @@ store 前呼叫一個檢查函式）找出寫車手目標點（`+0x170`）的指
 
 還沒處理：上車點的距離修正後是 5.0，仍比 60 Hz 的 3.3 遠一點（那一跳的弧線由 `RaceWholeFrames`
 計時，其餘沒有再查）。
+
+## Dolphin Resort 滑水（#410，2026-11-19）
+
+玩家影片（Super Sonic、144 Hz）裡，滑水那段鏡頭貼著水面、繞著車手轉，「Super Sonic 一直看著我」。
+用玩家的設定重現：Expert、Chaos Emeralds、兩個 Super Sonic 選項都開，`SFR_TEST_RACE_RINGS=100@20`
+讓無人操作的 Sonic 變身。一般的 Sonic 在 144 Hz 也一樣，只是比較不明顯。
+
+拖著車手的物件（`8234B160`，`+76` 是它拖的車手，`+224` 是前面的船）讓車手沿著賽道走，並把「船在車手
+座標裡的角度」寫到車手的偏航（`82349F78` 寫 `+0x700`），所以車手一直朝著船。三個量是以「一步一幀」寫的：
+
+1. 開始拖時，船放在車手前面「步長 × 常數」的地方（`8234B3BC`）：144 Hz 時只在前面 21，60 Hz 是 52。
+2. 船每次更新走「步長 × 步長 × 速度」（`8234F3A4` 把步長自乘），144 Hz 時只有車手速度的 0.42 倍。
+3. 車手每次更新加速固定的 0.0077（`8234B1E8`），144 Hz 時 0.67 秒就到全速（60 Hz 1.62 秒）。
+
+所以 144 Hz 時拖了 1.2 秒，車手就超過船，船在車手的正後方，繩子的角度變成 180 度：車手在滑水板上轉了
+一圈背對前進方向，鏡頭也跟著繞到前面、貼近水面，一直到這段結束。
+
+修法：1 用 `RaceStepAsFrameMidAsmHook`（`8234B3B8`，當成一幀）；2 先把讀到的步長當成一幀
+（`8234F3A0`），乘完再用 `RaceShortStepScaleMidAsmHook` 乘一次步長（`8234F3A8`）；3 用
+`RaceShortStepAddMidAsmHook`。
+
+找法：每一步把車手前 8 KiB 寫到檔案比對 60／144（偏航 `+0x90`～`+0xB8` 等於前進方向加 `+0x700`），
+再用暫時的「函式粒度寫入監看」找出寫 `+0x700`、`+0x77C`（速度）的程式，最後把拖車物件和船一起存下來
+比對兩者的距離。
+
+| 跑法（Dolphin Resort Expert，無人操作的 Super Sonic） | 60 Hz | 144 Hz 修正前 | 144 Hz 修正後 |
+| --- | --- | --- | --- |
+| 開始拖時船在前面多遠 | 52 | 21 | 沒量（步長當成一幀，同 60） |
+| 到全速的時間 | 1.62 秒 | 0.67 秒 | 1.61 秒 |
+| 繩子的角度：拖 3 秒時／整段最大 | 0.8°／35.7° | 180°／180° | 0.1°／40.1° |
+| 車手朝向與前進方向差（中位／最大） | 0.1°／44° | 164°～180°／180° | 0.9°／57° |
+
+整段最大的 35～40 度在轉彎（拖了 10 秒左右），60 與 144 都有。60 Hz 修正前後的數字完全相同。
 
 ## 實測結果
 
@@ -284,5 +316,6 @@ Metropolis Speedway、Frozen Forest 都沒有車手一去不回。Forgotten Tomb
   `RACE_STEP_RATE rate=`。
 - 測試：`SFR_RACE_TRACK=<n>` 每 n 步印出所有車手位置（後面是圈數 `lap=`、名次 `place=`、電腦 `cpu=`、車手狀態與速度 `state=`、`speed=`、`top=`，#420），`SFR_RACE_PACING=1` 印呈現間隔，
   `SFR_TEST_RACE_HOLD`、`SFR_TEST_RACE_STEER` 在賽道固定位置按 A 與轉向，`SFR_TEST_RACE_WEAVE`
-  在一段範圍裡左右交替傾（Rocky Ridge 礦車的搖桿）。Rocky Ridge 在
+  在一段範圍裡左右交替傾（Rocky Ridge 礦車的搖桿），`SFR_TEST_RACE_RINGS=<n>[@秒]` 從比賽時間
+  那一秒起讓玩家的環不少於 n（選 Chaos Emeralds 時無人操作也會變成 Super Sonic，#410）。Rocky Ridge 在
   選賽道畫面往左一格（`left@11300`）。

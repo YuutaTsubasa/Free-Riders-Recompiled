@@ -388,6 +388,42 @@ address = 0x822B9010
 registers = ["f10"]
 after_instruction = true
 
+# Dolphin Resort's water ski (#410). A towing object (8234B160, its racers at
+# +76) carries its racers along the course behind a boat (its +224) and turns
+# each racer to face the boat (82349F78 writes the rope's angle to the racer's
+# yaw, +0x700). Three amounts were written for steps of one frame:
+# - the boat is put a fixed distance ahead of the racer when the tow starts,
+#   step times a constant (8234B3BC): that step is one frame;
+# - the boat then moves step * step * its speed each update (8234F3A4): taken
+#   as one frame (8234F3A0), then scaled to the step once (8234F3A8);
+# - the racer speeds up by a fixed 0.0077 each update (8234B1E8): scaled.
+# At 144 Hz the boat started 21 units ahead instead of 52 and moved at 0.42
+# times the racer's speed, so the racer passed it 1.8 s into the tow. The
+# rope's angle went to 180 degrees: the racer turned round on its skis and the
+# camera swung low round it for the rest of the section.
+[[midasm_hook]]
+name = "RaceStepAsFrameMidAsmHook"
+address = 0x8234B3B8
+registers = ["f13"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RaceStepAsFrameMidAsmHook"
+address = 0x8234F3A0
+registers = ["f0"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RaceShortStepScaleMidAsmHook"
+address = 0x8234F3A8
+registers = ["f1"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "RaceShortStepAddMidAsmHook"
+address = 0x8234B1E8
+registers = ["f0", "f12"]
+
 # CPU difficulty Hard (Issue #420, cpu_difficulty.h). 8229F1C0 updates a
 # computer racer's top speed; near player 0 it stores the player's top
 # (player r3, +0x784) minus 30 km/h (following, controller r25 state 1 or 2)
