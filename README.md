@@ -327,10 +327,16 @@ with [docs/progress.md](docs/progress.md).
 
 ## System Requirements
 
-- **Windows**: Windows 10 or 11 (x64), a CPU with AVX, a GPU with Direct3D 12
-  (or Vulkan 1.2). Since 0.10.53, older integrated GPUs with only Direct3D 11
-  (such as Intel HD Graphics 4000/4600) can try the experimental Direct3D 11 backend.
-- **Linux**: x86-64 with AVX and a Vulkan 1.2 driver (tested on Ubuntu 22.04).
+- **Windows**: Windows 10 or 11 (x64), a GPU with Direct3D 12 (or Vulkan 1.2).
+  Since 0.10.53, older GPUs with only Direct3D 11 (such as Intel HD Graphics
+  4000/4600, or a GeForce 400/500 series) can try the experimental Direct3D 11 backend.
+- **CPU (Windows and Linux)**: a CPU with AVX (Intel Sandy Bridge, AMD Bulldozer or later)
+  runs the game at full speed. Older CPUs with SSE4.2 but no AVX (such as Intel
+  Core i3/i5/i7 of the Nehalem and Westmere generations, or Pentium and Celeron
+  chips without AVX) run a second copy of the game built without AVX; the launcher
+  picks it by itself. That copy is slower, and PCs that old usually also need the
+  Direct3D 11 backend above. CPUs without SSE4.2 (Core 2, Phenom II) cannot run the game.
+- **Linux**: x86-64 and a Vulkan 1.2 driver (tested on Ubuntu 22.04).
 - **macOS**: macOS 14 or later on Apple Silicon (tested on an M1 Mac mini); since 0.10.39, for the camera motion input's runtime.
   The Vulkan driver (MoltenVK) is inside the app. Experimental: menus run at
   full speed, but races are slow on an M1 for now.

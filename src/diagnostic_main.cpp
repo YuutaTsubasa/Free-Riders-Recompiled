@@ -4792,6 +4792,13 @@ int main(int argc, char** argv) {
             std::cerr << "Usage: sfr_cpu_diagnostic IMAGE-DUMP-DIRECTORY [EXTRACTED-ASSET-DIRECTORY] [--game-region=ntsc-us]\nThis is a CPU diagnostic, not a playable game.\n";
             return 2;
         }
+        // Which build this is on x86-64 (Issue #432): the launcher starts the
+        // AVX one, or the SSE one where the processor has no AVX.
+#if defined(__AVX__)
+        std::cerr << "GAME_BUILD isa=avx\n";
+#elif defined(__SSE4_2__)
+        std::cerr << "GAME_BUILD isa=sse4.2\n";
+#endif
         // Opt-in until handheld A/B measurements establish a benefit. Keep the
         // request in this process and alive until all runtime workers stop.
         const char* timer_setting = std::getenv("SFR_TIMER_RESOLUTION");
