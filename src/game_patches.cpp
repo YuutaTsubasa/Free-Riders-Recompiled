@@ -948,6 +948,7 @@ static void race_track() {
 }
 
 static void test_player_breakaway();
+static void test_player_rings();
 
 // SFR_TEST_RAND_SEED=<n>: the CRT's srand (82A54FA0; rand is 82A54FA0+0x30,
 // a per-thread LCG) seeds with n instead of the value the title passes, so
@@ -974,6 +975,7 @@ SFR_CONCURRENT_HOOK(sub_8249F048) {
     race_state_digest();
     race_track();
     test_player_breakaway();
+    test_player_rings();
     const uint64_t collision_started=steady_ns();
     wait_for_collision_batch(ctx,base);
     const uint64_t collision_ns=steady_ns()-collision_started;
@@ -1786,6 +1788,35 @@ void CpuFarBehindTopMidAsmHook(PPCRegister& player, PPCRegister& rider, PPCRegis
         memory.load<uint32_t>(entry+0x358),memory.load<uint32_t>(player_entry+0x358),
         std::bit_cast<float>(memory.load<uint32_t>(player.u32+0x784)),game_top);
     if(top!=game_top) memory.store<uint32_t>(rider.u32+0x724,std::bit_cast<uint32_t>(top));
+}
+
+// SFR_TEST_RACE_RINGS=<n>[@<seconds>] (testing, never for play): from that
+// race time on (default 0), player 1's racer never has fewer than n rings
+// (racer +0x884), so an unmanned run with the Chaos Emeralds turns into Super
+// Sonic (30 rings) and stays him (Issue #410). Rings from the very start crashed
+// the run where Dolphin Resort Expert's start run-in hands over (about 13 s).
+static void test_player_rings() {
+    struct Setting { uint32_t rings = 0; double after = 0; };
+    static const Setting setting=[]{
+        Setting s;
+        if(const char* t=std::getenv("SFR_TEST_RACE_RINGS")) {
+            char* end;
+            s.rings=uint32_t(std::strtoul(t,&end,10));
+            if(*end=='@') s.after=std::strtod(end+1,nullptr);
+        }
+        return s;
+    }();
+    if(!setting.rings || !sfr::active_memory) return;
+    auto& memory=*sfr::active_memory;
+    static double time=0;
+    if(!memory.readable(0x83E52F8C,4) || !memory.load<uint32_t>(0x83E52F8C)) { time=0; return; }
+    time+=std::bit_cast<float>(memory.load<uint32_t>(0x83E53810+36));
+    if(time<setting.after) return;
+    const auto racers=sfr::avatar_state_detail::local_racers(memory);
+    if(!racers || !racers->populated_count || !racers->local_count) return;
+    const uint32_t racer=memory.load<uint32_t>(uint64_t(racers->begin));
+    if(!racer || !memory.readable(racer+0x884,4)) return;
+    if(memory.load<uint32_t>(racer+0x884)<setting.rings) memory.store<uint32_t>(racer+0x884,setting.rings);
 }
 
 // SFR_TEST_PLAYER_BREAKAWAY=<km/h>: for testing CPU difficulty (Issue #420),
