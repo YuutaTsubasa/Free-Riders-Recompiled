@@ -7,6 +7,7 @@
 
 #include "imgui.h"
 #include "launcher_platform.h"
+#include "game_program_choice.h"
 
 namespace sfr::launcher {
 namespace fs = std::filesystem;
@@ -125,7 +126,10 @@ std::optional<fs::path> pick_path(const fs::path& start, bool folders, FileFilte
     return chosen;
 }
 
-fs::path game_program(const fs::path& directory) { return directory / L"sfr_cpu_diagnostic.exe"; }
+// The AVX game or, on a processor without AVX, the SSE one (Issue #432).
+fs::path game_program(const fs::path& directory) {
+    return directory / (std::string(game_program_stem(this_machine_game_program().build)) + ".exe");
+}
 
 bool quit_with_game() { return true; }
 
@@ -165,6 +169,14 @@ std::unique_ptr<GameProcess> start_game(const LauncherSettings& settings, const 
     startup.dwFlags = STARTF_USESTDHANDLES;
     startup.hStdOutput = output;
     startup.hStdError = output;
+    // Which program and why, ahead of the game's own lines (the game writes
+    // on after it, through the same handle).
+    if (output != INVALID_HANDLE_VALUE) {
+        const std::string line =
+            game_program_log_line(this_cpu(), this_machine_game_program(), program.filename().string());
+        DWORD written = 0;
+        WriteFile(output, line.data(), DWORD(line.size()), &written, nullptr);
+    }
     PROCESS_INFORMATION process{};
     // In the checkout when there is one: the game translates its shaders
     // with tools found relative to its working directory.

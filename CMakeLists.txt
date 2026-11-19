@@ -910,6 +910,10 @@ else()
     target_link_libraries(sfr_live_client_test PRIVATE Threads::Threads)
 endif()
 add_test(NAME live_client COMMAND sfr_live_client_test)
+# Which game program the launcher starts: AVX or not (Issue #432).
+add_executable(sfr_game_program_choice_test tests/game_program_choice_test.cpp src/game_program_choice.cpp)
+target_include_directories(sfr_game_program_choice_test PRIVATE src)
+add_test(NAME game_program_choice COMMAND sfr_game_program_choice_test)
 add_executable(sfr_launcher_settings_test tests/launcher_settings_test.cpp src/launcher_settings.cpp)
 target_include_directories(sfr_launcher_settings_test PRIVATE src)
 add_test(NAME launcher_settings COMMAND sfr_launcher_settings_test)
@@ -1019,7 +1023,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui/imgui.cpp")
         src/achievements.cpp src/achievement_progress.cpp src/image_decode.cpp
         ${SFR_CAMERA_CAPTURE} src/kinect_sensor.cpp ${SFR_KINECT_SENSOR} ${SFR_VOICE}
         src/kinect_preview.cpp src/kinect_preview_window.cpp src/kinect_preview_layout.cpp src/camera_preview_window.cpp src/camera_debug.cpp src/text_wrap.cpp src/touch_scroll.cpp
-        src/live_connect.cpp
+        src/live_connect.cpp src/game_program_choice.cpp
         ${SFR_IMGUI}/imgui.cpp ${SFR_IMGUI}/imgui_draw.cpp ${SFR_IMGUI}/imgui_tables.cpp ${SFR_IMGUI}/imgui_widgets.cpp)
     if(WIN32)
         add_executable(sfr_launcher WIN32 ${SFR_LAUNCHER_SOURCES} src/launcher_platform_win32.cpp src/app_icon.rc
@@ -1560,6 +1564,21 @@ if(SFR_BUILD_DIAGNOSTIC)
     endif()
     set_source_files_properties(tests/kinect_depth_view_guest_test.cpp PROPERTIES COMPILE_OPTIONS "${SFR_DEPTH_VIEW_GUEST_OPTIONS}")
     add_test(NAME kinect_depth_view_guest COMMAND sfr_kinect_depth_view_guest_test)
+    # The same with the options of the game for processors without AVX
+    # (sfr_cpu_diagnostic_sse, Issue #432): its vector code bit for bit too.
+    # A copy of the test, as the options belong to the source file.
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|amd64|x86_64" AND NOT ANDROID AND NOT APPLE)
+        set(SFR_DEPTH_VIEW_SSE_TEST "${CMAKE_CURRENT_BINARY_DIR}/kinect_depth_view_guest_sse_test.cpp")
+        configure_file(tests/kinect_depth_view_guest_test.cpp "${SFR_DEPTH_VIEW_SSE_TEST}" COPYONLY)
+        add_executable(sfr_kinect_depth_view_guest_sse_test "${SFR_DEPTH_VIEW_SSE_TEST}" src/kinect_depth_features.cpp
+            "${SFR_DEPTH_VIEW_GUEST}")
+        target_include_directories(sfr_kinect_depth_view_guest_sse_test PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}" "${SFR_DIAGNOSTIC_DIR}"
+            tools/XenonRecomp/thirdparty/simde)
+        set(SFR_DEPTH_VIEW_SSE_OPTIONS ${SFR_DEPTH_VIEW_GUEST_OPTIONS})
+        list(REMOVE_ITEM SFR_DEPTH_VIEW_SSE_OPTIONS -march=sandybridge)
+        set_source_files_properties("${SFR_DEPTH_VIEW_SSE_TEST}" PROPERTIES COMPILE_OPTIONS "${SFR_DEPTH_VIEW_SSE_OPTIONS};-march=x86-64-v2")
+        add_test(NAME kinect_depth_view_guest_sse COMMAND sfr_kinect_depth_view_guest_sse_test)
+    endif()
     # The same two functions with every register class as locals
     # (scripts/register_locals.py --file), against the same extractor: the
     # conversion keeps real generated code (vector, CR bit and loop code) bit
@@ -1578,130 +1597,155 @@ if(SFR_BUILD_DIAGNOSTIC)
     target_include_directories(sfr_kinect_depth_view_locals_test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/register-locals-test"
         src "${SFR_DIAGNOSTIC_DIR}" tools/XenonRecomp/thirdparty/simde)
     add_test(NAME kinect_depth_view_locals COMMAND sfr_kinect_depth_view_locals_test)
-    if(ANDROID)
-        # The game is libmain.so; SDL's activity calls its SDL_main
-        # (src/android_main.cpp), which sets up and calls the usual main.
-        add_library(sfr_cpu_diagnostic SHARED src/android_main.cpp src/graphics_selftest.cpp)
-        set_target_properties(sfr_cpu_diagnostic PROPERTIES OUTPUT_NAME main)
-        set_source_files_properties(src/diagnostic_main.cpp PROPERTIES COMPILE_DEFINITIONS main=sfr_game_main)
-        target_link_libraries(sfr_cpu_diagnostic PRIVATE android log ${SFR_CAMERA_LIBRARIES})
-        # The NDK hardens every translation unit by default. The guest code is
-        # thirty thousand generated functions with large frames that only ever
-        # touch the checked guest memory, so the canaries and the fortified
-        # library calls buy nothing here and are paid for in every one of them.
-        target_compile_options(sfr_cpu_diagnostic PRIVATE -fno-stack-protector -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
-        # A shared library lets its exported functions be interposed, so every
-        # call between them went through a PLT stub: 19822 of them, 3.9% of the
-        # main thread in a Thor race (simpleperf). Nothing replaces them, so
-        # bind the library's own calls inside it.
-        target_link_options(sfr_cpu_diagnostic PRIVATE -Wl,-Bsymbolic-functions)
-    elseif(IOS)
-        # FreeRidersGame.framework, which the launcher loads at Play once it
-        # has set the environment the runtime reads while it loads.
-        add_library(sfr_cpu_diagnostic SHARED src/ios_game_entry.cpp)
-        set_target_properties(sfr_cpu_diagnostic PROPERTIES OUTPUT_NAME FreeRidersGame)
-        set_source_files_properties(src/diagnostic_main.cpp PROPERTIES COMPILE_DEFINITIONS main=sfr_game_main)
-        target_link_options(sfr_cpu_diagnostic PRIVATE "-Wl,-install_name,@rpath/FreeRidersGame.framework/FreeRidersGame")
-        # SDL is shared from the app's Frameworks; the launcher's SDL2main owns main.
-        target_link_options(sfr_cpu_diagnostic PRIVATE "-Wl,-rpath,@loader_path/..")
-        target_compile_definitions(sfr_cpu_diagnostic PRIVATE SDL_MAIN_HANDLED)
-        # The audio session in game.log (src/native_audio.cpp, Issue #249).
-        target_sources(sfr_cpu_diagnostic PRIVATE src/ios_audio_session.mm)
-        target_link_libraries(sfr_cpu_diagnostic PRIVATE "-framework Foundation" "-framework AVFoundation" objc)
-    else()
-        # SFR_GRAPHICS_SELFTEST=1 runs the graphics self test instead of the game.
-        add_executable(sfr_cpu_diagnostic src/graphics_selftest.cpp)
-        if(WIN32)
-            # The icon (Issue #63), and narrow strings in UTF-8 (src/game.manifest, Issue #71).
-            target_sources(sfr_cpu_diagnostic PRIVATE src/app_icon.rc src/game.manifest)
-        endif()
-    endif()
-    target_sources(sfr_cpu_diagnostic PRIVATE src/diagnostic_main.cpp src/guest_memory.cpp src/xex_module.cpp src/virtual_memory.cpp src/critical_section.cpp src/hardware_info.cpp src/thread_local_storage.cpp src/system_time.cpp src/guest_clock.cpp src/timestamp_bundle.cpp src/vector_memory.cpp src/optional_import_policy.cpp src/native_modules.cpp src/integer_arithmetic.cpp src/memory_statistics.cpp
-        ${SFR_DIAGNOSTIC_COMPILED_SOURCES} "${SFR_DIAGNOSTIC_DIR}/ppc_func_mapping.cpp" "${SFR_DIAGNOSTIC_DIR}/imports.cpp")
-    if(APPLE)  # the generated names as calls, as Mach-O has no aliases
-        if(NOT EXISTS "${SFR_DIAGNOSTIC_DIR}/aliases.cpp")
-            message(FATAL_ERROR "Run scripts/generate_diagnostic.py again; this output has no aliases.cpp.")
-        endif()
-        target_sources(sfr_cpu_diagnostic PRIVATE "${SFR_DIAGNOSTIC_DIR}/aliases.cpp")
-    endif()
-    target_include_directories(sfr_cpu_diagnostic PRIVATE src "${SFR_DIAGNOSTIC_DIR}" tools/XenonRecomp/thirdparty/simde tools/XenonRecomp/thirdparty/TinySHA1)
-    target_sources(sfr_cpu_diagnostic PRIVATE src/video_mode.cpp src/native_display.cpp src/physical_memory.cpp src/ansi_string.cpp src/store_halfword_update.cpp src/store_float_single_update.cpp src/load_halfword_update.cpp src/vector_compare_bounds.cpp src/debug_monitor.cpp src/image_protection.cpp src/resource_coherency.cpp src/video_globals.cpp src/native_language.cpp src/system_config.cpp)
-    target_sources(sfr_cpu_diagnostic PRIVATE src/game_region.cpp)
-    target_sources(sfr_cpu_diagnostic PRIVATE src/guest_register_hooks.cpp)
-    target_sources(sfr_cpu_diagnostic PRIVATE src/race_frame_clock_hooks.cpp src/race_task_hooks.cpp src/draw_read_watch.cpp src/race_orientation_hooks.cpp src/race_boarding_hooks.cpp src/race_launch_hooks.cpp src/race_scripted_motion_hooks.cpp)
-    target_sources(sfr_cpu_diagnostic PRIVATE src/offline_presence_hooks.cpp)
-    # The webcam standing in for the sensor, and the body it finds.
-    target_sources(sfr_cpu_diagnostic PRIVATE src/camera_player.cpp src/camera_debug.cpp src/camera_debug_window.cpp src/pose_skeleton.cpp src/pose_smoothing.cpp src/pose_stability.cpp src/kinect_stability.cpp
-                   src/window_title.cpp src/camera_tuner.cpp src/camera_tuner_window.cpp
-                   ${SFR_CAMERA_CAPTURE} ${SFR_POSE_SOURCES})
-    # A real Kinect (SFR_CAMERA=kinect), through the Kinect for Windows runtime.
-    # One door for both: motion_input.h.
-    target_sources(sfr_cpu_diagnostic PRIVATE src/motion_input.cpp src/motion_input_device.cpp)
-    target_sources(sfr_cpu_diagnostic PRIVATE src/kinect_sensor.cpp ${SFR_KINECT_SENSOR} ${SFR_VOICE}
-        src/kinect_preview.cpp src/kinect_preview_window.cpp src/kinect_preview_layout.cpp)
-    if(SFR_POSE_AVAILABLE)
-        target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_onnxruntime)
-        sfr_copy_onnx_dlls(sfr_cpu_diagnostic)
-    endif()
-    if(APPLE)
-        target_link_libraries(sfr_cpu_diagnostic PRIVATE ${SFR_CAMERA_LIBRARIES})
-        if(SFR_FREENECT_AVAILABLE)
-            target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_freenect)
-        endif()
-    endif()
-    target_sources(sfr_cpu_diagnostic PRIVATE src/memory_update_forms.cpp)
-    target_sources(sfr_cpu_diagnostic PRIVATE src/native_input.cpp src/input_bindings.cpp src/pad_assignment.cpp src/pad_devices.cpp src/sony_gamepad.cpp src/native_audio.cpp src/nui_skeleton.cpp src/nui_speech.cpp src/nui_race.cpp)
-    target_sources(sfr_cpu_diagnostic PRIVATE src/guest_printf.cpp)
-    if(WIN32)
-        target_link_libraries(sfr_cpu_diagnostic PRIVATE xinput hid setupapi xaudio2 ole32 comctl32)
-        # Symbol map for host-side profiling (SFR_HOST_PROFILE).
-        target_link_options(sfr_cpu_diagnostic PRIVATE "/MAP:$<TARGET_FILE_DIR:sfr_cpu_diagnostic>/sfr_cpu_diagnostic.map")
-    endif()
-    target_sources(sfr_cpu_diagnostic PRIVATE src/native_country.cpp)
-    target_sources(sfr_cpu_diagnostic PRIVATE src/nui_device_status.cpp)
-    target_sources(sfr_cpu_diagnostic PRIVATE src/unselected_users.cpp src/local_profile.cpp src/content_files.cpp)
-    target_sources(sfr_cpu_diagnostic PRIVATE src/achievements.cpp)
-    # The achievement notification and page (Issue #288); text through
-    # Dear ImGui's copy of stb_truetype when it is there.
-    target_sources(sfr_cpu_diagnostic PRIVATE src/achievement_overlay.cpp src/achievement_progress.cpp src/achievement_toast.cpp src/overlay_canvas.cpp)
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui/imstb_truetype.h")
-        set_source_files_properties(src/overlay_canvas.cpp PROPERTIES INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui")
-    endif()
-    target_sources(sfr_cpu_diagnostic PRIVATE src/multibyte_unicode.cpp)
-    target_sources(sfr_cpu_diagnostic PRIVATE src/guest_critical_sections.cpp)
-    target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_guest_execution)
-    target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_wait_trace)
-    target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_native_timer_resolution)
-    target_sources(sfr_cpu_diagnostic PRIVATE src/guest_graphics_hooks.cpp src/game_patches.cpp src/nui_hooks.cpp src/nui_race_hooks.cpp src/pause_gesture.cpp)
-    # The title's NuiTransformSmooth and the SFR_NUI_ANALYSIS_TRACE observations (docs/kinect-sensor.md).
-    target_sources(sfr_cpu_diagnostic PRIVATE src/nui_smooth_hooks.cpp src/nui_transform_smooth_guest.cpp src/nui_analysis_hooks.cpp)
-    # The title's heap on o1heap (SFR_HOST_HEAP=1; docs/architecture-migration.md, phase 2).
-    target_sources(sfr_cpu_diagnostic PRIVATE src/heap_hooks.cpp src/guest_heap.cpp src/sound_heap.cpp)
-    target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_o1heap)
-    target_sources(sfr_cpu_diagnostic PRIVATE src/native_winsock.cpp)
-    # Xbox LIVE on this project's own service (SFR_LIVE_SERVER; server/live_server.py).
-    target_sources(sfr_cpu_diagnostic PRIVATE src/live_client.cpp src/live_connect.cpp src/live_imports.cpp src/live_service.cpp src/live_hooks.cpp)
-    target_sources(sfr_cpu_diagnostic PRIVATE src/guest_timers.cpp)
-    target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_native_notifications)
-    target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_guest_graphics sfr_asset_files sfr_native_sync_objects sfr_guest_threads)
-    target_link_libraries(sfr_cpu_diagnostic PRIVATE sfr_guest_async_files)
-    if(WIN32)
-        target_link_libraries(sfr_cpu_diagnostic PRIVATE ws2_32 iphlpapi user32 gdi32)
-    else()
-        target_link_libraries(sfr_cpu_diagnostic PRIVATE SDL2::SDL2)
-    endif()
-    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")  # Clang or AppleClang
-        message(FATAL_ERROR "The generated diagnostic currently requires Clang.")
-    endif()
-    target_compile_options(sfr_cpu_diagnostic PRIVATE -fno-strict-aliasing -Wno-unused-variable -Wno-unused-value)
-    if(MSVC)
-        target_compile_options(sfr_cpu_diagnostic PRIVATE "/FI${CMAKE_CURRENT_SOURCE_DIR}/src/diagnostic_hooks.h" /fp:strict)
-    else()
-        target_compile_options(sfr_cpu_diagnostic PRIVATE -include "${CMAKE_CURRENT_SOURCE_DIR}/src/diagnostic_hooks.h" -ffp-model=strict)
-    endif()
+    # The game, and on x86-64 Windows and Linux the same game a second time
+    # for processors without AVX (Issue #432): sfr_cpu_diagnostic is built
+    # for Sandy Bridge (AVX), sfr_cpu_diagnostic_sse for x86-64-v2 (SSE4.2,
+    # SSSE3, POPCNT, CMPXCHG16B), from the same sources with the same options
+    # otherwise. The launcher starts the one the processor runs
+    # (src/game_program_choice.h); saves, settings and game files are shared.
+    set(SFR_GAME_X86_64 OFF)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|amd64|x86_64")
-        target_compile_options(sfr_cpu_diagnostic PRIVATE -march=sandybridge)
+        set(SFR_GAME_X86_64 ON)
     endif()
+    set(SFR_GAME_TARGETS sfr_cpu_diagnostic)
+    option(SFR_SSE_GAME "Also build sfr_cpu_diagnostic_sse, the game for x86-64 processors without AVX" ON)
+    if(SFR_SSE_GAME AND SFR_GAME_X86_64 AND NOT ANDROID AND NOT IOS AND NOT APPLE)
+        list(APPEND SFR_GAME_TARGETS sfr_cpu_diagnostic_sse)
+        # Both compile the same prepared copies of the generated code: one
+        # target makes them, so two builds never write them at once.
+        add_custom_target(sfr_game_generated_sources DEPENDS ${SFR_DIAGNOSTIC_COMPILED_SOURCES})
+    endif()
+    foreach(game IN LISTS SFR_GAME_TARGETS)
+        if(ANDROID)
+            # The game is libmain.so; SDL's activity calls its SDL_main
+            # (src/android_main.cpp), which sets up and calls the usual main.
+            add_library(${game} SHARED src/android_main.cpp src/graphics_selftest.cpp)
+            set_target_properties(${game} PROPERTIES OUTPUT_NAME main)
+            set_source_files_properties(src/diagnostic_main.cpp PROPERTIES COMPILE_DEFINITIONS main=sfr_game_main)
+            target_link_libraries(${game} PRIVATE android log ${SFR_CAMERA_LIBRARIES})
+            # The NDK hardens every translation unit by default. The guest code is
+            # thirty thousand generated functions with large frames that only ever
+            # touch the checked guest memory, so the canaries and the fortified
+            # library calls buy nothing here and are paid for in every one of them.
+            target_compile_options(${game} PRIVATE -fno-stack-protector -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
+            # A shared library lets its exported functions be interposed, so every
+            # call between them went through a PLT stub: 19822 of them, 3.9% of the
+            # main thread in a Thor race (simpleperf). Nothing replaces them, so
+            # bind the library's own calls inside it.
+            target_link_options(${game} PRIVATE -Wl,-Bsymbolic-functions)
+        elseif(IOS)
+            # FreeRidersGame.framework, which the launcher loads at Play once it
+            # has set the environment the runtime reads while it loads.
+            add_library(${game} SHARED src/ios_game_entry.cpp)
+            set_target_properties(${game} PROPERTIES OUTPUT_NAME FreeRidersGame)
+            set_source_files_properties(src/diagnostic_main.cpp PROPERTIES COMPILE_DEFINITIONS main=sfr_game_main)
+            target_link_options(${game} PRIVATE "-Wl,-install_name,@rpath/FreeRidersGame.framework/FreeRidersGame")
+            # SDL is shared from the app's Frameworks; the launcher's SDL2main owns main.
+            target_link_options(${game} PRIVATE "-Wl,-rpath,@loader_path/..")
+            target_compile_definitions(${game} PRIVATE SDL_MAIN_HANDLED)
+            # The audio session in game.log (src/native_audio.cpp, Issue #249).
+            target_sources(${game} PRIVATE src/ios_audio_session.mm)
+            target_link_libraries(${game} PRIVATE "-framework Foundation" "-framework AVFoundation" objc)
+        else()
+            # SFR_GRAPHICS_SELFTEST=1 runs the graphics self test instead of the game.
+            add_executable(${game} src/graphics_selftest.cpp)
+            if(WIN32)
+                # The icon (Issue #63), and narrow strings in UTF-8 (src/game.manifest, Issue #71).
+                target_sources(${game} PRIVATE src/app_icon.rc src/game.manifest)
+            endif()
+        endif()
+        if(TARGET sfr_game_generated_sources)
+            add_dependencies(${game} sfr_game_generated_sources)
+        endif()
+        target_sources(${game} PRIVATE src/diagnostic_main.cpp src/guest_memory.cpp src/xex_module.cpp src/virtual_memory.cpp src/critical_section.cpp src/hardware_info.cpp src/thread_local_storage.cpp src/system_time.cpp src/guest_clock.cpp src/timestamp_bundle.cpp src/vector_memory.cpp src/optional_import_policy.cpp src/native_modules.cpp src/integer_arithmetic.cpp src/memory_statistics.cpp
+            ${SFR_DIAGNOSTIC_COMPILED_SOURCES} "${SFR_DIAGNOSTIC_DIR}/ppc_func_mapping.cpp" "${SFR_DIAGNOSTIC_DIR}/imports.cpp")
+        if(APPLE)  # the generated names as calls, as Mach-O has no aliases
+            if(NOT EXISTS "${SFR_DIAGNOSTIC_DIR}/aliases.cpp")
+                message(FATAL_ERROR "Run scripts/generate_diagnostic.py again; this output has no aliases.cpp.")
+            endif()
+            target_sources(${game} PRIVATE "${SFR_DIAGNOSTIC_DIR}/aliases.cpp")
+        endif()
+        target_include_directories(${game} PRIVATE src "${SFR_DIAGNOSTIC_DIR}" tools/XenonRecomp/thirdparty/simde tools/XenonRecomp/thirdparty/TinySHA1)
+        target_sources(${game} PRIVATE src/video_mode.cpp src/native_display.cpp src/physical_memory.cpp src/ansi_string.cpp src/store_halfword_update.cpp src/store_float_single_update.cpp src/load_halfword_update.cpp src/vector_compare_bounds.cpp src/debug_monitor.cpp src/image_protection.cpp src/resource_coherency.cpp src/video_globals.cpp src/native_language.cpp src/system_config.cpp)
+        target_sources(${game} PRIVATE src/game_region.cpp)
+        target_sources(${game} PRIVATE src/guest_register_hooks.cpp)
+        target_sources(${game} PRIVATE src/race_frame_clock_hooks.cpp src/race_task_hooks.cpp src/draw_read_watch.cpp src/race_orientation_hooks.cpp src/race_boarding_hooks.cpp src/race_launch_hooks.cpp src/race_scripted_motion_hooks.cpp)
+        target_sources(${game} PRIVATE src/offline_presence_hooks.cpp)
+        # The webcam standing in for the sensor, and the body it finds.
+        target_sources(${game} PRIVATE src/camera_player.cpp src/camera_debug.cpp src/camera_debug_window.cpp src/pose_skeleton.cpp src/pose_smoothing.cpp src/pose_stability.cpp src/kinect_stability.cpp
+                       src/window_title.cpp src/camera_tuner.cpp src/camera_tuner_window.cpp
+                       ${SFR_CAMERA_CAPTURE} ${SFR_POSE_SOURCES})
+        # A real Kinect (SFR_CAMERA=kinect), through the Kinect for Windows runtime.
+        # One door for both: motion_input.h.
+        target_sources(${game} PRIVATE src/motion_input.cpp src/motion_input_device.cpp)
+        target_sources(${game} PRIVATE src/kinect_sensor.cpp ${SFR_KINECT_SENSOR} ${SFR_VOICE}
+            src/kinect_preview.cpp src/kinect_preview_window.cpp src/kinect_preview_layout.cpp)
+        if(SFR_POSE_AVAILABLE)
+            target_link_libraries(${game} PRIVATE sfr_onnxruntime)
+            sfr_copy_onnx_dlls(${game})
+        endif()
+        if(APPLE)
+            target_link_libraries(${game} PRIVATE ${SFR_CAMERA_LIBRARIES})
+            if(SFR_FREENECT_AVAILABLE)
+                target_link_libraries(${game} PRIVATE sfr_freenect)
+            endif()
+        endif()
+        target_sources(${game} PRIVATE src/memory_update_forms.cpp)
+        target_sources(${game} PRIVATE src/native_input.cpp src/input_bindings.cpp src/pad_assignment.cpp src/pad_devices.cpp src/sony_gamepad.cpp src/native_audio.cpp src/nui_skeleton.cpp src/nui_speech.cpp src/nui_race.cpp)
+        target_sources(${game} PRIVATE src/guest_printf.cpp)
+        if(WIN32)
+            target_link_libraries(${game} PRIVATE xinput hid setupapi xaudio2 ole32 comctl32)
+            # Symbol map for host-side profiling (SFR_HOST_PROFILE).
+            target_link_options(${game} PRIVATE "/MAP:$<TARGET_FILE_DIR:${game}>/${game}.map")
+        endif()
+        target_sources(${game} PRIVATE src/native_country.cpp)
+        target_sources(${game} PRIVATE src/nui_device_status.cpp)
+        target_sources(${game} PRIVATE src/unselected_users.cpp src/local_profile.cpp src/content_files.cpp)
+        target_sources(${game} PRIVATE src/achievements.cpp)
+        # The achievement notification and page (Issue #288); text through
+        # Dear ImGui's copy of stb_truetype when it is there.
+        target_sources(${game} PRIVATE src/achievement_overlay.cpp src/achievement_progress.cpp src/achievement_toast.cpp src/overlay_canvas.cpp)
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui/imstb_truetype.h")
+            set_source_files_properties(src/overlay_canvas.cpp PROPERTIES INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui")
+        endif()
+        target_sources(${game} PRIVATE src/multibyte_unicode.cpp)
+        target_sources(${game} PRIVATE src/guest_critical_sections.cpp)
+        target_link_libraries(${game} PRIVATE sfr_guest_execution)
+        target_link_libraries(${game} PRIVATE sfr_wait_trace)
+        target_link_libraries(${game} PRIVATE sfr_native_timer_resolution)
+        target_sources(${game} PRIVATE src/guest_graphics_hooks.cpp src/game_patches.cpp src/nui_hooks.cpp src/nui_race_hooks.cpp src/pause_gesture.cpp)
+        # The title's NuiTransformSmooth and the SFR_NUI_ANALYSIS_TRACE observations (docs/kinect-sensor.md).
+        target_sources(${game} PRIVATE src/nui_smooth_hooks.cpp src/nui_transform_smooth_guest.cpp src/nui_analysis_hooks.cpp)
+        # The title's heap on o1heap (SFR_HOST_HEAP=1; docs/architecture-migration.md, phase 2).
+        target_sources(${game} PRIVATE src/heap_hooks.cpp src/guest_heap.cpp src/sound_heap.cpp)
+        target_link_libraries(${game} PRIVATE sfr_o1heap)
+        target_sources(${game} PRIVATE src/native_winsock.cpp)
+        # Xbox LIVE on this project's own service (SFR_LIVE_SERVER; server/live_server.py).
+        target_sources(${game} PRIVATE src/live_client.cpp src/live_connect.cpp src/live_imports.cpp src/live_service.cpp src/live_hooks.cpp)
+        target_sources(${game} PRIVATE src/guest_timers.cpp)
+        target_link_libraries(${game} PRIVATE sfr_native_notifications)
+        target_link_libraries(${game} PRIVATE sfr_guest_graphics sfr_asset_files sfr_native_sync_objects sfr_guest_threads)
+        target_link_libraries(${game} PRIVATE sfr_guest_async_files)
+        if(WIN32)
+            target_link_libraries(${game} PRIVATE ws2_32 iphlpapi user32 gdi32)
+        else()
+            target_link_libraries(${game} PRIVATE SDL2::SDL2)
+        endif()
+        if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")  # Clang or AppleClang
+            message(FATAL_ERROR "The generated diagnostic currently requires Clang.")
+        endif()
+        target_compile_options(${game} PRIVATE -fno-strict-aliasing -Wno-unused-variable -Wno-unused-value)
+        if(MSVC)
+            target_compile_options(${game} PRIVATE "/FI${CMAKE_CURRENT_SOURCE_DIR}/src/diagnostic_hooks.h" /fp:strict)
+        else()
+            target_compile_options(${game} PRIVATE -include "${CMAKE_CURRENT_SOURCE_DIR}/src/diagnostic_hooks.h" -ffp-model=strict)
+        endif()
+        if(game STREQUAL "sfr_cpu_diagnostic_sse")
+            target_compile_options(${game} PRIVATE -march=x86-64-v2)
+        elseif(SFR_GAME_X86_64)
+            target_compile_options(${game} PRIVATE -march=sandybridge)
+        endif()
+    endforeach()
 endif()
 # D3D12 through the Agility SDK's runtime (scripts/fetch_d3d12_agility.py,
 # run by bootstrap on Windows): every program that draws with D3D12 exports
@@ -1722,7 +1766,7 @@ if(WIN32)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SFR_D3D12_AGILITY_DIR}/D3D12Core.dll" "${SFR_D3D12_CORE}"
             DEPENDS "${SFR_D3D12_AGILITY_DIR}/D3D12Core.dll")
         add_custom_target(sfr_d3d12_runtime DEPENDS "${SFR_D3D12_CORE}")
-        foreach(target sfr_cpu_diagnostic sfr_native_graphics_test sfr_native_upload_batch_test sfr_native_shaders_test sfr_native_presentation_test
+        foreach(target sfr_cpu_diagnostic sfr_cpu_diagnostic_sse sfr_native_graphics_test sfr_native_upload_batch_test sfr_native_shaders_test sfr_native_presentation_test
                        sfr_native_resolution_test sfr_native_pipeline_prewarm_test sfr_shader_cache_rebuild sfr_d3d11_shader_pack sfr_native_shader_abi_test
                        sfr_native_raster_state_test sfr_native_blend_control_test sfr_guest_graphics_test
                        sfr_guest_render_state_test sfr_guest_blend_request_test sfr_guest_sampler_filter_test

@@ -106,6 +106,10 @@ def desktop_files(platform, build, pack):
     exe = '.exe' if platform == 'windows' else ''
     files = [('FreeRidersRecompiled' + exe, need(build / ('FreeRidersRecompiled' + exe))),
              ('sfr_cpu_diagnostic' + exe, need(build / ('sfr_cpu_diagnostic' + exe)))]
+    if platform in ('windows', 'linux'):
+        # The same game for x86-64 processors without AVX (Issue #432); the
+        # launcher starts it there. macOS keeps its two programs first.
+        files.append(('sfr_cpu_diagnostic_sse' + exe, need(build / ('sfr_cpu_diagnostic_sse' + exe))))
     if platform == 'windows':
         files.append(('shader-tools/shader_common.h', need(ROOT / 'tools/XenosRecomp/XenosRecomp/shader_common.h')))
         files.append(('shader-tools/shader_translate.exe', need(ROOT / 'out/tools/shader-translator/shader_translate.exe')))
@@ -506,7 +510,7 @@ def main():
                 archive.addfile(info, io.BytesIO(readme))
                 for inside, source in files:
                     member = archive.gettarinfo(str(source), name + '/' + inside)
-                    executable = inside.endswith(('FreeRidersRecompiled', 'sfr_cpu_diagnostic', '.so', '.so.1'))
+                    executable = inside.endswith(('FreeRidersRecompiled', 'sfr_cpu_diagnostic', 'sfr_cpu_diagnostic_sse', '.so', '.so.1'))
                     member.mode = 0o755 if executable else 0o644
                     with open(source, 'rb') as stream:
                         archive.addfile(member, stream)

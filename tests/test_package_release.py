@@ -74,7 +74,7 @@ class ShaderPackageTests(unittest.TestCase):
     def test_manifest_defaults_and_adjacent_override(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for name in ('FreeRidersRecompiled', 'sfr_cpu_diagnostic'):
+            for name in ('FreeRidersRecompiled', 'sfr_cpu_diagnostic', 'sfr_cpu_diagnostic_sse'):
                 (root / name).write_bytes(b'program')
             pack = root / 'shaders.pack'
             pack.write_bytes(b'SFRSHPK2' + struct.pack('<II', SHADER_ABI, 1) +
@@ -90,10 +90,31 @@ class ShaderPackageTests(unittest.TestCase):
                 (root / name).write_bytes(b'pack-specific capture')
                 self.assertEqual(dict(package.desktop_files('linux', root, pack))[name], root / name)
 
+    def test_desktop_release_carries_the_game_without_avx(self):
+        # Issue #432: Windows and Linux ship the game twice, for processors
+        # with and without AVX; the release stops if the second is missing.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ('FreeRidersRecompiled', 'sfr_cpu_diagnostic', 'sfr_cpu_diagnostic_sse'):
+                (root / name).write_bytes(b'program')
+            pack = root / 'shaders.pack'
+            pack.write_bytes(b'SFRSHPK2' + struct.pack('<II', SHADER_ABI, 1) +
+                             struct.pack('<5I', 0, 0, 4, 1, 1) + b'gameDS')
+            files = dict(package.desktop_files('linux', root, pack))
+            self.assertEqual(files['sfr_cpu_diagnostic'], root / 'sfr_cpu_diagnostic')
+            self.assertEqual(files['sfr_cpu_diagnostic_sse'], root / 'sfr_cpu_diagnostic_sse')
+            # macOS keeps the launcher and the game first (macos_app drops them).
+            macos = package.desktop_files('macos', root, pack)
+            self.assertNotIn('sfr_cpu_diagnostic_sse', dict(macos))
+            self.assertEqual([inside for inside, _ in macos[:2]], ['FreeRidersRecompiled', 'sfr_cpu_diagnostic'])
+            (root / 'sfr_cpu_diagnostic_sse').unlink()
+            with self.assertRaisesRegex(SystemExit, 'sfr_cpu_diagnostic_sse'):
+                package.desktop_files('linux', root, pack)
+
     def test_release_rejects_shader_pack_without_current_abi(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for name in ('FreeRidersRecompiled', 'sfr_cpu_diagnostic'):
+            for name in ('FreeRidersRecompiled', 'sfr_cpu_diagnostic', 'sfr_cpu_diagnostic_sse'):
                 (root / name).write_bytes(b'program')
             pack = root / 'shaders.pack'
             for header in (b'SFRSHPK1' + struct.pack('<I', 1),
@@ -106,7 +127,7 @@ class ShaderPackageTests(unittest.TestCase):
     def test_release_accepts_complete_current_pack_and_rejects_truncation(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for name in ('FreeRidersRecompiled', 'sfr_cpu_diagnostic'):
+            for name in ('FreeRidersRecompiled', 'sfr_cpu_diagnostic', 'sfr_cpu_diagnostic_sse'):
                 (root / name).write_bytes(b'program')
             pack = root / 'shaders.pack'
             valid = b'SFRSHPK2' + struct.pack('<II', SHADER_ABI, 1) + struct.pack('<5I', 0, 0, 4, 1, 1) + b'gameDS'

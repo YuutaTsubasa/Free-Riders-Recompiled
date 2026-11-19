@@ -8,7 +8,9 @@ anything from `private/` or `game/`. GitHub Actions cannot make a release: it
 has no disc, and must never be given one.
 
 What a release does contain, beside the launcher: the recompiled game
-(`sfr_cpu_diagnostic`), the `shaders.pack` translated so far, the licences,
+(`sfr_cpu_diagnostic`; on Windows and Linux also `sfr_cpu_diagnostic_sse`, the
+same game built without AVX, which the launcher starts on a processor without
+AVX, Issue #432), the `shaders.pack` translated so far, the licences,
 on Windows the shader tools that translate shaders the pack lacks and the
 D3D12 Agility SDK runtime (`D3D12\D3D12Core.dll`, which Windows 10 needs), and with
 `--camera` the ONNX Runtime and MediaPipe models of the webcam's motion input.
@@ -95,7 +97,14 @@ character; state any platform or mode that has not received gameplay testing.
 Unpack the Windows archive into an empty folder **outside the checkout** (so
 the launcher cannot find `tools/` or `out/` above it), install from a disc
 image, and play into a race with both D3D12 and Vulkan. `game.log` beside the
-launcher must have no `untranslatable=1` line.
+launcher must have no `untranslatable=1` line. Its first line says which
+game program the launcher started (`LAUNCHER_GAME_PROGRAM program=sfr_cpu_diagnostic.exe
+reason=avx` on a processor with AVX). Run a race once more with
+`SFR_TEST_GAME_PROGRAM=sse` set for the launcher: it starts
+`sfr_cpu_diagnostic_sse.exe` (`reason=test-override`, then `GAME_BUILD isa=sse4.2`
+from the game), which must not contain AVX instructions (Issue #432): disassemble
+it with `llvm-objdump -d` and look for none of `ymm`, `vzeroupper` or another
+VEX-encoded (`v`-prefixed) instruction.
 
 ## 4. Publish
 

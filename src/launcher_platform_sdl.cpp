@@ -4,6 +4,7 @@
 // while its library loads, so every run needs a fresh process), started
 // through LauncherActivity, which also shows the system's document picker.
 #include "launcher_platform.h"
+#include "game_program_choice.h"
 #include "xdg_portal.h"
 #include "imgui.h"
 #include <SDL.h>
@@ -485,7 +486,8 @@ fs::path game_program(const fs::path& directory) {
     (void)directory;  // which is Application Support inside the .app
     return program_directory() / "sfr_cpu_diagnostic";
 #else
-    return directory / "sfr_cpu_diagnostic";
+    // The AVX game or, on a processor without AVX, the SSE one (Issue #432).
+    return directory / game_program_stem(this_machine_game_program().build);
 #endif
 }
 
@@ -561,6 +563,7 @@ std::unique_ptr<GameProcess> start_game(const LauncherSettings& settings, const 
     for (auto& argument : arguments) argv.push_back(argument.data());
     argv.push_back(nullptr);
     const std::string working = utf8(root.empty() ? directory : root), log_path = utf8(log);
+    const std::string choice_line = game_program_log_line(this_cpu(), this_machine_game_program(), utf8(program.filename()));
     const pid_t pid = fork();
     if (pid < 0) return nullptr;
     if (pid == 0) {
@@ -569,6 +572,8 @@ std::unique_ptr<GameProcess> start_game(const LauncherSettings& settings, const 
         if (chdir(working.c_str()) != 0) _exit(126);
         const int output = open(log_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (output >= 0) {
+            // Which program and why, ahead of the game's own lines.
+            if (write(output, choice_line.data(), choice_line.size()) < 0) {}
             dup2(output, 1);
             dup2(output, 2);
             close(output);

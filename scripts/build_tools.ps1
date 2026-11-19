@@ -127,6 +127,7 @@ $targets += 'sfr_race_hud_owners_test'
 $targets += 'sfr_launcher_screen_fit_test'
 $targets += 'sfr_launcher_screen_keyboard_test'
 $targets += 'sfr_disc_image_search_test'
+$targets += 'sfr_game_program_choice_test'
 $targets += 'sfr_voice_language_test'
 $targets += 'sfr_mod_loader_test'
 $targets += 'sfr_vector_compare_bounds_test'
@@ -215,6 +216,6 @@ $targets += 'sfr_guest_texture_binding_test'
 $targets += 'sfr_native_notification_event_test'
 $targets += 'sfr_native_notifications_test'
 $targets += 'sfr_notification_placement_test'
-if ($Diagnostic) { $targets += 'sfr_cpu_diagnostic'; $targets += 'sfr_native_winsock_test'; $targets += 'sfr_kinect_depth_view_guest_test'; $targets += 'sfr_kinect_depth_view_locals_test' }
+if ($Diagnostic) { $targets += 'sfr_cpu_diagnostic'; $targets += 'sfr_cpu_diagnostic_sse'; $targets += 'sfr_kinect_depth_view_guest_sse_test'; $targets += 'sfr_native_winsock_test'; $targets += 'sfr_kinect_depth_view_guest_test'; $targets += 'sfr_kinect_depth_view_locals_test' }
 & cmake --build $build --target $targets --parallel $Jobs
 if ($LASTEXITCODE -ne 0) { throw 'Xenon tools build failed.' }
