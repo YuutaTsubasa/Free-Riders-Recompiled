@@ -1608,8 +1608,8 @@ if(SFR_BUILD_DIAGNOSTIC)
         set(SFR_GAME_X86_64 ON)
     endif()
     set(SFR_GAME_TARGETS sfr_cpu_diagnostic)
-    option(SFR_SSE_GAME "Also build sfr_cpu_diagnostic_sse, the game for x86-64 processors without AVX" ON)
-    if(SFR_SSE_GAME AND SFR_GAME_X86_64 AND NOT ANDROID AND NOT IOS AND NOT APPLE)
+    # Always both there: the release ships both, and build_tools.ps1 builds both.
+    if(SFR_GAME_X86_64 AND NOT ANDROID AND NOT IOS AND NOT APPLE)
         list(APPEND SFR_GAME_TARGETS sfr_cpu_diagnostic_sse)
         # Both compile the same prepared copies of the generated code: one
         # target makes them, so two builds never write them at once.
