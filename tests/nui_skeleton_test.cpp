@@ -107,6 +107,62 @@ int main() {
         require(joining.centre_cursor(), "START during the raise");
         for (int i = 1; i < 30; ++i) joining.update({});
         require(joining.hand(true) == centred, "the raise ends at the centre");
+        // Issue #426: START held keeps the hand on SKIP; let go, the hand
+        // goes back where it was, so a brief press skips nothing.
+        {
+            sfr::NuiSkeletonEmulation held = joined;
+            require(held.hold_skip() && held.hand(true) == centred, "holding START moves the hand to SKIP");
+            for (int i = 0; i < 20; ++i) held.update({});
+            require(held.hand(true) == centred, "and keeps it there while held");
+            held.release_skip();
+            require(held.hand(true) == parked, "letting go parks it again");
+            held.update({});
+            require(held.hand(true) == parked, "and it stays parked");
+            held.release_skip();
+            require(held.hand(true) == parked, "a second release changes nothing");
+            // A hand the stick moves on while START is held stays there.
+            sfr::NuiSkeletonEmulation steered = joined;
+            steered.hold_skip();
+            sfr::GamepadState nudge{};
+            nudge.thumb_rx = 32767;
+            for (int i = 0; i < 5; ++i) steered.update(nudge);
+            const auto moved = steered.hand(true);
+            require(moved != centred, "the stick moves the held hand");
+            steered.release_skip();
+            require(steered.hand(true) == moved, "letting go keeps where the stick put it");
+            // After a race: START raises the hand to SKIP; let go during the
+            // raise, it ends parked; let go after it, it goes to the corner.
+            sfr::NuiSkeletonEmulation lowered = joined;
+            lowered.update({}, true);
+            sfr::NuiSkeletonEmulation early = lowered;
+            require(early.hold_skip(), "holding START raises a resting hand");
+            for (int i = 0; i < 10; ++i) early.update({});
+            early.release_skip();
+            for (int i = 0; i < 25; ++i) early.update({});
+            require(early.hand(true) == parked, "let go during the raise, it ends parked");
+            sfr::NuiSkeletonEmulation late = lowered;
+            late.hold_skip();
+            for (int i = 0; i < 35; ++i) late.update({});
+            require(late.hand(true) == centred, "held through the raise it rests on SKIP");
+            late.release_skip();
+            require(late.hand(true) == parked, "let go after the raise, it is parked");
+            // During the identification raise: it ends as identification
+            // would have ended it, parked.
+            sfr::NuiSkeletonEmulation raising;
+            raising.identify();
+            raising.update({});
+            raising.hold_skip();
+            for (int i = 1; i < 30; ++i) raising.update({});
+            require(raising.hand(true) == centred, "held, the identification raise ends on SKIP");
+            raising.release_skip();
+            require(raising.hand(true) == parked, "let go, it is parked as identification parks it");
+            // A race while START is held forgets the hold.
+            sfr::NuiSkeletonEmulation raced = joined;
+            raced.hold_skip();
+            raced.update({}, true);
+            raced.release_skip();
+            require(raced.hand(true) == before, "a race in between leaves the hand down");
+        }
         // A race reads the body's pose, so the parked cursor hand comes down.
         joined.update({}, true);
         require(joined.hand(true) == before, "a race rests the hands");

@@ -267,9 +267,10 @@ PPC_FUNC_IMPL(__imp__sub_82817B48);
 // releasing its execution permit while blocked. Keep that behavior while
 // measuring the current decoder rather than assuming the old bottleneck.
 //
-// Skipping: A, B, START or BACK on the pad (or SFR_SKIP_MOVIES=1) ends the
-// movie as the player's end of file does (XMV_ENDOFFILE, which the callers
-// 8243A728 and 8243A968 test). Decoder throughput depends on the host.
+// Skipping: A, B, START or BACK on the pad held for half a second (or
+// SFR_SKIP_MOVIES=1) ends the movie as the player's end of file does
+// (XMV_ENDOFFILE, which the callers 8243A728 and 8243A968 test). Decoder
+// throughput depends on the host.
 SFR_CONCURRENT_HOOK(sub_82817B48) {
     sfr::enter_function(ctx,"sub_82817B48",0x82817B48);
     sfr::note_touch_movie();  // the touch controls hide while it plays (Issue #274)
@@ -290,6 +291,7 @@ SFR_CONCURRENT_HOOK(sub_82817B48) {
         uint32_t trace_last_status=0;
         double trace_ms=0, trace_max_ms=0;
         std::chrono::steady_clock::time_point first{}, trace_reported{};
+        std::chrono::steady_clock::time_point skip_held{};  // since when a skip button is down
     };
     // Its own lock: a player's entry, once made, is its caller's alone.
     static std::mutex players_lock;
@@ -307,9 +309,23 @@ SFR_CONCURRENT_HOOK(sub_82817B48) {
     }();
     const bool started=progress.rendered>30 ||
         now-progress.first>std::chrono::milliseconds(allowance_ms);
+    // A skip button has to stay down for half a second (Issue #426). On a
+    // phone a finger anywhere on a movie is START (touch_controls.h), so a
+    // brief touch, or a palm while taking hold of the phone, ended it at
+    // once; a tap or a quick press lasts well under a quarter of a second,
+    // and half a second is still short for someone who means to skip, with
+    // no gauge on the screen to watch. B is held too: Android's Back button
+    // and edge-swipe gesture are B, and that swipe is easy to make by
+    // accident; a Back button kept down for a second leaves for the
+    // launcher, which the half second stays clear of.
     constexpr uint16_t skip_buttons=sfr::gamepad_button::a|sfr::gamepad_button::b|sfr::gamepad_button::start|
                                     sfr::gamepad_button::back;
-    if(started && (skip_all || (sfr::nui_gamepad().buttons & skip_buttons))) {
+    constexpr auto skip_hold=std::chrono::milliseconds(500);
+    const bool skip_down=(sfr::nui_gamepad().buttons & skip_buttons)!=0;
+    if(!skip_down) progress.skip_held={};
+    else if(progress.skip_held==std::chrono::steady_clock::time_point{}) progress.skip_held=now;
+    const bool skip_hold_done=skip_down && now-progress.skip_held>=skip_hold;
+    if(started && (skip_all || skip_hold_done)) {
         static uint32_t skipped=0;
         if(skipped++<8)
             std::cerr << "GAME_PATCH movie_skip player=0x" << std::hex << player << std::dec

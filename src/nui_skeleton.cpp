@@ -63,6 +63,7 @@ bool NuiSkeletonEmulation::hand_starts_centred() {
 }
 
 void NuiSkeletonEmulation::rearm_menu() {
+    skip_ = {};
     engage_ = 0;
     lower_first_ = 0;
     park_ = false;
@@ -134,9 +135,39 @@ bool NuiSkeletonEmulation::centre_cursor() {
     return true;
 }
 
+bool NuiSkeletonEmulation::hold_skip() {
+    if (!skip_.held) skip_ = {true, engage_, park_, pointed_, pointed_now_, right_};
+    return centre_cursor();
+}
+
+void NuiSkeletonEmulation::release_skip() {
+    if (!skip_.held) return;
+    const SkipReturn was = skip_;
+    skip_ = {};
+    if (engage_ == 0) return;  // BACK or a new page put the hand down meanwhile
+    const bool was_up = was.engage > 30, was_raising = was.engage >= 1 && was.engage <= 30;
+    if (engage_ <= 30) {
+        // The raise START began or sped to the centre is still under way: it
+        // ends where it would have without START, or parked if it was START's.
+        park_ = was_raising ? was.park : true;
+        pointed_ = was_raising && was.pointed;
+        return;
+    }
+    if (right_ != centred_hand) return;  // the right stick moved it on
+    if (was_up) {
+        right_ = was.right;
+        pointed_now_ = was.pointed_now;
+    } else if (was_raising && was.pointed) {
+        right_ = {pointed_hand_[0], pointed_hand_[1], 2.25f};
+    } else if (!was_raising || was.park) {
+        right_ = parked_hand;
+    }
+}
+
 void NuiSkeletonEmulation::update(const GamepadState& pad, bool racing, bool two_player_menu, bool cursor_pending) {
     const float rx = axis(pad.thumb_rx), ry = axis(pad.thumb_ry);
     if (racing) {
+        skip_ = {};
         engage_ = 0;
         lower_first_ = 0;
         pointed_now_ = false;
@@ -155,7 +186,7 @@ void NuiSkeletonEmulation::update(const GamepadState& pad, bool racing, bool two
     // Keep the left hand out of two-player menu selection.
     if (two_player_menu) left_ = rest_position(false);
     const bool rest = (pad.buttons & gamepad_button::back) != 0;
-    if (rest) engage_ = 0;
+    if (rest) { engage_ = 0; skip_ = {}; }
     if (rest || rx != 0.0f || ry != 0.0f) pointed_now_ = false;
     // The first right-stick input raises the hand (one second) and then
     // centres it, so the cursor appears at the centre of the screen.

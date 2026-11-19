@@ -51,6 +51,15 @@ public:
     // scene shows its SKIP button (it fills while a hand rests on it). A hand
     // not up yet (after a race) is raised first and ends there.
     bool centre_cursor();
+    // START held in a story scene (Issue #426): hold_skip on the press moves
+    // the hand to the SKIP button (centre_cursor) and remembers where it was;
+    // release_skip on the release puts it back, so the button's gauge stops
+    // and the scene goes on unless the gauge filled while START was held. A
+    // hand that was down (after a race) goes to the corner where the
+    // identified player's hand waits, clear of buttons. A hand the right
+    // stick moved on meanwhile stays where the stick put it.
+    bool hold_skip();
+    void release_skip();
     // Writes the complete frame for this player alone: the header, this
     // skeleton in slot 0 with tracking id 1, and no other slot tracked.
     void write(GuestMemory& memory, uint32_t address, uint32_t frame_number, uint64_t timestamp_ms) const;
@@ -130,5 +139,12 @@ private:
     std::array<float, 2> pointed_hand_{};
     std::array<float, 3> left_{-0.25f, -0.15f, 2.45f};
     uint32_t enrollment_ = unidentified;
+    // hold_skip's memory of the hand before the press.
+    struct SkipReturn {
+        bool held = false;
+        uint32_t engage = 0;
+        bool park = false, pointed = false, pointed_now = false;
+        std::array<float, 3> right{};
+    } skip_;
 };
 }

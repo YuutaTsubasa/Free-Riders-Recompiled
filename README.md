@@ -480,7 +480,9 @@ dash (X), measured from however you held it when the race started; tip it back
 before the next kick. Outside races a finger moves the Kinect
 hand cursor: touch anywhere away from the buttons and the cursor goes there
 (rest on an item to choose it, as with a hand); on the title screen a touch is
-START. On a PC the mouse moves the hand cursor the same way. Details: [docs/race-controls.md](docs/race-controls.md),
+START. In movies and story scenes, touch and hold anywhere (or hold START) to
+skip: half a second for a movie, until the SKIP gauge fills in a story scene;
+a brief touch skips nothing. On a PC the mouse moves the hand cursor the same way. Details: [docs/race-controls.md](docs/race-controls.md),
 [docs/pad-menus.md](docs/pad-menus.md).
 
 The **achievements page** lists all 50 achievements in the game with their

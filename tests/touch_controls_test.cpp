@@ -314,7 +314,7 @@ void tilt_lean() {
 }
 
 // Issue #274: movies and story scenes draw no controls, and a touch anywhere
-// is START, which skips.
+// is START while the finger stays down; held, it skips (Issue #426).
 void scenes() {
     using sfr::TouchScene;
     TouchControls controls;
