@@ -483,6 +483,15 @@ void title_stats_settings() {
     const auto unknown = sfr::parse_launcher_settings("cpu_difficulty=insane\n");
     require(unknown.cpu_difficulty == "normal" && value_of(unknown, "SFR_CPU_DIFFICULTY") == "normal",
             "an unknown CPU difficulty reads as Normal");
+    // Plain race loading screen (Issue #365): off by default, the original loading screen; on is saved and
+    // passed on, off exports the name with no value, which the game reads as off.
+    require(!defaults.plain_race_loading && value_of(defaults, "SFR_PLAIN_RACE_LOADING").empty() &&
+                sfr::format_launcher_settings(defaults).find("plain_race_loading=0\n") != std::string::npos,
+            "the race loading screen is the original by default");
+    const auto plain = sfr::parse_launcher_settings("plain_race_loading=1\n");
+    require(plain.plain_race_loading && value_of(plain, "SFR_PLAIN_RACE_LOADING") == "1" &&
+                sfr::format_launcher_settings(plain).find("plain_race_loading=1\n") != std::string::npos,
+            "a plain race loading screen is saved and the game is told");
 }
 
 void race_frameskip_settings() {

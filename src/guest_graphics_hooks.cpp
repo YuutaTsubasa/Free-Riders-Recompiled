@@ -643,6 +643,10 @@ static const auto process_start=std::chrono::steady_clock::now();
 // GPU completion callbacks (InsertCallback) waiting for the frame's end.
 static std::vector<std::pair<uint32_t,uint32_t>> frame_callbacks;
 
+// The plain race loading screen (Issue #365, game_patches.cpp): whether it is
+// up, and whether a draw made now is left out (all but Now Loading).
+namespace sfr { bool plain_race_loading_screen(); bool plain_race_loading_hides_draw(); }
+
 SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
     sfr::enter_function(ctx,"sub_824E65A0",0x824E65A0);
     // Preload in the menu; actual geometry is drawn in the Avatar's pass.
@@ -692,6 +696,8 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
         }
     }
     if(frame_drawn) {
+        // The plain race loading screen's Now Loading in the window's corner (Issue #365).
+        graphics().presentation().set_corner_anchor(sfr::plain_race_loading_screen());
         graphics().present_front_buffer(ctx.r3.u32);
         // SFR_TEST_RACE_DRAW_MS=<ms> (testing): each drawn race frame takes that
         // much longer, as on a device whose GPU cannot keep 60 fps.
@@ -1053,6 +1059,8 @@ static bool native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
                         uint32_t index_count=0, bool cached_only=false) {
     auto& memory=*sfr::active_memory;
     if(skip_draws() || !rendering_this_frame()) return true;
+    // The plain race loading screen (Issue #365, game_patches.cpp) shows only Now Loading.
+    if(sfr::plain_race_loading_hides_draw()) return true;
     // Everything a draw costs beside reading its indices and vertices.
     const auto draw_start=metrics_clock();
     struct DrawTimer {

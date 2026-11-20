@@ -63,6 +63,9 @@ struct LauncherSettings {
     // "newbie", "easy", "normal" (the original) or "hard" (cpu_difficulty.h,
     // Issue #420).
     std::string cpu_difficulty = "normal";
+    // SFR_PLAIN_RACE_LOADING: the loading screen before a race is black with
+    // only "Now Loading" in its corner, without Omochao's practice (Issue #365).
+    bool plain_race_loading = false;
     bool vertex_cache = true;        // SFR_VERTEX_CACHE
     bool gpu_pipeline = true;        // SFR_GPU_PIPELINE
     uint32_t race_render_every = 1;  // SFR_RENDER_EVERY
