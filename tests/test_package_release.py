@@ -70,6 +70,24 @@ class CameraPackageTests(unittest.TestCase):
                 package.camera_files(root, 'linux', game)
 
 
+class LauncherVersionTests(unittest.TestCase):
+    def test_launcher_must_be_built_for_the_release_version(self):
+        version = package.android_version_name()
+        self.assertRegex(version, r'^[0-9]+\.[0-9]+\.[0-9]+$')
+        built = b'...FreeRidersRecompiled-launcher-version=' + version.encode() + b'\0...'
+        package.check_launcher_version(version, [('launcher', built)])
+        with self.assertRaises(SystemExit):  # built before the bump
+            package.check_launcher_version(version, [('launcher', b'FreeRidersRecompiled-launcher-version=0.0.1\0')])
+        with self.assertRaises(SystemExit):  # a prefix of the version is not it
+            package.check_launcher_version(version, [('launcher', built.replace(b'\0', b'1\0'))])
+        with self.assertRaises(SystemExit):  # --version is not VERSION_NAME
+            package.check_launcher_version('0.0.1', [('launcher', b'FreeRidersRecompiled-launcher-version=0.0.1\0')])
+        with self.assertRaises(SystemExit):  # an APK without a launcher
+            package.check_launcher_version(version, [])
+        # A test package's version is not a release's: noted, not stopped.
+        package.check_launcher_version(version + '-test', [('launcher', b'')])
+
+
 class ShaderPackageTests(unittest.TestCase):
     def test_manifest_defaults_and_adjacent_override(self):
         with tempfile.TemporaryDirectory() as directory:

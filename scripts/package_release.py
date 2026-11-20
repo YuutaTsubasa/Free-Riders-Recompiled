@@ -33,6 +33,7 @@ import hashlib
 import io
 import json
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -85,6 +86,34 @@ platform details and current animation/material limitations. No model is include
 Sonic Free Riders is (c) SEGA. This project is not affiliated with or
 endorsed by SEGA or Microsoft. Licences: licenses/.
 """
+
+
+def android_version_name():
+    """scripts/package_android.py's VERSION_NAME: the release's version, which
+    CMake also compiles into the launcher for its update notice (Issue #365)."""
+    text = (ROOT / 'scripts/package_android.py').read_text(encoding='utf-8')
+    found = re.search(r"^VERSION_CODE, VERSION_NAME = \d+, '([0-9]+\.[0-9]+\.[0-9]+)'", text, re.MULTILINE)
+    return found.group(1) if found else None
+
+
+def check_launcher_version(version, launchers):
+    """Stops unless --version is VERSION_NAME and every launcher program was
+    built with it. The launcher compares its own version with GitHub's latest
+    release: one built before the bump would offer the release it is in as an
+    update, every day. launchers: (name, the program's bytes). A --version
+    that is not a release's (0.10.38-test, for a test package) is only noted."""
+    if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version):
+        print('note: %s is not a release version; the launcher\'s own version is not checked' % version)
+        return
+    if android_version_name() != version:
+        sys.exit('--version %s is not scripts/package_android.py\'s VERSION_NAME (%s): bump it and build again'
+                 % (version, android_version_name()))
+    marker = ('FreeRidersRecompiled-launcher-version=%s\0' % version).encode()
+    if not launchers:
+        sys.exit('no launcher program to check the version of')
+    for name, data in launchers:
+        if marker not in data:
+            sys.exit('%s was not built for %s (configure and build it again after the version bump)' % (name, version))
 
 
 def need(path):
@@ -431,6 +460,11 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     readme = README.format(version=args.version, platform=args.platform).encode()
 
+    if args.platform != 'android':
+        build = args.build or (ROOT / 'out/build/host' if args.platform == 'windows' else Path.home() / 'sfr-build')
+        launcher = build / {'windows': 'FreeRidersRecompiled.exe',
+                            'ios': 'FreeRidersRecompiled.app/FreeRidersRecompiled'}.get(args.platform, 'FreeRidersRecompiled')
+        check_launcher_version(args.version, [(str(launcher), need(launcher).read_bytes())])
     if args.platform == 'ios':
         if sys.platform != 'darwin' or not args.moltenvk or not args.build:
             parser.error('ios packages on a Mac, with --build and --moltenvk')
@@ -463,6 +497,7 @@ def main():
         apk = need(ROOT / 'out/android/FreeRidersRecompiled.apk')
         with zipfile.ZipFile(apk) as archive:
             apk_names = archive.namelist()
+            check_launcher_version(args.version, [(n, archive.read(n)) for n in apk_names if n.endswith('/liblauncher.so')])
             try:
                 validate_shader_pack(archive.read('assets/shaders.pack'))
             except (KeyError, ValueError) as error:
