@@ -202,12 +202,15 @@ void open_url(const char* url) {
 std::optional<std::string> fetch_https(const std::string& url, const std::string& user_agent, int timeout_ms) {
     std::wstring wide = from_utf8(url);
     URL_COMPONENTS parts{sizeof(parts)};
-    wchar_t host[256]{}, path[2048]{};
+    wchar_t host[256]{}, path[2048]{}, query[512]{};
     parts.lpszHostName = host;
     parts.dwHostNameLength = DWORD(std::size(host));
     parts.lpszUrlPath = path;
     parts.dwUrlPathLength = DWORD(std::size(path));
+    parts.lpszExtraInfo = query;  // "?per_page=20": the request names it after the path
+    parts.dwExtraInfoLength = DWORD(std::size(query));
     if (!WinHttpCrackUrl(wide.c_str(), 0, 0, &parts) || parts.nScheme != INTERNET_SCHEME_HTTPS) return std::nullopt;
+    const std::wstring target = std::wstring(path) + query;
     // The system's proxy settings; no cookies or credentials are kept or sent
     // (WinHTTP has no cookie store of its own and logs on to nothing unless asked).
     HINTERNET session = WinHttpOpen(from_utf8(user_agent).c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
@@ -216,7 +219,7 @@ std::optional<std::string> fetch_https(const std::string& url, const std::string
     WinHttpSetTimeouts(session, timeout_ms, timeout_ms, timeout_ms, timeout_ms);
     std::optional<std::string> body;
     HINTERNET connection = WinHttpConnect(session, host, parts.nPort, 0);
-    HINTERNET request = connection ? WinHttpOpenRequest(connection, L"GET", path, nullptr, WINHTTP_NO_REFERER,
+    HINTERNET request = connection ? WinHttpOpenRequest(connection, L"GET", target.c_str(), nullptr, WINHTTP_NO_REFERER,
                                                         WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE) : nullptr;
     if (request) {
         DWORD no_cookies = WINHTTP_DISABLE_COOKIES;
