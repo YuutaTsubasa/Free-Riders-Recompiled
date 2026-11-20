@@ -20,11 +20,14 @@ struct Value {
     bool flag = false;
     std::string text;
     std::vector<Value> items;
-    std::vector<std::pair<std::string, Value>> fields;
+    // An object's keys and their values, side by side: a vector of pairs
+    // holding Value would need Value complete here (libstdc++ checks).
+    std::vector<std::string> keys;
+    std::vector<Value> fields;
 
     const Value* field(std::string_view name) const {
-        for (const auto& [key, value] : fields)
-            if (key == name) return &value;
+        for (size_t i = 0; i < keys.size(); ++i)
+            if (keys[i] == name) return &fields[i];
         return nullptr;
     }
     std::string string_field(std::string_view name) const {
@@ -131,7 +134,8 @@ private:
                 std::string key;
                 Value item;
                 if (!parse_string(key) || !take(':') || !parse(item, depth + 1)) return false;
-                value.fields.emplace_back(std::move(key), std::move(item));
+                value.keys.push_back(std::move(key));
+                value.fields.push_back(std::move(item));
             } while (take(','));
             return take('}');
         }
