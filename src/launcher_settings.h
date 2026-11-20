@@ -88,6 +88,14 @@ struct LauncherSettings {
     // Linux: the launcher keeps an entry for itself in the desktop's
     // application menu (linux_desktop_entry.h, Issue #365); off removes it.
     bool application_menu = true;
+    // The launcher asks GitHub once a day whether a newer release is out and
+    // then shows "Version X is available" (update_check.h, Issue #365). Off
+    // asks nothing. The last answer is kept here (not settings the player
+    // chooses): when it was asked (Unix seconds), the newest version and the
+    // address of its file for this platform.
+    bool check_updates = true;
+    int64_t update_checked_at = 0;
+    std::string update_version, update_url;
     bool vulkan = true;             // legacy settings key; selects Vulkan or D3D12
     bool d3d11 = false;             // Direct3D 11 (experimental, Windows, Issue #359), over `vulkan`
     bool touch_controls = true;      // SFR_TOUCH_CONTROLS (Android, iOS)

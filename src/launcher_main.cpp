@@ -49,6 +49,7 @@
 #include "test_options.h"
 #include "cpu_difficulty.h"
 #include "video_driver.h"
+#include "update_check.h"
 #if defined(__linux__) && !defined(__ANDROID__)
 #include "linux_desktop_entry.h"
 #endif
@@ -165,6 +166,7 @@ enum Text {
     SectionGameplay, SuperSonicBoard, SuperSonicBoardHint, SuperSonicAllTypes, SuperSonicAllTypesHint,
     CpuDifficulty, CpuDifficultyHint, CpuNewbie, CpuEasy, CpuNormal, CpuHard,
     SectionDesktop, AppMenuLabel, AppMenuHint,
+    SectionUpdates, CheckUpdatesLabel, CheckUpdatesHint, UpdateAvailable, UpdateDownload, UpdateNone,
     TextCount
 };
 
@@ -618,6 +620,15 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Add to application menu", "加入應用程式選單"},
     {"Lists Free Riders Recompiled in your desktop's application menu, starting this launcher from where it is now (~/.local/share/applications; it follows the folder if you move it). Off removes the entry.",
      "把 Free Riders Recompiled 加入桌面環境的應用程式選單，從啟動器現在的位置啟動它（~/.local/share/applications；資料夾搬走後會跟著更新）。關閉會移除這個項目。"},
+    {"Updates", "更新"},
+    {"Check for updates", "檢查更新"},
+    {"Once a day the launcher asks GitHub whether a newer release is out (the request carries only the launcher's name and version). "
+     "If there is one, a button at the top opens its download for this device in your browser; nothing is downloaded or installed by itself.",
+     "啟動器每天向 GitHub 查詢一次是否有新版本（請求只帶啟動器的名稱與版本）。有新版本時，上方會出現按鈕，"
+     "在瀏覽器開啟適合這台裝置的下載檔；不會自動下載或安裝任何東西。"},
+    {"Version %s is available", "版本 %s 已推出"},
+    {"Download", "下載"},
+    {"You have the newest version (%s).", "已是最新版本（%s）。"},
 }};
 
 int language = 0;
@@ -1722,6 +1733,19 @@ struct Launcher {
         sfr::LiveCheck result;  // written before done
     };
     std::shared_ptr<OnlineCheck> online_check;  // the one running, if any
+    // The update notice (update_check.h, Issue #365): this build's version
+    // (SFR_TEST_UPDATE_CURRENT_VERSION stands in for it in tests), and the
+    // day's check, running on its own thread.
+    struct UpdateCheck {
+        std::atomic<bool> done{false};
+        sfr::update::CheckResult result;  // written before done
+    };
+    std::string current_version = [] {
+        const char* test = std::getenv("SFR_TEST_UPDATE_CURRENT_VERSION");
+        return std::string(test && *test ? test : sfr::update::build_version());
+    }();
+    std::shared_ptr<UpdateCheck> update_check;
+    bool update_check_started = false;
     std::string online_checked;                 // the address it is for
     bool online_check_starts = false;           // Start waits for it
     std::string online_result;                  // what the last one found, shown under the address
@@ -1759,6 +1783,134 @@ struct Launcher {
         page = next;
         page_fade = 0.0f;
         focus_start = true;
+    }
+
+    // ------------------------------------------------ updates
+    // At most once a day (the answer is kept in settings.ini), never in the
+    // way: the check runs on its own thread, times out in seconds and fails
+    // silently, and Start does not wait for it.
+    void start_update_check() {
+        update_check_started = true;
+        if (!settings.check_updates || current_version.empty()) {
+            std::fprintf(stderr, "LAUNCHER_UPDATE_CHECK skipped=%s current=%s\n", settings.check_updates ? "no_version" : "off",
+                         current_version.c_str());
+            return;
+        }
+        const int64_t now = int64_t(std::time(nullptr));
+        if (!sfr::update::check_due(settings.update_checked_at, now)) {
+            std::fprintf(stderr, "LAUNCHER_UPDATE_CHECK skipped=checked_today current=%s latest=%s newer=%d\n", current_version.c_str(),
+                         settings.update_version.c_str(), int(update_available()));
+            return;
+        }
+        auto check = std::make_shared<UpdateCheck>();
+        update_check = check;
+        std::thread([check, version = current_version] {
+            check->result = sfr::update::run_check(sfr::launcher::fetch_https, version, sfr::update::this_platform());
+            check->done.store(true, std::memory_order_release);
+        }).detach();
+    }
+
+    void poll_update_check() {
+        if (!update_check_started) start_update_check();
+        if (!update_check || !update_check->done.load(std::memory_order_acquire)) return;
+        const sfr::update::CheckResult result = update_check->result;
+        update_check.reset();
+        // Asked today, whatever the answer: a failed check waits for tomorrow
+        // too, so a launcher without a network never asks at every start.
+        settings.update_checked_at = int64_t(std::time(nullptr));
+        if (result.found) {
+            settings.update_version = result.found->version;
+            settings.update_url = result.found->url;
+        }
+        std::fprintf(stderr, "LAUNCHER_UPDATE_CHECK outcome=%s current=%s latest=%s newer=%d url=%s\n",
+                     sfr::update::outcome_name(result.outcome), current_version.c_str(), settings.update_version.c_str(),
+                     int(update_available()), settings.update_url.c_str());
+        sfr::save_launcher_settings(settings_file, settings);
+    }
+
+    // A newer release than this one is known (and the player wants to hear).
+    bool update_available() const {
+        return settings.check_updates && !settings.update_url.empty() &&
+               sfr::update::is_newer(settings.update_version, current_version);
+    }
+
+    void open_update() {
+        std::fprintf(stderr, "LAUNCHER_UPDATE_OPEN url=%s\n", settings.update_url.c_str());
+        sfr::launcher::open_url(settings.update_url.c_str());
+    }
+
+    std::string update_notice_text() const {
+        char text[160];
+        std::snprintf(text, sizeof text, tr(UpdateAvailable), settings.update_version.c_str());
+        return text;
+    }
+
+    // The top bar's notice, left of the language button: "Version X is
+    // available" with a download arrow, opening the file in the browser. The
+    // mouse's and touch's way, as the language button; keys and pads have
+    // the same button in General > Updates.
+    float update_button_width() const {
+        if (!update_available()) return 0.0f;
+        const std::string text = update_notice_text();
+        return fonts.tiny->CalcTextSizeA(fonts.tiny->FontSize, FLT_MAX, 0, text.c_str()).x + 56 * scale;
+    }
+
+    void update_button(ImVec2 size) {
+        const float width = update_button_width();
+        if (width <= 0) return;
+        const float shown = ease_out(appear);
+        const float height = 36 * scale;
+        const ImVec2 at(size.x - margin * scale - language_button_width() - 12 * scale - width + (1.0f - shown) * 60 * scale,
+                        top_bar * scale * shown - top_bar * scale + 24 * scale);
+        ImGui::SetCursorScreenPos(at);
+        ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);
+        const bool pressed = ImGui::InvisibleButton("##update-button", ImVec2(width, height));
+        ImGui::PopItemFlag();
+        const bool hovered = ImGui::IsItemHovered();
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        const ImVec2 end(at.x + width, at.y + height);
+        draw->AddRectFilled(at, end, hovered ? IM_COL32(40, 110, 90, 235) : IM_COL32(18, 70, 60, 210), height * 0.5f);
+        draw->AddRect(at, end, IM_COL32(110, 240, 170, hovered ? 240 : 150), height * 0.5f, 0, 1.5f * scale);
+        // A download arrow: a shaft, its head and the tray under it.
+        const ImU32 ink = IM_COL32(220, 255, 235, 245);
+        const float cx = at.x + height * 0.5f + 2 * scale, cy = at.y + height * 0.5f, r = height * 0.26f;
+        draw->AddLine(ImVec2(cx, cy - r), ImVec2(cx, cy + r * 0.45f), ink, 1.8f * scale);
+        draw->AddTriangleFilled(ImVec2(cx - r * 0.6f, cy), ImVec2(cx + r * 0.6f, cy), ImVec2(cx, cy + r * 0.7f), ink);
+        draw->AddLine(ImVec2(cx - r, cy + r), ImVec2(cx + r, cy + r), ink, 1.8f * scale);
+        const std::string text = update_notice_text();
+        const ImVec2 text_size = fonts.tiny->CalcTextSizeA(fonts.tiny->FontSize, FLT_MAX, 0, text.c_str());
+        draw->AddText(fonts.tiny, fonts.tiny->FontSize, ImVec2(cx + r + 12 * scale, at.y + (height - text_size.y) * 0.5f), ink, text.c_str());
+        if (pressed) {
+            ::play(sfr::UiSound::confirm);
+            open_update();
+        }
+    }
+
+    // General > Updates.
+    void update_settings() {
+        settings_section(SectionUpdates);
+        const float switch_width = ImGui::GetFrameHeight() * 1.9f;
+        setting_row(tr(CheckUpdatesLabel), tr(CheckUpdatesHint), switch_width, scale, [&] {
+            if (toggle("##check_updates", &settings.check_updates)) {
+                if (settings.check_updates && !update_check) start_update_check();
+                sfr::save_launcher_settings(settings_file, settings);
+            }
+        });
+        if (update_available()) {
+            const std::string text = update_notice_text();
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextColored(ImVec4(0.45f, 0.90f, 0.55f, 1), "%s", text.c_str());
+            ImGui::SameLine();
+            if (small_button(tr(UpdateDownload), scale)) open_update();
+        } else if (settings.check_updates && !settings.update_version.empty() && !current_version.empty() &&
+                   !sfr::update::is_newer(settings.update_version, current_version)) {
+            char text[160];
+            std::snprintf(text, sizeof text, tr(UpdateNone), current_version.c_str());
+            ImGui::PushStyleColor(ImGuiCol_Text, dim_text);
+            ImGui::TextUnformatted(text);
+            ImGui::PopStyleColor();
+        }
+        ImGui::Dummy(ImVec2(0, 4 * scale));
     }
 
     // ------------------------------------------------ online
@@ -2109,10 +2261,15 @@ struct Launcher {
         // The page's name on the right, breathing while installing.
         const float breath = breathing ? 0.55f + 0.45f * (0.5f + 0.5f * std::sin(t * 3.0f)) : 1.0f;
         const ImVec2 label_size = fonts.heading->CalcTextSizeA(fonts.heading->FontSize, FLT_MAX, 0, label);
-        draw->AddText(fonts.heading, fonts.heading->FontSize,
-                      ImVec2(size.x - margin * scale - right_reserved - (right_reserved > 0 ? 18 * scale : 0.0f) - label_size.x +
-                                 (1.0f - shown) * 60 * scale, title_y + 8 * scale),
-                      color(accent_bright, shown * breath), label);
+        const float label_x = size.x - margin * scale - right_reserved - (right_reserved > 0 ? 18 * scale : 0.0f) - label_size.x +
+                              (1.0f - shown) * 60 * scale;
+        // Left out where the buttons on the right (the update notice) would
+        // push it into the logo.
+        const float logo_end = title_x + logo_size.x + 12 * scale +
+                               fonts.tiny->CalcTextSizeA(fonts.tiny->FontSize, FLT_MAX, 0, "RECOMPILED").x + 18 * scale;
+        if (label_x >= logo_end)
+            draw->AddText(fonts.heading, fonts.heading->FontSize, ImVec2(label_x, title_y + 8 * scale),
+                          color(accent_bright, shown * breath), label);
         // Bottom bar.
         draw->AddRectFilledMultiColor(ImVec2(left, bottom), ImVec2(right, size.y + screen_bleed.w), IM_COL32(6, 16, 44, 225),
                                       IM_COL32(6, 16, 44, 225), IM_COL32(3, 8, 24, 240), IM_COL32(8, 6, 30, 240));
@@ -2668,6 +2825,7 @@ struct Launcher {
             });
         }
 #endif
+        update_settings();
         settings_section(SectionReset);
         reset_settings();
     }
@@ -3769,8 +3927,13 @@ struct Launcher {
         if (small_button(tr(Defaults), scale)) {
             const auto image = settings.image_directory, assets = settings.asset_directory;
             const auto saves = settings.save_directory;  // the saves stay where they are
+            const auto checked_at = settings.update_checked_at;  // the last update check's answer is not a setting
+            const auto update_version = settings.update_version, update_url = settings.update_url;
             settings = {};
             settings.save_directory = saves;
+            settings.update_checked_at = checked_at;
+            settings.update_version = update_version;
+            settings.update_url = update_url;
             avatar_model_import_failed = false;
             settings.image_directory = image;
             settings.asset_directory = assets;
@@ -4358,11 +4521,14 @@ struct Launcher {
         page_fade = approach(page_fade, 1.0f, 7.0f);
         if (leaving && appear < 0.03f) launch_now();
         poll_online_check();
+        poll_update_check();
         draw_backdrop(ImGui::GetBackgroundDrawList(), io.DisplaySize, float(ImGui::GetTime()), scale);
 
         const Text bar = page == Page::Settings ? BarSettings : page == Page::Stopped ? BarStopped
                        : page == Page::Installing ? BarInstalling : BarInstaller;
-        bars(io.DisplaySize, tr(bar), page == Page::Installing, language_button_width());
+        const bool update_shown = page != Page::Installing && update_available();
+        bars(io.DisplaySize, tr(bar), page == Page::Installing,
+             language_button_width() + (update_shown ? update_button_width() + 12 * scale : 0.0f));
 
         ImGui::SetNextWindowPos(ImVec2(0, 0));
         ImGui::SetNextWindowSize(io.DisplaySize);
@@ -4371,6 +4537,7 @@ struct Launcher {
                      ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoSavedSettings |
                      ImGuiWindowFlags_NoBringToFrontOnFocus);
         language_button(io.DisplaySize);
+        if (update_shown) update_button(io.DisplaySize);
         switch (page) {
         case Page::Settings: settings_page(io.DisplaySize); break;
         case Page::Stopped: stopped_page(io.DisplaySize); break;
