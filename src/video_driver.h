@@ -58,9 +58,10 @@ inline const char* choose_linux_video_driver(const char* force_x11) {
     if (const char* name = linux_window_class(std::getenv("SDL_VIDEO_X11_WMCLASS"), std::getenv("SDL_VIDEO_WAYLAND_WMCLASS"),
                                               std::getenv("SDL_APP_ID"))) {
         // In the environment, so the game the launcher starts has them too.
-        setenv("SDL_VIDEO_X11_WMCLASS", name, 0);
-        setenv("SDL_VIDEO_WAYLAND_WMCLASS", name, 0);
-        setenv("SDL_APP_ID", name, 0);
+        // Replaced: none is set, though one may be empty, which SDL 2 would use.
+        setenv("SDL_VIDEO_X11_WMCLASS", name, 1);
+        setenv("SDL_VIDEO_WAYLAND_WMCLASS", name, 1);
+        setenv("SDL_APP_ID", name, 1);
     }
     SDL_version linked{};
     SDL_GetVersion(&linked);
