@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <bitset>
 #include <chrono>
 #include <cstdint>
@@ -505,6 +506,15 @@ struct NativeRenderer::Impl {
         return index;
     }
     std::bitset<texture_capacity> resolved_texture_indices;
+    // Own resolve copies made at an earlier render scale (a resized window,
+    // Issue #365) and not resolved to since: their logical/physical ratio,
+    // which the draws that sample them use instead of the current one.
+    std::unordered_map<uint32_t, std::array<float, 2>> stale_resolve_scale;
+    // The resolved-texture ratio of a draw sampling these descriptors, and
+    // which of them it marks (SharedConstants::resolved_texture_scale): the
+    // current render scale's, or an older copy's where one is sampled with no
+    // current one. False when no descriptor needs it (all at 1:1).
+    bool resolved_scale(const SharedConstants& shared, std::array<float, 2>& scale, uint32_t& marked) const;
     // Changes whenever texture() could answer the same fetch words
     // differently: a new frame, a resolve, a texture made or dropped.
     uint64_t texture_generation = 0;
@@ -1193,6 +1203,7 @@ std::vector<NativeDraw> NativeRenderer::prepared_draws() {
 NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& presentation)
     : impl_(std::make_unique<Impl>(graphics, presentation)) {
     presentation.set_before_surface_write([this](const void* surface) { materialize_aliases(surface); });
+    presentation.set_before_rescale([this] { release_surface_views(); });
     if (const char* setting = std::getenv("SFR_CONSTANT_REUSE_TRACE"); setting && *setting == '1')
         impl_->constant_reuse_probe = std::make_unique<Impl::ConstantReuseProbe>();
     if (const char* setting = std::getenv("SFR_CONSTANT_UPLOAD_REUSE"); setting && *setting == '1')
@@ -1437,6 +1448,7 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
 NativeRenderer::~NativeRenderer() {
     // Complete recorded draws while their upload ring and textures still exist.
     impl_->presentation.set_before_surface_write({});
+    impl_->presentation.set_before_rescale({});
     try { impl_->presentation.flush(); } catch (...) {}
     impl_->presentation.clear_before_submit();
     impl_->presentation.clear_after_flush();
@@ -1746,6 +1758,8 @@ static uint32_t own_resolve(NativeRenderer::Impl& impl, uint32_t physical, uint3
                             plume::RenderFormat format, bool depth) {
     if (auto found = impl.resolved_own.find(physical); found != impl.resolved_own.end()) {
         const auto& own = found->second;
+        // Resolved to again: its copy holds the current scale's pixels.
+        impl.stale_resolve_scale.erase(own.index);
         if (own.width == width && own.height == height && own.format == format) return own.index;
         impl.resolved_texture_indices.reset(own.index);
         impl.released_texture_indices.push_back(own.index);
@@ -1820,6 +1834,81 @@ void NativeRenderer::materialize_aliases(const void* surface) {
         }
         for (const auto& [alias, current] : to_swap[depth]) copy_out(*alias, current);
     }
+}
+
+bool NativeRenderer::Impl::resolved_scale(const SharedConstants& shared, std::array<float, 2>& scale,
+                                          uint32_t& marked) const {
+    const std::array<float, 2> current{float(presentation.width()) / float(presentation.render_width()),
+                                       float(presentation.height()) / float(presentation.render_height())};
+    const bool current_scaled = current[0] != 1.0f || current[1] != 1.0f;
+    if (!current_scaled && stale_resolve_scale.empty()) return false;
+    // Each resolved descriptor's own ratio: an older copy's, or the current one.
+    std::array<std::array<float, 2>, 16> ratios{};
+    uint32_t resolved = 0, fresh = 0;
+    for (uint32_t s = 0; s < 16; ++s) {
+        const uint32_t descriptor = shared.texture_2d[s];
+        if (descriptor >= texture_capacity || !resolved_texture_indices.test(descriptor)) continue;
+        resolved |= 1u << s;
+        const auto older = stale_resolve_scale.find(descriptor);
+        ratios[s] = older != stale_resolve_scale.end() ? older->second : current;
+        if (older == stale_resolve_scale.end()) fresh |= 1u << s;
+    }
+    if (!resolved) return false;
+    // One ratio a draw (the shared constants have one), and a resolve at 1:1
+    // needs none: the ratio is one that is not 1:1, the current scale's when
+    // the draw samples a resolve made at it, otherwise an older copy's. Only
+    // a draw sampling two resolves of two different ratios, neither 1:1 (a
+    // copy from before the window was resized beside one made since, until
+    // that copy is resolved to again), reads one of them at the other's.
+    const auto unit = [](const std::array<float, 2>& r) { return r[0] == 1.0f && r[1] == 1.0f; };
+    uint32_t scaled = 0;
+    for (uint32_t s = 0; s < 16; ++s)
+        if ((resolved & (1u << s)) && !unit(ratios[s])) scaled |= 1u << s;
+    if (!scaled) return false;
+    scale = ratios[std::countr_zero((scaled & fresh) ? (scaled & fresh) : scaled)];
+    marked = 0;
+    for (uint32_t s = 0; s < 16; ++s)
+        if ((resolved & (1u << s)) && ratios[s] == scale) marked |= 1u << s;
+    return true;
+}
+
+void NativeRenderer::release_surface_views() {
+    // What the title resolved out of a surface and still samples there gets
+    // its own copy first, as before the surface is drawn to again; the copies
+    // run before the surfaces go (the flush waits for them).
+    std::vector<const void*> aliased;
+    for (const auto& [surface, aliases] : impl_->pending_aliases) aliased.push_back(surface);
+    for (const void* surface : aliased) materialize_aliases(surface);
+    if (!aliased.empty()) impl_->presentation.flush();
+    // Every own copy is now at the scale that is about to change: the draws
+    // that sample one before it is resolved to again take its own ratio.
+    const std::array<float, 2> ratio{float(impl_->presentation.width()) / float(impl_->presentation.render_width()),
+                                     float(impl_->presentation.height()) / float(impl_->presentation.render_height())};
+    for (const auto& [physical, own] : impl_->resolved_own) impl_->stale_resolve_scale.try_emplace(own.index, ratio);
+    if (impl_->surface_views.empty()) return;
+    // A slot keeps a descriptor of what it last held: the placeholder's, not
+    // a view about to be destroyed with its surface.
+    const uint32_t placeholder = placeholder_texture();
+    plume::RenderTexture* const flat = impl_->texture_objects[placeholder - first_texture].get();
+    plume::RenderTextureView* const flat_view = impl_->texture_views[placeholder - first_texture].get();
+    size_t dropped = 0;
+    for (const auto& [texture, index] : impl_->surface_views) {
+        for (auto it = impl_->resolved_targets.begin(); it != impl_->resolved_targets.end();) {
+            if (it->second == index) it = impl_->resolved_targets.erase(it);
+            else ++it;
+        }
+        impl_->set_texture(index, flat, flat_view);
+        impl_->texture_views[index - first_texture].reset();
+        impl_->resolved_texture_indices.reset(index);
+        impl_->alias_indices.erase(index);
+        impl_->free_texture_indices.push_back(index);
+        ++dropped;
+    }
+    impl_->surface_views.clear();
+    impl_->pending_aliases.clear();
+    ++impl_->texture_generation;
+    std::cerr << "NATIVE_RENDER_SCALE released_surface_views=" << dropped << " copied_aliases=" << aliased.size()
+              << " older_copies=" << impl_->stale_resolve_scale.size() << '\n';
 }
 
 namespace {
@@ -2230,6 +2319,7 @@ void NativeRenderer::invalidate(uint32_t physical, uint32_t size) {
     for (auto it = impl_->resolved_own.lower_bound(physical);
          it != impl_->resolved_own.end() && uint64_t(it->first) < end;) {
         impl_->resolved_texture_indices.reset(it->second.index);
+        impl_->stale_resolve_scale.erase(it->second.index);
         impl_->released_texture_indices.push_back(it->second.index);
         it = impl_->resolved_own.erase(it);
     }
@@ -2485,12 +2575,13 @@ void NativeRenderer::draw(const NativeDraw& draw) {
         // Same as below, then pointed into the draw's own sets; composed here
         // and written once, as the ring is write-combined.
         auto shared = draw.shared;
-        if (impl_->presentation.width() != impl_->presentation.render_width() ||
-            impl_->presentation.height() != impl_->presentation.render_height()) {
-            shared.resolved_texture_scale[0] = float(impl_->presentation.width()) / impl_->presentation.render_width();
-            shared.resolved_texture_scale[1] = float(impl_->presentation.height()) / impl_->presentation.render_height();
-            for (auto& descriptor : shared.texture_2d)
-                if (descriptor < texture_capacity && impl_->resolved_texture_indices.test(descriptor)) descriptor |= 0x80000000u;
+        std::array<float, 2> scale{};
+        uint32_t marked = 0;
+        if (impl_->resolved_scale(shared, scale, marked)) {
+            shared.resolved_texture_scale[0] = scale[0];
+            shared.resolved_texture_scale[1] = scale[1];
+            for (uint32_t s = 0; s < 16; ++s)
+                if (marked & (1u << s)) shared.texture_2d[s] |= 0x80000000u;
         }
         const auto bind_start = frame_metrics_timed() ? std::chrono::steady_clock::now()
                                                       : std::chrono::steady_clock::time_point{};
@@ -2502,13 +2593,14 @@ void NativeRenderer::draw(const NativeDraw& draw) {
         std::memcpy(mapped + shared_rel, &shared, sizeof(shared));
     } else {
         std::memcpy(mapped + shared_rel, &draw.shared, sizeof(draw.shared));
-        if (impl_->presentation.width() != impl_->presentation.render_width() ||
-            impl_->presentation.height() != impl_->presentation.render_height()) {
+        std::array<float, 2> scale{};
+        uint32_t marked = 0;
+        if (impl_->resolved_scale(draw.shared, scale, marked)) {
             auto shared = draw.shared;
-            shared.resolved_texture_scale[0] = float(impl_->presentation.width()) / impl_->presentation.render_width();
-            shared.resolved_texture_scale[1] = float(impl_->presentation.height()) / impl_->presentation.render_height();
-            for (auto& descriptor : shared.texture_2d)
-                if (descriptor < texture_capacity && impl_->resolved_texture_indices.test(descriptor)) descriptor |= 0x80000000u;
+            shared.resolved_texture_scale[0] = scale[0];
+            shared.resolved_texture_scale[1] = scale[1];
+            for (uint32_t s = 0; s < 16; ++s)
+                if (marked & (1u << s)) shared.texture_2d[s] |= 0x80000000u;
             std::memcpy(mapped + shared_rel, &shared, sizeof(shared));
         }
     }

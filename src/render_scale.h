@@ -41,6 +41,19 @@ inline constexpr uint32_t max_extent = 8192;
     return (std::max)(1u, (std::min)(percent, most));
 }
 
+// The percent of the title's logical_height lines that draws an output
+// (the window, or the display in full screen) output_height lines tall at
+// the launcher's Render Size: resolution_scale is a percent of the output's
+// height, or 0 for Original, which is 100 whatever the output. The launcher
+// starts the game with it, and the game follows a resized window with it
+// (SFR_RENDER_SIZE, Issue #365).
+[[nodiscard]] inline uint32_t percent_of_output(uint32_t output_height, uint32_t resolution_scale,
+                                                uint32_t logical_height = 720) noexcept {
+    if (!resolution_scale || !logical_height) return default_percent;
+    const uint64_t scaled = uint64_t(output_height) * resolution_scale;
+    return uint32_t(std::clamp<uint64_t>((scaled + logical_height / 2) / logical_height, min_percent, max_percent));
+}
+
 // One side scaled by percent, to the nearest pixel; an even side stays even
 // (nearest even), so internal targets never get an odd size from an even
 // logical one.

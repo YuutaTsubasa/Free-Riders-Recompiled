@@ -150,6 +150,13 @@ public:
     uint32_t adopt_resolved_target(uint32_t physical, bool depth = false);
     // Copies out what is still resolved from a surface about to be drawn to.
     void materialize_aliases(const void* surface);
+    // Before the presentation makes its targets again at another render
+    // scale (a resized window, NativePresentation::set_before_rescale), with
+    // nothing in flight: the views of its render surfaces go (their slots
+    // read the placeholder until reused), with the resolves aliased to them.
+    // Resolves that have their own copies keep them; a copy of another size
+    // is made again by the next resolve to it.
+    void release_surface_views();
     // Flat white texture used for formats without a native layout while
     // SFR_ALLOW_RENDER_TARGETS is set.
     uint32_t placeholder_texture();
