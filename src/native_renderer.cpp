@@ -1844,22 +1844,28 @@ bool NativeRenderer::Impl::resolved_scale(const SharedConstants& shared, std::ar
     if (!current_scaled && stale_resolve_scale.empty()) return false;
     // Each resolved descriptor's own ratio: an older copy's, or the current one.
     std::array<std::array<float, 2>, 16> ratios{};
-    uint32_t resolved = 0, fresh = 0, stale = 0;
+    uint32_t resolved = 0, fresh = 0;
     for (uint32_t s = 0; s < 16; ++s) {
         const uint32_t descriptor = shared.texture_2d[s];
         if (descriptor >= texture_capacity || !resolved_texture_indices.test(descriptor)) continue;
         resolved |= 1u << s;
         const auto older = stale_resolve_scale.find(descriptor);
         ratios[s] = older != stale_resolve_scale.end() ? older->second : current;
-        (older != stale_resolve_scale.end() ? stale : fresh) |= 1u << s;
+        if (older == stale_resolve_scale.end()) fresh |= 1u << s;
     }
     if (!resolved) return false;
-    // One ratio a draw: the current scale's when the draw samples a resolve
-    // made at it (an older copy beside it is then read at that ratio, until
-    // it is resolved to again), otherwise the older copy's.
-    const uint32_t first = uint32_t(std::countr_zero(fresh ? fresh : stale));
-    scale = ratios[first];
-    if (scale[0] == 1.0f && scale[1] == 1.0f) return false;
+    // One ratio a draw (the shared constants have one), and a resolve at 1:1
+    // needs none: the ratio is one that is not 1:1, the current scale's when
+    // the draw samples a resolve made at it, otherwise an older copy's. Only
+    // a draw sampling two resolves of two different ratios, neither 1:1 (a
+    // copy from before the window was resized beside one made since, until
+    // that copy is resolved to again), reads one of them at the other's.
+    const auto unit = [](const std::array<float, 2>& r) { return r[0] == 1.0f && r[1] == 1.0f; };
+    uint32_t scaled = 0;
+    for (uint32_t s = 0; s < 16; ++s)
+        if ((resolved & (1u << s)) && !unit(ratios[s])) scaled |= 1u << s;
+    if (!scaled) return false;
+    scale = ratios[std::countr_zero((scaled & fresh) ? (scaled & fresh) : scaled)];
     marked = 0;
     for (uint32_t s = 0; s < 16; ++s)
         if ((resolved & (1u << s)) && ratios[s] == scale) marked |= 1u << s;
