@@ -157,10 +157,19 @@ void sync_files() {
     const auto png = de::icon_png(sfr::render_icon(de::icon_size), de::icon_size);
     using O = de::Outcome;
 
+    // A file of the player's beside the entry, named as a temporary might be.
+    fs::create_directories(entry.parent_path());
+    const fs::path beside = entry.string() + ".new";
+    { std::ofstream(beside, std::ios::binary) << "mine"; }
     auto result = de::sync(home, true, "/opt/a b/FreeRidersRecompiled", "/opt/a b", png);
     require(result.entry == O::written && result.icon == O::written, "the first start writes both");
-    require(fs::is_regular_file(entry) && fs::is_regular_file(icon) && !fs::exists(entry.string() + ".new"),
-            "both are in place, no temporary left");
+    // (update-desktop-database, where installed, adds its mimeinfo.cache.)
+    size_t temporaries = 0;
+    for (const auto& item : fs::directory_iterator(entry.parent_path()))
+        temporaries += item.path().extension() == ".tmp";
+    require(fs::is_regular_file(entry) && fs::is_regular_file(icon) && !temporaries && read_file(beside) == "mine",
+            "both are in place, no temporary left, the file beside untouched");
+    fs::remove(beside);
     require(value_of(read_file(entry), "Exec") == "\"/opt/a b/FreeRidersRecompiled\"", "Exec is the launcher");
 
     result = de::sync(home, true, "/opt/a b/FreeRidersRecompiled", "/opt/a b", png);
@@ -190,6 +199,13 @@ void sync_files() {
     result = de::sync(home, false, {}, {}, png);
     require(result.entry == O::foreign && result.icon == O::foreign && read_file(entry) == theirs && fs::exists(icon),
             "nor removed");
+
+    // A folder where the entry goes is not written over (nor reported written).
+    fs::remove(entry);
+    fs::create_directories(entry);
+    result = de::sync(home, true, "/opt/x/FreeRidersRecompiled", "/opt/x", png);
+    require(result.entry == O::foreign && fs::is_directory(entry), "a folder in the way is left alone");
+    require(de::sync(home, false, {}, {}, png).entry == O::foreign && fs::is_directory(entry), "and not removed");
 
     require(de::sync({}, true, "/opt/x/FreeRidersRecompiled", "/opt/x", png).entry == O::skipped, "no home, nothing");
     std::error_code error;

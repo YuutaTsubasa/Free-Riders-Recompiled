@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -88,20 +89,38 @@ const std::string& icon_marker() {
     return marker;
 }
 
+// Whether anything is at the path (a file, a folder, even a broken link).
+bool present(const fs::path& file) {
+    std::error_code error;
+    return fs::symlink_status(file, error).type() != fs::file_type::not_found || (error && error != std::errc::no_such_file_or_directory);
+}
+
+// The file's bytes; nullopt when it is missing or cannot be read. Callers
+// treat something present but unreadable as not the launcher's.
 std::optional<std::string> read_file(const fs::path& file) {
     std::error_code error;
     if (!fs::is_regular_file(file, error)) return std::nullopt;
     std::ifstream in(file, std::ios::binary);
     if (!in) return std::nullopt;
-    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    if (in.bad()) return std::nullopt;
+    return bytes;
 }
 
 // Written beside the file and renamed over it, so a menu never reads half a file.
 bool write_file(const fs::path& file, const std::string& bytes) {
     std::error_code error;
     fs::create_directories(file.parent_path(), error);
-    fs::path temporary = file;
-    temporary += ".new";
+    // A name nothing else uses: a file the player keeps beside it is never
+    // truncated.
+    fs::path temporary;
+    const auto seed = uint64_t(std::chrono::steady_clock::now().time_since_epoch().count());
+    for (uint64_t attempt = 0; attempt < 100 && temporary.empty(); ++attempt) {
+        fs::path candidate = file;
+        candidate += ".sfr-" + std::to_string(seed + attempt) + ".tmp";
+        if (!present(candidate)) temporary = candidate;
+    }
+    if (temporary.empty()) return false;
     {
         std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
         if (!out) return false;
@@ -113,12 +132,17 @@ bool write_file(const fs::path& file, const std::string& bytes) {
         }
     }
     fs::rename(temporary, file, error);
-    if (error) fs::remove(temporary, error);
-    return !error;
+    if (error) {
+        std::error_code ignored;
+        fs::remove(temporary, ignored);
+        return false;
+    }
+    return true;
 }
 
 Outcome keep(const fs::path& file, const std::string& wanted, bool (*managed)(const std::string&)) {
     const auto existing = read_file(file);
+    if (!existing && present(file)) return Outcome::foreign;  // a folder, or a file it cannot read
     switch (change_for(existing, wanted, existing && managed(*existing))) {
     case Change::none: return Outcome::unchanged;
     case Change::foreign: return Outcome::foreign;
@@ -129,7 +153,7 @@ Outcome keep(const fs::path& file, const std::string& wanted, bool (*managed)(co
 
 Outcome drop(const fs::path& file, bool (*managed)(const std::string&)) {
     const auto existing = read_file(file);
-    if (!existing) return Outcome::unchanged;
+    if (!existing) return present(file) ? Outcome::foreign : Outcome::unchanged;
     if (!managed(*existing)) return Outcome::foreign;
     std::error_code error;
     return fs::remove(file, error) && !error ? Outcome::removed : Outcome::failed;
