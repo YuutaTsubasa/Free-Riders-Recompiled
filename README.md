@@ -326,6 +326,8 @@ with [docs/progress.md](docs/progress.md).
   Story scenes now skip only while you hold START (or keep a finger on the screen on Android) until the circle fills, so a tap or an accidental touch no longer skips them. Movies need START, A, B or Back held for half a second. The startup logos still skip with a press (#426).
 - [v0.10.68 — Dolphin Resort water ski above 60 Hz](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.68)
   With **Test options › Gameplay › Race step rate** above 60 (for example 120 or 144), the racer no longer turns round and rides backwards behind the boat on the Dolphin Resort water ski, so the camera no longer looks at the racer's face and swings low beside them. At the default 60 Hz nothing changes (#410).
+- [v0.10.70 — Update notice, and the Linux application menu](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.70)
+  The launcher now tells you when a newer version is out, and its button opens the right download for your device in the browser. It checks at most once a day, sends no personal data, and can be turned off under **General › Updates**. On Linux the launcher also adds itself to your desktop's application menu; turn that off under **General › Desktop** (#365).
 
 ## System Requirements
 
