@@ -72,6 +72,13 @@ Kinect v2 目前屬實驗性支援，仍待實機驗證。
    複製到旁邊。然後按 **開始遊戲**。在 iOS 上也可以用「檔案」App 把 `.iso` 放進
    **我的 iPhone › Free Riders**，啟動器會在那裡找到它。
 
+Linux 上啟動器第一次啟動時，也會把 **Free Riders Recompiled** 加入桌面環境的應用程式選單，
+之後可以直接從選單啟動：它寫入 `~/.local/share/applications/com.freeriders.recompiled.desktop`
+與 `~/.local/share/icons/hicolor/256x256/apps/` 裡的圖示（有設定 `$XDG_DATA_HOME` 時改放那裡）。
+這個項目會從啟動器現在的位置啟動它；資料夾搬走後，下一次啟動會跟著更新。關閉
+**一般 › 桌面 › 加入應用程式選單**會移除這兩個檔案。啟動器只會改動它自己寫的檔案。
+細節見 [docs/linux.md](docs/linux.md)。
+
 ## 設定分類
 
 啟動器依照用途分成九類：

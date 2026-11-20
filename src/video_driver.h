@@ -15,6 +15,13 @@
 //    of drivers to try in turn, so "wayland,x11" would start no video at
 //    all, and before 2.0.22 it reads the choice from the environment only.
 // The launcher's Test option "Use X11" (SFR_TEST_X11=1) asks for X11 only.
+//
+// Both also name their windows com.freeriders.recompiled, the X11 class and
+// the Wayland app ID SDL takes from SDL_VIDEO_X11_WMCLASS and
+// SDL_VIDEO_WAYLAND_WMCLASS (SDL 3 and sdl2-compat: SDL_APP_ID), so the
+// desktop matches them with the launcher's application menu entry
+// (linux_desktop_entry.h) and its icon. Without them SDL used each
+// program's file name. A player who set any of the three keeps theirs.
 #include <string_view>
 // SFR_VIDEO_DRIVER_RULE_ONLY: the rule alone, for a test without SDL.
 #if defined(__linux__) && !defined(__ANDROID__) && !defined(SFR_VIDEO_DRIVER_RULE_ONLY)
@@ -35,11 +42,27 @@ inline const char* linux_video_driver_hint(const char* player, const char* force
     return "wayland,x11";
 }
 
+// The window class and app ID the windows carry, or nullptr when the
+// player's own variables are left to say it.
+inline const char* linux_window_class(const char* x11, const char* wayland, const char* app_id) {
+    const auto set = [](const char* value) { return value && *value; };
+    if (set(x11) || set(wayland) || set(app_id)) return nullptr;
+    return "com.freeriders.recompiled";
+}
+
 #ifdef SFR_VIDEO_DRIVER_SDL
 // Sets the hint (before SDL_Init or the first SDL_InitSubSystem of video)
 // and returns it, or nullptr when SDL is left to choose. force_x11 is the
 // Test option's value: the game's environment, or the launcher's settings.
 inline const char* choose_linux_video_driver(const char* force_x11) {
+    if (const char* name = linux_window_class(std::getenv("SDL_VIDEO_X11_WMCLASS"), std::getenv("SDL_VIDEO_WAYLAND_WMCLASS"),
+                                              std::getenv("SDL_APP_ID"))) {
+        // In the environment, so the game the launcher starts has them too.
+        // Replaced: none is set, though one may be empty, which SDL 2 would use.
+        setenv("SDL_VIDEO_X11_WMCLASS", name, 1);
+        setenv("SDL_VIDEO_WAYLAND_WMCLASS", name, 1);
+        setenv("SDL_APP_ID", name, 1);
+    }
     SDL_version linked{};
     SDL_GetVersion(&linked);
     const char* hint = linux_video_driver_hint(std::getenv("SDL_VIDEODRIVER"), force_x11,

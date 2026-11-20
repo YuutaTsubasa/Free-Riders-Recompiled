@@ -85,6 +85,9 @@ struct LauncherSettings {
     uint32_t fps_inset = 0;
 #endif
     bool ui_sounds = true;           // the launcher's own sounds
+    // Linux: the launcher keeps an entry for itself in the desktop's
+    // application menu (linux_desktop_entry.h, Issue #365); off removes it.
+    bool application_menu = true;
     bool vulkan = true;             // legacy settings key; selects Vulkan or D3D12
     bool d3d11 = false;             // Direct3D 11 (experimental, Windows, Issue #359), over `vulkan`
     bool touch_controls = true;      // SFR_TOUCH_CONTROLS (Android, iOS)

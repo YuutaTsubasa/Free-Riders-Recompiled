@@ -35,6 +35,33 @@ ImGui 的 SDL 繪製後端）。檔案選擇對話框用 zenity 或 kdialog（�
 `out/shaders/shaders.pack` 時會自動使用，不需要翻譯器與 DXC（見 [著色器包](vulkan.md#著色器包)）。
 包裡沒有的著色器仍在執行時用 XenosRecomp 翻譯，並以 dxc-bin 的 `dxc-linux` 編成 SPIR-V。
 
+## 應用程式選單
+
+Linux 啟動器每次啟動時，照 freedesktop 的 Desktop Entry 規格維護一個使用者自己的選單項目
+（`src/linux_desktop_entry.cpp`，Issue #365）：
+
+| 檔案 | 位置 |
+| --- | --- |
+| 選單項目 | `$XDG_DATA_HOME/applications/com.freeriders.recompiled.desktop` |
+| 圖示（啟動器畫的同一個，256×256 PNG） | `$XDG_DATA_HOME/icons/hicolor/256x256/apps/com.freeriders.recompiled.png` |
+
+`$XDG_DATA_HOME` 沒設定（或不是絕對路徑）時是 `~/.local/share`。
+
+- `Exec=`、`TryExec=` 是啟動器現在的絕對路徑（`/proc/self/exe`），`Path=` 是它的資料夾；
+  路徑有空白或特殊字元時照規格的 `Exec` 引號規則寫。資料夾搬走後，下一次啟動會改寫；
+  內容沒變就不重寫。資料夾被刪掉時，`TryExec` 讓選單自動藏起這個項目。
+- 啟動器和遊戲的視窗都用同一個 id `com.freeriders.recompiled` 當 X11 的 `WM_CLASS` 與
+  Wayland 的 app ID（`SDL_VIDEO_X11_WMCLASS`、`SDL_VIDEO_WAYLAND_WMCLASS`、`SDL_APP_ID`，
+  玩家自己設了其中任何一個就不動），項目的 `StartupWMClass` 也是它，所以桌面會把執行中的
+  視窗歸到這個項目、用它的圖示。
+- 寫入或移除後，有安裝 `update-desktop-database` 時會對 applications 資料夾跑一次；沒有也不算失敗。
+- **一般 › 桌面 › 加入應用程式選單**（`settings.ini` 的 `application_menu`，預設開）關閉時移除兩個
+  檔案。啟動器只改動自己寫的檔案：選單項目要有 `X-FreeRidersRecompiled-Managed=true`，圖示要有
+  同樣內容的 PNG 文字區塊；同名但不是它寫的檔案不會被覆寫或刪除。
+- 在 AppImage、Flatpak、Snap 裡執行時（有 `APPIMAGE`、`FLATPAK_ID`、`SNAP` 環境變數或
+  `/.flatpak-info`）這些套件有自己的桌面整合，啟動器不寫，也不顯示這個開關。Windows、macOS、
+  Android 不做這件事。
+
 ## 與 Windows 不同的部分
 
 | 部分 | Windows | Linux |

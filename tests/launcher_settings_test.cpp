@@ -46,6 +46,7 @@ void settings_round_trip() {
     settings.gpu_pipeline = false;
     settings.race_render_every = 2;
     settings.ui_sounds = false;
+    settings.application_menu = false;
     settings.vulkan = true;
     settings.camera = "motion";
     settings.camera_device = "e2eSoft iVCam #2";
@@ -68,6 +69,9 @@ void settings_round_trip() {
     require(read.fullscreen && read.vsync && !read.audio && read.volume == 35, "display and sound survive a round trip");
     require(read.sharp_scaling && !sfr::LauncherSettings{}.sharp_scaling,
             "sharp scaling survives a round trip and is off by default");
+    require(!read.application_menu && sfr::LauncherSettings{}.application_menu &&
+                sfr::parse_launcher_settings("").application_menu,
+            "the application menu entry is on by default and its switch survives a round trip");
     require(read.skip_movies && !read.vertex_cache && !read.gpu_pipeline && read.race_render_every == 2 && !read.ui_sounds && read.vulkan,
             "advanced settings survive a round trip");
     require(read.camera == "motion" && read.camera_device == "e2eSoft iVCam #2" && read.camera_mirror,

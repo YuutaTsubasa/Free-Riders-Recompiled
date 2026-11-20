@@ -49,6 +49,9 @@
 #include "test_options.h"
 #include "cpu_difficulty.h"
 #include "video_driver.h"
+#if defined(__linux__) && !defined(__ANDROID__)
+#include "linux_desktop_entry.h"
+#endif
 #ifdef SFR_IOS
 #include "disc_image_search.h"
 #include "ios_screen.h"
@@ -161,6 +164,7 @@ enum Text {
     GestureMove, GestureController, GestureKeyboard, GestureTouch, GesturesOf,
     SectionGameplay, SuperSonicBoard, SuperSonicBoardHint, SuperSonicAllTypes, SuperSonicAllTypesHint,
     CpuDifficulty, CpuDifficultyHint, CpuNewbie, CpuEasy, CpuNormal, CpuHard,
+    SectionDesktop, AppMenuLabel, AppMenuHint,
     TextCount
 };
 
@@ -610,6 +614,10 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Easy", "簡單"},
     {"Normal (original)", "普通（原版）"},
     {"Hard", "困難"},
+    {"Desktop", "桌面"},
+    {"Add to application menu", "加入應用程式選單"},
+    {"Lists Free Riders Recompiled in your desktop's application menu, starting this launcher from where it is now (~/.local/share/applications; it follows the folder if you move it). Off removes the entry.",
+     "把 Free Riders Recompiled 加入桌面環境的應用程式選單，從啟動器現在的位置啟動它（~/.local/share/applications；資料夾搬走後會跟著更新）。關閉會移除這個項目。"},
 }};
 
 int language = 0;
@@ -2646,9 +2654,33 @@ struct Launcher {
                     settings.online_name = text;
             });
         }
+#if defined(__linux__) && !defined(__ANDROID__)
+        // The launcher's own application menu entry (Issue #365); not offered
+        // inside an AppImage, Flatpak or Snap, which have their own.
+        static const bool menu_offered = sfr::desktop_entry::available();
+        if (menu_offered) {
+            settings_section(SectionDesktop);
+            setting_row(tr(AppMenuLabel), tr(AppMenuHint), switch_width, scale, [&] {
+                if (toggle("##application_menu", &settings.application_menu)) {
+                    sync_application_menu();
+                    sfr::save_launcher_settings(settings_file, settings);
+                }
+            });
+        }
+#endif
         settings_section(SectionReset);
         reset_settings();
     }
+
+#if defined(__linux__) && !defined(__ANDROID__)
+    // Writes, updates or removes the application menu entry as the setting
+    // says (linux_desktop_entry.h): at start and when the switch changes.
+    void sync_application_menu() {
+        const auto result = sfr::desktop_entry::sync_launcher(settings.application_menu);
+        std::fprintf(stderr, "APPLICATION_MENU wanted=%d entry=%s icon=%s\n", int(settings.application_menu),
+                     sfr::desktop_entry::outcome_name(result.entry), sfr::desktop_entry::outcome_name(result.icon));
+    }
+#endif
 
     // ------------------------------------------------ controls
     // Two players' bindings; the four sets on the page are each player's
@@ -3745,6 +3777,9 @@ struct Launcher {
             sfr::apply_default_window_size(settings, desktop_width, desktop_height);
             ui_sounds.enabled = settings.ui_sounds;
             apply_language(settings.language);
+#if defined(__linux__) && !defined(__ANDROID__)
+            sync_application_menu();  // on again by default
+#endif
             bindings_read = false;  // the Controls page reads them again
             capturing = -1;
         }
@@ -4572,6 +4607,9 @@ int main(int argc, char** argv) {
     launcher.settings = sfr::load_launcher_settings(launcher.settings_file);
     apply_language(launcher.settings.language);
     launcher.ui_sounds.enabled = launcher.settings.ui_sounds;
+#if defined(__linux__) && !defined(__ANDROID__)
+    launcher.sync_application_menu();  // the menu entry follows where the launcher is
+#endif
     if (launcher.settings.image_directory.empty())
         launcher.settings.image_directory = sfr::default_image_directory(launcher.directory);
     if (launcher.settings.asset_directory.empty())
