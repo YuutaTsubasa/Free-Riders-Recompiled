@@ -1902,8 +1902,13 @@ void NativePresentation::Impl::rescale(uint32_t percent) {
     const auto started = std::chrono::steady_clock::now();
     flush();
     graphics->wait_idle();
-    if (before_rescale) before_rescale();
+    // The renderer copies out what is still resolved from the surfaces (its
+    // copies are recorded against the framebuffer, as between draws) and
+    // lets go of its views of them; whatever it recorded is waited for too.
     target = nullptr;
+    if (before_rescale) before_rescale();
+    flush();
+    graphics->wait_idle();
     bound = nullptr;
     deferred_clear.reset();
     surfaces.clear();
