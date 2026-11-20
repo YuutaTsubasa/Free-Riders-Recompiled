@@ -61,6 +61,16 @@ library goes in without its symbol table (`--strip-unneeded`; the build
 directory keeps the full one), and the pose models only go in when ONNX
 Runtime for Android was fetched too.
 
+The version a release carries is `VERSION_NAME` in
+`scripts/package_android.py`: bump it **before** building. CMake compiles it
+into the launcher (re-configuring when the file changes), which compares it
+with GitHub's latest release for its update notice
+([update-notice.md](update-notice.md)). `package_release.py` stops when
+`--version` is not `VERSION_NAME`, or when a launcher (the Windows or Linux
+program, the macOS or iOS app's, each APK's `liblauncher.so`) was built for
+another version: such a launcher would announce the release it is in as an
+update. A `--version` that is not `X.Y.Z` (a test package) is only noted.
+
 ## 2. Package
 
 ```bash

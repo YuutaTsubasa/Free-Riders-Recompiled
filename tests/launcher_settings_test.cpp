@@ -47,6 +47,10 @@ void settings_round_trip() {
     settings.race_render_every = 2;
     settings.ui_sounds = false;
     settings.application_menu = false;
+    settings.check_updates = false;
+    settings.update_checked_at = 1790000000;
+    settings.update_version = "0.10.70";
+    settings.update_url = "https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/download/v0.10.70/FreeRidersRecompiled-0.10.70-windows-x64.zip";
     settings.vulkan = true;
     settings.camera = "motion";
     settings.camera_device = "e2eSoft iVCam #2";
@@ -72,6 +76,12 @@ void settings_round_trip() {
     require(!read.application_menu && sfr::LauncherSettings{}.application_menu &&
                 sfr::parse_launcher_settings("").application_menu,
             "the application menu entry is on by default and its switch survives a round trip");
+    require(!read.check_updates && sfr::LauncherSettings{}.check_updates && sfr::parse_launcher_settings("").check_updates,
+            "checking for updates is on by default and its switch survives a round trip");
+    require(read.update_checked_at == 1790000000 && read.update_version == "0.10.70" && read.update_url == settings.update_url,
+            "the last update check's answer survives a round trip");
+    require(sfr::parse_launcher_settings("update_checked_at=-5\nupdate_checked_at=12x\n").update_checked_at == 0,
+            "an unreadable update check time is ignored");
     require(read.skip_movies && !read.vertex_cache && !read.gpu_pipeline && read.race_render_every == 2 && !read.ui_sounds && read.vulkan,
             "advanced settings survive a round trip");
     require(read.camera == "motion" && read.camera_device == "e2eSoft iVCam #2" && read.camera_mirror,

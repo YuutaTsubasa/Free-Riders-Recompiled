@@ -26,6 +26,9 @@
 #else
 #include <sys/wait.h>
 #endif
+#if !defined(__ANDROID__) && !defined(__APPLE__)
+#include <dlfcn.h>
+#endif
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #include <optional>
@@ -607,6 +610,90 @@ void open_log(const fs::path& log) {
 }
 
 void open_url(const char* url) { SDL_OpenURL(url); }
+
+#ifdef __ANDROID__
+std::optional<std::string> fetch_https(const std::string& url, const std::string& user_agent, int timeout_ms) {
+    // LauncherActivity.fetchBytes, from this (worker) thread: SDL attaches it
+    // to the Java VM.
+    auto* env = static_cast<JNIEnv*>(SDL_AndroidGetJNIEnv());
+    auto activity = static_cast<jobject>(SDL_AndroidGetActivity());
+    if (!env || !activity) return std::nullopt;
+    std::optional<std::string> body;
+    jclass type = env->GetObjectClass(activity);
+    jmethodID fetch = env->GetMethodID(type, "fetchBytes", "(Ljava/lang/String;Ljava/lang/String;I)[B");
+    if (env->ExceptionCheck()) { env->ExceptionClear(); fetch = nullptr; }
+    if (fetch) {
+        jstring address = env->NewStringUTF(url.c_str()), agent = env->NewStringUTF(user_agent.c_str());
+        auto result = static_cast<jbyteArray>(env->CallObjectMethod(activity, fetch, address, agent, jint(timeout_ms)));
+        if (env->ExceptionCheck()) { env->ExceptionClear(); result = nullptr; }
+        if (result) {
+            std::string text(size_t(env->GetArrayLength(result)), '\0');
+            env->GetByteArrayRegion(result, 0, jsize(text.size()), reinterpret_cast<jbyte*>(text.data()));
+            body = std::move(text);
+            env->DeleteLocalRef(result);
+        }
+        env->DeleteLocalRef(address);
+        env->DeleteLocalRef(agent);
+    }
+    env->DeleteLocalRef(type);
+    env->DeleteLocalRef(activity);
+    return body;
+}
+#elif !defined(__APPLE__)
+// Linux: the system's libcurl, opened when the check runs, so the launcher
+// neither links it nor needs it (launcher_https_apple.mm is macOS and iOS).
+// Without it there is no check. The few calls used, with libcurl's stable
+// option numbers (curl/curl.h).
+namespace {
+size_t keep_body(char* data, size_t size, size_t count, void* out) {
+    auto& text = *static_cast<std::string*>(out);
+    if (text.size() + size * count > (4u << 20)) return 0;  // not a release's answer: stop
+    text.append(data, size * count);
+    return size * count;
+}
+}
+
+std::optional<std::string> fetch_https(const std::string& url, const std::string& user_agent, int timeout_ms) {
+    if (url.compare(0, 8, "https://") != 0) return std::nullopt;
+    static void* const library = [] {
+        void* handle = dlopen("libcurl.so.4", RTLD_NOW | RTLD_LOCAL);
+        return handle ? handle : dlopen("libcurl-gnutls.so.4", RTLD_NOW | RTLD_LOCAL);
+    }();
+    if (!library) return std::nullopt;
+    using Init = void* (*)();
+    using SetOption = int (*)(void*, int, ...);
+    using Perform = int (*)(void*);
+    using GetInfo = int (*)(void*, int, ...);
+    using Cleanup = void (*)(void*);
+    const auto init = reinterpret_cast<Init>(dlsym(library, "curl_easy_init"));
+    const auto set = reinterpret_cast<SetOption>(dlsym(library, "curl_easy_setopt"));
+    const auto perform = reinterpret_cast<Perform>(dlsym(library, "curl_easy_perform"));
+    const auto info = reinterpret_cast<GetInfo>(dlsym(library, "curl_easy_getinfo"));
+    const auto cleanup = reinterpret_cast<Cleanup>(dlsym(library, "curl_easy_cleanup"));
+    if (!init || !set || !perform || !info || !cleanup) return std::nullopt;
+    void* curl = init();
+    if (!curl) return std::nullopt;
+    enum : int {
+        WRITEDATA = 10001, URL = 10002, USERAGENT = 10018, WRITEFUNCTION = 20011, NOSIGNAL = 99,
+        TIMEOUT_MS = 155, CONNECTTIMEOUT_MS = 156, PROTOCOLS = 181, RESPONSE_CODE = 0x200002,
+    };
+    constexpr long https_only = 1L << 1;  // CURLPROTO_HTTPS
+    std::string text;
+    set(curl, URL, url.c_str());
+    set(curl, USERAGENT, user_agent.c_str());
+    set(curl, PROTOCOLS, https_only);
+    set(curl, NOSIGNAL, 1L);  // from a worker thread
+    set(curl, CONNECTTIMEOUT_MS, long(timeout_ms));
+    set(curl, TIMEOUT_MS, long(timeout_ms));
+    set(curl, WRITEFUNCTION, &keep_body);
+    set(curl, WRITEDATA, static_cast<void*>(&text));
+    long status = 0;
+    const bool ok = perform(curl) == 0 && info(curl, RESPONSE_CODE, &status) == 0 && status == 200;
+    cleanup(curl);
+    if (!ok) return std::nullopt;
+    return text;
+}
+#endif
 
 #ifdef __ANDROID__
 void export_diagnostics() { call_activity("exportDiagnostics"); }

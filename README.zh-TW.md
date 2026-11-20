@@ -79,13 +79,29 @@ Linux 上啟動器第一次啟動時，也會把 **Free Riders Recompiled** 加�
 **一般 › 桌面 › 加入應用程式選單**會移除這兩個檔案。啟動器只會改動它自己寫的檔案。
 細節見 [docs/linux.md](docs/linux.md)。
 
+### 新版本通知
+
+啟動器每天向 GitHub 查詢一次是否有新版本。有新版本時，上方會出現綠色的 **版本 X 已推出**
+按鈕（**一般 › 更新** 裡也有）；按下後會在瀏覽器開啟該版本中適合你系統的檔案：Windows 的 zip、
+Linux 的 tar.gz、macOS 的 zip、iOS 的 `.ipa`，Android 則是與你安裝的相同的 APK
+（`android10-arm64.apk`，或 Android 9 用的 `android-arm64.apk`）。該版本沒有你系統的檔案時，
+改開版本頁面。啟動器不會自己下載或安裝任何東西。
+
+這個請求送到 `api.github.com`，不帶任何個人資料：沒有帳號、沒有 cookie，User-Agent 只有
+`FreeRidersRecompiled-launcher/<版本>`（GitHub 會看到你的 IP 位址，和一般瀏覽網頁相同）。
+它在背景執行，沒有網路時幾秒後就放棄，也不會延遲 **開始遊戲**。最後一次的結果存在
+`settings.ini`（`update_checked_at`、`update_version`、`update_url`），所以一天最多查一次。
+要關閉，請關掉 **一般 › 更新 › 檢查更新**（`settings.ini` 的 `check_updates=0`）。Linux 上
+這個請求使用系統的 libcurl（`libcurl.so.4`，幾乎每個桌面環境都有裝）；沒有它就不會檢查。
+細節見 [docs/update-notice.md](docs/update-notice.md)。
+
 ## 設定分類
 
 啟動器依照用途分成九類：
 
 | 分類 | 設定內容 |
 | --- | --- |
-| 一般 | 啟動器語言、遊戲語言、語音語言、影片、還原設定 |
+| 一般 | 啟動器語言、遊戲語言、語音語言、影片、檢查更新、還原設定 |
 | 畫面與效能 | 顯示模式（無邊框或視窗，預設無邊框）、視窗解析度、畫面比例與介面對齊、繪圖後端、渲染尺寸、垂直同步、可展開的進階效能選項 |
 | 音效 | 遊戲音量、啟動器提示音 |
 | 控制器與按鍵 | 各玩家的輸入來源與手把、按鍵綁定、Android 觸控與傾斜操作 |

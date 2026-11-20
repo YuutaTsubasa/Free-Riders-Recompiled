@@ -1016,6 +1016,22 @@ add_executable(sfr_linux_desktop_entry_test tests/linux_desktop_entry_test.cpp s
     src/launcher_art.cpp src/image_decode.cpp)
 target_include_directories(sfr_linux_desktop_entry_test PRIVATE src)
 add_test(NAME linux_desktop_entry COMMAND sfr_linux_desktop_entry_test)
+# The launcher's update notice (Issue #365): what it reads from GitHub's
+# answer and when it asks. The version it compares with is the release's,
+# scripts/package_android.py's VERSION_NAME (the one place a release bumps
+# it), compiled into update_check.cpp alone; editing that file configures again.
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/package_android.py" SFR_VERSION_LINE REGEX "^VERSION_CODE, VERSION_NAME = ")
+set(SFR_VERSION "")
+if(SFR_VERSION_LINE MATCHES "'([0-9]+[.][0-9]+[.][0-9]+)'")
+    set(SFR_VERSION "${CMAKE_MATCH_1}")
+else()
+    message(WARNING "No VERSION_NAME in scripts/package_android.py: the launcher will not check for updates")
+endif()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/package_android.py")
+set_source_files_properties(src/update_check.cpp PROPERTIES COMPILE_DEFINITIONS "SFR_VERSION=\"${SFR_VERSION}\"")
+add_executable(sfr_update_check_test tests/update_check_test.cpp src/update_check.cpp)
+target_include_directories(sfr_update_check_test PRIVATE src)
+add_test(NAME update_check COMMAND sfr_update_check_test)
 add_executable(sfr_installer_test tests/installer_test.cpp)
 target_link_libraries(sfr_installer_test PRIVATE sfr_installer)
 add_test(NAME installer COMMAND sfr_installer_test)
@@ -1028,16 +1044,21 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui/imgui.cpp")
         src/achievements.cpp src/achievement_progress.cpp src/image_decode.cpp
         ${SFR_CAMERA_CAPTURE} src/kinect_sensor.cpp ${SFR_KINECT_SENSOR} ${SFR_VOICE}
         src/kinect_preview.cpp src/kinect_preview_window.cpp src/kinect_preview_layout.cpp src/camera_preview_window.cpp src/camera_debug.cpp src/text_wrap.cpp src/touch_scroll.cpp
-        src/live_connect.cpp src/game_program_choice.cpp
+        src/live_connect.cpp src/game_program_choice.cpp src/update_check.cpp
         ${SFR_IMGUI}/imgui.cpp ${SFR_IMGUI}/imgui_draw.cpp ${SFR_IMGUI}/imgui_tables.cpp ${SFR_IMGUI}/imgui_widgets.cpp)
     if(WIN32)
         add_executable(sfr_launcher WIN32 ${SFR_LAUNCHER_SOURCES} src/launcher_platform_win32.cpp src/app_icon.rc
             ${SFR_IMGUI}/backends/imgui_impl_win32.cpp ${SFR_IMGUI}/backends/imgui_impl_dx11.cpp)
-        target_link_libraries(sfr_launcher PRIVATE sfr_installer winmm imm32 d3d11 dxgi d3dcompiler hid setupapi ole32 shell32 xinput gdi32 advapi32 ws2_32 iphlpapi)
+        target_link_libraries(sfr_launcher PRIVATE sfr_installer winmm imm32 d3d11 dxgi d3dcompiler hid setupapi ole32 shell32 xinput gdi32 advapi32 ws2_32 iphlpapi winhttp)
         set_target_properties(sfr_launcher PROPERTIES OUTPUT_NAME FreeRidersRecompiled)
     else()
         set(SFR_LAUNCHER_SOURCES ${SFR_LAUNCHER_SOURCES} src/launcher_platform_sdl.cpp src/xdg_portal.cpp
             ${SFR_IMGUI}/backends/imgui_impl_sdl2.cpp ${SFR_IMGUI}/backends/imgui_impl_sdlrenderer2.cpp)
+        if(APPLE)
+            # The update notice's request, NSURLSession (Issue #365).
+            list(APPEND SFR_LAUNCHER_SOURCES src/launcher_https_apple.mm)
+            set_source_files_properties(src/launcher_https_apple.mm PROPERTIES COMPILE_OPTIONS -fobjc-arc)
+        endif()
         if(ANDROID)
             # liblauncher.so, run by LauncherActivity (android/).
             add_library(sfr_launcher SHARED ${SFR_LAUNCHER_SOURCES})
@@ -1072,7 +1093,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/imgui/imgui.cpp")
         target_compile_definitions(sfr_launcher PRIVATE SFR_UI_SOUND_SDL)
         target_link_libraries(sfr_launcher PRIVATE sfr_installer SDL2::SDL2 ${CMAKE_DL_LIBS})
         if(APPLE)
-            target_link_libraries(sfr_launcher PRIVATE ${SFR_CAMERA_LIBRARIES})
+            target_link_libraries(sfr_launcher PRIVATE ${SFR_CAMERA_LIBRARIES} "-framework Foundation")
             sfr_link_freenect_sensor(sfr_launcher)
         endif()
     endif()

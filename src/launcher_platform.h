@@ -52,6 +52,14 @@ void export_diagnostics();
 #endif
 // A web page in the host's browser (the Kinect SDK's download page).
 void open_url(const char* url);
+// The body of an HTTPS GET answered with 200, else nullopt (no network, a
+// timeout, another status). Sends only the User-Agent given: no cookies,
+// no credentials. Blocks: call it off the launcher's thread. The update
+// notice's request (update_check.h, Issue #365): WinHTTP on Windows,
+// HttpURLConnection on Android, NSURLSession on macOS and iOS, and the
+// system's libcurl on Linux when it is installed (opened at run time; the
+// launcher does not need it otherwise).
+std::optional<std::string> fetch_https(const std::string& url, const std::string& user_agent, int timeout_ms);
 
 // Font files, first existing one wins: Latin regular, semibold and a heavy
 // italic for the title; Chinese regular and bold.

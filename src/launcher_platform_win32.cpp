@@ -4,6 +4,7 @@
 #include <windows.h>
 #include <shobjidl.h>
 #include <shellapi.h>
+#include <winhttp.h>
 
 #include "imgui.h"
 #include "launcher_platform.h"
@@ -196,6 +197,62 @@ void open_log(const fs::path& log) { ShellExecuteW(owner_window, L"open", log.c_
 void open_url(const char* url) {
     // UTF-8, so a folder with non-ASCII letters (the mods folder) opens too.
     ShellExecuteW(owner_window, L"open", from_utf8(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+std::optional<std::string> fetch_https(const std::string& url, const std::string& user_agent, int timeout_ms) {
+    std::wstring wide = from_utf8(url);
+    URL_COMPONENTS parts{sizeof(parts)};
+    wchar_t host[256]{}, path[2048]{}, query[512]{};
+    parts.lpszHostName = host;
+    parts.dwHostNameLength = DWORD(std::size(host));
+    parts.lpszUrlPath = path;
+    parts.dwUrlPathLength = DWORD(std::size(path));
+    parts.lpszExtraInfo = query;  // "?per_page=20": the request names it after the path
+    parts.dwExtraInfoLength = DWORD(std::size(query));
+    if (!WinHttpCrackUrl(wide.c_str(), 0, 0, &parts) || parts.nScheme != INTERNET_SCHEME_HTTPS) return std::nullopt;
+    const std::wstring target = std::wstring(path) + query;
+    // The system's proxy settings; no cookies or credentials are kept or sent
+    // (WinHTTP has no cookie store of its own and logs on to nothing unless asked).
+    HINTERNET session = WinHttpOpen(from_utf8(user_agent).c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                                    WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!session) return std::nullopt;
+    WinHttpSetTimeouts(session, timeout_ms, timeout_ms, timeout_ms, timeout_ms);
+    std::optional<std::string> body;
+    HINTERNET connection = WinHttpConnect(session, host, parts.nPort, 0);
+    HINTERNET request = connection ? WinHttpOpenRequest(connection, L"GET", target.c_str(), nullptr, WINHTTP_NO_REFERER,
+                                                        WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE) : nullptr;
+    if (request) {
+        DWORD no_cookies = WINHTTP_DISABLE_COOKIES;
+        WinHttpSetOption(request, WINHTTP_OPTION_DISABLE_FEATURE, &no_cookies, sizeof(no_cookies));
+        const wchar_t* accept = L"Accept: application/vnd.github+json\r\n";
+        DWORD status = 0, status_size = sizeof(status);
+        if (WinHttpSendRequest(request, accept, DWORD(-1L), WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+            WinHttpReceiveResponse(request, nullptr) &&
+            WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
+                                &status, &status_size, WINHTTP_NO_HEADER_INDEX) &&
+            status == 200) {
+            std::string text;
+            bool complete = true;
+            for (;;) {
+                DWORD available = 0;
+                if (!WinHttpQueryDataAvailable(request, &available)) { complete = false; break; }
+                if (available == 0) break;
+                // A release's answer is a few tens of kilobytes; anything far
+                // larger is not one.
+                if (text.size() + available > (4u << 20)) { complete = false; break; }
+                const size_t at = text.size();
+                text.resize(at + available);
+                DWORD read = 0;
+                if (!WinHttpReadData(request, text.data() + at, available, &read)) { complete = false; break; }
+                text.resize(at + read);
+            }
+            if (complete) body = std::move(text);
+        }
+        WinHttpCloseHandle(request);
+    }
+    if (connection) WinHttpCloseHandle(connection);
+    WinHttpCloseHandle(session);
+    return body;
 }
 
 FontFiles font_files() {
