@@ -202,8 +202,17 @@ std::string exec_argument(const std::string& argument) {
 }
 
 std::string string_value(const std::string& value) {
+    // Spaces at either end as \s: readers drop unescaped ones there, and a
+    // folder may well end in one.
+    const size_t first = value.find_first_not_of(' ');
+    const size_t last = value.find_last_not_of(' ');
     std::string out;
-    for (const char c : value) {
+    for (size_t i = 0; i < value.size(); ++i) {
+        const char c = value[i];
+        if (c == ' ' && (first == std::string::npos || i < first || i > last)) {
+            out += "\\s";
+            continue;
+        }
         switch (c) {
         case '\\': out += "\\\\"; break;
         case '\n': out += "\\n"; break;

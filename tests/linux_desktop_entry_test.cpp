@@ -78,6 +78,12 @@ void exec_quoting() {
                                    "/x/new\nline\ttab", "/plain/path", "/~user/;&|<>*?#"})
         require(read_exec(de::exec_argument(path)) == path, "a desktop reads back the very path");
     require(de::string_value("/a\\b\nc\td") == "/a\\\\b\\nc\\td", "string values escape \\, newline and tab");
+    require(de::string_value("/games/Free Riders ") == "/games/Free Riders\\s" && de::string_value(" x") == "\\sx" &&
+                de::string_value("a  b") == "a  b",
+            "spaces at either end are \\s, inside they stay");
+    require(read_exec(de::exec_argument("/games/Free Riders /run")) == "/games/Free Riders /run" &&
+                de::entry_text("/g/x /run", "/g/x ").find("\nPath=/g/x\\s\n") != std::string::npos,
+            "a folder ending in a space reads back whole");
 }
 
 void entry_contents() {

@@ -36,8 +36,8 @@ inline constexpr int icon_size = 256;
 // reserved character (inside double quotes ", `, $ and \ get a backslash),
 // with % doubled; then escaped as any string value (\ becomes \\).
 std::string exec_argument(const std::string& argument);
-// A string value (Path=, TryExec=): \ as \\, and newline, tab and carriage
-// return as \n, \t and \r.
+// A string value (Path=, TryExec=): \ as \\, newline, tab and carriage
+// return as \n, \t and \r, and spaces at either end as \s.
 std::string string_value(const std::string& value);
 
 // The whole entry for a launcher program and the folder it runs in.
