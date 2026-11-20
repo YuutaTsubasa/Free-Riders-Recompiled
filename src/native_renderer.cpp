@@ -1193,6 +1193,7 @@ std::vector<NativeDraw> NativeRenderer::prepared_draws() {
 NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& presentation)
     : impl_(std::make_unique<Impl>(graphics, presentation)) {
     presentation.set_before_surface_write([this](const void* surface) { materialize_aliases(surface); });
+    presentation.set_before_rescale([this] { release_surface_views(); });
     if (const char* setting = std::getenv("SFR_CONSTANT_REUSE_TRACE"); setting && *setting == '1')
         impl_->constant_reuse_probe = std::make_unique<Impl::ConstantReuseProbe>();
     if (const char* setting = std::getenv("SFR_CONSTANT_UPLOAD_REUSE"); setting && *setting == '1')
@@ -1437,6 +1438,7 @@ NativeRenderer::NativeRenderer(NativeGraphics& graphics, NativePresentation& pre
 NativeRenderer::~NativeRenderer() {
     // Complete recorded draws while their upload ring and textures still exist.
     impl_->presentation.set_before_surface_write({});
+    impl_->presentation.set_before_rescale({});
     try { impl_->presentation.flush(); } catch (...) {}
     impl_->presentation.clear_before_submit();
     impl_->presentation.clear_after_flush();
@@ -1820,6 +1822,32 @@ void NativeRenderer::materialize_aliases(const void* surface) {
         }
         for (const auto& [alias, current] : to_swap[depth]) copy_out(*alias, current);
     }
+}
+
+void NativeRenderer::release_surface_views() {
+    if (impl_->surface_views.empty() && impl_->pending_aliases.empty()) return;
+    // A slot keeps a descriptor of what it last held: the placeholder's, not
+    // a view about to be destroyed with its surface.
+    const uint32_t placeholder = placeholder_texture();
+    plume::RenderTexture* const flat = impl_->texture_objects[placeholder - first_texture].get();
+    plume::RenderTextureView* const flat_view = impl_->texture_views[placeholder - first_texture].get();
+    size_t dropped = 0;
+    for (const auto& [texture, index] : impl_->surface_views) {
+        for (auto it = impl_->resolved_targets.begin(); it != impl_->resolved_targets.end();) {
+            if (it->second == index) it = impl_->resolved_targets.erase(it);
+            else ++it;
+        }
+        impl_->set_texture(index, flat, flat_view);
+        impl_->texture_views[index - first_texture].reset();
+        impl_->resolved_texture_indices.reset(index);
+        impl_->alias_indices.erase(index);
+        impl_->free_texture_indices.push_back(index);
+        ++dropped;
+    }
+    impl_->surface_views.clear();
+    impl_->pending_aliases.clear();
+    ++impl_->texture_generation;
+    std::cerr << "NATIVE_RENDER_SCALE released_surface_views=" << dropped << '\n';
 }
 
 namespace {

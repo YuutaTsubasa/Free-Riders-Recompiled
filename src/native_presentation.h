@@ -185,6 +185,13 @@ public:
     // Submit independent uploads on the same queue before recorded draws.
     // Also called by an empty flush, so pending copies cannot outlive teardown.
     void before_submit(std::function<void()> callback);
+    // The render size follows a resized window (SFR_RENDER_SIZE, Issue #365):
+    // once its new size has settled, a present makes the framebuffer and the
+    // render surfaces again at the new scale (render_width() and
+    // render_height() change; width() and height() do not). This runs first,
+    // when nothing in flight uses the old ones, so that what samples them
+    // (the renderer's views of the surfaces) lets go of them before they go.
+    void set_before_rescale(std::function<void()> callback);
     void clear_before_submit();
     // Runs after each submission. complete: every submitted command has
     // finished. Otherwise a present submitted the frame without waiting for

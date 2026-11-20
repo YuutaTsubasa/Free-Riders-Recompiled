@@ -454,6 +454,14 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         // The resolution scale of the output height, as the game's percent
         // of its 720 lines (always set: an inherited value is overridden).
         {"SFR_RENDER_SCALE", std::to_string(internal.requested_percent)},
+#if defined(__ANDROID__) || defined(SFR_IOS)
+        {"SFR_RENDER_SIZE", ""},  // a phone's frame does not follow a window
+#else
+        // The Render Size itself (0 Original, or a percent of the output's
+        // height), so that the game's render size follows a resized window
+        // (Issue #365): SFR_RENDER_SCALE is only where it starts.
+        {"SFR_RENDER_SIZE", std::to_string(validated_resolution_scale(s.resolution_scale))},
+#endif
         {"SFR_ASPECT_MODE", original ? "original" : "auto"},
         // Clear any inherited fixed ratio; Auto follows the window or display.
         {"SFR_ASPECT_RATIO", ""},
@@ -704,10 +712,9 @@ InternalResolution internal_resolution(const LauncherSettings& s, uint32_t resol
     // percent of 720 = output_height * (scale / 100) / 720 * 100; Original
     // is 100 whatever the output.
     const uint32_t chosen = validated_resolution_scale(resolution_scale);
-    const uint64_t scaled = uint64_t(r.output_height) * chosen;
-    r.requested_percent = chosen ? uint32_t(std::clamp<uint64_t>((scaled + logical_height / 2) / logical_height,
-                                                                 render_scale::min_percent, render_scale::max_percent))
-                                 : render_scale::default_percent;
+    // (render_scale::percent_of_output, which the game also follows a resized
+    // window with).
+    r.requested_percent = render_scale::percent_of_output(r.output_height, chosen, logical_height);
     // The logical frame is the title's 1280x720, widened in Auto for an
     // output wider than 16:9 as the game widens it (aspect_settings.cpp).
     r.logical_width = logical_width;
