@@ -145,6 +145,7 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         else if (key == "achievement_notifications") read_flag(value, settings.achievement_notifications);
         else if (key == "fps_inset") read_number(value, 0, 20, settings.fps_inset);
         else if (key == "ui_sounds") read_flag(value, settings.ui_sounds);
+        else if (key == "application_menu") read_flag(value, settings.application_menu);
         else if (key == "vulkan") read_flag(value, settings.vulkan);
         else if (key == "d3d11") read_flag(value, settings.d3d11);
         else if (key == "touch_controls") read_flag(value, settings.touch_controls);
@@ -251,6 +252,7 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "achievement_notifications=" << s.achievement_notifications << '\n'
         << "fps_inset=" << s.fps_inset << '\n'
         << "ui_sounds=" << s.ui_sounds << '\n'
+        << "application_menu=" << s.application_menu << '\n'
         << "vulkan=" << s.vulkan << '\n'
         << "d3d11=" << s.d3d11 << '\n'
         << "touch_controls=" << s.touch_controls << '\n'

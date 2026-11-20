@@ -370,6 +370,15 @@ with [docs/progress.md](docs/progress.md).
    **Start game**. On iOS you can instead copy the `.iso` with the Files app
    to **On My iPhone › Free Riders**; the launcher finds it there.
 
+On Linux the launcher also adds **Free Riders Recompiled** to your desktop's
+application menu the first time it starts, so you can start it from there
+later: it writes `~/.local/share/applications/com.freeriders.recompiled.desktop`
+and its icon in `~/.local/share/icons/hicolor/256x256/apps/` (under
+`$XDG_DATA_HOME` when that is set). The entry starts the launcher from where
+it is; if you move the folder, the next start updates it. **General › Desktop ›
+Add to application menu** turned off removes both files. The launcher only
+ever changes files it wrote itself. Details are in [docs/linux.md](docs/linux.md).
+
 ## Settings
 
 The launcher groups settings by what you want to change:
