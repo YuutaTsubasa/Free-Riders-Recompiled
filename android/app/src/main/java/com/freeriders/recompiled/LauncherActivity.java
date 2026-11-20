@@ -17,6 +17,8 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import org.libsdl.app.SDLActivity;
@@ -363,6 +365,39 @@ public class LauncherActivity extends SDLActivity {
             bitmap.recycle();
         }
         return out.array();
+    }
+
+    // Called from a launcher thread (the update notice, src/update_check.h):
+    // the body of an HTTPS GET answered with 200, as bytes (so the native
+    // side reads plain UTF-8), else null. Only the User-Agent is sent:
+    // HttpURLConnection keeps no cookies unless the app installs a
+    // CookieHandler, which this one does not.
+    public byte[] fetchBytes(String address, String userAgent, int timeoutMs) {
+        HttpURLConnection connection = null;
+        try {
+            URL url = new URL(address);
+            if (!"https".equals(url.getProtocol())) return null;
+            connection = (HttpURLConnection) url.openConnection();
+            connection.setConnectTimeout(timeoutMs);
+            connection.setReadTimeout(timeoutMs);
+            connection.setUseCaches(false);
+            connection.setRequestProperty("User-Agent", userAgent);
+            connection.setRequestProperty("Accept", "application/vnd.github+json");
+            if (connection.getResponseCode() != 200) return null;
+            try (InputStream in = connection.getInputStream()) {
+                java.io.ByteArrayOutputStream body = new java.io.ByteArrayOutputStream();
+                byte[] buffer = new byte[16384];
+                for (int read; (read = in.read(buffer)) > 0; ) {
+                    body.write(buffer, 0, read);
+                    if (body.size() > (4 << 20)) return null;  // not a release's answer
+                }
+                return body.toByteArray();
+            }
+        } catch (Exception error) {
+            return null;
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
     }
 
     private static native void nativeDocumentPicked(String path, String name);
