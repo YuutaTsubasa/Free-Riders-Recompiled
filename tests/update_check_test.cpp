@@ -185,12 +185,36 @@ void checking() {
     require(up::is_newer(result.found->version, "0.10.49"), "newer than the installed one");
     require(!up::is_newer(result.found->version, "0.10.50"), "the same version: no notice");
 
+    // GitHub's latest is not a game release: the recent releases are read
+    // and the newest game release among them is the answer.
+    {
+        std::vector<std::string> urls;
+        const std::string list = "[" + release_json("deps-onnxruntime-1.30.0") + "," + release_json("v0.10.51", false, true) + "," +
+                                 release_json("v0.10.50") + "," + release_json("v0.10.48") + ",{\"id\":1}]";
+        const auto fallback = up::run_check([&](const std::string& url, const std::string&, int) -> std::optional<std::string> {
+            urls.push_back(url);
+            return urls.size() == 1 ? release_json("deps-onnxruntime-1.30.0") : list;
+        }, "0.10.49", android10);
+        require(urls.size() == 2 && urls[1] == up::recent_releases_url, "a second request for the recent releases");
+        require(fallback.outcome == up::Outcome::found && fallback.found && fallback.found->version == "0.10.50",
+                "the newest game release, not the prerelease or the mirror");
+        require(fallback.found->url.ends_with("/v0.10.50/FreeRidersRecompiled-0.10.50-android10-arm64.apk"), "its APK");
+        // The list unreadable or without a game release: nothing found.
+        require(up::run_check([&](const std::string& url, const std::string&, int) -> std::optional<std::string> {
+                    return url == up::latest_release_url ? release_json("deps-onnxruntime-1.30.0") : std::string("[]");
+                }, "0.10.49", android10).outcome == up::Outcome::not_a_release, "no game release at all");
+        require(!up::parse_releases(release_json("v0.10.50")), "an object is not a list");
+    }
+    // A latest release that is the game's needs one request only.
+    calls = 0;
+    up::run_check(answer(release_json("v0.10.50")), "0.10.49", android10);
+    require(calls == 1, "one request when the latest is a game release");
     require(up::run_check(answer(std::nullopt), "0.10.49", android10).outcome == up::Outcome::no_answer, "no network");
     require(!up::run_check(answer(std::nullopt), "0.10.49", android10).found, "no network: nothing found");
     require(up::run_check(answer(std::string("<html>rate limited</html>")), "0.10.49", android10).outcome ==
                 up::Outcome::unreadable, "not JSON");
     require(up::run_check(answer(release_json("deps-onnxruntime-1.30.0")), "0.10.49", android10).outcome ==
-                up::Outcome::not_a_release, "the mirror's tag");
+                up::Outcome::not_a_release, "the mirror's tag (and the same answer for the list, which is no list)");
     require(up::run_check(nullptr, "0.10.49", android10).outcome == up::Outcome::no_answer, "no fetch at all");
     require(up::user_agent("") == "FreeRidersRecompiled-launcher/unknown", "no version");
     require(up::outcome_name(up::Outcome::found) == std::string("found"), "outcome names");

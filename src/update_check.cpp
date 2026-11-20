@@ -165,6 +165,24 @@ private:
 };
 
 bool from_project(std::string_view url) { return url.substr(0, project_prefix.size()) == project_prefix; }
+
+std::optional<Release> release_from(const Value& value) {
+    if (value.kind != Value::object) return std::nullopt;
+    Release release;
+    release.tag = value.string_field("tag_name");
+    if (release.tag.empty()) return std::nullopt;
+    release.page = value.string_field("html_url");
+    release.draft = value.bool_field("draft");
+    release.prerelease = value.bool_field("prerelease");
+    if (const Value* assets = value.field("assets"); assets && assets->kind == Value::array) {
+        for (const Value& item : assets->items) {
+            if (item.kind != Value::object) continue;
+            Asset asset{item.string_field("name"), item.string_field("browser_download_url")};
+            if (!asset.name.empty() && !asset.url.empty()) release.assets.push_back(std::move(asset));
+        }
+    }
+    return release;
+}
 }
 
 // The version inside a marker that stays in the program as one string:
@@ -213,22 +231,26 @@ std::string format_version(const Version& version) {
 }
 
 std::optional<Release> parse_release(std::string_view json) {
-    auto document = Parser(json).document();
-    if (!document || document->kind != Value::object) return std::nullopt;
-    Release release;
-    release.tag = document->string_field("tag_name");
-    if (release.tag.empty()) return std::nullopt;
-    release.page = document->string_field("html_url");
-    release.draft = document->bool_field("draft");
-    release.prerelease = document->bool_field("prerelease");
-    if (const Value* assets = document->field("assets"); assets && assets->kind == Value::array) {
-        for (const Value& item : assets->items) {
-            if (item.kind != Value::object) continue;
-            Asset asset{item.string_field("name"), item.string_field("browser_download_url")};
-            if (!asset.name.empty() && !asset.url.empty()) release.assets.push_back(std::move(asset));
-        }
+    const auto document = Parser(json).document();
+    return document ? release_from(*document) : std::nullopt;
+}
+
+std::optional<std::vector<Release>> parse_releases(std::string_view json) {
+    const auto document = Parser(json).document();
+    if (!document || document->kind != Value::array) return std::nullopt;
+    std::vector<Release> releases;
+    for (const Value& item : document->items)
+        if (auto release = release_from(item)) releases.push_back(std::move(*release));
+    return releases;
+}
+
+std::optional<Found> newest_release(const std::vector<Release>& releases, const Platform& platform) {
+    std::optional<Found> newest;
+    for (const Release& release : releases) {
+        auto found = found_release(release, platform);
+        if (found && (!newest || is_newer(found->version, newest->version))) newest = std::move(found);
     }
-    return release;
+    return newest;
 }
 
 Platform this_platform() {
@@ -316,6 +338,13 @@ CheckResult run_check(const Fetch& fetch, std::string_view current_version, cons
         return result;
     }
     result.found = found_release(*release, platform);
+    if (!result.found) {
+        // GitHub's latest is not a game release (another kind of release
+        // published as a full one): the newest game release among the recent
+        // ones, so the notice does not go quiet until the next game release.
+        const auto list = fetch(recent_releases_url, user_agent(current_version), timeout_ms);
+        if (const auto releases = list ? parse_releases(*list) : std::nullopt) result.found = newest_release(*releases, platform);
+    }
     result.outcome = result.found ? Outcome::found : Outcome::not_a_release;
     return result;
 }

@@ -1746,6 +1746,7 @@ struct Launcher {
     }();
     std::shared_ptr<UpdateCheck> update_check;
     bool update_check_started = false;
+    std::chrono::steady_clock::time_point update_due_looked = std::chrono::steady_clock::now();
     std::string online_checked;                 // the address it is for
     bool online_check_starts = false;           // Start waits for it
     std::string online_result;                  // what the last one found, shown under the address
@@ -1812,6 +1813,15 @@ struct Launcher {
 
     void poll_update_check() {
         if (!update_check_started) start_update_check();
+        // A launcher left open (or, on Android, come back from the game) asks
+        // again once the day is over. Looked at once a minute.
+        const auto now = std::chrono::steady_clock::now();
+        if (!update_check && now - update_due_looked >= std::chrono::minutes(1)) {
+            update_due_looked = now;
+            if (settings.check_updates && !current_version.empty() &&
+                sfr::update::check_due(settings.update_checked_at, int64_t(std::time(nullptr))))
+                start_update_check();
+        }
         if (!update_check || !update_check->done.load(std::memory_order_acquire)) return;
         const sfr::update::CheckResult result = update_check->result;
         update_check.reset();

@@ -8,11 +8,15 @@ installs anything itself.
 
 ## What it does
 
-1. Once a day, on the launcher's first frame, a background thread sends one
+1. Once a day, on the launcher's first frame (and again once the day is over,
+   if the launcher stays open), a background thread sends one
    `GET https://api.github.com/repos/YuutaTsubasa/Free-Riders-Recompiled/releases/latest`.
    GitHub's `latest` already skips drafts and prereleases; the launcher also
    ignores any tag that is not `vX.Y.Z` (such as the `deps-onnxruntime-1.30.0`
-   mirror of a build dependency).
+   mirror of a build dependency). Should the latest release ever be such a
+   tag, a second request reads the recent releases
+   (`/releases?per_page=20`) and takes the newest `vX.Y.Z` among them that is
+   neither a draft nor a prerelease.
 2. It compares that version with its own, number by number (0.10.10 is newer
    than 0.10.9).
 3. When the release is newer, a green **Version X is available** button

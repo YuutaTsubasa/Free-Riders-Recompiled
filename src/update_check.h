@@ -21,6 +21,10 @@ namespace sfr::update {
 // User-Agent names the launcher and its version only.
 inline constexpr const char* latest_release_url =
     "https://api.github.com/repos/YuutaTsubasa/Free-Riders-Recompiled/releases/latest";
+// Asked only when the latest release is not the game's (a tag that is not
+// vX.Y.Z): the recent releases, newest first.
+inline constexpr const char* recent_releases_url =
+    "https://api.github.com/repos/YuutaTsubasa/Free-Riders-Recompiled/releases?per_page=20";
 // Opened when this platform has no file of its own in a release.
 inline constexpr const char* releases_page_url = "https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/latest";
 inline constexpr int timeout_ms = 5000;
@@ -54,6 +58,8 @@ struct Release {
 };
 // GitHub's answer for one release; nullopt when it is not JSON or has no tag.
 std::optional<Release> parse_release(std::string_view json);
+// Its answer for a list of releases (entries without a tag are skipped).
+std::optional<std::vector<Release>> parse_releases(std::string_view json);
 
 // Which release file runs here. Android's two APKs are the API 28 build
 // (Android 9) and the API 29 one ("android10"); the build knows its own.
@@ -83,6 +89,8 @@ struct Found {
 // The release as a notice: nullopt for a draft, a prerelease or a tag that
 // is not vX.Y.Z (GitHub's latest skips the first two already).
 std::optional<Found> found_release(const Release& release, const Platform& platform);
+// The highest-versioned game release of a list, if any.
+std::optional<Found> newest_release(const std::vector<Release>& releases, const Platform& platform);
 
 // Whether a day has passed since the last check (or the clock went back).
 bool check_due(int64_t last_checked, int64_t now);
@@ -99,6 +107,7 @@ struct CheckResult {
     Outcome outcome = Outcome::no_answer;
     std::optional<Found> found;
 };
-// One check: the request, then reading it.
+// One check: the request, then reading it. When GitHub's latest release is
+// not a game release, a second request reads the recent ones.
 CheckResult run_check(const Fetch& fetch, std::string_view current_version, const Platform& platform);
 }
