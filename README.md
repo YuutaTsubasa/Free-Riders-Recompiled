@@ -379,13 +379,34 @@ it is; if you move the folder, the next start updates it. **General › Desktop 
 Add to application menu** turned off removes both files. The launcher only
 ever changes files it wrote itself. Details are in [docs/linux.md](docs/linux.md).
 
+### Update notice
+
+Once a day the launcher asks GitHub whether a newer release is out. When there
+is one, a green **Version X is available** button appears at the top (and in
+**General › Updates**); it opens that release's file for your system in your
+browser: the Windows zip, the Linux tarball, the macOS zip, the iOS `.ipa`, or
+on Android the same APK you installed (`android10-arm64.apk` or the Android 9
+`android-arm64.apk`). Where a release has no file for your system it opens the
+release page. The launcher never downloads or installs anything itself.
+
+The request goes to `api.github.com` and carries nothing about you: no
+account, no cookies, only `FreeRidersRecompiled-launcher/<version>` as its
+User-Agent (GitHub sees your IP address, as with any visit). It runs in the
+background, gives up after a few seconds without a network and never delays
+**Start game**. The last answer is kept in `settings.ini` (`update_checked_at`,
+`update_version`, `update_url`), so the launcher asks at most once a day.
+To turn it off, switch off **General › Updates › Check for updates**
+(`check_updates=0` in `settings.ini`). On Linux the request uses the system's
+libcurl (`libcurl.so.4`, installed on nearly every desktop); without it there
+is no check. Details are in [docs/update-notice.md](docs/update-notice.md).
+
 ## Settings
 
 The launcher groups settings by what you want to change:
 
 | Category | Settings |
 | --- | --- |
-| General | Launcher, game and voice languages, movies, restore defaults |
+| General | Launcher, game and voice languages, movies, update check, restore defaults |
 | Graphics | Display mode (Borderless or Windowed; Borderless by default), window size, aspect ratio and UI alignment, backend, Render Size, VSync, expandable performance options |
 | Sound | Game volume and launcher sounds |
 | Controls | Each player's input source and controller, button/key bindings, Android touch and tilt |
