@@ -165,6 +165,7 @@ enum Text {
     GestureMove, GestureController, GestureKeyboard, GestureTouch, GesturesOf,
     SectionGameplay, SuperSonicBoard, SuperSonicBoardHint, SuperSonicAllTypes, SuperSonicAllTypesHint,
     CpuDifficulty, CpuDifficultyHint, CpuNewbie, CpuEasy, CpuNormal, CpuHard,
+    PlainRaceLoading, PlainRaceLoadingHint,
     SectionDesktop, AppMenuLabel, AppMenuHint,
     SectionUpdates, CheckUpdatesLabel, CheckUpdatesHint, UpdateAvailable, UpdateDownload, UpdateNone,
     TextCount
@@ -616,6 +617,9 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Easy", "簡單"},
     {"Normal (original)", "普通（原版）"},
     {"Hard", "困難"},
+    {"Plain race loading screen", "簡化比賽前的載入畫面"},
+    {"The loading screen before each race shows only black and Now Loading in its corner, instead of Omochao and the practice of Kinect moves. The race starts as it would without it. Works with and without a Kinect or camera. Off, the game behaves as the original.",
+     "每場比賽前的載入畫面只顯示黑色背景與角落的 Now Loading，不再顯示 Omochao 與 Kinect 動作的練習。比賽照常開始。有沒有使用 Kinect 或攝影機都可以開啟。關閉時與原版相同。"},
     {"Desktop", "桌面"},
     {"Add to application menu", "加入應用程式選單"},
     {"Lists Free Riders Recompiled in your desktop's application menu, starting this launcher from where it is now (~/.local/share/applications; it follows the folder if you move it). Off removes the entry.",
@@ -2738,6 +2742,8 @@ struct Launcher {
                 }
             });
         }
+        setting_row(tr(PlainRaceLoading), tr(PlainRaceLoadingHint), switch_width, scale,
+                    [&] { toggle("##plain_race_loading", &settings.plain_race_loading); });
         settings_section(SectionOnline);
         setting_row(tr(OnlineLabel), tr(OnlineHint), switch_width, scale, [&] { toggle("##online", &settings.online); });
         if (settings.online) {

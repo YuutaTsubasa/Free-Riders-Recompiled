@@ -135,6 +135,7 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
             sfr::cpu_difficulty::Level level = sfr::cpu_difficulty::Level::normal;
             if (sfr::cpu_difficulty::parse(value, level)) settings.cpu_difficulty = sfr::cpu_difficulty::name(level);
         }
+        else if (key == "plain_race_loading") read_flag(value, settings.plain_race_loading);
         else if (key == "vertex_cache") read_flag(value, settings.vertex_cache);
         else if (key == "gpu_pipeline") read_flag(value, settings.gpu_pipeline);
         else if (key == "race_render_every") read_number(value, 1, 4, settings.race_render_every);
@@ -251,6 +252,7 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "super_sonic_stay_on_board=" << s.super_sonic_stay_on_board << '\n'
         << "super_sonic_all_types=" << s.super_sonic_all_types << '\n'
         << "cpu_difficulty=" << s.cpu_difficulty << '\n'
+        << "plain_race_loading=" << s.plain_race_loading << '\n'
         << "vertex_cache=" << s.vertex_cache << '\n'
         << "gpu_pipeline=" << s.gpu_pipeline << '\n'
         << "race_render_every=" << s.race_render_every << '\n'
@@ -446,6 +448,7 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
         {"SFR_SUPER_SONIC_STAY_ON_BOARD", s.super_sonic_stay_on_board ? "1" : "0"},
         {"SFR_SUPER_SONIC_ALL_TYPES", s.super_sonic_stay_on_board && s.super_sonic_all_types ? "1" : "0"},
         {"SFR_CPU_DIFFICULTY", s.cpu_difficulty},
+        {"SFR_PLAIN_RACE_LOADING", s.plain_race_loading ? "1" : ""},
         {"SFR_WINDOW_WIDTH", std::to_string(window_width)},
         {"SFR_WINDOW_HEIGHT", std::to_string(window_height)},
         // The resolution scale of the output height, as the game's percent

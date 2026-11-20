@@ -129,6 +129,11 @@ public:
     // display_aspect > 0 shows the part in a centered area of that shape (ultrawide
     // windows keep 16:9 content 16:9) instead of filling the framebuffer's shape.
     void present(uint32_t area_width = 0, uint32_t area_height = 0, float display_aspect = 0.0f);
+    // While set, a frame that does not fill the window is shown in its bottom
+    // right corner instead of centered: the plain race loading screen (Issue
+    // #365) is black but for Now Loading, which then sits in the window's
+    // corner on an ultrawide window too.
+    void set_corner_anchor(bool anchored) noexcept;
     void prepare_player_model();
     // The model loads on its own thread; this waits for it and builds it
     // (for callers that need it drawn at once, such as the tests).

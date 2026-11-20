@@ -585,6 +585,7 @@ struct NativePresentation::Impl {
     std::unique_ptr<sfr::ScreenOverlayRenderer> overlay_renderer;
     std::pair<uint32_t, uint32_t> presented_area{0, 0};
     float presented_aspect = 0.0f;
+    std::atomic<bool> corner_anchor{false};  // set_corner_anchor
     void build_blit();
     void build_blit_targets();
 
@@ -2114,6 +2115,9 @@ std::pair<uint32_t, uint32_t> NativePresentation::target_size() const noexcept {
 }
 
 float NativePresentation::presented_aspect() const noexcept { return impl_->presented_aspect; }
+void NativePresentation::set_corner_anchor(bool anchored) noexcept {
+    impl_->corner_anchor.store(anchored, std::memory_order_relaxed);
+}
 
 std::pair<uint32_t, uint32_t> NativePresentation::presented_area() const noexcept {
     return impl_->presented_area.first ? impl_->presented_area : std::pair{impl_->width, impl_->height};
@@ -2528,7 +2532,8 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
             view_height = (std::min)(view_height, float(out_width) / display_aspect);
             view_width = view_height * display_aspect;
         }
-        const plume::RenderViewport viewport((float(out_width) - view_width) * 0.5f, (float(out_height) - view_height) * 0.5f,
+        const float corner = impl_->corner_anchor.load(std::memory_order_relaxed) ? 1.0f : 0.5f;
+        const plume::RenderViewport viewport((float(out_width) - view_width) * corner, (float(out_height) - view_height) * corner,
                                              view_width, view_height);
         const plume::RenderRect scissor(0, 0, int32_t(out_width), int32_t(out_height));
         impl_->command_list->setViewports(&viewport, 1);
