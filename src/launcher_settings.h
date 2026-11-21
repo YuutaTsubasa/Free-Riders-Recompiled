@@ -38,8 +38,9 @@ struct LauncherSettings {
     // Neither changes the selected output resolution. Alignment affects the
     // race HUD in Auto and is ignored with 16:9.
 #ifdef __ANDROID__
-    // A phone is about 20:9: Auto would draw a quarter more and stretch the
-    // touch controls, so phones keep the original picture unless asked.
+    // A phone is about 20:9: Auto would draw a quarter more, so phones keep
+    // the original picture unless asked. (The touch controls keep their
+    // shape in Auto too, Issue #443; they were stretched before.)
     std::string aspect_ratio = "16:9";
 #else
     std::string aspect_ratio = "auto";  // "auto" or "16:9"

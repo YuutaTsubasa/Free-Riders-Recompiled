@@ -2702,11 +2702,20 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
         const float area[2] = {float(shown.right) / float(impl_->render_width),
                                float(shown.bottom) / float(impl_->render_height)};
         std::memcpy(constants.data(), area, sizeof area);
+        // The controls keep their shape in an image of any aspect (Issue #443,
+        // touch_controls.h): the touch reader lays them out for this viewport.
+        const float image_aspect = touch_image_aspect(viewport.width, viewport.height);
+#ifdef _WIN32
+        // No touch reader here: SFR_TOUCH_CONTROLS=1 shows them at rest.
+        TouchOverlay overlay = touch_shown ? touch_overlay_at_rest(image_aspect) : TouchOverlay{};
+#else
         TouchOverlay overlay = touch_shown ? touch_overlay() : TouchOverlay{};
+#endif
         overlay.readout = fps_readout_word(fps_shown, impl_->fps.value(), fps_overlay_inset()) |
                           (touch_names_shown() ? 0u : touch_names_hidden_bit);
         // START's circle becomes the gauge: state 3 plus how far.
-        if (pause > 0.0f) overlay.circle[TouchControls::start] = {0.075f, 0.86f, 0.05f, 3.0f + (std::min)(pause, 1.0f)};
+        if (pause > 0.0f) overlay.circle[TouchControls::start] = {touch_anchor_x(0.075f, image_aspect), 0.86f, 0.05f,
+                                                               3.0f + (std::min)(pause, 1.0f)};
         const auto touch_words = pack_touch_overlay(overlay);
         std::copy(touch_words.begin(), touch_words.end(), constants.begin() + 2);
         impl_->touch_view = {viewport.x, viewport.y, viewport.width, viewport.height, float(out_width), float(out_height)};
@@ -2992,6 +3001,7 @@ void NativePresentation::Impl::read_touch_controls() {
     const auto [view_x, view_y, view_width, view_height, out_width, out_height] = touch_view;
     std::vector<TouchPoint> touches;
     if (view_width > 0.0f && view_height > 0.0f) {
+        touch_controls.set_aspect(touch_image_aspect(view_width, view_height));
         for (int device = 0; device < SDL_GetNumTouchDevices(); ++device) {
             const SDL_TouchID id = SDL_GetTouchDevice(device);
             for (int index = 0; index < SDL_GetNumTouchFingers(id); ++index) {
