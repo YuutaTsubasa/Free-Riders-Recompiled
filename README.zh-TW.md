@@ -81,7 +81,7 @@ Linux 上啟動器第一次啟動時，也會把 **Free Riders Recompiled** 加�
 
 ### 新版本通知
 
-啟動器每天向 GitHub 查詢一次是否有新版本。有新版本時，上方會出現綠色的 **版本 X 已推出**
+啟動器每小時最多向 GitHub 查詢一次是否有新版本。有新版本時，上方會出現綠色的 **版本 X 已推出**
 按鈕（**一般 › 更新** 裡也有）；按下後會在瀏覽器開啟該版本中適合你系統的檔案：Windows 的 zip、
 Linux 的 tar.gz、macOS 的 zip、iOS 的 `.ipa`，Android 則是與你安裝的相同的 APK
 （`android10-arm64.apk`，或 Android 9 用的 `android-arm64.apk`）。該版本沒有你系統的檔案時，
@@ -90,7 +90,7 @@ Linux 的 tar.gz、macOS 的 zip、iOS 的 `.ipa`，Android 則是與你安裝�
 這個請求送到 `api.github.com`，不帶任何個人資料：沒有帳號、沒有 cookie，User-Agent 只有
 `FreeRidersRecompiled-launcher/<版本>`（GitHub 會看到你的 IP 位址，和一般瀏覽網頁相同）。
 它在背景執行，沒有網路時幾秒後就放棄，也不會延遲 **開始遊戲**。最後一次的結果存在
-`settings.ini`（`update_checked_at`、`update_version`、`update_url`），所以一天最多查一次。
+`settings.ini`（`update_checked_at`、`update_version`、`update_url`），所以每小時最多查一次。
 要關閉，請關掉 **一般 › 更新 › 檢查更新**（`settings.ini` 的 `check_updates=0`）。Linux 上
 這個請求使用系統的 libcurl（`libcurl.so.4`，幾乎每個桌面環境都有裝）；沒有它就不會檢查。
 細節見 [docs/update-notice.md](docs/update-notice.md)。

@@ -8,8 +8,9 @@ installs anything itself.
 
 ## What it does
 
-1. Once a day, on the launcher's first frame (and again once the day is over,
-   if the launcher stays open), a background thread sends one
+1. At most once an hour, on the launcher's first frame (and again once the
+   hour is over, if the launcher stays open; it looks once a minute), a
+   background thread sends one
    `GET https://api.github.com/repos/YuutaTsubasa/Free-Riders-Recompiled/releases/latest`.
    GitHub's `latest` already skips drafts and prereleases; the launcher also
    ignores any tag that is not `vX.Y.Z` (such as the `deps-onnxruntime-1.30.0`
@@ -60,11 +61,17 @@ update check, and nothing else changes.
 
 ## Never in the way
 
-- At most once a day: the time of the last check, the version found and its
+- At most once an hour: the time of the last check, the version found and its
   file's address are kept in `settings.ini` (`update_checked_at`,
   `update_version`, `update_url`). A failed check also waits until the next
-  day, so a launcher without a network does not try at every start. A clock
+  hour, so a launcher without a network does not try at every start. A clock
   set back makes it ask again.
+- GitHub allows 60 unauthenticated API requests an hour per IP address. A
+  check is one request (two in the rare case the latest release is not a
+  `vX.Y.Z` tag and `/releases?per_page=20` is read too), so one check an hour
+  per launcher stays well inside it, even with a few launchers behind the
+  same address. Over the limit GitHub answers 403, which is a `no_answer`
+  that waits for the next hour like any other failure.
 - Each step times out after 5 seconds and a failure is silent. **Start game**
   never waits for the check.
 - **General › Updates › Check for updates** (`check_updates`, on by default)
@@ -75,7 +82,7 @@ The launcher prints what happened on its standard error, for example:
 
 ```text
 LAUNCHER_UPDATE_CHECK outcome=found current=0.10.69 latest=0.10.69 newer=0 url=https://github.com/.../FreeRidersRecompiled-0.10.69-windows-x64.zip
-LAUNCHER_UPDATE_CHECK skipped=checked_today current=0.10.69 latest=0.10.69 newer=0
+LAUNCHER_UPDATE_CHECK skipped=checked_recently current=0.10.69 latest=0.10.69 newer=0
 LAUNCHER_UPDATE_CHECK skipped=off current=0.10.69
 LAUNCHER_UPDATE_OPEN url=...
 ```
@@ -96,7 +103,7 @@ launcher it packages carries the release's version (see
 
 `tests/update_check_test.cpp` (ctest `update_check`) covers version
 comparison, tag filtering, reading GitHub's answer, the file chosen per
-platform and Android flavour, the once-a-day rule and a whole check against a
+platform and Android flavour, the once-an-hour rule and a whole check against a
 made-up answer. To see the notice on a real launcher, a test-only variable
 stands in for the build's version:
 
@@ -105,4 +112,4 @@ $env:SFR_TEST_UPDATE_CURRENT_VERSION = '0.10.60'
 ```
 
 Delete `update_checked_at` from `settings.ini` to make the launcher ask again
-today. Players never need either.
+within the hour. Players never need either.

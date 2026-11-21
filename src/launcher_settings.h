@@ -94,8 +94,8 @@ struct LauncherSettings {
     // Linux: the launcher keeps an entry for itself in the desktop's
     // application menu (linux_desktop_entry.h, Issue #365); off removes it.
     bool application_menu = true;
-    // The launcher asks GitHub once a day whether a newer release is out and
-    // then shows "Version X is available" (update_check.h, Issue #365). Off
+    // The launcher asks GitHub at most once an hour whether a newer release
+    // is out and then shows "Version X is available" (update_check.h, Issue #365). Off
     // asks nothing. The last answer is kept here (not settings the player
     // chooses): when it was asked (Unix seconds), the newest version and the
     // address of its file for this platform.

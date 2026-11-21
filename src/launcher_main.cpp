@@ -631,9 +631,9 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
      "把 Free Riders Recompiled 加入桌面環境的應用程式選單，從啟動器現在的位置啟動它（~/.local/share/applications；資料夾搬走後會跟著更新）。關閉會移除這個項目。"},
     {"Updates", "更新"},
     {"Check for updates", "檢查更新"},
-    {"Once a day the launcher asks GitHub whether a newer release is out (the request carries only the launcher's name and version). "
+    {"At most once an hour the launcher asks GitHub whether a newer release is out (the request carries only the launcher's name and version). "
      "If there is one, a button at the top opens its download for this device in your browser; nothing is downloaded or installed by itself.",
-     "啟動器每天向 GitHub 查詢一次是否有新版本（請求只帶啟動器的名稱與版本）。有新版本時，上方會出現按鈕，"
+     "啟動器每小時最多向 GitHub 查詢一次是否有新版本（請求只帶啟動器的名稱與版本）。有新版本時，上方會出現按鈕，"
      "在瀏覽器開啟適合這台裝置的下載檔；不會自動下載或安裝任何東西。"},
     {"Version %s is available", "版本 %s 已推出"},
     {"Download", "下載"},
@@ -1774,7 +1774,7 @@ struct Launcher {
     std::shared_ptr<OnlineCheck> online_check;  // the one running, if any
     // The update notice (update_check.h, Issue #365): this build's version
     // (SFR_TEST_UPDATE_CURRENT_VERSION stands in for it in tests), and the
-    // day's check, running on its own thread.
+    // hourly check, running on its own thread.
     struct UpdateCheck {
         std::atomic<bool> done{false};
         sfr::update::CheckResult result;  // written before done
@@ -1826,7 +1826,7 @@ struct Launcher {
     }
 
     // ------------------------------------------------ updates
-    // At most once a day (the answer is kept in settings.ini), never in the
+    // At most once an hour (the answer is kept in settings.ini), never in the
     // way: the check runs on its own thread, times out in seconds and fails
     // silently, and Start does not wait for it.
     void start_update_check() {
@@ -1838,7 +1838,7 @@ struct Launcher {
         }
         const int64_t now = int64_t(std::time(nullptr));
         if (!sfr::update::check_due(settings.update_checked_at, now)) {
-            std::fprintf(stderr, "LAUNCHER_UPDATE_CHECK skipped=checked_today current=%s latest=%s newer=%d\n", current_version.c_str(),
+            std::fprintf(stderr, "LAUNCHER_UPDATE_CHECK skipped=checked_recently current=%s latest=%s newer=%d\n", current_version.c_str(),
                          settings.update_version.c_str(), int(update_available()));
             return;
         }
@@ -1853,7 +1853,8 @@ struct Launcher {
     void poll_update_check() {
         if (!update_check_started) start_update_check();
         // A launcher left open (or, on Android, come back from the game) asks
-        // again once the day is over. Looked at once a minute.
+        // again once the hour is over. Looked at once a minute, so at most a
+        // minute late.
         const auto now = std::chrono::steady_clock::now();
         if (!update_check && now - update_due_looked >= std::chrono::minutes(1)) {
             update_due_looked = now;
@@ -1864,8 +1865,8 @@ struct Launcher {
         if (!update_check || !update_check->done.load(std::memory_order_acquire)) return;
         const sfr::update::CheckResult result = update_check->result;
         update_check.reset();
-        // Asked today, whatever the answer: a failed check waits for tomorrow
-        // too, so a launcher without a network never asks at every start.
+        // Asked now, whatever the answer: a failed check also waits for the
+        // next hour, so a launcher without a network never asks at every start.
         settings.update_checked_at = int64_t(std::time(nullptr));
         if (result.found) {
             settings.update_version = result.found->version;
