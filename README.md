@@ -332,6 +332,8 @@ with [docs/progress.md](docs/progress.md).
   A new option, **General › Gameplay › Plain race loading screen** (off by default), shows a black screen with only Now Loading in the corner instead of the Omochao practice before a race; the race starts as usual. When you resize the game window, the picture is now redrawn at the new size once you stop resizing, instead of being stretched. A change of window shape (for example to ultrawide) still needs a restart to change the aspect ratio (#365).
 - [v0.10.72 — Round touch buttons on wide phones, and per-button touch options](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.72)
   The touch buttons now stay round on wide phones with Aspect Ratio Auto, and on iPhones, instead of being stretched into ovals. A new page, **Controls › Touch and tilt › Customise touch buttons**, lets you hide any touch control, or only its name; for example, hide the left stick when you steer by tilting (#443).
+- [v0.10.73 — Plain race loading screen fixes on wide screens](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.73)
+  With **Plain race loading screen** on, wide screens (for example 20:9 phones with Aspect Ratio Auto) no longer show a half-window frame, with the touch buttons and frame-rate readout moved aside, after Now Loading goes. The hidden practice is now silent, and buttons pressed during the screen no longer change when the race starts (#365).
 
 ## System Requirements
 
