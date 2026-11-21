@@ -328,6 +328,8 @@ with [docs/progress.md](docs/progress.md).
   With **Test options › Gameplay › Race step rate** above 60 (for example 120 or 144), the racer no longer turns round and rides backwards behind the boat on the Dolphin Resort water ski, so the camera no longer looks at the racer's face and swings low beside them. At the default 60 Hz nothing changes (#410).
 - [v0.10.70 — Update notice, and the Linux application menu](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.70)
   The launcher now tells you when a newer version is out, and its button opens the right download for your device in the browser. It checks at most once a day, sends no personal data, and can be turned off under **General › Updates**. On Linux the launcher also adds itself to your desktop's application menu; turn that off under **General › Desktop** (#365).
+- [v0.10.71 — Plain race loading screen, and the picture follows a resized window](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.71)
+  A new option, **General › Gameplay › Plain race loading screen** (off by default), shows a black screen with only Now Loading in the corner instead of the Omochao practice before a race; the race starts as usual. When you resize the game window, the picture is now redrawn at the new size once you stop resizing, instead of being stretched. A change of window shape (for example to ultrawide) still needs a restart to change the aspect ratio (#365).
 
 ## System Requirements
 
