@@ -38,13 +38,16 @@ struct View {
 
 // The shape a 16:9 screen of the title, drawn in the left of a framebuffer
 // wider than 16:9, is shown at. Normally 16:9, centred with black at the
-// sides. While the plain loading screen is up, every such frame is black
-// (none of the practice reaches the GPU), so it fills the framebuffer's
-// shape instead: the window stays filled from the first frame of the screen
-// to the race, and the touch controls and the frame-rate readout, which are
-// drawn in the shown frame, do not jump into a narrower box and back.
-[[nodiscard]] inline float title_part_aspect(bool screen_up, uint32_t fb_width, uint32_t fb_height) {
-    if (screen_up && fb_width && fb_height) return float(fb_width) / float(fb_height);
+// sides. While the plain loading screen is up, a frame without Now Loading
+// is all black (none of the practice reaches the GPU), so it fills the
+// framebuffer's shape instead: the window stays filled from the screen to
+// the race, and the touch controls and the frame-rate readout, which are
+// drawn in the shown frame, do not jump into a narrower box and back. A
+// frame with Now Loading keeps 16:9, so its words and ring keep their shape
+// (it goes to the corner, corner_anchored).
+[[nodiscard]] inline float title_part_aspect(bool screen_up, bool now_loading_drawn, uint32_t fb_width,
+                                             uint32_t fb_height) {
+    if (screen_up && !now_loading_drawn && fb_width && fb_height) return float(fb_width) / float(fb_height);
     return 16.0f / 9.0f;
 }
 

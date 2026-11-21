@@ -33,7 +33,7 @@ void wide_phone_after_loading() {
     // Now: Now Loading is gone, so no corner, and the screen's frames take the framebuffer's shape.
     const bool corner = corner_anchored(true, false);
     require(!corner, "no corner once Now Loading is gone");
-    const View after = present_view(out_w, out_h, fb_w, fb_h, true, title_part_aspect(true, fb_w, fb_h), corner);
+    const View after = present_view(out_w, out_h, fb_w, fb_h, true, title_part_aspect(true, false, fb_w, fb_h), corner);
     require(fills(after, out_w, out_h), "the screen's black frames fill the wide window");
     // The race's frames are the whole framebuffer.
     require(fills(present_view(out_w, out_h, fb_w, fb_h, false, 0.0f, false), out_w, out_h), "the race fills it");
@@ -54,16 +54,25 @@ void aspects() {
             // The 880x720 back buffer of the loading screens is stretched over the whole frame.
             require(fills(present_view(c.out_w, c.out_h, fb_w, fb_h, true, 0.0f, corner), c.out_w, c.out_h),
                     "a stretched loading frame fills the window");
-            if (fb_w > 1280)
-                require(fills(present_view(c.out_w, c.out_h, fb_w, fb_h, true, title_part_aspect(true, fb_w, fb_h), corner),
+            if (fb_w > 1280 && !loading)
+                require(fills(present_view(c.out_w, c.out_h, fb_w, fb_h, true, title_part_aspect(true, false, fb_w, fb_h),
+                                           corner),
                               c.out_w, c.out_h),
-                        "a 16:9 view of the screen fills a wider window");
+                        "a black 16:9 view of the screen fills a wider window");
+            if (fb_w > 1280 && loading) {
+                // Codex review of b0f24de: Now Loading drawn in a 16:9 view keeps its shape, in the corner.
+                const View shown = present_view(c.out_w, c.out_h, fb_w, fb_h, true,
+                                                title_part_aspect(true, true, fb_w, fb_h), corner);
+                require(near(shown.width / shown.height * 9.0f, 16.0f) && near(shown.height, float(c.out_h)) &&
+                            near(shown.x + shown.width, float(c.out_w)),
+                        "a 16:9 view with Now Loading stays 16:9, against the right edge");
+            }
         }
         require(fills(present_view(c.out_w, c.out_h, fb_w, fb_h, false, 0.0f, false), c.out_w, c.out_h),
                 "the race's first frames fill the window");
         // Off the screen the title's 16:9 views are still shown as centred 16:9.
         if (fb_w > 1280) {
-            const View menu = present_view(c.out_w, c.out_h, fb_w, fb_h, true, title_part_aspect(false, fb_w, fb_h), false);
+            const View menu = present_view(c.out_w, c.out_h, fb_w, fb_h, true, title_part_aspect(false, false, fb_w, fb_h), false);
             require(near(menu.height, float(c.out_h)) && near(menu.width, c.out_h * 16.0f / 9.0f) &&
                         near(menu.x, (c.out_w - menu.width) / 2),
                     "a 16:9 menu stays centred 16:9");
@@ -84,9 +93,10 @@ void anchor() {
     require(corner_anchored(true, true), "Now Loading on the screen: the corner");
     require(!corner_anchored(true, false) && !corner_anchored(false, true) && !corner_anchored(false, false),
             "anything else: centred");
-    require(title_part_aspect(false, 1600, 720) == 16.0f / 9.0f, "off the screen a title view stays 16:9");
-    require(near(title_part_aspect(true, 1600, 720) * 720.0f, 1600.0f), "on it, the framebuffer's shape");
-    require(title_part_aspect(true, 0, 0) == 16.0f / 9.0f, "no framebuffer yet: 16:9");
+    require(title_part_aspect(false, false, 1600, 720) == 16.0f / 9.0f, "off the screen a title view stays 16:9");
+    require(near(title_part_aspect(true, false, 1600, 720) * 720.0f, 1600.0f), "a black one: the framebuffer's shape");
+    require(title_part_aspect(true, true, 1600, 720) == 16.0f / 9.0f, "one with Now Loading stays 16:9");
+    require(title_part_aspect(true, false, 0, 0) == 16.0f / 9.0f, "no framebuffer yet: 16:9");
     require(fills(present_view(0, 0, 1280, 720, false, 0.0f, false), 0, 0), "a minimised window has no view");
 }
 

@@ -56,10 +56,15 @@ race flag is set):
   window's right edge, so Now Loading sits in the window's corner and the
   rest is black. Once the files are loaded Now Loading goes and the rest of
   the screen is centred as usual. With Aspect Ratio Auto the framebuffer
-  already has the window's shape, so nothing moves;
+  already has the window's shape, so nothing moves; Now Loading then sits in
+  the corner of the centred 16:9 area the title keeps its 2D in (about 175
+  pixels from the right edge of a 1560x702 window), with the option off as
+  with it on;
 - the title's 16:9 views that a wider framebuffer would show as centred 16:9
-  (`GuestGraphics::present_front_buffer`) take the whole frame instead: they
-  are black, and the window stays filled from the screen to the race;
+  (`GuestGraphics::present_front_buffer`) take the whole frame instead when
+  they are black (no Now Loading drawn in them), and the window stays filled
+  from the screen to the race. One with Now Loading keeps 16:9, so its words
+  and ring are not widened, and goes to the corner;
 - every sound the practice asks the title's sound manager for (`8222FA18`:
   player, sound) is asked for as the title's own "no sound", `-1`. The music
   has its own path (`82230250`) and is not touched;

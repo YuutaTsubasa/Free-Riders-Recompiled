@@ -705,9 +705,9 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
     if(frame_drawn) {
         // A frame showing Now Loading goes to the window's corner; the black
         // frames of the screen fill a wider window.
-        graphics().presentation().set_corner_anchor(
-            sfr::plain_loading::corner_anchored(plain_screen,sfr::plain_race_loading_take_now_loading()));
-        graphics().set_plain_loading_screen(plain_screen);
+        const bool now_loading=sfr::plain_race_loading_take_now_loading();
+        graphics().presentation().set_corner_anchor(sfr::plain_loading::corner_anchored(plain_screen,now_loading));
+        graphics().set_plain_loading_screen(plain_screen,now_loading);
         graphics().present_front_buffer(ctx.r3.u32);
         // SFR_TEST_RACE_DRAW_MS=<ms> (testing): each drawn race frame takes that
         // much longer, as on a device whose GPU cannot keep 60 fps.

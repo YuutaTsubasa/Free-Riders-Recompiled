@@ -216,14 +216,14 @@ void GuestGraphics::present_front_buffer(uint32_t device) {
     }
     // Wider than 16:9: the title lays its 1280x720 (or 880x720) screens out in
     // the left part of the wider framebuffer. Present that part as centered
-    // 16:9; on the plain race loading screen, which is black, across the whole
-    // frame (plain_race_loading.h).
+    // 16:9; the plain race loading screen's black frames (those without Now
+    // Loading) across the whole frame (plain_race_loading.h).
     const uint32_t fb_width=impl_->presentation->width(),fb_height=impl_->presentation->height();
     if(stretch && aspect::wider_than_16x9(fb_width,fb_height) && viewport.x==0 && viewport.y==0 &&
        uint32_t(viewport.height)==fb_height && uint32_t(viewport.width)<fb_width &&
        aspect::title_16x9_view(uint32_t(viewport.width))) {
         impl_->presentation->present(uint32_t(viewport.width),uint32_t(viewport.height),
-            plain_loading::title_part_aspect(plain_loading_screen_,fb_width,fb_height));
+            plain_loading::title_part_aspect(plain_loading_screen_,plain_now_loading_,fb_width,fb_height));
         return;
     }
     impl_->presentation->present(back_buffer_sized?back_width:0,back_buffer_sized?back_height:0);
