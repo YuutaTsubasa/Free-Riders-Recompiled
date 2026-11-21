@@ -527,11 +527,154 @@ void options() {
     require(sfr::half_to_float(uint16_t(words[3 + TouchControls::a * 2] >> 16)) == -2.0f, "a negative state reaches the blit");
 }
 
+// Issue #443's layout editor: the touches follow the moved and resized
+// controls (touch_layout.h), in each shape of image.
+void placed() {
+    namespace layout = sfr::touch_layout;
+    using sfr::TouchScene;
+    const auto put = [](TouchControls::Button button, float x, float y, float scale, float aspect) {
+        return layout::place_at(button, x, y, scale, aspect);
+    };
+    for (const float aspect : {16.0f / 9.0f, 19.5f / 9.0f, 20.0f / 9.0f}) {
+        TouchControls controls;
+        controls.set_aspect(aspect);
+        const auto old_a = controls.place(TouchControls::a);
+        // A moved to the middle of the screen, B twice as big, X smaller.
+        sfr::TouchLayout custom;
+        custom.places[TouchControls::a] = put(TouchControls::a, 0.5f, 0.5f, 1.0f, aspect);
+        custom.places[TouchControls::b] = put(TouchControls::b, 0.9f, 0.6f, 2.0f, aspect);
+        custom.places[TouchControls::x] = put(TouchControls::x, 0.75f, 0.6f, 0.7f, aspect);
+        controls.set_layout(custom);
+        const auto [ax, ay, ar] = controls.place(TouchControls::a);
+        require(std::abs(ax - 0.5f) < 0.001f && std::abs(ay - 0.5f) < 0.001f && ar == 0.075f, "A is where it was put");
+        controls.update(std::vector<TouchPoint>{{1, ax, ay}}, 0.0f, TouchScene::race);
+        require(controls.state().buttons == button::a, "A presses where it now is");
+        controls.update({}, 0.0f, TouchScene::race);
+        controls.update(std::vector<TouchPoint>{{2, old_a[0], old_a[1]}}, 0.0f, TouchScene::race);
+        require(!(controls.state().buttons & button::a), "and not where it was");
+        controls.update({}, 0.0f, TouchScene::race);
+        // The drawn circles are the placed ones.
+        const auto overlay = controls.overlay();
+        require(overlay.circle[TouchControls::a][0] == ax && overlay.circle[TouchControls::a][1] == ay &&
+                    overlay.circle[TouchControls::b][2] == 0.15f,
+                "the blit draws the placed circles");
+        // Twice as big reacts twice as far out; smaller, less far.
+        const auto [bx, by, br] = controls.place(TouchControls::b);
+        controls.update(std::vector<TouchPoint>{{3, bx, by + 0.075f * 1.8f}}, 0.0f, TouchScene::race);
+        require(controls.state().buttons == button::b, "a bigger B reacts further from its centre");
+        controls.update({}, 0.0f, TouchScene::race);
+        const auto [xx, xy, xr] = controls.place(TouchControls::x);
+        controls.update(std::vector<TouchPoint>{{4, xx, xy - 0.075f * 1.1f}}, 0.0f, TouchScene::race);
+        require(!(controls.state().buttons & button::x), "a smaller X does not reach as far as before");
+        controls.update({}, 0.0f, TouchScene::race);
+        controls.update(std::vector<TouchPoint>{{40, xx, xy - xr * 0.9f}}, 0.0f, TouchScene::race);
+        require(controls.state().buttons == button::x, "but reacts on itself");
+        controls.update({}, 0.0f, TouchScene::race);
+
+        // Overlap: B over A, a little to the right. A touch inside both
+        // presses the nearer centre's (in radii); only in both slacks, both.
+        sfr::TouchLayout over;
+        over.places[TouchControls::a] = put(TouchControls::a, 0.5f, 0.5f, 1.0f, aspect);
+        over.places[TouchControls::b] = put(TouchControls::b, 0.5f + 0.06f / aspect, 0.5f, 1.0f, aspect);
+        controls.set_layout(over);
+        controls.update(std::vector<TouchPoint>{{5, 0.5f, 0.5f}}, 0.0f, TouchScene::race);
+        require(controls.state().buttons == button::a, "on A's centre only A");
+        controls.update(std::vector<TouchPoint>{{6, 0.5f + 0.06f / aspect, 0.5f}}, 0.0f, TouchScene::race);
+        require(controls.state().buttons == button::b, "on B's centre only B");
+        controls.update(std::vector<TouchPoint>{{7, 0.5f + 0.03f / aspect, 0.5f + 0.083f}}, 0.0f, TouchScene::race);
+        require(controls.state().buttons == (button::a | button::b), "just outside both, both (as a thumb across two)");
+        controls.update({}, 0.0f, TouchScene::race);
+        // A button put over the stick's side wins over the floating stick.
+        sfr::TouchLayout on_stick;
+        on_stick.places[TouchControls::y] = put(TouchControls::y, 0.2f, 0.3f, 1.0f, aspect);
+        controls.set_layout(on_stick);
+        const auto [yx, yy, yr] = controls.place(TouchControls::y);
+        controls.update(std::vector<TouchPoint>{{8, yx, yy}}, 0.0f, TouchScene::race);
+        require(controls.state().buttons == button::y && controls.state().thumb_lx == 0, "a button beats the stick's side");
+        controls.update({}, 0.0f, TouchScene::race);
+
+        // LS bigger and higher: its circle in the menus, its travel in a race.
+        sfr::TouchLayout big_stick;
+        big_stick.places[TouchControls::stick] = put(TouchControls::stick, 0.2f, 0.45f, 1.5f, aspect);
+        controls.set_layout(big_stick);
+        const auto [sx, sy, sr] = controls.place(TouchControls::stick);
+        require(std::abs(sr - 0.195f) < 1e-5f, "LS one and a half times as big");
+        controls.update(std::vector<TouchPoint>{{9, sx, sy - sr}}, 0.0f, TouchScene::menu);
+        controls.update(std::vector<TouchPoint>{{9, sx, sy - sr - 0.15f}}, 0.0f, TouchScene::menu);
+        require(controls.state().buttons == button::dpad_up, "the menus' stick starts on its new circle");
+        controls.update({}, 0.0f, TouchScene::menu);
+        const auto rest = controls.overlay();
+        require(rest.circle[TouchControls::stick][0] == sx && rest.circle[TouchControls::stick][1] == sy &&
+                    rest.knob[0] == sx && rest.knob[1] == sy,
+                "the stick rests where it was put");
+        controls.update(std::vector<TouchPoint>{{10, 0.2f, 0.6f}}, 0.0f, TouchScene::race);
+        controls.update(std::vector<TouchPoint>{{10, 0.2f + 0.13f / aspect, 0.6f}}, 0.0f, TouchScene::race);
+        const int lx = controls.state().thumb_lx;
+        require(lx > 21000 && lx < 22700, "the bigger stick needs a longer push for full lean (2/3 here)");
+        controls.update({}, 0.0f, TouchScene::race);
+
+        // LS put on the right: the floating stick moves to the right 40%.
+        sfr::TouchLayout right_stick;
+        right_stick.places[TouchControls::stick] = put(TouchControls::stick, 0.8f, 0.3f, 1.0f, aspect);
+        controls.set_layout(right_stick);
+        controls.update(std::vector<TouchPoint>{{11, 0.2f, 0.6f}}, 0.0f, TouchScene::race);
+        controls.update(std::vector<TouchPoint>{{11, 0.25f, 0.6f}}, 0.0f, TouchScene::race);
+        require(controls.state() == sfr::GamepadState{}, "the left side is empty once LS is on the right");
+        controls.update({}, 0.0f, TouchScene::race);
+        controls.update(std::vector<TouchPoint>{{12, 0.75f, 0.2f}}, 0.0f, TouchScene::race);
+        controls.update(std::vector<TouchPoint>{{12, 0.7f, 0.2f}}, 0.0f, TouchScene::race);
+        require(controls.state().thumb_lx < -16000, "the stick starts on the right side");
+        controls.update({}, 0.0f, TouchScene::race);
+        // LS just past 40% on the left: the side reaches its circle.
+        sfr::TouchLayout inner_stick;
+        inner_stick.places[TouchControls::stick] = put(TouchControls::stick, 0.42f, 0.5f, 1.0f, aspect);
+        controls.set_layout(inner_stick);
+        const auto inner = controls.place(TouchControls::stick);
+        controls.update(std::vector<TouchPoint>{{13, inner[0] + inner[2] / aspect, 0.5f}}, 0.0f, TouchScene::race);
+        controls.update(std::vector<TouchPoint>{{13, inner[0], 0.5f}}, 0.0f, TouchScene::race);
+        require(controls.state().thumb_lx < -16000, "the side reaches a stick put past it");
+        controls.update({}, 0.0f, TouchScene::race);
+        // The default layout: the left 40% as before.
+        controls.set_layout({});
+        controls.update(std::vector<TouchPoint>{{14, 0.39f, 0.2f}}, 0.0f, TouchScene::race);
+        controls.update(std::vector<TouchPoint>{{14, 0.30f, 0.2f}}, 0.0f, TouchScene::race);
+        require(controls.state().thumb_lx < -16000, "by default the stick's side is the left 40%");
+        controls.update({}, 0.0f, TouchScene::race);
+        controls.update(std::vector<TouchPoint>{{15, 0.41f, 0.2f}}, 0.0f, TouchScene::race);
+        controls.update(std::vector<TouchPoint>{{15, 0.32f, 0.2f}}, 0.0f, TouchScene::race);
+        require(controls.state() == sfr::GamepadState{}, "and no further");
+        controls.update({}, 0.0f, TouchScene::race);
+
+        // The right stick moved: its base and knob follow.
+        sfr::TouchLayout moved_rs;
+        moved_rs.places[TouchControls::right_stick] = put(TouchControls::right_stick, 0.55f, 0.25f, 1.0f, aspect);
+        controls.set_layout(moved_rs);
+        const auto [rx, ry, rr] = controls.place(TouchControls::right_stick);
+        controls.update(std::vector<TouchPoint>{{16, rx, ry}}, 0.0f, TouchScene::race);
+        controls.update(std::vector<TouchPoint>{{16, rx + rr / aspect, ry}}, 0.0f, TouchScene::race);
+        require(controls.state().thumb_rx == 32767, "the right stick works where it was put");
+        controls.update({}, 0.0f, TouchScene::race);
+        require(controls.overlay().right_knob[0] == rx && controls.overlay().right_knob[1] == ry, "and rests there");
+    }
+    // The game reads the launcher's list from SFR_TOUCH_LAYOUT (the at-rest
+    // overlay a desktop shows uses it too).
+    const auto read = sfr::touch_layout_chosen();
+    require(read.places[TouchControls::a] && read.places[TouchControls::a]->anchor == 'c', "SFR_TOUCH_LAYOUT is read");
+    const auto rest = sfr::touch_overlay_at_rest(16.0f / 9.0f);
+    require(std::abs(rest.circle[TouchControls::a][0] - 0.5f) < 1e-4f && std::abs(rest.circle[TouchControls::a][1] - 0.3f) < 1e-4f,
+            "the controls at rest follow it");
+}
+
 int main() {
 #ifdef _WIN32
     _putenv_s("SFR_TOUCH_CONTROLS", "1");
 #else
     setenv("SFR_TOUCH_CONTROLS", "1", 1);
+#endif
+#ifdef _WIN32
+    _putenv_s("SFR_TOUCH_LAYOUT", "a:c0.000,0.300,1.00");
+#else
+    setenv("SFR_TOUCH_LAYOUT", "a:c0.000,0.300,1.00", 1);
 #endif
     try {
         run();
@@ -543,6 +686,7 @@ int main() {
         tilt_lean();
         aspects();
         options();
+        placed();
         std::cout << "Touch control checks passed\n";
         return 0;
     } catch (const std::exception& error) {

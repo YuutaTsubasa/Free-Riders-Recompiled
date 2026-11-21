@@ -535,7 +535,13 @@ skip: half a second for a movie, until the SKIP gauge fills in a story scene;
 a brief touch skips nothing. Under Controls › Touch and tilt, **Customise touch
 buttons** hides any button you don't use (it then doesn't react: its spot is
 empty screen; with the stick hidden, tilting still steers) or only its name;
-**Button names** still turns every name off at once (#443). On a PC the mouse moves the hand cursor the same way. Details: [docs/race-controls.md](docs/race-controls.md),
+**Button names** still turns every name off at once (#443). **Move and resize
+touch buttons**, below it, shows the game's screen with the buttons on it: drag
+a button to move it, touch it to choose it and set its size (half to twice as
+big, never smaller than START), or reset one or all. Each button keeps its
+distance from the nearer side (or from the middle), so a layout also fits a
+screen of another shape; the stick's area in races follows the stick to its
+side. On a PC the mouse moves the hand cursor the same way. Details: [docs/race-controls.md](docs/race-controls.md),
 [docs/pad-menus.md](docs/pad-menus.md).
 
 The **achievements page** lists all 50 achievements in the game with their

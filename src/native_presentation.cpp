@@ -2937,6 +2937,7 @@ void NativePresentation::pump_events() {
     if (touch_controls_enabled()) {
         static TouchControls resting;
         resting.set_options(touch_options_chosen());
+        resting.set_layout(touch_layout_chosen());
         resting.update({}, 0.0f, touch_scene());
         publish_touch_controls(resting.state(), resting.overlay());
     }
@@ -3000,6 +3001,7 @@ void NativePresentation::Impl::read_touch_controls() {
     if (view_width > 0.0f && view_height > 0.0f) {
         touch_controls.set_aspect(touch_image_aspect(view_width, view_height));
         touch_controls.set_options(touch_options_chosen());  // the player's hidden and unnamed controls
+        touch_controls.set_layout(touch_layout_chosen());    // and where they put each (Issue #443)
         for (int device = 0; device < SDL_GetNumTouchDevices(); ++device) {
             const SDL_TouchID id = SDL_GetTouchDevice(device);
             for (int index = 0; index < SDL_GetNumTouchFingers(id); ++index) {
