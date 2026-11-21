@@ -49,8 +49,10 @@ namespace sfr {
 //
 // Each control can be hidden, and each can lose its name (Issue #443,
 // touch_options.h; set_options below). A hidden control is neither drawn nor
-// read: a touch where it was is a touch on empty screen (nothing in a race,
-// the hand cursor in the menus, START on the title).
+// read: a touch where it was is a touch on empty screen. In a race that is
+// the floating stick on the left 40% (LB's and LT's places too, unless LS is
+// hidden as well) and nothing elsewhere; the hand cursor in the menus, START
+// on the title.
 //
 // Outside races the screen itself is the Kinect hand cursor (Issue #217): a
 // finger that lands away from the controls is the pointer, and the hand

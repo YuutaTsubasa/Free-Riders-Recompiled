@@ -469,6 +469,20 @@ void options() {
     require(controls.state().buttons == button::b, "the other buttons still work");
     controls.update({}, 0.0f, TouchScene::race);
 
+    // LB hidden: in a race its place is the left side's empty screen, where
+    // the floating stick starts (Codex review); with LS hidden too, nothing.
+    controls.set_options({1u << TouchControls::lb, 0});
+    controls.update(std::vector<TouchPoint>{at(11, TouchControls::lb)}, 0.0f, TouchScene::race);
+    controls.update(std::vector<TouchPoint>{at(11, TouchControls::lb, 0.05f)}, 0.0f, TouchScene::race);
+    require(!(controls.state().buttons & button::left_shoulder) && controls.state().thumb_lx > 0,
+            "a hidden LB's place in a race starts the stick, as the left side's empty screen does");
+    controls.update({}, 0.0f, TouchScene::race);
+    controls.set_options({(1u << TouchControls::lb) | (1u << TouchControls::stick), 0});
+    controls.update(std::vector<TouchPoint>{at(12, TouchControls::lb)}, 0.0f, TouchScene::race);
+    controls.update(std::vector<TouchPoint>{at(12, TouchControls::lb, 0.05f)}, 0.0f, TouchScene::race);
+    require(controls.state() == sfr::GamepadState{}, "with LS hidden as well it is nothing");
+    controls.update({}, 0.0f, TouchScene::race);
+
     // The stick hidden (a player who steers by tilting): the left of the
     // screen starts no stick, and tilt steers.
     controls.set_options({1u << TouchControls::stick, 0});
