@@ -22,7 +22,7 @@ PROJECT = ROOT / 'android' / 'app' / 'src' / 'main'
 ICON = ROOT / 'packaging' / 'icon' / 'app.png'
 SDL_JAVA = ROOT / 'tools' / 'SDL' / 'android-project' / 'app' / 'src' / 'main' / 'java'
 MIN_SDK, TARGET_SDK = 28, 35
-VERSION_CODE, VERSION_NAME = 121, '0.10.73'
+VERSION_CODE, VERSION_NAME = 122, '0.10.74'
 
 
 def version_key(path):

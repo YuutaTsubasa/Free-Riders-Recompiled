@@ -334,6 +334,8 @@ with [docs/progress.md](docs/progress.md).
   The touch buttons now stay round on wide phones with Aspect Ratio Auto, and on iPhones, instead of being stretched into ovals. A new page, **Controls › Touch and tilt › Customise touch buttons**, lets you hide any touch control, or only its name; for example, hide the left stick when you steer by tilting (#443).
 - [v0.10.73 — Plain race loading screen fixes on wide screens](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.73)
   With **Plain race loading screen** on, wide screens (for example 20:9 phones with Aspect Ratio Auto) no longer show a half-window frame, with the touch buttons and frame-rate readout moved aside, after Now Loading goes. The hidden practice is now silent, and buttons pressed during the screen no longer change when the race starts (#365).
+- [v0.10.74 — Move and resize touch buttons](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.74)
+  A new page, **Controls › Touch and tilt › Move and resize touch buttons**, lets you drag each touch button to a new place and change its size, or reset one or all of them. A layout made on one screen shape still fits a screen of another shape (#443).
 
 ## System Requirements
 
