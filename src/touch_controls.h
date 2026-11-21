@@ -73,7 +73,7 @@ namespace sfr {
 //   1. the buttons (A, B, X, Y, RT, START, LB, RB, LT): each whose circle or
 //      the slack just outside it the touch is in, as a thumb across two
 //      buttons of a pad (as before the editor); but a touch inside two or
-//      more circles, which only a player's layout puts over each other,
+//      more circles, at least one of them moved or resized by the player,
 //      presses the one whose centre is nearest (in radii) alone;
 //   2. the right stick;
 //   3. the left stick (its circle in the menus, its side in a race);

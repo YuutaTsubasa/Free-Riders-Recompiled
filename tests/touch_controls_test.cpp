@@ -585,25 +585,7 @@ void placed() {
         controls.update(std::vector<TouchPoint>{{7, 0.5f + 0.03f / aspect, 0.5f + 0.083f}}, 0.0f, TouchScene::race);
         require(controls.state().buttons == (button::a | button::b), "just outside both, both (as a thumb across two)");
         controls.update({}, 0.0f, TouchScene::race);
-        // The default layout: every button whose circle or slack a touch is
-        // in, exactly as before the editor (no two default circles overlap).
-        controls.set_layout({});
-        for (float gx = 0.5f; gx <= 1.0f; gx += 0.005f)
-            for (float gy = 0.3f; gy <= 1.0f; gy += 0.005f) {
-                uint16_t expect = 0;
-                const std::pair<TouchControls::Button, uint16_t> pads[] = {
-                    {TouchControls::a, button::a}, {TouchControls::b, button::b}, {TouchControls::x, button::x},
-                    {TouchControls::y, button::y}};
-                for (const auto& [control, bit] : pads) {
-                    const auto [cx, cy, cr] = TouchControls::layout(control, aspect);
-                    if (std::hypot((gx - cx) * aspect, gy - cy) <= cr * 1.25f) expect |= bit;
-                }
-                if (!expect) continue;
-                controls.update(std::vector<TouchPoint>{{70, gx, gy}}, 0.0f, TouchScene::race);
-                require((controls.state().buttons & (button::a | button::b | button::x | button::y)) == expect,
-                        "the default diamond presses what it always did");
-                controls.update({}, 0.0f, TouchScene::race);
-            }
+        controls.update({}, 0.0f, TouchScene::race);
         // A button put over the stick's side wins over the floating stick.
         sfr::TouchLayout on_stick;
         on_stick.places[TouchControls::y] = put(TouchControls::y, 0.2f, 0.3f, 1.0f, aspect);
@@ -675,6 +657,39 @@ void placed() {
         require(controls.state().thumb_rx == 32767, "the right stick works where it was put");
         controls.update({}, 0.0f, TouchScene::race);
         require(controls.overlay().right_knob[0] == rx && controls.overlay().right_knob[1] == ry, "and rests there");
+    }
+    // The default layout presses, at every point, every button whose circle
+    // or slack the touch is in, exactly as before the editor; also where
+    // default circles meet (LT and RT at 5:4).
+    for (const float aspect : {16.0f / 9.0f, 19.5f / 9.0f, 20.0f / 9.0f, 5.0f / 4.0f}) {
+        TouchControls controls;
+        controls.set_aspect(aspect);
+        const std::pair<TouchControls::Button, uint16_t> buttons[] = {
+            {TouchControls::a, button::a}, {TouchControls::b, button::b}, {TouchControls::x, button::x},
+            {TouchControls::y, button::y}, {TouchControls::start, button::start},
+            {TouchControls::lb, button::left_shoulder}, {TouchControls::rb, button::right_shoulder}};
+        int both = 0;
+        for (float gx = 0.0f; gx <= 1.0f; gx += 0.004f)
+            for (float gy = 0.0f; gy <= 1.0f; gy += 0.004f) {
+                uint16_t expect = 0;
+                bool rt = false, lt = false;
+                for (const auto& [control, bit] : buttons) {
+                    const auto [cx, cy, cr] = TouchControls::layout(control, aspect);
+                    if (std::hypot((gx - cx) * aspect, gy - cy) <= cr * 1.25f) expect |= bit;
+                }
+                for (const auto control : {TouchControls::trigger, TouchControls::lt}) {
+                    const auto [cx, cy, cr] = TouchControls::layout(control, aspect);
+                    if (std::hypot((gx - cx) * aspect, gy - cy) <= cr * 1.25f) (control == TouchControls::lt ? lt : rt) = true;
+                }
+                if (!expect && !rt && !lt) continue;
+                controls.update(std::vector<TouchPoint>{{71, gx, gy}}, 0.0f, TouchScene::race);
+                const auto state = controls.state();
+                require(state.buttons == expect && (state.right_trigger == 255) == rt && (state.left_trigger == 255) == lt,
+                        "the default layout presses what it always did");
+                both += rt && lt;
+                controls.update({}, 0.0f, TouchScene::race);
+            }
+        if (aspect < 1.5f) require(both > 0, "at 5:4 the default LT and RT meet, and press together");
     }
     // The game reads the launcher's list from SFR_TOUCH_LAYOUT (the at-rest
     // overlay a desktop shows uses it too).
