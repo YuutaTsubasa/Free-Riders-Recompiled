@@ -3139,7 +3139,7 @@ struct Launcher {
                                  ? std::clamp(display.x / display.y, 1.0f, 4.0f)
                                  : layout::default_aspect;
         float width = content_width, height = width / aspect;
-        if (const float most = display.y * 0.6f; height > most) {
+        if (const float most = display.y * 0.42f; height > most) {
             height = most;
             width = height * aspect;
         }
