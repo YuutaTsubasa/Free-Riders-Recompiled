@@ -108,24 +108,29 @@ void TouchControls::update(std::span<const TouchPoint> touches, float tilt, Touc
     const bool stick_shown = options_.shown(stick), right_shown = options_.shown(right_stick);
     for (const TouchPoint& touch : touches) {
         if (touch.id == stick_finger_ || touch.id == right_finger_ || touch.id == pointer_finger_) continue;
-        // Inside a circle: the nearest one (in radii) only, so controls put
-        // over each other each keep their own middle. Only in the slack
-        // around circles: each of them (a thumb across two buttons).
-        size_t inside = 0;
-        float inside_by = 2.0f;
+        // Each button whose circle or slack the touch is in (a thumb across
+        // two buttons), as always; but inside two or more circles, which
+        // only a player's layout puts over each other (the default's never
+        // touch), the nearest one (in radii) only, so each keeps its middle.
+        size_t nearest = 0;
+        float nearest_by = 2.0f;
+        int inside = 0;
         uint32_t slack = 0;
         for (size_t index = a; index <= lt; ++index) {
             if (!options_.shown(index)) continue;
             const auto [bx, by, br] = place(Button(index));
             const float by_radii = distance(bx, by, touch.x, touch.y, aspect) / br;
-            if (by_radii <= 1.0f && by_radii < inside_by) {
-                inside = index;
-                inside_by = by_radii;
+            if (by_radii <= 1.0f) {
+                ++inside;
+                if (by_radii < nearest_by) {
+                    nearest = index;
+                    nearest_by = by_radii;
+                }
             }
             if (by_radii <= touch_slack) slack |= 1u << index;
         }
-        if (inside) {
-            pressed_[inside] = true;
+        if (inside >= 2) {
+            pressed_[nearest] = true;
             continue;
         }
         if (slack) {

@@ -70,10 +70,11 @@ namespace sfr {
 // was put beyond it), the right 40% once LS is put on the right half. The
 // stick's resting circle is where LS was put. Overlapping controls are the
 // player's choice; a touch then goes, in this order, to:
-//   1. the buttons (A, B, X, Y, RT, START, LB, RB, LT): a touch inside one or
-//      more circles presses the one whose centre is nearest (in radii); a
-//      touch only in the slack just outside the circles presses each whose
-//      slack it is in, as a thumb across two buttons of a pad does;
+//   1. the buttons (A, B, X, Y, RT, START, LB, RB, LT): each whose circle or
+//      the slack just outside it the touch is in, as a thumb across two
+//      buttons of a pad (as before the editor); but a touch inside two or
+//      more circles, which only a player's layout puts over each other,
+//      presses the one whose centre is nearest (in radii) alone;
 //   2. the right stick;
 //   3. the left stick (its circle in the menus, its side in a race);
 //   4. the pointer (the menus) or START (the title).

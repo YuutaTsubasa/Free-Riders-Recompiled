@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -584,6 +585,25 @@ void placed() {
         controls.update(std::vector<TouchPoint>{{7, 0.5f + 0.03f / aspect, 0.5f + 0.083f}}, 0.0f, TouchScene::race);
         require(controls.state().buttons == (button::a | button::b), "just outside both, both (as a thumb across two)");
         controls.update({}, 0.0f, TouchScene::race);
+        // The default layout: every button whose circle or slack a touch is
+        // in, exactly as before the editor (no two default circles overlap).
+        controls.set_layout({});
+        for (float gx = 0.5f; gx <= 1.0f; gx += 0.005f)
+            for (float gy = 0.3f; gy <= 1.0f; gy += 0.005f) {
+                uint16_t expect = 0;
+                const std::pair<TouchControls::Button, uint16_t> pads[] = {
+                    {TouchControls::a, button::a}, {TouchControls::b, button::b}, {TouchControls::x, button::x},
+                    {TouchControls::y, button::y}};
+                for (const auto& [control, bit] : pads) {
+                    const auto [cx, cy, cr] = TouchControls::layout(control, aspect);
+                    if (std::hypot((gx - cx) * aspect, gy - cy) <= cr * 1.25f) expect |= bit;
+                }
+                if (!expect) continue;
+                controls.update(std::vector<TouchPoint>{{70, gx, gy}}, 0.0f, TouchScene::race);
+                require((controls.state().buttons & (button::a | button::b | button::x | button::y)) == expect,
+                        "the default diamond presses what it always did");
+                controls.update({}, 0.0f, TouchScene::race);
+            }
         // A button put over the stick's side wins over the floating stick.
         sfr::TouchLayout on_stick;
         on_stick.places[TouchControls::y] = put(TouchControls::y, 0.2f, 0.3f, 1.0f, aspect);
