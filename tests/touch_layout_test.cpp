@@ -121,6 +121,19 @@ void editing() {
             "what the editor shows is what is saved");
 }
 
+void stick_area() {
+    // The default LS keeps exactly the left 40%, in any shape (on a square
+    // screen its circle and slack reach past it, as before the editor).
+    for (const float aspect : {wide_16x9, phone_20x9, 1.0f})
+        require(layout::race_stick_area(std::nullopt, aspect) == std::array<float, 2>{0.0f, layout::stick_side},
+                "the default stick side is the left 40%");
+    // A placed LS: its side, reaching its circle.
+    const auto right = layout::race_stick_area(layout::place_at(0, 0.8f, 0.5f, 1.0f, wide_16x9), wide_16x9);
+    require(right[0] == 1.0f - layout::stick_side && right[1] == 1.0f, "LS on the right: the right 40%");
+    const auto inner = layout::race_stick_area(layout::place_at(0, 0.42f, 0.5f, 1.0f, wide_16x9), wide_16x9);
+    require(inner[0] == 0.0f && inner[1] > 0.5f, "LS past 40%: the side reaches its circle");
+}
+
 void limits() {
     // Off the image, too big, too small: kept whole on it, within the sizes.
     for (const float aspect : aspects) {
@@ -156,6 +169,7 @@ int main() {
         defaults();
         shapes();
         editing();
+        stick_area();
         limits();
         std::cout << "Touch layout checks passed\n";
         return 0;

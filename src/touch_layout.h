@@ -128,8 +128,10 @@ inline std::array<float, 3> resolve(size_t circle, const std::optional<Place>& p
 
 // The floating stick's side of the image in a race, x from .. to: the left
 // 40% while LS is on the left half, the right 40% once it is on the right
-// half, reaching further in when LS's circle (with its slack) does.
+// half, reaching further in when a placed LS's circle (with its slack)
+// does. LS at its default place keeps exactly the left 40% in any shape.
 inline std::array<float, 2> race_stick_area(const std::optional<Place>& stick, float aspect) {
+    if (!stick) return {0.0f, stick_side};
     if (!(aspect > 0.0f)) aspect = default_aspect;
     const auto [x, y, radius] = resolve(0, stick, aspect);
     const float reach = radius * touch_slack / aspect;
