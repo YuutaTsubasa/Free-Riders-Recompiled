@@ -528,7 +528,10 @@ hand cursor: touch anywhere away from the buttons and the cursor goes there
 (rest on an item to choose it, as with a hand); on the title screen a touch is
 START. In movies and story scenes, touch and hold anywhere (or hold START) to
 skip: half a second for a movie, until the SKIP gauge fills in a story scene;
-a brief touch skips nothing. On a PC the mouse moves the hand cursor the same way. Details: [docs/race-controls.md](docs/race-controls.md),
+a brief touch skips nothing. Under Controls › Touch and tilt, **Customise touch
+buttons** hides any button you don't use (it then doesn't react: its spot is
+empty screen; with the stick hidden, tilting still steers) or only its name;
+**Button names** still turns every name off at once (#443). On a PC the mouse moves the hand cursor the same way. Details: [docs/race-controls.md](docs/race-controls.md),
 [docs/pad-menus.md](docs/pad-menus.md).
 
 The **achievements page** lists all 50 achievements in the game with their

@@ -159,6 +159,8 @@ LauncherSettings parse_launcher_settings(const std::string& text) {
         else if (key == "d3d11") read_flag(value, settings.d3d11);
         else if (key == "touch_controls") read_flag(value, settings.touch_controls);
         else if (key == "touch_labels") read_flag(value, settings.touch_labels);
+        else if (key == "touch_hidden") settings.touch_hidden = touch_options::parse(value);
+        else if (key == "touch_unnamed") settings.touch_unnamed = touch_options::parse(value);
         else if (key == "tilt") read_flag(value, settings.tilt);
         else if (key == "tilt_lean") read_flag(value, settings.tilt_lean);
         // "picture" is no longer offered: it reads as the default, off.
@@ -271,6 +273,8 @@ std::string format_launcher_settings(const LauncherSettings& s) {
         << "d3d11=" << s.d3d11 << '\n'
         << "touch_controls=" << s.touch_controls << '\n'
         << "touch_labels=" << s.touch_labels << '\n'
+        << "touch_hidden=" << touch_options::format(s.touch_hidden) << '\n'
+        << "touch_unnamed=" << touch_options::format(s.touch_unnamed) << '\n'
         << "tilt=" << s.tilt << '\n'
         << "tilt_lean=" << s.tilt_lean << '\n'
         << "camera=" << s.camera << '\n'
@@ -541,6 +545,9 @@ std::vector<std::pair<std::string, std::string>> game_environment(const Launcher
 #if defined(__ANDROID__) || defined(SFR_IOS)
         {"SFR_TOUCH_CONTROLS", s.touch_controls ? "1" : "0"},
         {"SFR_TOUCH_LABELS", s.touch_labels ? "1" : "0"},
+        // Empty (every control shown and named) removes the variables.
+        {"SFR_TOUCH_HIDDEN", touch_options::format(s.touch_hidden)},
+        {"SFR_TOUCH_UNNAMED", touch_options::format(s.touch_unnamed)},
         {"SFR_TILT", s.tilt ? "1" : "0"},
         {"SFR_TILT_LEAN", s.tilt_lean ? "1" : "0"},
 #endif

@@ -1,5 +1,6 @@
 #pragma once
 #include "kinect_ideal_diagram.h"
+#include "touch_options.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -104,6 +105,12 @@ struct LauncherSettings {
     bool d3d11 = false;             // Direct3D 11 (experimental, Windows, Issue #359), over `vulkan`
     bool touch_controls = true;      // SFR_TOUCH_CONTROLS (Android, iOS)
     bool touch_labels = true;        // SFR_TOUCH_LABELS: the buttons' names on them (Issue #236)
+    // Issue #443 (touch_options.h): the touch controls that are hidden, and
+    // those drawn without their names, as masks of TouchControls' circles;
+    // in settings.ini and to the game (SFR_TOUCH_HIDDEN, SFR_TOUCH_UNNAMED)
+    // as lists of names, "ls,lt". None by default: every control shown and
+    // named. touch_labels off still hides every name.
+    uint32_t touch_hidden = 0, touch_unnamed = 0;
     bool tilt = true;                // SFR_TILT: tilt to steer (Android, iOS)
     bool tilt_lean = false;          // SFR_TILT_LEAN: "Tilt to kick", a forward tip kicks (Android, iOS; Issue #247; key kept from "Tilt to lean")
     // Where the Kinect player's body comes from, and whether the camera

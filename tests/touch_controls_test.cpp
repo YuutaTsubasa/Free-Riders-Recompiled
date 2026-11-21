@@ -421,6 +421,98 @@ void aspects() {
     }
 }
 
+// Issue #443: each control hidden (neither drawn nor read: its place is
+// empty screen) or drawn without its name (a negative state for the blit).
+void options() {
+    using sfr::TouchScene;
+    namespace names = sfr::touch_options;
+    require(names::parse("ls,lt") == ((1u << TouchControls::stick) | (1u << TouchControls::lt)), "a list of names is a mask");
+    require(names::parse(" LS , Start,rs\r") ==
+                ((1u << TouchControls::stick) | (1u << TouchControls::start) | (1u << TouchControls::right_stick)),
+            "names in any case, with spaces");
+    require(names::parse("") == 0 && names::parse("dpad,,a") == (1u << TouchControls::a), "unknown names are ignored");
+    require(names::format(0).empty() && names::format(names::all) == "ls,a,b,x,y,rt,start,lb,rb,lt,rs",
+            "a mask as a list, in the circles' order");
+    for (uint32_t mask : {0u, 1u, 0x2A5u, names::all}) require(names::parse(names::format(mask)) == mask, "a list reads back");
+    const sfr::TouchOptions read = sfr::touch_options_from("ls,rt", nullptr);
+    require(read.hidden == ((1u << TouchControls::stick) | (1u << TouchControls::trigger)) && read.unnamed == 0 &&
+                sfr::touch_options_from(nullptr, nullptr).hidden == 0,
+            "the variables read as masks; unset is none");
+
+    TouchControls controls;
+    controls.update({});
+    for (const auto& circle : controls.overlay().circle) require(circle[3] == 1.0f, "by default every control is shown and named");
+
+    // Without names: drawn as before, the state negative.
+    controls.set_options({0, (1u << TouchControls::a) | (1u << TouchControls::stick)});
+    controls.update(std::vector<TouchPoint>{at(1, TouchControls::a)});
+    require(controls.state().buttons == button::a, "a control without its name still works");
+    require(controls.overlay().circle[TouchControls::a][3] == -2.0f && controls.overlay().circle[TouchControls::stick][3] == -1.0f &&
+                controls.overlay().circle[TouchControls::b][3] == 1.0f,
+            "only the chosen controls lose their names");
+    controls.update({});
+
+    // A hidden button is not drawn and does not react: in the menus its place
+    // is the pointer, in a race nothing, on the title START.
+    controls.set_options({1u << TouchControls::a, 0});
+    controls.update(std::vector<TouchPoint>{at(2, TouchControls::a)}, 0.0f, TouchScene::menu);
+    require(!controls.state().buttons && controls.pointer(), "a hidden A's place is the pointer in the menus");
+    require(controls.overlay().circle[TouchControls::a][3] == 0.0f, "a hidden button is not drawn");
+    controls.update({}, 0.0f, TouchScene::menu);
+    controls.update(std::vector<TouchPoint>{at(3, TouchControls::a)}, 0.0f, TouchScene::race);
+    require(controls.state() == sfr::GamepadState{} && !controls.pointer(), "a hidden A's place does nothing in a race");
+    controls.update({}, 0.0f, TouchScene::race);
+    controls.update(std::vector<TouchPoint>{at(4, TouchControls::a)}, 0.0f, TouchScene::title);
+    require(controls.state().buttons == button::start, "a hidden A's place is START on the title, as empty screen");
+    controls.update({}, 0.0f, TouchScene::title);
+    controls.update(std::vector<TouchPoint>{at(5, TouchControls::b)}, 0.0f, TouchScene::race);
+    require(controls.state().buttons == button::b, "the other buttons still work");
+    controls.update({}, 0.0f, TouchScene::race);
+
+    // The stick hidden (a player who steers by tilting): the left of the
+    // screen starts no stick, and tilt steers.
+    controls.set_options({1u << TouchControls::stick, 0});
+    controls.update(std::vector<TouchPoint>{{6, 0.2f, 0.6f}}, -0.5f, TouchScene::race);
+    controls.update(std::vector<TouchPoint>{{6, 0.3f, 0.6f}}, -0.5f, TouchScene::race);
+    require(controls.state().thumb_lx < -16000 && controls.state().thumb_lx > -16500 && !controls.state().buttons,
+            "with the stick hidden a finger on the left is nothing, and tilt steers");
+    const sfr::TouchOverlay hidden_stick = controls.overlay();
+    require(hidden_stick.circle[TouchControls::stick][3] == 0.0f, "the hidden stick is not drawn, held or not");
+    controls.update({}, 0.0f, TouchScene::race);
+    controls.update(std::vector<TouchPoint>{at(7, TouchControls::stick)}, 0.0f, TouchScene::menu);
+    controls.update(std::vector<TouchPoint>{at(7, TouchControls::stick, 0.1f)}, 0.0f, TouchScene::menu);
+    require(!controls.state().buttons && controls.pointer(), "in the menus the hidden stick's circle is the pointer");
+    controls.update({}, 0.0f, TouchScene::menu);
+
+    // The right stick hidden: its circle is empty screen too.
+    controls.set_options({1u << TouchControls::right_stick, 0});
+    controls.update(std::vector<TouchPoint>{at(8, TouchControls::right_stick, 0.03f)}, 0.0f, TouchScene::race);
+    require(controls.state().thumb_rx == 0 && controls.overlay().circle[TouchControls::right_stick][3] == 0.0f,
+            "a hidden right stick neither moves nor shows");
+    controls.update({}, 0.0f, TouchScene::race);
+
+    // START hidden: in a story scene a touch is still START (nothing is drawn there anyway).
+    controls.set_options({1u << TouchControls::start, 0});
+    controls.update(std::vector<TouchPoint>{at(9, TouchControls::start)}, 0.0f, TouchScene::scene);
+    require(controls.state().buttons == button::start, "a scene's touch is START whatever is hidden");
+    controls.update({}, 0.0f, TouchScene::scene);
+    controls.update(std::vector<TouchPoint>{at(10, TouchControls::start)}, 0.0f, TouchScene::race);
+    require(!controls.state().buttons, "a hidden START does not pause a race");
+    controls.update({}, 0.0f, TouchScene::race);
+
+    // Everything hidden at a wide aspect (Issue #443's round layout): nothing drawn.
+    controls.set_options({names::all, 0});
+    controls.set_aspect(19.5f / 9.0f);
+    controls.update({});
+    for (const auto& circle : controls.overlay().circle) require(circle[3] == 0.0f, "every control hidden draws none");
+
+    // The blit's halves keep the sign: -1 and -2 survive packing.
+    sfr::TouchOverlay overlay;
+    overlay.circle[TouchControls::a] = {0.5f, 0.5f, 0.1f, -2.0f};
+    const auto words = sfr::pack_touch_overlay(overlay);
+    require(sfr::half_to_float(uint16_t(words[3 + TouchControls::a * 2] >> 16)) == -2.0f, "a negative state reaches the blit");
+}
+
 int main() {
 #ifdef _WIN32
     _putenv_s("SFR_TOUCH_CONTROLS", "1");
@@ -436,6 +528,7 @@ int main() {
         controller_handover();
         tilt_lean();
         aspects();
+        options();
         std::cout << "Touch control checks passed\n";
         return 0;
     } catch (const std::exception& error) {
