@@ -3,6 +3,7 @@
 #include "wait_trace.h"
 #include "guest_memory.h"
 #include "guest_graphics.h"
+#include "plain_race_loading.h"
 #include "aspect_settings.h"
 #include "native_input.h"
 #include "avatar_state.h"
@@ -272,6 +273,9 @@ bool plain_race_loading() {
     return on;
 }
 thread_local bool drawing_now_loading=false;
+// Whether Now Loading drew its ring or words since the last present
+// (plain_race_loading_take_now_loading).
+std::atomic<bool> now_loading_drawn{false};
 // How far Now Loading moves towards the bottom right corner, in the 1280x720
 // layout it is drawn in: its words end about 80 pixels from the right edge
 // and 55 from the bottom, and about 20 from each after the move.
@@ -297,6 +301,12 @@ bool plain_race_loading_screen() {
 bool plain_race_loading_hides_draw() {
     return !drawing_now_loading && plain_race_loading_screen();
 }
+// Whether the frame being presented showed Now Loading on the screen (and
+// starts over for the next frame): only such frames go to the window's
+// corner (plain_race_loading.h).
+bool plain_race_loading_take_now_loading() {
+    return now_loading_drawn.exchange(false,std::memory_order_relaxed);
+}
 }
 
 PPC_FUNC_IMPL(__imp__sub_8223DFE8);
@@ -317,6 +327,7 @@ SFR_CONCURRENT_HOOK(sub_8223CE58) {
     const uint32_t from=uint32_t(ctx.lr);
     if((from==0x82459FDCu || from==0x82451518u) && kinect_ui_hidden()!=KinectUiHidden::none) return;
     if((from==0x8223E140u || from==0x8223E188u) && drawing_now_loading && sfr::plain_race_loading_screen()) {
+        now_loading_drawn.store(true,std::memory_order_relaxed);
         if(from==0x8223E188u) {
             // The words: their rectangle.
             ctx.f1.f64+=now_loading_right; ctx.f3.f64+=now_loading_right;
@@ -1605,6 +1616,32 @@ static void report_cue(const char* how, PPCContext& ctx, uint32_t key, bool name
     line << " key=0x" << std::hex << key << " r3=0x" << ctx.r3.u32 << " r5=0x" << ctx.r5.u32
          << " lr=0x" << uint32_t(ctx.lr);
     std::cerr << line.str() << '\n';
+}
+
+PPC_FUNC_IMPL(__imp__sub_8222FA18);
+// The title's sound effects and voices: 8222FA18(sound manager [83E52E18],
+// player r4, sound r5) has player r4 play sound r5; r5 == -1 plays nothing
+// (the title's own "no sound"). The music has its own path (82230250), and
+// SFR_AUDIO_CUES=1 lists both.
+// The plain race loading screen (Issue #365, plain_race_loading.h) asks for
+// no sound while it is up: what plays then is the practice's (Omochao's
+// lines, its effects), none of it shown. The race's first sounds come once
+// the practice object is gone, so they still play.
+SFR_CONCURRENT_HOOK(sub_8222FA18) {
+    sfr::enter_function(ctx,"sub_8222FA18",0x8222FA18);
+    const bool screen=sfr::plain_race_loading_screen();
+    if(audio_cue_trace())
+        std::cerr << "AUDIO_PLAY present=" << sfr::present_count.load(std::memory_order_relaxed)
+                  << " player=" << ctx.r4.s32 << " sound=" << ctx.r5.s32 << " lr=0x" << std::hex << uint32_t(ctx.lr)
+                  << std::dec << " plain_screen=" << screen << '\n';
+    if(sfr::plain_loading::silences_sound(screen,ctx.r5.s32)) {
+        static std::atomic<uint32_t> told{0};
+        if(told.fetch_add(1,std::memory_order_relaxed)<40)
+            std::cerr << "GAME_PATCH plain_race_loading silenced player=" << ctx.r4.s32 << " sound=" << ctx.r5.s32
+                      << " present=" << sfr::present_count.load(std::memory_order_relaxed) << '\n';
+        ctx.r5.s64=-1;
+    }
+    __imp__sub_8222FA18(ctx,base);
 }
 
 PPC_FUNC_IMPL(__imp__sub_827BCD18);

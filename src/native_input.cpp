@@ -163,10 +163,16 @@ bool in_use(const GamepadState& state) {
 }
 
 namespace {
-std::atomic<bool> held_input{false};
+std::atomic<bool> held_input{false}, held_for_loading{false};
 }
 void set_input_held(bool held) { held_input.store(held, std::memory_order_relaxed); }
-bool input_held() { return held_input.load(std::memory_order_relaxed); }
+void set_loading_input_held(bool held) {
+    if (held_for_loading.exchange(held, std::memory_order_relaxed) != held)
+        std::cerr << "NATIVE_INPUT loading_hold=" << (held ? "on" : "off") << '\n';
+}
+bool input_held() {
+    return held_input.load(std::memory_order_relaxed) || held_for_loading.load(std::memory_order_relaxed);
+}
 
 std::optional<GamepadState> NativeInput::current(uint32_t user) const {
     if (user >= players_.size()) return std::nullopt;

@@ -4,6 +4,8 @@
 #include "avatar_transform.h"
 #include "guest_graphics.h"
 #include "aspect_settings.h"
+#include "plain_race_loading.h"
+#include "native_input.h"
 #include "touch_controls.h"
 #include "native_graphics.h"
 #include "native_presentation.h"
@@ -645,7 +647,7 @@ static std::vector<std::pair<uint32_t,uint32_t>> frame_callbacks;
 
 // The plain race loading screen (Issue #365, game_patches.cpp): whether it is
 // up, and whether a draw made now is left out (all but Now Loading).
-namespace sfr { bool plain_race_loading_screen(); bool plain_race_loading_hides_draw(); }
+namespace sfr { bool plain_race_loading_screen(); bool plain_race_loading_hides_draw(); bool plain_race_loading_take_now_loading(); }
 
 SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
     sfr::enter_function(ctx,"sub_824E65A0",0x824E65A0);
@@ -695,9 +697,17 @@ SFR_GRAPHICS_HOST_HOOK(sub_824E65A0) {
             intervals.clear();
         }
     }
+    // The plain race loading screen (Issue #365, plain_race_loading.h). The
+    // player's controller, keyboard and touch controls read as at rest while
+    // it is up: nothing of the practice they would move is shown.
+    const bool plain_screen=sfr::plain_race_loading_screen();
+    sfr::set_loading_input_held(plain_screen);
     if(frame_drawn) {
-        // The plain race loading screen's Now Loading in the window's corner (Issue #365).
-        graphics().presentation().set_corner_anchor(sfr::plain_race_loading_screen());
+        // A frame showing Now Loading goes to the window's corner; the black
+        // frames of the screen fill a wider window.
+        graphics().presentation().set_corner_anchor(
+            sfr::plain_loading::corner_anchored(plain_screen,sfr::plain_race_loading_take_now_loading()));
+        graphics().set_plain_loading_screen(plain_screen);
         graphics().present_front_buffer(ctx.r3.u32);
         // SFR_TEST_RACE_DRAW_MS=<ms> (testing): each drawn race frame takes that
         // much longer, as on a device whose GPU cannot keep 60 fps.
