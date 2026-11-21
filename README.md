@@ -330,6 +330,8 @@ with [docs/progress.md](docs/progress.md).
   The launcher now tells you when a newer version is out, and its button opens the right download for your device in the browser. It checks at most once a day, sends no personal data, and can be turned off under **General › Updates**. On Linux the launcher also adds itself to your desktop's application menu; turn that off under **General › Desktop** (#365).
 - [v0.10.71 — Plain race loading screen, and the picture follows a resized window](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.71)
   A new option, **General › Gameplay › Plain race loading screen** (off by default), shows a black screen with only Now Loading in the corner instead of the Omochao practice before a race; the race starts as usual. When you resize the game window, the picture is now redrawn at the new size once you stop resizing, instead of being stretched. A change of window shape (for example to ultrawide) still needs a restart to change the aspect ratio (#365).
+- [v0.10.72 — Round touch buttons on wide phones, and per-button touch options](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.72)
+  The touch buttons now stay round on wide phones with Aspect Ratio Auto, and on iPhones, instead of being stretched into ovals. A new page, **Controls › Touch and tilt › Customise touch buttons**, lets you hide any touch control, or only its name; for example, hide the left stick when you steer by tilting (#443).
 
 ## System Requirements
 
