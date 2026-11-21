@@ -10,7 +10,8 @@
 //
 // Each button carries its name (Issue #236, touch_labels.hlsli): letters in
 // a light shade of its colour with a dark edge, readable over any picture.
-// Bit 17 of the readout's word (below) hides them, and LB's and RB's arrows.
+// Bit 17 of the readout's word (below) hides them, and LB's and RB's arrows;
+// a negative state (-1 shown, -2 pressed) hides one circle's (Issue #443).
 //
 // The constants are 32 words, the 128 bytes of push constants every Vulkan
 // device has: the sampled area as two floats, then pairs of half floats
@@ -168,8 +169,10 @@ float4 pixelMain(Vertex vertex) : SV_Target {
     const uint readout_word = g_Circles[6].w;
     const bool names = (readout_word & 0x20000) == 0;
     [unroll] for (int i = 0; i < CIRCLES; ++i) {
-        const float4 c = circle_at(i);
-        if (c.w <= 0.0) continue;
+        float4 c = circle_at(i);
+        if (c.w == 0.0) continue;
+        const bool named = names && c.w > 0.0;
+        c.w = abs(c.w);
         if (c.w >= 3.0) {
             color.rgb = gauge(color.rgb, vertex.image, c, pixel);
             continue;
@@ -184,7 +187,7 @@ float4 pixelMain(Vertex vertex) : SV_Target {
             const float shown = disc(vertex.image, knob, c.z * 0.45, pixel);
             color.rgb = lerp(color.rgb, float3(1.0, 1.0, 1.0), shown * (pressed ? 0.6 : 0.3));
         }
-        if (!names) continue;
+        if (!named) continue;
         // The name, on the knob for a stick; p in the circle's radii.
         const float2 centre = label_on_knob(i) ? unpack_halves(i == 0 ? g_Knobs.x : g_Knobs.y) : c.xy;
         const float2 p = (vertex.image - centre) * image_heights(pixel) / c.z;

@@ -168,6 +168,9 @@ enum Text {
     PlainRaceLoading, PlainRaceLoadingHint,
     SectionDesktop, AppMenuLabel, AppMenuHint,
     SectionUpdates, CheckUpdatesLabel, CheckUpdatesHint, UpdateAvailable, UpdateDownload, UpdateNone,
+    SectionTouchButtons, TouchButtonsHint, TouchButtonColumn, TouchShownColumn, TouchNameColumn,
+    TouchRoleStick, TouchRoleRightStick, TouchRoleA, TouchRoleB, TouchRoleX, TouchRoleY,
+    TouchRoleLb, TouchRoleRb, TouchRoleLt, TouchRoleRt, TouchRoleStart,
     TextCount
 };
 
@@ -633,6 +636,25 @@ constexpr std::array<std::array<const char*, 2>, TextCount> texts{{
     {"Version %s is available", "版本 %s 已推出"},
     {"Download", "下載"},
     {"You have the newest version (%s).", "已是最新版本（%s）。"},
+    {"Customise touch buttons", "自訂觸控按鈕"},
+    {"Hide a button you do not use, or only its name. A hidden button does not react: touching where it was is touching empty screen. "
+     "With the stick hidden, tilting still steers. Button names off above hides every name.",
+     "隱藏用不到的按鈕，或只隱藏它的名稱。隱藏的按鈕不會反應，按在原本的位置就跟按在空白畫面一樣。"
+     "隱藏搖桿後仍可傾斜轉彎。上方的「按鈕名稱」關閉時，所有名稱都會隱藏。"},
+    {"Button", "按鈕"},
+    {"Shown", "顯示"},
+    {"Name", "名稱"},
+    {"Stick: steer, lean; menus: move", "搖桿：轉彎、傾身；選單：移動"},
+    {"Right stick: reach, raise hands", "右搖桿：伸手、舉起雙手"},
+    {"Jump (hold to crouch)", "跳躍（按住蹲下）"},
+    {"Brake, grab; menus: back", "煞車、抓住；選單：返回"},
+    {"Kick dash", "踢地加速"},
+    {"Stance", "切換站姿"},
+    {"Punch left (power skill)", "向左出招（Power Skill）"},
+    {"Punch right (power skill)", "向右出招（Power Skill）"},
+    {"Hold hands (Tag Race)", "牽手（Tag Race）"},
+    {"Use or shake an item", "使用或搖晃道具"},
+    {"Pause", "暫停"},
 }};
 
 int language = 0;
@@ -3015,6 +3037,69 @@ struct Launcher {
         ImGui::Dummy(ImVec2(0, 6 * scale));
     }
 
+    // Each touch control on its own (Issue #443, touch_options.h): shown or
+    // hidden, and with or without its name. Folded until opened, so the
+    // Touch section stays a few rows; one row a control, two switches.
+    bool touch_buttons_open = false;
+    void touch_button_list() {
+        collapsible_section(SectionTouchButtons, touch_buttons_open);
+        if (!touch_buttons_open) return;
+        ImGui::PushStyleColor(ImGuiCol_Text, dim_text);
+        ImGui::PushTextWrapPos(content_width);
+        ImGui::TextUnformatted(wrapped(tr(TouchButtonsHint), room_to(content_width)).c_str());
+        ImGui::PopTextWrapPos();
+        ImGui::PopStyleColor();
+        ImGui::Dummy(ImVec2(0, 4 * scale));
+        // The order a player reads the screen in: the sticks, the diamond,
+        // the shoulders and triggers, START. The index is the circle's
+        // (TouchControls::Button, touch_options::names).
+        struct Row { size_t circle; const char* name; Text role; };
+        static constexpr Row rows[] = {
+            {0, "LS", TouchRoleStick}, {10, "RS", TouchRoleRightStick}, {1, "A", TouchRoleA}, {2, "B", TouchRoleB},
+            {3, "X", TouchRoleX}, {4, "Y", TouchRoleY}, {7, "LB", TouchRoleLb}, {8, "RB", TouchRoleRb},
+            {9, "LT", TouchRoleLt}, {5, "RT", TouchRoleRt}, {6, "START", TouchRoleStart}};
+        static_assert(std::size(rows) == sfr::touch_options::names.size());
+        const float switch_width = ImGui::GetFrameHeight() * 1.9f;
+        const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp;
+        if (!ImGui::BeginTable("##touch_buttons", 3, flags, ImVec2(content_width, 0))) return;
+        ImGui::TableSetupColumn(tr(TouchButtonColumn), ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn(tr(TouchShownColumn), ImGuiTableColumnFlags_WidthFixed, switch_width + 24 * scale);
+        ImGui::TableSetupColumn(tr(TouchNameColumn), ImGuiTableColumnFlags_WidthFixed, switch_width + 24 * scale);
+        ImGui::PushStyleColor(ImGuiCol_Text, cyan);
+        ImGui::TableHeadersRow();
+        ImGui::PopStyleColor();
+        // A switch for one bit of a mask that is set when the switch is off.
+        const auto bit_switch = [&](const char* id, uint32_t& off_mask, uint32_t bit) {
+            bool on = (off_mask & bit) == 0;
+            if (toggle(id, &on)) off_mask = on ? off_mask & ~bit : off_mask | bit;
+            focus_glow(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), ImGui::GetFrameHeight() * 0.5f,
+                       focus_amount(ImGui::IsItemFocused() && nav_visible()), scale);
+        };
+        for (const Row& row : rows) {
+            const uint32_t bit = 1u << row.circle;
+            ImGui::PushID(int(row.circle));
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(row.name);
+            ImGui::SameLine(0, 12 * scale);
+            ImGui::PushStyleColor(ImGuiCol_Text, dim_text);
+            ImGui::TextUnformatted(tr(row.role));
+            ImGui::PopStyleColor();
+            ImGui::TableNextColumn();
+            bit_switch("##shown", settings.touch_hidden, bit);
+            ImGui::TableNextColumn();
+            // A hidden control has no name to show, nor does any with every
+            // name off.
+            ImGui::BeginDisabled((settings.touch_hidden & bit) != 0 || !settings.touch_labels);
+            bit_switch("##named", settings.touch_unnamed, bit);
+            ImGui::EndDisabled();
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+        ImGui::Dummy(ImVec2(0, 6 * scale));
+    }
+
     void controls_settings() {
 #if defined(__ANDROID__) || defined(SFR_IOS)
         settings_section(SectionTouch);
@@ -3023,6 +3108,7 @@ struct Launcher {
         setting_row(tr(TouchNames), tr(TouchNamesHint), switch_width, scale, [&] { toggle("##touch_names", &settings.touch_labels); });
         setting_row(tr(TiltLabel), tr(TiltHint), switch_width, scale, [&] { toggle("##tilt", &settings.tilt); });
         setting_row(tr(TiltLeanLabel), tr(TiltLeanHint), switch_width, scale, [&] { toggle("##tilt_lean", &settings.tilt_lean); });
+        touch_button_list();
 #endif
         read_bindings();
         const float combo_width = 300 * scale;

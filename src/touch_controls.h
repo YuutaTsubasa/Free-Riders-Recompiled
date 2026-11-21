@@ -1,5 +1,6 @@
 #pragma once
 #include "native_input.h"
+#include "touch_options.h"
 #include <array>
 #include <cstdint>
 #include <optional>
@@ -42,7 +43,16 @@ namespace sfr {
 //
 // In a race, tilting the device like a steering wheel also steers (left
 // stick X), and with "Tilt to kick" a quick tip of its top edge away from
-// the player is a kick dash (X; TiltKick below), stick held or not.
+// the player is a kick dash (X; TiltKick below), stick held or not. Tilt
+// steers whenever the stick is not held, so a player who only tilts can hide
+// the stick (TouchOptions).
+//
+// Each control can be hidden, and each can lose its name (Issue #443,
+// touch_options.h; set_options below). A hidden control is neither drawn nor
+// read: a touch where it was is a touch on empty screen. In a race that is
+// the floating stick on the left 40% (LB's and LT's places too, unless LS is
+// hidden as well) and nothing elsewhere; the hand cursor in the menus, START
+// on the title.
 //
 // Outside races the screen itself is the Kinect hand cursor (Issue #217): a
 // finger that lands away from the controls is the pointer, and the hand
@@ -75,7 +85,8 @@ struct TouchPoint {
 };
 
 // What the blit draws: per circle (x, y, radius, state), state 0 hidden,
-// 1 shown, 2 pressed. The circles are TouchControls::Button's; knob and
+// 1 shown, 2 pressed; -1 and -2 the same without the control's name (and
+// without LB's and RB's arrows; Issue #443). The circles are TouchControls::Button's; knob and
 // right_knob are the knobs of the stick and the right stick.
 struct TouchOverlay {
     static constexpr size_t circles = 11;
@@ -116,6 +127,10 @@ public:
     // layout, the touches and the overlay follow it from the next update.
     void set_aspect(float aspect) { aspect_ = aspect > 0.0f ? aspect : touch_layout_aspect; }
     float aspect() const { return aspect_; }
+    // Which controls are hidden and which are drawn without their names
+    // (touch_options.h); all shown and named until set.
+    void set_options(const TouchOptions& options) { options_ = options; }
+    const TouchOptions& options() const { return options_; }
     // Resting layout (circle centre and radius) of each control in an image
     // of that aspect.
     static std::array<float, 3> layout(Button button, float aspect = touch_layout_aspect);
@@ -123,6 +138,7 @@ public:
 private:
     static std::array<float, 3> layout_16x9(Button button);
     float aspect_ = touch_layout_aspect;
+    TouchOptions options_{};
     GamepadState state_{};
     bool stick_active_ = false;
     int64_t stick_finger_ = -1;
@@ -263,4 +279,10 @@ bool touch_controls_active();
 // readout's word (fps_readout.h) has this bit set.
 constexpr uint32_t touch_names_hidden_bit = 1u << 17;
 bool touch_names_shown();
+
+// The player's choice of controls (touch_options.h): SFR_TOUCH_HIDDEN and
+// SFR_TOUCH_UNNAMED, lists of control names such as "ls,lt"; read once.
+// touch_options_from is that reading for given values (null for unset).
+TouchOptions touch_options_chosen();
+TouchOptions touch_options_from(const char* hidden, const char* unnamed);
 }

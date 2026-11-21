@@ -964,6 +964,32 @@ void environment_follows_settings() {
         require(!sfr::LauncherSettings{}.tilt_lean, "tilt to lean is off by default");
         require(!sfr::parse_launcher_settings("tilt=1\n").tilt_lean, "an older settings file leaves tilt to lean off");
         require(parsed.language == "zh-TW", "the launcher language survives a save");
+        // Issue #443: each touch control hidden or without its name, kept as
+        // lists of names; none by default, so an older file plays as before.
+        require(sfr::LauncherSettings{}.touch_hidden == 0 && sfr::LauncherSettings{}.touch_unnamed == 0 &&
+                    sfr::parse_launcher_settings("touch_labels=0\n").touch_hidden == 0,
+                "every touch control is shown and named by default");
+        sfr::LauncherSettings chosen;
+        chosen.touch_hidden = sfr::touch_options::parse("ls,lt");
+        chosen.touch_unnamed = sfr::touch_options::parse("a,start");
+        const std::string saved = sfr::format_launcher_settings(chosen);
+        require(saved.find("touch_hidden=ls,lt\n") != std::string::npos &&
+                    saved.find("touch_unnamed=a,start\n") != std::string::npos,
+                "the touch controls are saved as names");
+        const auto again = sfr::parse_launcher_settings(saved);
+        require(again.touch_hidden == chosen.touch_hidden && again.touch_unnamed == chosen.touch_unnamed,
+                "and survive a save");
+        require(sfr::parse_launcher_settings("touch_hidden=LS, rs ,nonsense\n").touch_hidden ==
+                    sfr::touch_options::parse("ls,rs"),
+                "a hand-edited list keeps the names it knows");
+#if defined(__ANDROID__) || defined(SFR_IOS)
+        require(value_of(chosen, "SFR_TOUCH_HIDDEN") == "ls,lt" && value_of(chosen, "SFR_TOUCH_UNNAMED") == "a,start" &&
+                    value_of(sfr::LauncherSettings{}, "SFR_TOUCH_HIDDEN").empty(),
+                "the lists reach the game; none leaves the variables unset");
+#else
+        require(!exports(chosen, "SFR_TOUCH_HIDDEN") && !exports(chosen, "SFR_TOUCH_UNNAMED"),
+                "a desktop has no touch controls to choose");
+#endif
         require(sfr::parse_launcher_settings("language=klingon\n").language == "auto", "an unknown language is the system's");
     }
     {
