@@ -148,12 +148,15 @@ void picking() {
 }
 
 void throttle() {
-    const int64_t day = up::check_interval_seconds, t = 1'790'000'000;
+    const int64_t hour = up::check_interval_seconds, t = 1'790'000'000;
+    require(hour == 60 * 60, "the interval is an hour (Issue #365)");
     require(up::check_due(0, t), "never checked");
     require(!up::check_due(t, t), "just checked");
-    require(!up::check_due(t, t + day - 1), "within the day");
-    require(up::check_due(t, t + day), "a day later");
-    require(up::check_due(t, t + 10 * day), "days later");
+    require(!up::check_due(t, t + 59 * 60), "59 minutes later");
+    require(!up::check_due(t, t + hour - 1), "within the hour");
+    require(up::check_due(t, t + hour), "an hour later");
+    require(up::check_due(t, t + hour + 60), "an hour and a minute later (an open launcher's next look)");
+    require(up::check_due(t, t + 24 * hour), "a day later");
     require(up::check_due(t, t - 60), "the clock went back: ask again");
 }
 
