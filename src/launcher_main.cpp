@@ -3158,20 +3158,29 @@ struct Launcher {
         if (touch_layout_choice >= 0 && !shown(size_t(touch_layout_choice))) touch_layout_choice = -1;
         if (ImGui::IsItemActivated()) {
             // The control under the finger: the nearest centre, in radii,
-            // within the slack the game gives a touch.
+            // within the slack the game gives a touch. Controls put on top
+            // of each other: touching inside the stack again chooses the next
+            // one there, so a covered control can still be chosen.
             touch_layout_dragging = false;
+            const int previous = touch_layout_choice;
             touch_layout_choice = -1;
-            float nearest = layout::touch_slack;
+            std::vector<std::pair<float, int>> under;  // (radii from the centre, circle)
             for (size_t i = 0; i < layout::count; ++i) {
                 if (!shown(i)) continue;
                 const auto [x, y, r] = at(i);
                 const ImVec2 c = screen(x, y);
                 const float by = std::hypot(io.MousePos.x - c.x, io.MousePos.y - c.y) / (r * height);
-                if (by <= nearest) {
-                    nearest = by;
-                    touch_layout_choice = int(i);
-                }
+                if (by <= layout::touch_slack) under.emplace_back(by, int(i));
             }
+            std::sort(under.begin(), under.end());
+            if (!under.empty()) touch_layout_choice = under.front().second;
+            // The stack: the circles the finger is inside (not just near).
+            const size_t stack = size_t(std::count_if(under.begin(), under.end(), [](const auto& c) { return c.first <= 1.0f; }));
+            for (size_t k = 0; stack > 1 && k < stack; ++k)
+                if (under[k].second == previous) {
+                    touch_layout_choice = under[(k + 1) % stack].second;
+                    break;
+                }
             if (touch_layout_choice >= 0) {
                 const auto [x, y, r] = at(size_t(touch_layout_choice));
                 const ImVec2 c = screen(x, y);
