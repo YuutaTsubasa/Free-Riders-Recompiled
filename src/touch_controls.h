@@ -9,8 +9,16 @@ namespace sfr {
 // On-screen controls for touch screens (Android, iOS): a floating stick on the
 // left, A/B/X/Y, RT, a small right stick and the shoulder buttons around
 // the game's HUD, drawn over the game by the presentation blit. Coordinates
-// are relative to the game image (0..1 across its 16:9 area, y down); radii
-// are fractions of its height.
+// are relative to the game image (0..1 across it, y down); radii are
+// fractions of its height.
+//
+// The layout is drawn for a 16:9 image. An image of another shape (Aspect
+// Ratio Auto on a 20:9 phone fills the whole display, Issue #443) keeps every
+// control round and its size: each control keeps its distance, in image
+// heights, from the nearer side edge (touch_anchor_x), so the two thumbs'
+// groups stay at the sides and the extra width is in the middle. Before,
+// the 16:9 layout was stretched across the image: ovals about a fifth wider
+// on a 19.5:9 phone, and touches read the same stretched shapes.
 //
 //   stick   anywhere in the left 40% in a race, on its own circle elsewhere:
 //           the base appears under the finger and the knob follows it. In a
@@ -50,6 +58,16 @@ namespace sfr {
 // gauge fills (Issue #426: a brief touch skips neither). SFR_TOUCH_IN_SCENES=1
 // keeps them as in the menus.
 enum class TouchScene { menu, race, title, scene };
+
+// The width / height the layout below is drawn for.
+inline constexpr float touch_layout_aspect = 16.0f / 9.0f;
+// An x of the 16:9 layout in an image aspect times as wide as it is tall:
+// the same distance in image heights from the nearer side edge (the centre
+// stays the centre).
+float touch_anchor_x(float x, float aspect);
+// The image's aspect from its size on screen (the blit's viewport), 16:9 when
+// unknown.
+float touch_image_aspect(float width, float height);
 
 struct TouchPoint {
     int64_t id;
@@ -94,10 +112,17 @@ public:
     // 0..1; none when no finger is the pointer.
     std::optional<std::array<float, 2>> pointer() const { return pointer_; }
     TouchOverlay overlay() const;
-    // Resting layout (circle centre and radius) of each control.
-    static std::array<float, 3> layout(Button button);
+    // The game image's width / height on screen (touch_image_aspect); the
+    // layout, the touches and the overlay follow it from the next update.
+    void set_aspect(float aspect) { aspect_ = aspect > 0.0f ? aspect : touch_layout_aspect; }
+    float aspect() const { return aspect_; }
+    // Resting layout (circle centre and radius) of each control in an image
+    // of that aspect.
+    static std::array<float, 3> layout(Button button, float aspect = touch_layout_aspect);
 
 private:
+    static std::array<float, 3> layout_16x9(Button button);
+    float aspect_ = touch_layout_aspect;
     GamepadState state_{};
     bool stick_active_ = false;
     int64_t stick_finger_ = -1;
@@ -209,6 +234,9 @@ bool touch_in_scenes();
 void publish_touch_controls(const GamepadState& state, const TouchOverlay& overlay);
 GamepadState touch_gamepad();
 TouchOverlay touch_overlay();
+// The controls at rest in an image of that aspect (a desktop has no touch
+// reader: SFR_TOUCH_CONTROLS=1 shows them so).
+TouchOverlay touch_overlay_at_rest(float aspect);
 // Whether a race is running (the Kinect hooks know), for the stick's role.
 void set_touch_racing(bool racing);
 bool touch_racing();

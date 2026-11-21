@@ -345,6 +345,82 @@ void scenes() {
     require(sfr::touch_scene_for(false, false, false, false, false) == TouchScene::menu, "otherwise the menus");
 }
 
+// Issue #443: with Aspect Ratio Auto a phone's picture fills its 20:9
+// display, and the 16:9 layout was stretched across it (ovals about a fifth
+// wider, and touches read the same stretched shapes). In an image of any
+// shape each control keeps its size, its round shape and its distance from
+// the nearer side edge, all in image heights.
+void aspects() {
+    using sfr::touch_layout_aspect;
+    const float k16x9 = touch_layout_aspect;
+    for (size_t i = 0; i < sfr::TouchOverlay::circles; ++i) {
+        const auto button = TouchControls::Button(i);
+        const auto plain = TouchControls::layout(button);
+        const auto same = TouchControls::layout(button, k16x9);
+        require(plain == same, "16:9 keeps the layout as it was");
+    }
+    require(sfr::touch_anchor_x(0.5f, 21.0f / 9.0f) == 0.5f, "the centre stays the centre");
+    require(sfr::touch_image_aspect(0.0f, 1080.0f) == k16x9, "an unknown image is 16:9");
+    require(std::fabs(sfr::touch_image_aspect(2340.0f, 1080.0f) - 19.5f / 9.0f) < 1e-5f, "the viewport gives the aspect");
+
+    // Distance from the nearer side edge in image heights.
+    const auto from_edge = [](float x, float aspect) { return (x < 0.5f ? x : 1.0f - x) * aspect; };
+    const float shapes[] = {20.0f / 9.0f, 19.5f / 9.0f, 21.0f / 9.0f, 32.0f / 9.0f, 16.0f / 10.0f, 4.0f / 3.0f};
+    for (const float aspect : shapes) {
+        for (size_t i = 0; i < sfr::TouchOverlay::circles; ++i) {
+            const auto button = TouchControls::Button(i);
+            const auto [x0, y0, r0] = TouchControls::layout(button);
+            const auto [x, y, r] = TouchControls::layout(button, aspect);
+            require(y == y0 && r == r0, "a control keeps its height and size");
+            if (x0 == 0.5f) require(x == 0.5f, "START stays in the middle");
+            else require(std::fabs(from_edge(x, aspect) - from_edge(x0, k16x9)) < 1e-4f, "a control keeps its place from the edge");
+            require(x - r / aspect >= 0.0f && x + r / aspect <= 1.0f, "a control leaves the image");
+        }
+        // The diamond keeps its shape: A to B as far as A to Y, in heights.
+        const auto [ax, ay, ar] = TouchControls::layout(TouchControls::a, aspect);
+        const auto [bx, by, br] = TouchControls::layout(TouchControls::b, aspect);
+        const auto [yx, yy, yr] = TouchControls::layout(TouchControls::y, aspect);
+        const float a_to_b = std::hypot((bx - ax) * aspect, by - ay), a_to_y = std::hypot((yx - ax) * aspect, yy - ay);
+        require(std::fabs(a_to_b * a_to_b * 2.0f - a_to_y * a_to_y) < 1e-4f, "the diamond keeps its shape");
+        for (size_t i = TouchControls::a; i < sfr::TouchOverlay::circles; ++i)
+            for (size_t j = i + 1; j < sfr::TouchOverlay::circles; ++j) {
+                const auto [x0, y0, r0] = TouchControls::layout(TouchControls::Button(i), aspect);
+                const auto [x1, y1, r1] = TouchControls::layout(TouchControls::Button(j), aspect);
+                require(std::hypot((x1 - x0) * aspect, y1 - y0) > r0 + r1, "two controls overlap");
+            }
+
+        // Touches read round buttons: as far right as up, in heights.
+        TouchControls controls;
+        controls.set_aspect(aspect);
+        const auto [cx, cy, radius] = TouchControls::layout(TouchControls::b, aspect);
+        controls.update(std::vector<TouchPoint>{{1, cx + radius * 1.2f / aspect, cy}});
+        require(controls.state().buttons == button::b, "a touch beside B, inside its slack, presses it");
+        controls.update(std::vector<TouchPoint>{{1, cx, cy - radius * 1.2f}});
+        require(controls.state().buttons == button::b, "a touch above B, as far, presses it");
+        controls.update(std::vector<TouchPoint>{{1, cx + radius * 1.35f / aspect, cy}});
+        require(!(controls.state().buttons & button::b), "a touch past B's slack misses it");
+        controls.update({});
+        // The overlay draws what the touches read.
+        const auto drawn = controls.overlay().circle[TouchControls::b];
+        require(drawn[0] == cx && drawn[1] == cy && drawn[2] == radius, "the overlay follows the aspect");
+        require(sfr::touch_overlay_at_rest(aspect).circle[TouchControls::b][0] == cx, "at rest as well");
+        const auto rest = sfr::touch_overlay_at_rest(aspect);
+        require(rest.right_knob[0] == rest.circle[TouchControls::right_stick][0] &&
+                    rest.right_knob[1] == rest.circle[TouchControls::right_stick][1],
+                "the right knob rests on its base");
+        // A stick pushed its radius to the right (in heights) is a full push,
+        // and the knob stops at the rim, in heights too.
+        const auto [rx, ry, rr] = TouchControls::layout(TouchControls::right_stick, aspect);
+        controls.update(std::vector<TouchPoint>{{2, rx, ry}}, 0.0f, true);
+        controls.update(std::vector<TouchPoint>{{2, rx + rr * 2.0f / aspect, ry}}, 0.0f, true);
+        require(controls.state().thumb_rx == 32767 && controls.state().thumb_ry == 0, "the right stick reads round");
+        require(std::fabs((controls.overlay().right_knob[0] - rx) * aspect - rr) < 1e-4f, "the right knob stops at the rim");
+        controls.update(std::vector<TouchPoint>{{2, rx + rr * 0.5f / aspect, ry}}, 0.0f, true);
+        require(controls.state().thumb_rx > 16000 && controls.state().thumb_rx < 16500, "half a radius is half a push");
+        controls.update({}, 0.0f, true);
+    }
+}
+
 int main() {
 #ifdef _WIN32
     _putenv_s("SFR_TOUCH_CONTROLS", "1");
@@ -359,6 +435,7 @@ int main() {
         packing();
         controller_handover();
         tilt_lean();
+        aspects();
         std::cout << "Touch control checks passed\n";
         return 0;
     } catch (const std::exception& error) {

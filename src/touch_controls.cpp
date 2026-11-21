@@ -9,12 +9,11 @@
 
 namespace sfr {
 namespace {
-constexpr float aspect = 16.0f / 9.0f;       // game image width / height
 constexpr float stick_region = 0.40f;        // left part of the image for the stick
 constexpr float touch_slack = 1.25f;         // a button reacts a little outside its circle
 
-// Distance in image heights.
-float distance(float x0, float y0, float x1, float y1) {
+// Distance in image heights, in an image aspect times as wide as it is tall.
+float distance(float x0, float y0, float x1, float y1, float aspect) {
     return std::hypot((x1 - x0) * aspect, y1 - y0);
 }
 
@@ -28,7 +27,26 @@ GamepadState published_state;
 TouchOverlay published_overlay = TouchControls{}.overlay();
 }
 
-std::array<float, 3> TouchControls::layout(Button button) {
+float touch_anchor_x(float x, float aspect) {
+    if (!(aspect > 0.0f)) return x;
+    const float k = touch_layout_aspect / aspect;
+    if (x < 0.5f) return x * k;
+    if (x > 0.5f) return 1.0f - (1.0f - x) * k;
+    return x;
+}
+
+float touch_image_aspect(float width, float height) {
+    if (!(width > 0.0f) || !(height > 0.0f)) return touch_layout_aspect;
+    return std::clamp(width / height, 0.5f, 16.0f);
+}
+
+std::array<float, 3> TouchControls::layout(Button button, float aspect) {
+    const auto [left, top, radius] = layout_16x9(button);
+    return {touch_anchor_x(left, aspect), top, radius};
+}
+
+std::array<float, 3> TouchControls::layout_16x9(Button button) {
+    constexpr float aspect = touch_layout_aspect;
     constexpr float cx = 0.845f, cy = 0.70f, step = 0.12f, r = 0.075f;
     switch (button) {
     case stick: return {0.16f, 0.70f, 0.13f};
@@ -52,7 +70,7 @@ std::array<float, 3> TouchControls::layout(Button button) {
 
 namespace {
 // Where a finger on a stick puts its knob: (dx, dy) in -1..1 from the base.
-std::array<float, 2> stick_offset(const TouchPoint& finger, std::array<float, 2> base, float radius) {
+std::array<float, 2> stick_offset(const TouchPoint& finger, std::array<float, 2> base, float radius, float aspect) {
     float dx = (finger.x - base[0]) * aspect / radius;
     float dy = (finger.y - base[1]) / radius;
     const float length = std::hypot(dx, dy);
@@ -72,7 +90,7 @@ void TouchControls::update(std::span<const TouchPoint> touches, float tilt, Touc
         // finger anywhere is START until it lifts (the title's pointer).
         stick_active_ = false;
         stick_finger_ = right_finger_ = -1;
-        right_knob_ = {layout(right_stick)[0], layout(right_stick)[1]};
+        right_knob_ = {layout(right_stick, aspect_)[0], layout(right_stick, aspect_)[1]};
         pointer_.reset();
         const auto held = std::find_if(touches.begin(), touches.end(),
                                        [&](const TouchPoint& t) { return t.id == pointer_finger_; });
@@ -94,15 +112,16 @@ void TouchControls::update(std::span<const TouchPoint> touches, float tilt, Touc
     if (held(right_finger_) == touches.end()) right_finger_ = -1;
     // The pointer belongs to the scene it started in: a race takes it away.
     if (held(pointer_finger_) == touches.end() || racing) pointer_finger_ = -1;
-    const float stick_radius = layout(stick)[2];
-    const auto [right_x, right_y, right_radius] = layout(right_stick);
-    const auto [stick_x, stick_y, stick_rest_radius] = layout(stick);
+    const float aspect = aspect_;
+    const float stick_radius = layout(stick, aspect)[2];
+    const auto [right_x, right_y, right_radius] = layout(right_stick, aspect);
+    const auto [stick_x, stick_y, stick_rest_radius] = layout(stick, aspect);
     for (const TouchPoint& touch : touches) {
         if (touch.id == stick_finger_ || touch.id == right_finger_ || touch.id == pointer_finger_) continue;
         bool on_button = false;
         for (size_t index = a; index <= lt; ++index) {
-            const auto [bx, by, br] = layout(Button(index));
-            if (distance(bx, by, touch.x, touch.y) <= br * touch_slack) {
+            const auto [bx, by, br] = layout(Button(index), aspect);
+            if (distance(bx, by, touch.x, touch.y, aspect) <= br * touch_slack) {
                 pressed_[index] = true;
                 on_button = true;
             }
@@ -111,8 +130,8 @@ void TouchControls::update(std::span<const TouchPoint> touches, float tilt, Touc
         // Outside a race the stick starts only on its own circle: the rest
         // of the screen is the pointer.
         const bool stick_area = racing ? touch.x < stick_region && touch.x >= 0.0f
-                                       : distance(stick_x, stick_y, touch.x, touch.y) <= stick_rest_radius * touch_slack;
-        if (right_finger_ < 0 && distance(right_x, right_y, touch.x, touch.y) <= right_radius * touch_slack) {
+                                       : distance(stick_x, stick_y, touch.x, touch.y, aspect) <= stick_rest_radius * touch_slack;
+        if (right_finger_ < 0 && distance(right_x, right_y, touch.x, touch.y, aspect) <= right_radius * touch_slack) {
             right_finger_ = touch.id;
         } else if (!stick_active_ && stick_area) {
             stick_active_ = true;
@@ -132,7 +151,7 @@ void TouchControls::update(std::span<const TouchPoint> touches, float tilt, Touc
         }
     }
     if (stick_active_) {
-        const auto [dx, dy] = stick_offset(*held(stick_finger_), stick_base_, stick_radius);
+        const auto [dx, dy] = stick_offset(*held(stick_finger_), stick_base_, stick_radius, aspect);
         stick_knob_ = {stick_base_[0] + dx * stick_radius / aspect, stick_base_[1] + dy * stick_radius};
         if (racing) {
             state_.thumb_lx = axis(dx);
@@ -152,7 +171,7 @@ void TouchControls::update(std::span<const TouchPoint> touches, float tilt, Touc
         // The right stick is analog everywhere: the race's reach and arms up,
         // the menus' hand cursor. The race's own dead zone ignores a resting
         // thumb's wobble.
-        const auto [dx, dy] = stick_offset(*held(right_finger_), {right_x, right_y}, right_radius);
+        const auto [dx, dy] = stick_offset(*held(right_finger_), {right_x, right_y}, right_radius, aspect);
         right_knob_ = {right_x + dx * right_radius / aspect, right_y + dy * right_radius};
         state_.thumb_rx = axis(dx);
         state_.thumb_ry = axis(-dy);
@@ -173,12 +192,14 @@ TouchOverlay TouchControls::overlay() const {
     TouchOverlay overlay;
     if (hidden_) return overlay;  // every circle at state 0
     for (size_t index = 0; index < TouchOverlay::circles; ++index) {
-        auto [cx, cy, radius] = layout(Button(index));
+        auto [cx, cy, radius] = layout(Button(index), aspect_);
         if (index == stick && stick_active_) { cx = stick_base_[0]; cy = stick_base_[1]; }
         overlay.circle[index] = {cx, cy, radius, pressed_[index] ? 2.0f : 1.0f};
     }
-    overlay.knob = stick_active_ ? stick_knob_ : std::array<float, 2>{layout(stick)[0], layout(stick)[1]};
-    overlay.right_knob = right_knob_;
+    overlay.knob = stick_active_ ? stick_knob_ : std::array<float, 2>{layout(stick, aspect_)[0], layout(stick, aspect_)[1]};
+    // At rest (also before the first update) the right knob is on its base.
+    overlay.right_knob = right_finger_ >= 0 ? right_knob_
+                                           : std::array<float, 2>{layout(right_stick, aspect_)[0], layout(right_stick, aspect_)[1]};
     return overlay;
 }
 
@@ -372,6 +393,12 @@ std::optional<std::array<float, 2>> pointer_from_window(float x, float y) {
 TouchOverlay touch_overlay() {
     std::lock_guard lock(published_mutex);
     return published_overlay;
+}
+
+TouchOverlay touch_overlay_at_rest(float aspect) {
+    TouchControls controls;
+    controls.set_aspect(aspect);
+    return controls.overlay();
 }
 
 namespace { std::atomic<bool> controller_present{false}, touched_last{false}; }
