@@ -85,6 +85,13 @@ public:
     // Original 0x824E65A0: resolve RT0 into the front buffer, then swap it to the
     // display. Supported only for the native default back/front buffers.
     void present_front_buffer(uint32_t device);
+    // Whether the plain race loading screen is up and whether this frame drew
+    // Now Loading (Issue #365): the screen's title views without it, all
+    // black, are then shown across a wider frame, not as 16:9.
+    void set_plain_loading_screen(bool up, bool now_loading) noexcept {
+        plain_loading_screen_ = up;
+        plain_now_loading_ = now_loading;
+    }
     // Native draws, created with the first draw.
     NativeRenderer& renderer();
     // Discards the packets written since the last reset; returns the new write pointer.
@@ -110,6 +117,7 @@ private:
     // 640 wide each) or a race in the 880-wide layout (a Tag Race holding
     // hands, On your Gear). The layout's width, this frame and the last.
     uint32_t split_layout_ = 0, split_layout_last_ = 0;
+    bool plain_loading_screen_ = false, plain_now_loading_ = false;  // set_plain_loading_screen
 public:
     // Whether the frame is (or the last one was) such a frame: it is laid out
     // and shown as the title's own 16:9 picture, not widened.

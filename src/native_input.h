@@ -51,6 +51,11 @@ enum class PlayerDevice : uint8_t;
 // controller and the keyboard read as at rest: the game waits behind the
 // window as it did behind the console's system UI.
 void set_input_held(bool held);
+// The same while the plain race loading screen is up (Issue #365): it shows
+// nothing the player's input would move. Kept apart from set_input_held so
+// that neither lets go of the other's hold.
+void set_loading_input_held(bool held);
+// Either hold.
 bool input_held();
 
 class NativeInput {

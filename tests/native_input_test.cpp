@@ -179,12 +179,40 @@ void player_settings_route_and_remap_input() {
     require(input.current(0) == sfr::GamepadState{} && !input.controller(0),
             "off player one stays connected at rest without appearing as a controller");
 }
+
+// The plain race loading screen holds the input while it is up (Issue #365):
+// controllers, the keyboard and the touch controls read as at rest, user 0
+// stays connected, and the screen's hold and the Kinect window's hold do not
+// let go of each other.
+void loading_screen_holds_input() {
+    sfr::NativeInput input([](uint32_t user) {
+                               return user == 1 ? std::optional(sfr::GamepadState{button::b}) : std::nullopt;
+                           },
+                           [] { return sfr::GamepadState{button::a}; });
+    require(input.current(0)->buttons == button::a && input.controller(1)->buttons == button::b, "input before the screen");
+    sfr::set_loading_input_held(true);
+    require(sfr::input_held(), "the screen holds the input");
+    require(input.current(0) == sfr::GamepadState{}, "user 0 reads at rest and stays connected");
+    require(input.controller(1) == sfr::GamepadState{}, "a controller reads at rest");
+    require(!input.current(2), "a missing controller stays missing");
+    sfr::set_input_held(true);
+    sfr::set_input_held(false);
+    require(sfr::input_held() && input.current(0) == sfr::GamepadState{},
+            "the Kinect window closing does not let go of the screen's hold");
+    sfr::set_input_held(true);
+    sfr::set_loading_input_held(false);
+    require(sfr::input_held() && input.current(0) == sfr::GamepadState{},
+            "the screen going does not let go of the Kinect window's hold");
+    sfr::set_input_held(false);
+    require(!sfr::input_held() && input.current(0)->buttons == button::a, "the input comes back after the screen");
+}
 }
 
 int main() {
     try {
         run();
         player_settings_route_and_remap_input();
+        loading_screen_holds_input();
         std::cout << "native input tests passed\n";
         return 0;
     } catch (const std::exception& error) {

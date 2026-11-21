@@ -12,6 +12,7 @@
 #include "native_raster_state.h"
 #include "native_depth_flip.h"
 #include "gltf_model.h"
+#include "plain_race_loading.h"
 #include "touch_controls.h"
 #include "fps_readout.h"
 #include "screen_overlay_renderer.h"
@@ -2673,20 +2674,15 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
         // so the 880x720 the loading screens set fills the same 16:9 area the
         // rest of the game does. Keeping its own shape made the loading
         // screens narrower than the game, very visibly so on a 20:9 phone.
-        const float scale = (std::min)(float(out_width) / float(impl_->width),
-                                       float(out_height) / float(impl_->height));
-        float view_width = float(impl_->width) * scale, view_height = float(impl_->height) * scale;
-        if (part && display_aspect > 0.0f) {
-            // The part keeps the size it has inside the whole framebuffer as that
-            // is scaled into the window (the same as frames presented whole, so a
-            // window of another shape than the framebuffer does not make it jump),
-            // never more than the window holds.
-            view_height = (std::min)(view_height, float(out_width) / display_aspect);
-            view_width = view_height * display_aspect;
-        }
-        const float corner = impl_->corner_anchor.load(std::memory_order_relaxed) ? 1.0f : 0.5f;
-        const plume::RenderViewport viewport((float(out_width) - view_width) * corner, (float(out_height) - view_height) * corner,
-                                             view_width, view_height);
+        // The part keeps the size it has inside the whole framebuffer as that
+        // is scaled into the window (the same as frames presented whole, so a
+        // window of another shape than the framebuffer does not make it jump),
+        // never more than the window holds (plain_race_loading.h).
+        const auto shown_view = plain_loading::present_view(out_width, out_height, impl_->width, impl_->height, part,
+                                                            display_aspect,
+                                                            impl_->corner_anchor.load(std::memory_order_relaxed));
+        const float view_width = shown_view.width, view_height = shown_view.height;
+        const plume::RenderViewport viewport(shown_view.x, shown_view.y, view_width, view_height);
         const plume::RenderRect scissor(0, 0, int32_t(out_width), int32_t(out_height));
         impl_->command_list->setViewports(&viewport, 1);
         impl_->command_list->setScissors(&scissor, 1);
