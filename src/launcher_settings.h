@@ -1,5 +1,6 @@
 #pragma once
 #include "kinect_ideal_diagram.h"
+#include "touch_layout.h"
 #include "touch_options.h"
 
 #include <cstdint>
@@ -111,6 +112,11 @@ struct LauncherSettings {
     // as lists of names, "ls,lt". None by default: every control shown and
     // named. touch_labels off still hides every name.
     uint32_t touch_hidden = 0, touch_unnamed = 0;
+    // Issue #443 (touch_layout.h): where the player put each touch control
+    // and how big it is, from the layout editor; in settings.ini and to the
+    // game (SFR_TOUCH_LAYOUT) as "ls:l0.320,0.550,1.40;...". Empty is the
+    // default layout.
+    TouchLayout touch_layout{};
     bool tilt = true;                // SFR_TILT: tilt to steer (Android, iOS)
     bool tilt_lean = false;          // SFR_TILT_LEAN: "Tilt to kick", a forward tip kicks (Android, iOS; Issue #247; key kept from "Tilt to lean")
     // Where the Kinect player's body comes from, and whether the camera

@@ -17,8 +17,7 @@ static_assert(touch_options::bit_of("ls") == 1u << TouchControls::stick && touch
                   touch_options::bit_of("rs") == 1u << TouchControls::right_stick,
               "touch_options::names follows TouchControls::Button");
 namespace {
-constexpr float stick_region = 0.40f;        // left part of the image for the stick
-constexpr float touch_slack = 1.25f;         // a button reacts a little outside its circle
+using touch_layout::touch_slack;  // a button reacts a little outside its circle
 
 // Distance in image heights, in an image aspect times as wide as it is tall.
 float distance(float x0, float y0, float x1, float y1, float aspect) {
@@ -35,13 +34,7 @@ GamepadState published_state;
 TouchOverlay published_overlay = TouchControls{}.overlay();
 }
 
-float touch_anchor_x(float x, float aspect) {
-    if (!(aspect > 0.0f)) return x;
-    const float k = touch_layout_aspect / aspect;
-    if (x < 0.5f) return x * k;
-    if (x > 0.5f) return 1.0f - (1.0f - x) * k;
-    return x;
-}
+float touch_anchor_x(float x, float aspect) { return touch_layout::anchor_x(x, aspect); }
 
 float touch_image_aspect(float width, float height) {
     if (!(width > 0.0f) || !(height > 0.0f)) return touch_layout_aspect;
@@ -54,26 +47,14 @@ std::array<float, 3> TouchControls::layout(Button button, float aspect) {
 }
 
 std::array<float, 3> TouchControls::layout_16x9(Button button) {
-    constexpr float aspect = touch_layout_aspect;
-    constexpr float cx = 0.845f, cy = 0.70f, step = 0.12f, r = 0.075f;
-    switch (button) {
-    case stick: return {0.16f, 0.70f, 0.13f};
-    case a: return {cx, cy + step, r};
-    case b: return {cx + step / aspect, cy, r};
-    case x: return {cx - step / aspect, cy, r};
-    case y: return {cx, cy - step, r};
-    case trigger: return {0.66f, 0.84f, 0.065f};
-    case start: return {0.5f, 0.08f, 0.05f};
-    // The race HUD keeps the screen's edges free between its corners (Rings
-    // and items above, the place and lap below on the left; the map above,
-    // the air gauge below on the right), so the punches sit there, each on
-    // its own side.
-    case lb: return {0.065f, 0.44f, 0.07f};
-    case rb: return {0.935f, 0.44f, 0.07f};
-    case lt: return {0.34f, 0.86f, 0.055f};
-    case right_stick: return {0.70f, 0.46f, 0.09f};
-    }
-    return {};
+    return button < touch_layout::count ? touch_layout::defaults[button] : std::array<float, 3>{};
+}
+
+bool TouchControls::in_race_stick_area(float x) const {
+    // The stick's side: the left 40% (the right 40% once LS is put on the
+    // right half), reaching further in when LS's circle does.
+    const auto [from, to] = touch_layout::race_stick_area(layout_.places[stick], aspect_);
+    return from == 0.0f ? x >= 0.0f && x < to : x > from && x <= 1.0f;
 }
 
 namespace {
@@ -98,7 +79,7 @@ void TouchControls::update(std::span<const TouchPoint> touches, float tilt, Touc
         // finger anywhere is START until it lifts (the title's pointer).
         stick_active_ = false;
         stick_finger_ = right_finger_ = -1;
-        right_knob_ = {layout(right_stick, aspect_)[0], layout(right_stick, aspect_)[1]};
+        right_knob_ = {place(right_stick)[0], place(right_stick)[1]};
         pointer_.reset();
         const auto held = std::find_if(touches.begin(), touches.end(),
                                        [&](const TouchPoint& t) { return t.id == pointer_finger_; });
@@ -121,28 +102,51 @@ void TouchControls::update(std::span<const TouchPoint> touches, float tilt, Touc
     // The pointer belongs to the scene it started in: a race takes it away.
     if (held(pointer_finger_) == touches.end() || racing) pointer_finger_ = -1;
     const float aspect = aspect_;
-    const float stick_radius = layout(stick, aspect)[2];
-    const auto [right_x, right_y, right_radius] = layout(right_stick, aspect);
-    const auto [stick_x, stick_y, stick_rest_radius] = layout(stick, aspect);
+    const auto [right_x, right_y, right_radius] = place(right_stick);
+    const auto [stick_x, stick_y, stick_radius] = place(stick);
     // A hidden control is empty screen (TouchOptions).
     const bool stick_shown = options_.shown(stick), right_shown = options_.shown(right_stick);
     for (const TouchPoint& touch : touches) {
         if (touch.id == stick_finger_ || touch.id == right_finger_ || touch.id == pointer_finger_) continue;
-        bool on_button = false;
+        // Each button whose circle or slack the touch is in (a thumb across
+        // two buttons), as always; but inside two or more circles, at least
+        // one of them placed by the player, the nearest one (in radii) only,
+        // so controls put over each other each keep their middle. Default
+        // circles that meet (LT and RT on a screen narrower than 16:9) press
+        // together as before.
+        size_t nearest = 0;
+        float nearest_by = 2.0f;
+        int inside = 0;
+        bool placed_inside = false;
+        uint32_t slack = 0;
         for (size_t index = a; index <= lt; ++index) {
             if (!options_.shown(index)) continue;
-            const auto [bx, by, br] = layout(Button(index), aspect);
-            if (distance(bx, by, touch.x, touch.y, aspect) <= br * touch_slack) {
-                pressed_[index] = true;
-                on_button = true;
+            const auto [bx, by, br] = place(Button(index));
+            const float by_radii = distance(bx, by, touch.x, touch.y, aspect) / br;
+            if (by_radii <= 1.0f) {
+                ++inside;
+                placed_inside = placed_inside || layout_.places[index].has_value();
+                if (by_radii < nearest_by) {
+                    nearest = index;
+                    nearest_by = by_radii;
+                }
             }
+            if (by_radii <= touch_slack) slack |= 1u << index;
         }
-        if (on_button) continue;
+        if (inside >= 2 && placed_inside) {
+            pressed_[nearest] = true;
+            continue;
+        }
+        if (slack) {
+            for (size_t index = a; index <= lt; ++index)
+                if (slack & (1u << index)) pressed_[index] = true;
+            continue;
+        }
         // Outside a race the stick starts only on its own circle: the rest
         // of the screen is the pointer.
         const bool stick_area = stick_shown &&
-                                (racing ? touch.x < stick_region && touch.x >= 0.0f
-                                        : distance(stick_x, stick_y, touch.x, touch.y, aspect) <= stick_rest_radius * touch_slack);
+                                (racing ? in_race_stick_area(touch.x)
+                                        : distance(stick_x, stick_y, touch.x, touch.y, aspect) <= stick_radius * touch_slack);
         if (right_shown && right_finger_ < 0 && distance(right_x, right_y, touch.x, touch.y, aspect) <= right_radius * touch_slack) {
             right_finger_ = touch.id;
         } else if (!stick_active_ && stick_area) {
@@ -204,16 +208,16 @@ TouchOverlay TouchControls::overlay() const {
     TouchOverlay overlay;
     if (hidden_) return overlay;  // every circle at state 0
     for (size_t index = 0; index < TouchOverlay::circles; ++index) {
-        auto [cx, cy, radius] = layout(Button(index), aspect_);
+        auto [cx, cy, radius] = place(Button(index));
         if (index == stick && stick_active_) { cx = stick_base_[0]; cy = stick_base_[1]; }
         // Hidden: state 0, nothing drawn; without its name: negative.
         const float state = !options_.shown(index) ? 0.0f : pressed_[index] ? 2.0f : 1.0f;
         overlay.circle[index] = {cx, cy, radius, options_.named(index) ? state : -state};
     }
-    overlay.knob = stick_active_ ? stick_knob_ : std::array<float, 2>{layout(stick, aspect_)[0], layout(stick, aspect_)[1]};
+    overlay.knob = stick_active_ ? stick_knob_ : std::array<float, 2>{place(stick)[0], place(stick)[1]};
     // At rest (also before the first update) the right knob is on its base.
     overlay.right_knob = right_finger_ >= 0 ? right_knob_
-                                           : std::array<float, 2>{layout(right_stick, aspect_)[0], layout(right_stick, aspect_)[1]};
+                                           : std::array<float, 2>{place(right_stick)[0], place(right_stick)[1]};
     return overlay;
 }
 
@@ -413,6 +417,7 @@ TouchOverlay touch_overlay_at_rest(float aspect) {
     TouchControls controls;
     controls.set_aspect(aspect);
     controls.set_options(touch_options_chosen());
+    controls.set_layout(touch_layout_chosen());
     return controls.overlay();
 }
 
@@ -451,6 +456,16 @@ TouchOptions touch_options_chosen() {
             std::fprintf(stderr, "TOUCH options hidden=%s unnamed=%s\n", touch_options::format(options.hidden).c_str(),
                          touch_options::format(options.unnamed).c_str());
         return options;
+    }();
+    return chosen;
+}
+
+TouchLayout touch_layout_chosen() {
+    static const TouchLayout chosen = [] {
+        const char* text = std::getenv("SFR_TOUCH_LAYOUT");
+        const TouchLayout layout = text ? touch_layout::parse(text) : TouchLayout{};
+        if (!layout.empty()) std::fprintf(stderr, "TOUCH layout %s\n", touch_layout::format(layout).c_str());
+        return layout;
     }();
     return chosen;
 }

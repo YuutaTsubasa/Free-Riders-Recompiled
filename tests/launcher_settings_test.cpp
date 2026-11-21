@@ -982,12 +982,27 @@ void environment_follows_settings() {
         require(sfr::parse_launcher_settings("touch_hidden=LS, rs ,nonsense\n").touch_hidden ==
                     sfr::touch_options::parse("ls,rs"),
                 "a hand-edited list keeps the names it knows");
+        // Issue #443's layout editor: each moved or resized control, by name;
+        // none by default.
+        require(sfr::LauncherSettings{}.touch_layout.empty() &&
+                    sfr::format_launcher_settings(sfr::LauncherSettings{}).find("touch_layout=\n") != std::string::npos,
+                "the default layout saves an empty list");
+        sfr::LauncherSettings placed;
+        placed.touch_layout = sfr::touch_layout::parse("ls:l0.320,0.550,1.40;a:r0.276,0.820,0.80");
+        const std::string placed_saved = sfr::format_launcher_settings(placed);
+        require(placed_saved.find("touch_layout=ls:l0.320,0.550,1.40;a:r0.276,0.820,0.80\n") != std::string::npos,
+                "the layout is saved by name");
+        require(sfr::parse_launcher_settings(placed_saved).touch_layout == placed.touch_layout, "and survives a save");
 #if defined(__ANDROID__) || defined(SFR_IOS)
         require(value_of(chosen, "SFR_TOUCH_HIDDEN") == "ls,lt" && value_of(chosen, "SFR_TOUCH_UNNAMED") == "a,start" &&
                     value_of(sfr::LauncherSettings{}, "SFR_TOUCH_HIDDEN").empty(),
                 "the lists reach the game; none leaves the variables unset");
+        require(value_of(placed, "SFR_TOUCH_LAYOUT") == "ls:l0.320,0.550,1.40;a:r0.276,0.820,0.80" &&
+                    value_of(sfr::LauncherSettings{}, "SFR_TOUCH_LAYOUT").empty(),
+                "the layout reaches the game; the default leaves the variable unset");
 #else
-        require(!exports(chosen, "SFR_TOUCH_HIDDEN") && !exports(chosen, "SFR_TOUCH_UNNAMED"),
+        require(!exports(chosen, "SFR_TOUCH_HIDDEN") && !exports(chosen, "SFR_TOUCH_UNNAMED") &&
+                    !exports(placed, "SFR_TOUCH_LAYOUT"),
                 "a desktop has no touch controls to choose");
 #endif
         require(sfr::parse_launcher_settings("language=klingon\n").language == "auto", "an unknown language is the system's");

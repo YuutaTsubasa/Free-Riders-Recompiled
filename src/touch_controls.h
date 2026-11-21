@@ -1,5 +1,6 @@
 #pragma once
 #include "native_input.h"
+#include "touch_layout.h"
 #include "touch_options.h"
 #include <array>
 #include <cstdint>
@@ -60,6 +61,23 @@ namespace sfr {
 // circle). Selection stays the game's own: the cursor rests where the finger
 // left it and the item under it fills and is chosen, as with a hand. On the
 // title screen a touch away from the controls is START.
+//
+// The player may move and resize each control in the launcher's layout
+// editor (Issue #443, touch_layout.h; set_layout below). Everything follows
+// the placed circles: what is drawn, where a touch presses a button, the
+// sticks' travel (their radius) and, in a race, the floating stick's side:
+// the left 40% of the image while LS is on the left half (further in if LS
+// was put beyond it), the right 40% once LS is put on the right half. The
+// stick's resting circle is where LS was put. Overlapping controls are the
+// player's choice; a touch then goes, in this order, to:
+//   1. the buttons (A, B, X, Y, RT, START, LB, RB, LT): each whose circle or
+//      the slack just outside it the touch is in, as a thumb across two
+//      buttons of a pad (as before the editor); but a touch inside two or
+//      more circles, at least one of them moved or resized by the player,
+//      presses the one whose centre is nearest (in radii) alone;
+//   2. the right stick;
+//   3. the left stick (its circle in the menus, its side in a race);
+//   4. the pointer (the menus) or START (the title).
 //
 // A movie or a story scene (Issue #274) needs no controls and they hid the
 // picture, so none are drawn there: a touch anywhere is START for as long as
@@ -131,14 +149,23 @@ public:
     // (touch_options.h); all shown and named until set.
     void set_options(const TouchOptions& options) { options_ = options; }
     const TouchOptions& options() const { return options_; }
-    // Resting layout (circle centre and radius) of each control in an image
-    // of that aspect.
+    // Where the player put each control and how big it is (touch_layout.h);
+    // the default layout until set.
+    void set_layout(const TouchLayout& layout) { layout_ = layout; }
+    const TouchLayout& custom_layout() const { return layout_; }
+    // Default resting layout (circle centre and radius) of each control in an
+    // image of that aspect.
     static std::array<float, 3> layout(Button button, float aspect = touch_layout_aspect);
+    // The resting layout in use: the player's places in this aspect.
+    std::array<float, 3> place(Button button) const { return touch_layout::resolve(button, layout_.places[button], aspect_); }
 
 private:
     static std::array<float, 3> layout_16x9(Button button);
+    // Whether a touch at x is on the floating stick's side in a race.
+    bool in_race_stick_area(float x) const;
     float aspect_ = touch_layout_aspect;
     TouchOptions options_{};
+    TouchLayout layout_{};
     GamepadState state_{};
     bool stick_active_ = false;
     int64_t stick_finger_ = -1;
@@ -285,4 +312,7 @@ bool touch_names_shown();
 // touch_options_from is that reading for given values (null for unset).
 TouchOptions touch_options_chosen();
 TouchOptions touch_options_from(const char* hidden, const char* unnamed);
+// The player's layout (touch_layout.h): SFR_TOUCH_LAYOUT, read once; the
+// default layout when unset or empty.
+TouchLayout touch_layout_chosen();
 }
