@@ -336,6 +336,8 @@ with [docs/progress.md](docs/progress.md).
   With **Plain race loading screen** on, wide screens (for example 20:9 phones with Aspect Ratio Auto) no longer show a half-window frame, with the touch buttons and frame-rate readout moved aside, after Now Loading goes. The hidden practice is now silent, and buttons pressed during the screen no longer change when the race starts (#365).
 - [v0.10.74 — Move and resize touch buttons](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.74)
   A new page, **Controls › Touch and tilt › Move and resize touch buttons**, lets you drag each touch button to a new place and change its size, or reset one or all of them. A layout made on one screen shape still fits a screen of another shape (#443).
+- [v0.10.75 — Hourly update check, and AVATAR without a model](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.75)
+  The launcher now checks for a newer version at most once an hour instead of once a day (#365). Choosing AVATAR in the character ring with no VRM model set no longer loads for ever: you race with an empty rider (gear and board), and the loading screen tells you to choose a model in the launcher.
 
 ## System Requirements
 
