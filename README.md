@@ -391,8 +391,8 @@ ever changes files it wrote itself. Details are in [docs/linux.md](docs/linux.md
 
 ### Update notice
 
-Once a day the launcher asks GitHub whether a newer release is out. When there
-is one, a green **Version X is available** button appears at the top (and in
+At most once an hour the launcher asks GitHub whether a newer release is out.
+When there is one, a green **Version X is available** button appears at the top (and in
 **General › Updates**); it opens that release's file for your system in your
 browser: the Windows zip, the Linux tarball, the macOS zip, the iOS `.ipa`, or
 on Android the same APK you installed (`android10-arm64.apk` or the Android 9
@@ -404,7 +404,7 @@ account, no cookies, only `FreeRidersRecompiled-launcher/<version>` as its
 User-Agent (GitHub sees your IP address, as with any visit). It runs in the
 background, gives up after a few seconds without a network and never delays
 **Start game**. The last answer is kept in `settings.ini` (`update_checked_at`,
-`update_version`, `update_url`), so the launcher asks at most once a day.
+`update_version`, `update_url`), so the launcher asks at most once an hour.
 To turn it off, switch off **General › Updates › Check for updates**
 (`check_updates=0` in `settings.ini`). On Linux the request uses the system's
 libcurl (`libcurl.so.4`, installed on nearly every desktop); without it there

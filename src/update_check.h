@@ -6,10 +6,10 @@
 #include <string_view>
 #include <vector>
 
-// The launcher's "a newer version is available" notice (Issue #365): once a
-// day it asks GitHub for the project's latest release and, when that is newer
-// than this build, offers the release's file for this platform in the
-// browser. Nothing is downloaded or installed by the launcher itself.
+// The launcher's "a newer version is available" notice (Issue #365): at
+// most once an hour it asks GitHub for the project's latest release and, when
+// that is newer than this build, offers the release's file for this platform
+// in the browser. Nothing is downloaded or installed by the launcher itself.
 //
 // This file is the part without a network: reading the answer, comparing
 // versions, choosing the file and deciding when to ask. The request is
@@ -28,7 +28,7 @@ inline constexpr const char* recent_releases_url =
 // Opened when this platform has no file of its own in a release.
 inline constexpr const char* releases_page_url = "https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/latest";
 inline constexpr int timeout_ms = 5000;
-inline constexpr int64_t check_interval_seconds = 24 * 60 * 60;
+inline constexpr int64_t check_interval_seconds = 60 * 60;  // an hour
 
 // This build's version (scripts/package_android.py's VERSION_NAME, read by
 // CMake), "" when the build was made without it.
@@ -92,7 +92,8 @@ std::optional<Found> found_release(const Release& release, const Platform& platf
 // The highest-versioned game release of a list, if any.
 std::optional<Found> newest_release(const std::vector<Release>& releases, const Platform& platform);
 
-// Whether a day has passed since the last check (or the clock went back).
+// Whether check_interval_seconds (an hour) has passed since the last check
+// (or the clock went back).
 bool check_due(int64_t last_checked, int64_t now);
 // Whether found is newer than this build; false when either is unknown.
 bool is_newer(std::string_view found, std::string_view current);
