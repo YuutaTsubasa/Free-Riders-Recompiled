@@ -1779,26 +1779,16 @@ static uint32_t complete_overlapped(uint32_t overlapped, uint32_t result, uint32
     return 997;
 }
 
-// SFR_AVATAR=1 turns the Xbox avatar system on. It is off by default: the
-// title only needs it for the Avatar entry of the character ring, and saying
-// yes to XamAvatarInitialize means answering everything it then asks about
-// the assets it would draw.
-//
-// Online it is always on: another player may race as their Avatar, and a
-// game whose avatar system failed to start loads that racer anyway and reads
-// through a null pointer (an AYN Thor hosting a PC player's Avatar). With
-// the system on, a racer without parts is the empty avatar game_patches.cpp
-// already handles.
-static bool avatars_enabled() {
-    static const bool enabled = [] {
-        const char* const text = std::getenv("SFR_AVATAR");
-        if (text && *text && *text != '0') return true;
-        const char* const server = std::getenv("SFR_LIVE_SERVER");
-        const char* const host = std::getenv("SFR_LIVE_HOST");
-        return (server && *server) || (host && *host && *host != '0');
-    }();
-    return enabled;
-}
+// The Xbox avatar system is always on. The title only needs it for the
+// Avatar entry of the character ring, but with it off that entry loads for
+// ever: the title waits for assets an avatar system that failed to start
+// never hands over. With it on, an Avatar without a VRM model races as the
+// empty avatar game_patches.cpp already handles (nothing drawn for the rider,
+// a note on screen saying so), as another player's Avatar does online, where
+// the system has always been on -- there a game whose avatar system failed to
+// start read through a null pointer loading that racer (an AYN Thor hosting a
+// PC player's Avatar). SFR_AVATAR, which the launcher still writes, no longer
+// turns it off.
 
 static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t address) {
     // Cleared on the way out, so a report names what a thread is inside.
@@ -3383,19 +3373,16 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         throw GuestThreadExit{ctx.r3.u32};
     }
     if (std::string_view(name) == "__imp__XamAvatarInitialize") {
-        // Without SFR_AVATAR there is no avatar system: fail as the pinned
-        // reference does (xam_avatar.cc returns ~0), and the title's avatar
-        // library frees its buffer and carries on. With it the system is
-        // there, and the title goes on to ask for the assets it draws an
-        // avatar from -- which is what the Avatar entry of the character
-        // ring waits for: choosing it without this loads for ever.
-        ctx.r3.u64 = avatars_enabled() ? 0u : 0xFFFFFFFFu;
-        std::cerr << "RESULT XamAvatarInitialize status=0x" << std::hex << ctx.r3.u32 << " backend="
-                  << (avatars_enabled() ? "avatars" : "no-avatars") << " lr=0x" << ctx.lr << std::dec << '\n';
+        // Succeed, as the avatar system is always there (above). The title
+        // then asks for the assets it draws an avatar from, answered below
+        // with an avatar of no parts. Failing here (the pinned reference's
+        // ~0) leaves the Avatar entry of the character ring loading for ever.
+        ctx.r3.u64 = 0;
+        std::cerr << "RESULT XamAvatarInitialize status=0x0 backend=avatars lr=0x" << std::hex << ctx.lr << std::dec << '\n';
         return;
     }
     if (std::string_view(name) == "__imp__XamAvatarShutdown") {
-        std::cerr << "RESULT XamAvatarShutdown backend=no-avatars\n";
+        std::cerr << "RESULT XamAvatarShutdown\n";
         return;
     }
     if (std::string_view(name) == "__imp__XamAvatarGetAssets" && active_memory) {
@@ -3489,7 +3476,7 @@ static void dispatch_import_owned(PPCContext& ctx, const char* name, uint32_t ad
         if (!reported) {
             reported = true;
             std::cerr << "RESULT XamAvatarManifestGetBodyType manifest=0x" << std::hex << manifest
-                      << std::dec << " body=" << body << " backend=" << (avatars_enabled() ? "empty-assets" : "no-avatars")
+                      << std::dec << " body=" << body << " backend=empty-assets"
                       << " lr=0x" << std::hex << ctx.lr
                       << std::dec << '\n';
         }

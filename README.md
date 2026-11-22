@@ -658,6 +658,10 @@ unchanged. The model appears in Loading and races, follows the game's main
 body animation, jumps and stance changes, and supplies hand positions for
 held items. Models are read locally; no avatar model is bundled or uploaded.
 
+AVATAR can be chosen without a model too: it races with its gear and board
+but no rider drawn, and **NO AVATAR MODEL. CHOOSE ONE IN THE LAUNCHER** is
+shown in the corner for the first seconds of Loading.
+
 This is experimental. A `.glb` without VRM humanoid bones stays static.
 Full MToon shading, transparent blending, spring bones, facial expressions
 and finger animation are not implemented. Some poses and item grips can
