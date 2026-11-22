@@ -27,6 +27,8 @@ Loading. (Before this, choosing AVATAR without a model stayed on Now Loading
 for ever.) A model that is set but cannot be loaded shows
 **AVATAR MODEL DID NOT LOAD. SEE GAME.LOG** instead.
 
+![AVATAR without a model on the Loading screen: the board, no rider, and the note in the corner](images/avatar-without-model.jpg)
+
 There is one remembered model setting for both local players. Whoever
 selects AVATAR uses it, with independent animation poses for each player.
 Other characters retain their original appearance. Full two-player VRM
