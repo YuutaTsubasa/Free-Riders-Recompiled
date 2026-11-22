@@ -1,4 +1,5 @@
 #include "avatar_transform.h"
+#include "avatar_notice.h"
 #include "native_presentation.h"
 #include "render_scale.h"
 #include "window_resize.h"
@@ -541,6 +542,15 @@ struct NativePresentation::Impl {
     std::shared_ptr<std::string> model_error;
     std::chrono::steady_clock::time_point model_started;
     std::atomic<uint32_t> model_overlay{~0u};
+    // A local Avatar drawn with no model to draw (avatar_notice.h): written
+    // as the Avatar is drawn, read as the frame is presented.
+    sfr::AvatarNotice avatar_notice;
+    std::mutex avatar_notice_lock;
+    void avatar_drawn_bare(sfr::AvatarNotice::Reason reason) {
+        const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        std::lock_guard lock(avatar_notice_lock);
+        avatar_notice.drawn(now, reason);
+    }
     void build_model();
     void draw_model(const AvatarFrameTransform& frame);
     // The last blit's viewport (x, y, width, height) and window size, for touches.
@@ -2473,12 +2483,19 @@ void NativePresentation::wait_for_player_model() {
 }
 
 void NativePresentation::draw_player_model(const AvatarFrameTransform& frame) {
-    if (!sfr::model_wanted()) return;
+    // No model chosen in the launcher: the Avatar races with nothing drawn
+    // for it, and the frame says why.
+    if (!sfr::model_wanted()) { impl_->avatar_drawn_bare(sfr::AvatarNotice::Reason::no_model); return; }
     for (const auto* matrix : {&frame.world, &frame.view, &frame.projection})
         for (float value : *matrix) if (!std::isfinite(value)) return;
     impl_->refuse_during_gpu_wait();
     impl_->build_model();
-    if (!impl_->model_pipeline) return;
+    if (!impl_->model_pipeline) {
+        // Still loading has its own line; a model that will never be drawn
+        // (unreadable, or its pipelines refused) says so.
+        if (impl_->model_tried) impl_->avatar_drawn_bare(sfr::AvatarNotice::Reason::model_failed);
+        return;
+    }
     impl_->emit_deferred_clear();
     impl_->drain();
     impl_->ensure_open();
@@ -2642,13 +2659,21 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
     // While the Avatar's model loads, the frame is drawn (not copied) so a
     // line can be written over it.
     const uint32_t model_loading = impl_->model_overlay.load(std::memory_order_relaxed);
+    // So is it while an Avatar races without a model (avatar_notice.h).
+    std::string model_line;
+    if (model_loading != ~0u) model_line = "LOADING AVATAR MODEL " + std::to_string(model_loading / 10) + "%";
+    else {
+        const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        std::lock_guard lock(impl_->avatar_notice_lock);
+        model_line = impl_->avatar_notice.line(now);
+    }
     // The achievement notification or page (screen_overlay.h) is drawn too.
     const bool layers_shown = screen_layers_shown();
     // The button prompts under the game's pose figures (Issue #284,
     // control_prompts.h), drawn after the blit.
     const std::vector<prompts::Sighting> sightings = prompts::enabled() ? prompts::take_sightings() : std::vector<prompts::Sighting>{};
     const bool stretch = !can_copy || part || out_width != impl_->render_width || out_height != impl_->render_height ||
-                         pause > 0.0f || touch_shown || fps_shown || model_loading != ~0u || layers_shown || !sightings.empty();
+                         pause > 0.0f || touch_shown || fps_shown || !model_line.empty() || layers_shown || !sightings.empty();
     // The copy to the swap-chain texture follows the frame's draws in their
     // own list; pipelined, the frame is submitted without waiting for it.
     const bool pipelined = Impl::pipelined();
@@ -2760,10 +2785,11 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
                 impl_->overlay_renderer->draw(*impl_->command_list, layers, viewport.x, viewport.y, view_width, view_height,
                                               float(out_width), float(out_height));
         }
-        if (model_loading != ~0u) {
+        if (!model_line.empty()) {
             // "LOADING AVATAR MODEL 45%" in the frame's lower left corner, on a
-            // dark band, so a model that takes seconds does not look like a hang.
-            const std::string line = "LOADING AVATAR MODEL " + std::to_string(model_loading / 10) + "%";
+            // dark band, so a model that takes seconds does not look like a hang;
+            // or why an Avatar races with nothing drawn for it.
+            const std::string& line = model_line;
             const int px = (std::max)(2, int(view_height / 180.0f));
             const int x = int(viewport.x) + 4 * px, y = int(viewport.y + view_height) - 13 * px;
             const int w = int(out_width), h = int(out_height);

@@ -20,6 +20,15 @@ Start the game, select **AVATAR**, and choose Gear. You can use a controller,
 keyboard or the optional Windows Camera motion input. Selecting a VRM does
 not enable the camera and does not require one.
 
+AVATAR can be chosen without a model as well. It then races with its gear and
+board but without a rider drawn, and the lower left corner shows
+**NO AVATAR MODEL. CHOOSE ONE IN THE LAUNCHER** for the first seconds of
+Loading. (Before this, choosing AVATAR without a model stayed on Now Loading
+for ever.) A model that is set but cannot be loaded shows
+**AVATAR MODEL DID NOT LOAD. SEE GAME.LOG** instead.
+
+![AVATAR without a model on the Loading screen: the board, no rider, and the note in the corner](images/avatar-without-model.jpg)
+
 There is one remembered model setting for both local players. Whoever
 selects AVATAR uses it, with independent animation poses for each player.
 Other characters retain their original appearance. Full two-player VRM

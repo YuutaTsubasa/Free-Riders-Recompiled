@@ -13,7 +13,6 @@ v0.3.0 Preview 提供此功能；使用步驟見 [VRM Avatar guide](vrm-avatar.m
 直接啟動 runtime 時，也可以設定以下環境變數（Windows 範例）：
 
 ```bat
-set "SFR_AVATAR=1"
 set "SFR_AVATAR_MODEL=C:\Models\player.vrm"
 sfr_cpu_diagnostic.exe "C:\Game\image" "C:\Game\assets" --game-region=ntsc-us
 ```
@@ -34,8 +33,16 @@ sfr_cpu_diagnostic.exe "C:\Game\image" "C:\Game\assets" --game-region=ntsc-us
 - `SFR_TRACE_AVATAR_POSE=1`：額外取樣遊戲的骨骼旋轉數值，供動作診斷。
 
 沒有指定模型時，原生 VRM 渲染器不會建立 GPU 資源。
-只設定 `SFR_AVATAR=1` 可以測試沒有原始 Xbox Avatar 資產的載入流程，
-但不會憑空產生角色模型。
+
+Xbox Avatar 系統一律開啟（`XamAvatarInitialize` 一律成功），`SFR_AVATAR`
+已不再控制它；啟動器仍會寫入這個變數，但沒有作用。以前沒有模型時
+`SFR_AVATAR=0` 會讓初始化失敗，玩家在角色選單選 AVATAR 後，遊戲讀完
+Avatar 的 Gear（`gr17_ST`／`gr17`）就一直等不到 Avatar 資產，停在
+Now Loading 不會進入比賽。現在沒有模型時，AVATAR 以「沒有零件的 Avatar」
+參賽（與線上其他玩家的 AVATAR 相同）：裝備與滑板照常，角色本體不畫；
+Loading 開始的前 12 秒左下角顯示 `NO AVATAR MODEL. CHOOSE ONE IN THE LAUNCHER`
+（`src/avatar_notice.h`）。有設定模型但讀取失敗時，改顯示
+`AVATAR MODEL DID NOT LOAD. SEE GAME.LOG`。
 
 ## 本機玩家身分與生命週期
 
