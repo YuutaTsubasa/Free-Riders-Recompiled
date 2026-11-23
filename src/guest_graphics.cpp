@@ -510,32 +510,26 @@ void GuestGraphics::set_texture(uint32_t device, uint32_t slot, uint32_t texture
     if (texture) {
         FetchWords texture_words, slot_words;
         memory_.check(uint64_t(texture) + 28, 24);
-        // The two blocks of six words each read at once where they lie in an
-        // ordinary page, and the merged words written at once, rather than
-        // through two dozen checked accesses: the title binds textures
-        // thousands of times a race frame, and this was some 4% of an AYN
-        // Thor race's main thread (Issue #176). The checked accesses remain
-        // for anything else, as before.
-        const auto read_words = [&](uint64_t address, FetchWords& words) {
-            if (const uint8_t* bytes = memory_.fast_read(address, 24)) {
-                // One volatile word access each, as load() makes them.
-                for (uint32_t i = 0; i < 6; ++i)
-                    words[i] = __builtin_bswap32(*reinterpret_cast<const volatile uint32_t*>(bytes + i * 4));
-            } else {
-                for (uint32_t i = 0; i < 6; ++i) words[i] = memory_.load<uint32_t>(address + i * 4);
-            }
+        // Both blocks of six words are checked once each where they lie in an
+        // ordinary page and then read word by word, in the same order and
+        // with the same volatile accesses as load(), rather than through a
+        // dozen checked loads: the title binds textures thousands of times a
+        // race frame, and this was some 4% of an AYN Thor race's main thread
+        // (Issue #176). The checked loads remain for anything else, and the
+        // stores are the checked ones as before.
+        const uint8_t* const texture_bytes = memory_.fast_read(uint64_t(texture) + 28, 24);
+        const uint8_t* const slot_bytes = memory_.fast_read(fetch, 24);
+        const auto word = [](const uint8_t* bytes, uint32_t i) {
+            return __builtin_bswap32(*reinterpret_cast<const volatile uint32_t*>(bytes + i * 4));
         };
-        read_words(uint64_t(texture) + 28, texture_words);
-        read_words(fetch, slot_words);
+        for (uint32_t i = 0; i < 6; ++i) {
+            texture_words[i] = texture_bytes ? word(texture_bytes, i) : memory_.load<uint32_t>(uint64_t(texture) + 28 + i * 4);
+            slot_words[i] = slot_bytes ? word(slot_bytes, i) : memory_.load<uint32_t>(uint64_t(fetch) + i * 4);
+        }
         const auto merged = merge_texture_fetch(texture_words, slot_words,
             memory_.load<uint8_t>(uint64_t(device) + 0x2F5E + slot), memory_.load<uint8_t>(uint64_t(device) + 0x2F78 + slot));
         const uint64_t dirty = memory_.load<uint64_t>(uint64_t(device) + 24) | dirty_mask;
-        if (uint8_t* bytes = memory_.fast_write(fetch, 24)) {
-            for (uint32_t i = 0; i < 6; ++i)
-                *reinterpret_cast<volatile uint32_t*>(bytes + i * 4) = __builtin_bswap32(merged[i]);
-        } else {
-            for (uint32_t i = 0; i < 6; ++i) memory_.store<uint32_t>(uint64_t(fetch) + i * 4, merged[i]);
-        }
+        for (uint32_t i = 0; i < 6; ++i) memory_.store<uint32_t>(uint64_t(fetch) + i * 4, merged[i]);
         memory_.store<uint64_t>(uint64_t(device) + 24, dirty);
     } else {
         // Original null path only disables the fetch type and binding.

@@ -3099,10 +3099,14 @@ of combinations a frame, so 30% of draws still went on to its set.
   decommit, release, reservation, import variable and computed word (all
   that `readable()` reads); `readable()` is asked again only when it moved
   (`guest_memory_test`: layout_version_follows_readable).
-- `set_texture` reads both blocks of fetch words with `fast_read` and
-  writes the merged block with `fast_write` (which marks a watched page as
-  the stores did) where a block lies in an ordinary page; the checked
-  accesses remain for the rest.
+- `set_texture` checks each block of fetch words once with `fast_read`
+  where it lies in an ordinary page and then reads its words in the same
+  interleaved order and with the same volatile word accesses as `load()`;
+  the checked loads remain for the rest, and the stores are unchanged (a
+  first version wrote the block through `fast_write`, which marks a watched
+  page before the words land, where `store()` marks it after: dropped after
+  review; the A/B below measured that version, A/B of the final one
+  further below).
 - The vertex memo's slot and the draw log's filter take the hash's high
   bits (the low bits of an aligned address times an odd constant barely
   move); the filter has 8192 slots. Windows race: vertex lookups going on
