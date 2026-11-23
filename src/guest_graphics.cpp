@@ -518,11 +518,9 @@ void GuestGraphics::set_texture(uint32_t device, uint32_t slot, uint32_t texture
         // for anything else, as before.
         const auto read_words = [&](uint64_t address, FetchWords& words) {
             if (const uint8_t* bytes = memory_.fast_read(address, 24)) {
-                for (uint32_t i = 0; i < 6; ++i) {
-                    uint32_t word;
-                    std::memcpy(&word, bytes + i * 4, 4);
-                    words[i] = __builtin_bswap32(word);
-                }
+                // One volatile word access each, as load() makes them.
+                for (uint32_t i = 0; i < 6; ++i)
+                    words[i] = __builtin_bswap32(*reinterpret_cast<const volatile uint32_t*>(bytes + i * 4));
             } else {
                 for (uint32_t i = 0; i < 6; ++i) words[i] = memory_.load<uint32_t>(address + i * 4);
             }
@@ -533,10 +531,8 @@ void GuestGraphics::set_texture(uint32_t device, uint32_t slot, uint32_t texture
             memory_.load<uint8_t>(uint64_t(device) + 0x2F5E + slot), memory_.load<uint8_t>(uint64_t(device) + 0x2F78 + slot));
         const uint64_t dirty = memory_.load<uint64_t>(uint64_t(device) + 24) | dirty_mask;
         if (uint8_t* bytes = memory_.fast_write(fetch, 24)) {
-            for (uint32_t i = 0; i < 6; ++i) {
-                const uint32_t word = __builtin_bswap32(merged[i]);
-                std::memcpy(bytes + i * 4, &word, 4);
-            }
+            for (uint32_t i = 0; i < 6; ++i)
+                *reinterpret_cast<volatile uint32_t*>(bytes + i * 4) = __builtin_bswap32(merged[i]);
         } else {
             for (uint32_t i = 0; i < 6; ++i) memory_.store<uint32_t>(uint64_t(fetch) + i * 4, merged[i]);
         }
