@@ -3055,3 +3055,92 @@ A texture is watched for writes to its pages (movie frames are rewritten in plac
 `SFR_TEXTURE_SAME_CHECK` (on by default; Test options › Graphics › Keep unchanged textures, Off for the old way): when the pages report a write, the texture's bytes are hashed and compared with the hash taken when it was loaded (it covers the mips when they follow the base, the usual layout; a texture with its mips elsewhere is loaded again as before). Unchanged bytes keep the texture. `texture_rewrites_same=` in the frame log counts them. Each texture asks for writes since its own last look (`GuestMemory::written_since`, the write epochs the vertex cache uses), not the pages' shared written bits: with those, a texture that took a page's bit and kept its bytes would hide a write from another texture on that page.
 
 Windows, the release route to present 15600 (through the Omochao screen into a race): 24,581 uploads and 310 frames with 10 or more → 744 and 10, texture time 3.27 → 0.78 s; the screen at present 15000 shows the same picture, and the title movie (rewritten in place) still plays.
+
+## 2026-11-24: Texture lookups and texture binding on the main thread (Issue #176)
+
+The Pixel 10a's 0.10.73 logs (Final Factory Expert, Vulkan, frame metrics and
+GPU timing on, render scale 150 and 75) have the GPU at 10-14 ms a frame; the
+slow presents (over 20 ms: 17% at 150, 6% at 75) come with more draws (about
+900 against 440) and with the main thread's drawing growing with them
+(`draw_ms` 2.6 -> 6.0, `record_ms` 0.8 -> 2.0, `texture_ms` 0.5 -> 1.2), at
+roughly the same cost a draw: the phone's cores are held at 1.4-1.8 GHz
+there (`HOST_THREADS mhz=`). So the work a draw costs on the main thread
+was the place to look.
+
+**Where it went.** simpleperf on an AYN Thor (profileable APK, the moving
+Dolphin Resort race, frame metrics on, 40 s from present ~14000), main
+thread, share of its samples:
+
+| | self | with callees |
+| --- | --- | --- |
+| `NativeRenderer::texture` (first lookup of each texture in a frame) | 2.1% | 7.1% |
+| of it: `GuestMemory::readable` (incl. the layout lock's futex) | 1.3% | 3.4% |
+| `GuestGraphics::set_texture` (the title's SetTexture) | 3.9% | 3.8% |
+| `NativeRenderer::vertex_cache` | 4.1% | 4.5% |
+| the draw-combination log's `unordered_set` insert | 1.6% | 2.0% |
+| `clock_gettime` (the frame metrics' own timers) | 10.2% | |
+
+`texture()` walked two `std::map`s of thousands of textures for each
+texture's first lookup in a frame, then asked `readable()` of all three
+views of the texture (and of its mips) before scanning their watched pages;
+for the views that are not mapped, `readable()` searches the regions under
+the layout lock. `set_texture` read twelve words and stored six through one
+checked access each. The draw log's filter had 1024 slots for some hundreds
+of combinations a frame, so 30% of draws still went on to its set.
+
+**Changes** (output unchanged: every answer is the one the maps and
+`readable()` give):
+
+- A direct-mapped memo in front of `texture_indices`/`texture_ranges`
+  (key -> descriptor and range); `texture_set_version` moves whenever a
+  texture is made or dropped. 94% of lookups hit it on a Windows race.
+- Each texture range keeps which of its views are readable, with
+  `GuestMemory::layout_version()`, which moves after every commit,
+  decommit, release, reservation, import variable and computed word (all
+  that `readable()` reads); `readable()` is asked again only when it moved
+  (`guest_memory_test`: layout_version_follows_readable).
+- `set_texture` reads both blocks of fetch words with `fast_read` and
+  writes the merged block with `fast_write` (which marks a watched page as
+  the stores did) where a block lies in an ordinary page; the checked
+  accesses remain for the rest.
+- The vertex memo's slot and the draw log's filter take the hash's high
+  bits (the low bits of an aligned address times an odd constant barely
+  move); the filter has 8192 slots. Windows race: vertex lookups going on
+  to the maps 8.8% -> 5.9%, draws reaching the log's set 30% -> 0.9%.
+
+**AYN Thor A/B** (release-like APKs built the same way, Dolphin Resort,
+`CLAUDE_INPUT=kicks`, 60 Hz, presents 13000-20500, order base, new, new,
+base, base, new, each started below ~48 C (cpu-1-3) after cooling):
+
+| | base (3 runs) | new (3 runs) |
+| --- | --- | --- |
+| `draw_ms` a frame | 3.42 / 3.47 / 3.49 | 2.68 / 2.62 / 2.66 |
+| per draw (us) | 3.98 / 3.93 / 4.07 | 3.12 / 3.04 / 3.10 |
+| `texture_ms` a frame | 0.97 / 0.97 / 1.00 | 0.29 / 0.27 / 0.29 |
+| `record_ms` a frame | 0.87 / 0.89 / 0.90 | 0.91 / 0.92 / 0.90 |
+| `HOST_THREADS drawn_ms` | 15.12 / 14.89 / 15.13 | 13.65 / 13.92 / 14.33 |
+| presents over 20 ms | 39 / 65 / 48 | 27 / 23 / 41 |
+
+Frame metrics off (normal play; `HOST_THREADS` times one draw in a sample
+of them), order new, base, base, new, new, base (a seventh, base, stopped on
+the runner's adb time-out and is left out):
+
+| | base (3 runs) | new (3 runs) |
+| --- | --- | --- |
+| `HOST_THREADS draw_ms` | 3.21 / 3.18 / 3.31 | 2.35 / 2.43 / 2.32 |
+| `HOST_THREADS drawn_ms` | 14.11 / 14.12 / 14.24 | 13.47 / 13.79 / 13.54 |
+
+Windows (Vulkan, `SFR_TEST_RAND_SEED=1 SFR_PARALLEL_WORKER=0
+SFR_REALTIME_UI=0`, the release route, screenshots every 500 presents from
+1000): against the 0.10.75 package's game, 25 of the 27 pictures from 1000 to
+14000 (title, menus, course select, loading) are identical bit for bit; the
+other two differ where two runs of one build differ too (clock-timed
+elements), and the race draws alike. ctest 201 of 201 (the Kinect SDK one
+skipped as before).
+
+Still on the main thread and not changed here: `vkResetCommandBuffer` when
+a frame's first draw opens its list (1.7% on the Thor's Adreno driver), the
+upload ring and render queue writes (`record_ms`), and the vertex memo's
+own cache misses. The frame metrics' clock reads are about a tenth of the
+main thread with `SFR_FRAME_METRICS=1`, so a log taken with Frame timing on
+makes drawing look dearer than it is in normal play.
