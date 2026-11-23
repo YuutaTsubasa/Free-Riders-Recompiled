@@ -3134,13 +3134,26 @@ the runner's adb time-out and is left out):
 | `HOST_THREADS draw_ms` | 3.21 / 3.18 / 3.31 | 2.35 / 2.43 / 2.32 |
 | `HOST_THREADS drawn_ms` | 14.11 / 14.12 / 14.24 | 13.47 / 13.79 / 13.54 |
 
+The final version (checked stores in `set_texture`), frame metrics on, order
+new, base, new, base, new:
+
+| | base (2 runs) | new (3 runs) |
+| --- | --- | --- |
+| `draw_ms` a frame | 3.56 / 3.37 | 2.64 / 2.65 / 2.57 |
+| per draw (us) | 3.95 / 4.07 | 3.09 / 3.10 / 3.09 |
+| `texture_ms` a frame | 1.00 / 0.98 | 0.28 / 0.29 / 0.28 |
+| `HOST_THREADS drawn_ms` | 15.43 / 14.81 | 14.12 / 14.07 / 14.52 |
+| presents over 20 ms | 69 / 37 | 17 / 28 / 25 |
+
 Windows (Vulkan, `SFR_TEST_RAND_SEED=1 SFR_PARALLEL_WORKER=0
 SFR_REALTIME_UI=0`, the release route, screenshots every 500 presents from
-1000): against the 0.10.75 package's game, 25 of the 27 pictures from 1000 to
-14000 (title, menus, course select, loading) are identical bit for bit; the
-other two differ where two runs of one build differ too (clock-timed
-elements), and the race draws alike. ctest 201 of 201 (the Kinect SDK one
-skipped as before).
+1000; both builds with the 0.10.75 package's shaders.pack): the final
+version against the 0.10.75 package's game gives all 27 pictures from 1000
+to 14000 (title, menus, course select, loading) bit for bit the same, as
+two runs of the 0.10.75 game do; some runs of either land in another phase
+of the menus' clock-timed background and then differ from the others by
+about 1% of the pixels everywhere. The race draws alike (races do not
+repeat). ctest 201 of 201 (the Kinect SDK one skipped as before).
 
 Still on the main thread and not changed here: `vkResetCommandBuffer` when
 a frame's first draw opens its list (1.7% on the Thor's Adreno driver), the
