@@ -101,6 +101,12 @@ public:
     // exception, and the renderer asks that for every texture of every draw
     // (docs/performance.md).
     bool readable(uint64_t address, uint64_t size) const noexcept;
+    // Moves after every change to what readable() answers (a commit,
+    // decommit, release or reservation, an import variable or a computed
+    // word), so an answer kept with the version it was given at stays good
+    // while the version does. Such changes are made only while no other guest
+    // thread runs (see read_layout).
+    uint64_t layout_version() const noexcept { return layout_version_.load(std::memory_order_acquire); }
     // Inline for the common case, a range in one ordinary page that nothing
     // watches: the graphics setters preflight several of these per call,
     // thousands of times a frame. Anything else takes the full check.
@@ -335,6 +341,13 @@ private:
     }
     // Shared by concurrent readers' layout scans; see concurrent_reader.
     mutable std::shared_mutex layout_mutex_;
+    std::atomic<uint64_t> layout_version_{1};
+    // Taken after the layout lock by each change to the layout: moves the
+    // version once the change is made, before the lock is let go.
+    struct LayoutChange {
+        GuestMemory& memory;
+        ~LayoutChange() { memory.layout_version_.fetch_add(1, std::memory_order_release); }
+    };
     std::shared_lock<std::shared_mutex> read_layout() const {
         return concurrent_reader ? std::shared_lock(layout_mutex_) : std::shared_lock<std::shared_mutex>();
     }

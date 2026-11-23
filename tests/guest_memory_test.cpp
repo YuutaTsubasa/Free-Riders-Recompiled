@@ -1685,8 +1685,48 @@ static void shared_host_pages() {
 #endif
 }
 
+// layout_version moves with every change readable() can see, and only then:
+// the renderer keeps which views of a texture are readable while it stays.
+static void layout_version_follows_readable() {
+    sfr::GuestMemory memory;
+    uint64_t version = memory.layout_version();
+    const auto moved = [&](const char* message) {
+        const uint64_t now = memory.layout_version();
+        require(now != version, message);
+        version = now;
+    };
+    memory.reserve(0x80000, 0x4000);
+    moved("a reservation moves the layout version");
+    require(!memory.readable(0x81000, 4), "reserved pages are not readable");
+    memory.commit(0x81000, 0x1000);
+    moved("a commit moves the layout version");
+    require(memory.readable(0x81000, 4), "committed pages are readable");
+    memory.store<uint32_t>(0x81000, 1);
+    memory.load<uint32_t>(0x81004);
+    memory.watch_writes(0x81000, 0x1000);
+    memory.store<uint32_t>(0x81008, 2);
+    require(memory.layout_version() == version, "stores, loads and watches leave the layout version");
+    memory.commit(0x82000, 0x1000);
+    moved("a second commit moves the layout version");
+    memory.add_import_variable(0x82020, "LayoutVariable");
+    moved("an import variable moves the layout version");
+    require(!memory.readable(0x82020, 4), "an import variable is not readable");
+    memory.add_read_only_word(0x82040, [] { return 7u; });
+    moved("a computed word moves the layout version");
+    memory.decommit(0x81000, 0x1000);
+    moved("a decommit moves the layout version");
+    require(!memory.readable(0x81000, 4), "decommitted pages are not readable");
+    memory.reserve(0x90000, 0x2000);
+    memory.commit(0x90000, 0x2000);
+    version = memory.layout_version();
+    memory.release(0x90000, 0x2000);
+    moved("a release moves the layout version");
+    require(!memory.readable(0x90000, 4), "released pages are not readable");
+}
+
 int main() {
     try {
+        layout_version_follows_readable();
         shared_host_pages();
         top_down_search_matches_page_oracle();
         partial_page_fast_access();

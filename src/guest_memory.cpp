@@ -331,6 +331,7 @@ void GuestMemory::reserve(uint64_t address, uint64_t size) {
         throw RuntimeStop("memory-map", address, "invalid or overlapping guest reservation");
     // The entire guest address space already has inaccessible host backing.
     std::unique_lock layout(layout_mutex_);
+    LayoutChange layout_changed{*this};
     reservations_.insert(std::upper_bound(reservations_.begin(), reservations_.end(), address,
                                           [](uint64_t value, const Region& r) { return value < r.address; }),
                          {address, size});
@@ -451,6 +452,7 @@ void GuestMemory::decommit(uint64_t address, uint64_t size) {
     }
 #endif
     std::unique_lock layout(layout_mutex_);
+    LayoutChange layout_changed{*this};
     committed_.swap(next);
     rebuild_fast_pages(address, size);
 }
@@ -584,6 +586,7 @@ void GuestMemory::release(uint64_t address, uint64_t size) {
     }
 #endif
     std::unique_lock layout(layout_mutex_);
+    LayoutChange layout_changed{*this};
     reservations_.swap(next_reservations);
     committed_.swap(next_committed);
     backing_.swap(next_backing);
@@ -742,6 +745,7 @@ void GuestMemory::commit_impl(uint64_t address, uint64_t size, bool write_combin
 #endif
         throw RuntimeStop("memory-map", address, "cannot commit guest pages");
     std::unique_lock layout(layout_mutex_);
+    LayoutChange layout_changed{*this};
     committed_.swap(next);
     backing_.swap(next_backing);
     write_combined_.swap(next_write_combined);
@@ -828,6 +832,7 @@ void GuestMemory::add_import_variable(uint32_t address, std::string name) {
     check(address, 4);
     check_pending_writes(address,4);
     std::unique_lock layout(layout_mutex_);
+    LayoutChange layout_changed{*this};
     variables_.push_back({address, std::move(name)});
     special_words_.push_back(address);
     rebuild_fast_pages(address, 4);
@@ -1371,6 +1376,7 @@ void GuestMemory::add_read_only_word(uint32_t address, std::function<uint32_t()>
             throw RuntimeStop("memory-provider", address, "overlapping read-only word");
     check_pending_writes(address,4);
     std::unique_lock layout(layout_mutex_);
+    LayoutChange layout_changed{*this};
     // Providers are never removed. Reserve the bounded registry before its
     // first publication so readers can keep a stable pointer after unlocking.
     if (read_only_words_.empty()) read_only_words_.reserve(read_only_word_limit);
