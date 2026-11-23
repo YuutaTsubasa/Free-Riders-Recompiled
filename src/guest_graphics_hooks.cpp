@@ -1975,10 +1975,15 @@ static bool native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
     // In front of it, the combination last seen in each of 1024 slots: the
     // set's insert was still 1.2% of the main thread of an AYN Thor race.
     static std::unordered_set<uint64_t> seen=[]{ std::unordered_set<uint64_t> s; s.reserve(8192); return s; }();
-    static std::array<uint64_t,1024> recent{};
+    // Eight thousand slots, by the high bits of one more multiply: a race
+    // frame draws some hundreds of combinations, and with a thousand slots
+    // enough of them shared one to keep the set's insert at about 1.4% of
+    // an AYN Thor race's main thread (Issue #176).
+    // (A Windows race: 30% of the draws went on to the set; now 0.9%.)
+    static std::array<uint64_t,8192> recent{};
     const uint64_t combination=(uint64_t(vs_object)*0x9E3779B97F4A7C15ull)^(uint64_t(ps_object)*0xC2B2AE3D27D4EB4Full)^
                                (uint64_t(draw.shared.texture_2d[0])<<20)^primitive;
-    uint64_t& recent_slot=recent[(combination^(combination>>29))%recent.size()];
+    uint64_t& recent_slot=recent[size_t(((combination^(combination>>31))*0x9E3779B97F4A7C15ull)>>51)];
     if(recent_slot==combination) return true;
     recent_slot=combination;
     if(seen.insert(combination).second)

@@ -510,9 +510,21 @@ void GuestGraphics::set_texture(uint32_t device, uint32_t slot, uint32_t texture
     if (texture) {
         FetchWords texture_words, slot_words;
         memory_.check(uint64_t(texture) + 28, 24);
+        // Both blocks of six words are checked once each where they lie in an
+        // ordinary page and then read word by word, in the same order and
+        // with the same volatile accesses as load(), rather than through a
+        // dozen checked loads: the title binds textures thousands of times a
+        // race frame, and this was some 4% of an AYN Thor race's main thread
+        // (Issue #176). The checked loads remain for anything else, and the
+        // stores are the checked ones as before.
+        const uint8_t* const texture_bytes = memory_.fast_read(uint64_t(texture) + 28, 24);
+        const uint8_t* const slot_bytes = memory_.fast_read(fetch, 24);
+        const auto word = [](const uint8_t* bytes, uint32_t i) {
+            return __builtin_bswap32(*reinterpret_cast<const volatile uint32_t*>(bytes + i * 4));
+        };
         for (uint32_t i = 0; i < 6; ++i) {
-            texture_words[i] = memory_.load<uint32_t>(uint64_t(texture) + 28 + i * 4);
-            slot_words[i] = memory_.load<uint32_t>(uint64_t(fetch) + i * 4);
+            texture_words[i] = texture_bytes ? word(texture_bytes, i) : memory_.load<uint32_t>(uint64_t(texture) + 28 + i * 4);
+            slot_words[i] = slot_bytes ? word(slot_bytes, i) : memory_.load<uint32_t>(uint64_t(fetch) + i * 4);
         }
         const auto merged = merge_texture_fetch(texture_words, slot_words,
             memory_.load<uint8_t>(uint64_t(device) + 0x2F5E + slot), memory_.load<uint8_t>(uint64_t(device) + 0x2F78 + slot));

@@ -447,7 +447,11 @@ struct NativeRenderer::Impl {
     // (empty without SFR_TEXTURE_MIPS). bytes: the native texture's size.
     struct TextureRange { std::array<uint32_t, 4> key; uint64_t begin, end; uint64_t hash; bool dynamic;
                           uint64_t checked_frame = 0; uint64_t seen_frame = 0; uint32_t epoch = 0;
-                          uint64_t mip_begin = 0, mip_end = 0, bytes = 0; };
+                          uint64_t mip_begin = 0, mip_end = 0, bytes = 0;
+                          // Which of the three views of the base and of the
+                          // mips are readable (bits 0-2, 4-6), as of
+                          // GuestMemory::layout_version views_version.
+                          uint64_t views_version = 0; uint8_t view_mask = 0; };
     uint64_t texture_bytes = 0;  // native bytes of the textures in texture_ranges
     uint64_t frame = 1;  // counts flushes
     // Opt-in probe only: compare CPU bytes, never read write-combined uploads.
@@ -469,6 +473,34 @@ struct NativeRenderer::Impl {
     uint64_t constant_saved_bytes = 0;
     std::set<uint64_t> dynamic_ranges;  // physical starts of rewritten textures
     std::map<uint32_t, TextureRange> texture_ranges;  // by descriptor index
+    // A slot index from a key hash: its high bits after one more multiply,
+    // since the keys' low bits barely move (guest addresses are aligned, and
+    // multiplying an aligned address leaves the product's low bits zero).
+    static size_t slot_of(uint64_t hash, unsigned slot_bits) noexcept {
+        hash ^= hash >> 31;
+        return size_t((hash * 0x9E3779B97F4A7C15ull) >> (64 - slot_bits));
+    }
+    // In front of texture_indices and texture_ranges: the descriptor and
+    // range each recently asked key found. Both maps hold thousands of
+    // textures, and their two tree walks for the first lookup of each
+    // texture in a frame were most of texture()'s 3% of an AYN Thor race's
+    // main thread (Issue #176). The ranges' map nodes stay where they are
+    // until erased, and texture_set_version moves whenever a texture is
+    // made or dropped, which retires every slot.
+    struct TextureLookup {
+        std::array<uint32_t, 4> key{};
+        uint32_t index = 0;
+        TextureRange* range = nullptr;
+        uint64_t version = 0;
+    };
+    static constexpr unsigned texture_lookup_bits = 12;
+    std::array<TextureLookup, size_t(1) << texture_lookup_bits> texture_lookups{};
+    uint64_t texture_set_version = 1;
+    TextureLookup& texture_lookup_slot(const std::array<uint32_t, 4>& key) {
+        uint64_t hash = 0;
+        for (const uint32_t word : key) hash = (hash ^ word) * 0x100000001b3ull;
+        return texture_lookups[slot_of(hash, texture_lookup_bits)];
+    }
     // Destination address of a resolve to its descriptor index (the copy of
     // the framebuffer the title samples afterwards).
     std::map<uint32_t, uint32_t> resolved_targets;
@@ -665,8 +697,13 @@ struct NativeRenderer::Impl {
         VertexEntry* entry = nullptr;
         uint64_t generation = 0;
     };
-    std::array<VertexMemo, 16384> vertex_memo{};
-    VertexMemo& memo_slot(const PhysicalKey& key) { return vertex_memo[PhysicalKeyHash{}(key) % vertex_memo.size()]; }
+    // The slot by the hash's high bits (slot_of): its low fourteen bits, as
+    // the slot was taken before, came mostly from the size and layout, since
+    // the physical addresses' low bits barely move (Issue #176: of a Windows
+    // race's lookups, 8.8% went on to the maps; now 5.9%).
+    static constexpr unsigned vertex_memo_bits = 14;
+    std::array<VertexMemo, size_t(1) << vertex_memo_bits> vertex_memo{};
+    VertexMemo& memo_slot(const PhysicalKey& key) { return vertex_memo[slot_of(PhysicalKeyHash{}(key), vertex_memo_bits)]; }
     uint64_t vertex_generation = 1;
     // Each entry by the frame it was last known drawn, oldest first. Ranges
     // not drawn for ten seconds or so are forgotten a few at a time, each
@@ -2007,37 +2044,73 @@ uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
             visit(candidate);
         }
     };
-    if (auto found = impl_->texture_indices.find(key); found != impl_->texture_indices.end()) {
+    // The texture these words name, and its range, found through the lookup
+    // memo when its slot holds them (Impl::texture_lookups).
+    uint32_t known_index = 0;
+    Impl::TextureRange* known_range = nullptr;
+    if (auto& lookup = impl_->texture_lookup_slot(key);
+        lookup.version == impl_->texture_set_version && lookup.key == key) {
+        known_index = lookup.index;
+        known_range = lookup.range;
+    } else if (auto found = impl_->texture_indices.find(key); found != impl_->texture_indices.end()) {
+        known_index = found->second;
+        known_range = &impl_->texture_ranges.at(found->second);
+        lookup = {key, known_index, known_range, impl_->texture_set_version};
+    }
+    if (known_range) {
         // The CPU may rewrite a texture in place (movie frames) without a lock:
         // watched pages report it and the texture is uploaded again.
-        auto& range = impl_->texture_ranges.at(found->second);
+        auto& range = *known_range;
         // Checked once a frame, not once a draw: the scan below walks the
         // watched-page bits of the whole texture in each of three views, and a
         // race frame binds the same textures across hundreds of draws
         // (docs/performance.md). A rewrite lands one frame later, which is how
         // the content check beside it already behaves.
-        if (range.seen_frame == impl_->frame) return found->second;
+        if (range.seen_frame == impl_->frame) return known_index;
         range.seen_frame = impl_->frame;
         // Writes since this texture's own last look (write epochs): textures
         // share pages, and a shared written bit taken by one would hide the
         // write from the others.
         const uint32_t now = memory.write_epoch();
         bool written = false;
-        views(uint32_t(range.begin), range.end - range.begin, [&](uint64_t view) {
+        // The readable views of the base (mips false) or of the mips, kept
+        // with the range while the memory's layout stays as it was: asking
+        // readable() of the views that are not mapped takes the layout lock,
+        // and this check asked it three or six times for each texture a
+        // frame draws (Issue #176).
+        if (range.views_version != memory.layout_version()) {
+            range.views_version = memory.layout_version();
+            range.view_mask = 0;
+            const auto mask = [&](uint32_t physical, uint64_t size, unsigned shift) {
+                const uint64_t candidates[3] = {uint64_t(physical) + 0xE0000000u - 0x1000u,
+                                                uint64_t(physical) | 0xA0000000u, uint64_t(physical) | 0xC0000000u};
+                for (unsigned i = 0; i < 3; ++i)
+                    if (candidates[i] + size <= 0x100000000ull && memory.readable(candidates[i], size))
+                        range.view_mask |= uint8_t(1u << (shift + i));
+            };
+            mask(uint32_t(range.begin), range.end - range.begin, 0);
+            if (range.mip_end > range.mip_begin) mask(uint32_t(range.mip_begin), range.mip_end - range.mip_begin, 4);
+        }
+        const auto range_views = [&](bool mip_views, const auto& visit) {
+            const uint32_t physical = uint32_t(mip_views ? range.mip_begin : range.begin);
+            const uint64_t candidates[3] = {uint64_t(physical) + 0xE0000000u - 0x1000u,
+                                            uint64_t(physical) | 0xA0000000u, uint64_t(physical) | 0xC0000000u};
+            for (unsigned i = 0; i < 3; ++i)
+                if (range.view_mask & (1u << ((mip_views ? 4 : 0) + i))) visit(candidates[i]);
+        };
+        range_views(false, [&](uint64_t view) {
             written |= memory.written_since(view, range.end - range.begin, range.epoch);
         });
         if (range.mip_end > range.mip_begin)
-            views(uint32_t(range.mip_begin), range.mip_end - range.mip_begin, [&](uint64_t view) {
+            range_views(true, [&](uint64_t view) {
                 written |= memory.written_since(view, range.mip_end - range.mip_begin, range.epoch);
             });
         if (written) {
             range.epoch = now;
             // Protected again where page protection records the writes.
-            views(uint32_t(range.begin), range.end - range.begin,
-                  [&](uint64_t view) { memory.watch_writes(view, range.end - range.begin); });
+            range_views(false, [&](uint64_t view) { memory.watch_writes(view, range.end - range.begin); });
             if (range.mip_end > range.mip_begin)
-                views(uint32_t(range.mip_begin), range.mip_end - range.mip_begin,
-                      [&](uint64_t view) { memory.watch_writes(view, range.mip_end - range.mip_begin); });
+                range_views(true, [&](uint64_t view) { memory.watch_writes(view, range.mip_end - range.mip_begin); });
         }
         // A write to the pages is not a change to the texture: the title also
         // writes data that shares a page with one (loading screens do every
@@ -2061,7 +2134,7 @@ uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
             written = content_hash(memory.base() + source, size) != range.hash;
         }
         static const bool no_cache = std::getenv("SFR_TEXTURE_NO_CACHE") != nullptr;
-        if (!written && !(fetch.format == 2 && no_cache)) return found->second;
+        if (!written && !(fetch.format == 2 && no_cache)) return known_index;
         invalidate(uint32_t(range.begin), uint32_t(range.end - range.begin));
     }
     auto layout = linear_texture_layout(fetch);
@@ -2265,6 +2338,7 @@ uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
 
 
     impl_->texture_indices.emplace(key, index);
+    ++impl_->texture_set_version;
     ++impl_->texture_generation;
     const uint64_t physical = fetch.base_address;
     // The title stores a chain right after its base (within a page): one
@@ -2329,6 +2403,7 @@ void NativeRenderer::invalidate(uint32_t physical, uint32_t size) {
             impl_->texture_bytes -= range.bytes;
             impl_->dynamic_ranges.insert(it->second.begin);
             impl_->texture_indices.erase(it->second.key);
+            ++impl_->texture_set_version;
             ++impl_->texture_generation;
             impl_->released_texture_indices.push_back(it->first);
             it = impl_->texture_ranges.erase(it);
