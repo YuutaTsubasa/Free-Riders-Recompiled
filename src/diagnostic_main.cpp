@@ -1080,10 +1080,28 @@ uint64_t read_time_base() {
     return ticks;
 }
 static void check_reservation_context(const PPCContext& ctx) {
-    if (!execution_permit || current_context != &ctx || !active_memory || ctx.r13.u32 != current_pcr ||
-        active_memory->load<uint32_t>(uint64_t(current_pcr) + 0x100) != current_thread ||
+    if (!execution_permit || current_context != &ctx || !active_memory || ctx.r13.u32 != current_pcr)
+        throw RuntimeStop("thread-context", ctx.r13.u32, "guest context does not match the executing native thread");
+    // The guest's own record of the thread (the processor block's current
+    // thread, and that thread's id) is read again only when this host
+    // thread's record of it changes, and every 4096th time besides. Both
+    // words lie off the fast path: each lwarx/ldarx and stwcx./stdcx. read
+    // them through the checked path, four layout locks a reservation that
+    // every guest thread shares. On an AYN Thor race that was some two
+    // fifths of a worker's time, in the C runtime's mutex (Issue #176).
+    struct Verified {
+        const GuestMemory* memory = nullptr;
+        uint32_t pcr = 0, thread = 0, id = 0, uses = 0;
+    };
+    static thread_local Verified verified;
+    if (verified.memory == active_memory && verified.pcr == current_pcr && verified.thread == current_thread &&
+        verified.id == current_id && ++verified.uses % 4096 != 0) [[likely]]
+        return;
+    verified = {};
+    if (active_memory->load<uint32_t>(uint64_t(current_pcr) + 0x100) != current_thread ||
         active_memory->load<uint32_t>(uint64_t(current_thread) + 0x14c) != current_id)
         throw RuntimeStop("thread-context", ctx.r13.u32, "guest context does not match the executing native thread");
+    verified = {active_memory, current_pcr, current_thread, current_id, 0};
 }
 // Host-driven system threads (argument selects the loop in the thread entry).
 constexpr uint32_t system_thread_audio = 0;

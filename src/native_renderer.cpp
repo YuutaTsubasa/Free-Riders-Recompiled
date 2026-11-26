@@ -21,6 +21,7 @@
 #include "native_graphics.h"
 #include "native_presentation.h"
 #include "native_raster_state.h"
+#include "host_thread_stats.h"
 #include <plume_render_interface.h>
 #include <plume_render_interface_builders.h>
 #include <algorithm>
@@ -2003,12 +2004,11 @@ uint32_t NativeRenderer::texture(GuestMemory& memory, const FetchWords& words) {
     // asks hundreds of times, two clock reads each.
     static const bool timed = frame_metrics_timed();
     struct TextureTimer {
-        Impl& impl; std::chrono::steady_clock::time_point start;
+        Impl& impl; uint64_t start;
         ~TextureTimer() {
-            if (timed) impl.texture_ms += std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - start).count();
+            if (timed) impl.texture_ms += double(host_counter_ns() - start) * 1e-6;
         }
-    } texture_timer{*impl_, timed ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{}};
+    } texture_timer{*impl_, timed ? host_counter_ns() : 0};
     const auto fetch = decode_texture_fetch(words);
     if (!fetch.base_address) return null_2d;
     // What the title resolved out of the framebuffer is served from the copy
@@ -2658,13 +2658,11 @@ void NativeRenderer::draw(const NativeDraw& draw) {
             for (uint32_t s = 0; s < 16; ++s)
                 if (marked & (1u << s)) shared.texture_2d[s] |= 0x80000000u;
         }
-        const auto bind_start = frame_metrics_timed() ? std::chrono::steady_clock::now()
-                                                      : std::chrono::steady_clock::time_point{};
+        const uint64_t bind_start = frame_metrics_timed() ? host_counter_ns() : 0;
         std::tie(bounded_textures, bounded_samplers) =
             impl_->bounded->bind(impl_->bounded->rings[impl_->ring_index], shared, impl_->sampler_objects);
         if (frame_metrics_timed())
-            impl_->bounded->frame_ms +=
-                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - bind_start).count();
+            impl_->bounded->frame_ms += double(host_counter_ns() - bind_start) * 1e-6;
         std::memcpy(mapped + shared_rel, &shared, sizeof(shared));
     } else {
         std::memcpy(mapped + shared_rel, &draw.shared, sizeof(draw.shared));
