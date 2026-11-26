@@ -27,6 +27,7 @@
 //   main_mask        the cores the main thread may run on now (0 unknown),
 //   mhz              each speed's current/maximum clock, 0 if unreadable.
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -54,6 +55,31 @@ inline uint64_t host_monotonic_ns() {
     return windows_monotonic_ns();
 #else
     return 0;
+#endif
+}
+
+// A monotonic time in nanoseconds for timers read many times a frame (the
+// frame metrics' per-draw timers). On ARM64 it is the generic timer's virtual
+// count, read directly: clock_gettime reads the same counter, but through the
+// vDSO, and an AYN Thor race spent a tenth of its main thread there with the
+// frame metrics on (Issue #176). Comparable only with itself.
+inline uint64_t host_counter_ns() {
+#if defined(__aarch64__) && defined(__linux__)
+    // Nanoseconds per count in 32.32 fixed point (a multiply, not a divide).
+    static const uint64_t scale = [] {
+        uint64_t frequency;
+        asm volatile("mrs %0, cntfrq_el0" : "=r"(frequency));
+        return frequency ? uint64_t((uint64_t(1'000'000'000u) << 32) / frequency) : 0;
+    }();
+    if (!scale) return host_monotonic_ns();
+    uint64_t count;
+    asm volatile("isb" ::: "memory");
+    asm volatile("mrs %0, cntvct_el0" : "=r"(count));
+    return uint64_t(((unsigned __int128)count * scale) >> 32);
+#else
+    // steady_clock, not host_monotonic_ns: the renderer's tests link no host_timing.cpp.
+    return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
 #endif
 }
 
