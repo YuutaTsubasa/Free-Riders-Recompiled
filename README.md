@@ -340,6 +340,8 @@ with [docs/progress.md](docs/progress.md).
   The launcher now checks for a newer version at most once an hour instead of once a day (#365). Choosing AVATAR in the character ring with no VRM model set no longer loads for ever: you race with an empty rider (gear and board), and the loading screen tells you to choose a model in the launcher.
 - [v0.10.76 — Less work per draw on the main thread](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.76)
   Races spend less time on the CPU drawing each frame: texture lookups and texture setup are cheaper, so busy frames (many draws) on slower or hot phones are less likely to miss their time (#176). The picture is unchanged.
+- [v0.10.77 — Lower CPU use during races on Android](https://github.com/YuutaTsubasa/Free-Riders-Recompiled/releases/tag/v0.10.77)
+  Races use less CPU on Android, aimed at slower phones such as the Pixel 10a (#176): a check the game makes very often is now much cheaper. The picture is unchanged.
 
 ## System Requirements
 
