@@ -195,6 +195,13 @@ float GuestGraphics::camera_aspect() {
     return full ? float(native.width())/float(native.height()) : 16.0f/9.0f;
 }
 
+float GuestGraphics::frame_camera_aspect() {
+    if(!impl_) return 0.0f;
+    const auto& native=presentation();
+    if(!aspect::wider_than_16x9(native.width(),native.height())) return 0.0f;
+    return aspect::camera_aspect(native.width(),native.height(),split_layout_?split_layout_:split_layout_last_);
+}
+
 void GuestGraphics::set_scissor(uint32_t device,uint32_t rectangle_address) {
     check_device(memory_,created(),device);
     const auto rectangle=read_rectangle(memory_,rectangle_address);

@@ -126,6 +126,10 @@ public:
     // drawn: the framebuffer's when the view fills it, 16:9 for the 1280/880
     // wide views. 0 when the framebuffer is not wider than 16:9.
     [[nodiscard]] float camera_aspect();
+    // The aspect a camera drawn across the whole frame wants
+    // (aspect::camera_aspect): the framebuffer's, or 16:9 while a two-player
+    // layout is shown as 16:9. 0 when the framebuffer is not wider than 16:9.
+    [[nodiscard]] float frame_camera_aspect();
     [[nodiscard]] uint32_t last_view_width() const noexcept { return last_view_width_; }
     // SFR_MENU_BG: a draw in a 1280/880-wide view was placed in the centered area
     // (swapped) or went elsewhere (a surface the title composes later). The frame
