@@ -75,6 +75,10 @@ inline constexpr TestChoice gpu_timing[] = {{"1", {"Frames", "畫格"}}, {"2", {
 inline constexpr TestChoice step_rates[] = {
     {"80", {"80 Hz", "80 Hz"}}, {"90", {"90 Hz", "90 Hz"}}, {"120", {"120 Hz", "120 Hz"}}, {"144", {"144 Hz", "144 Hz"}},
 };
+// The stereo test view's eye distance (stereo_view.h), in the title's world units.
+inline constexpr TestChoice stereo_separations[] = {
+    {"0", {"None", "無"}}, {"0.03", {"Narrow", "窄"}}, {"0.15", {"Wide", "寬"}}, {"0.5", {"Very wide", "很寬"}},
+};
 inline constexpr TestChoice core_plan[] = {
     {"13", {"As in 0.10.8", "與 0.10.8 相同"}},
     {"0", {"Left to Android", "交給 Android"}},
@@ -210,6 +214,26 @@ inline constexpr TestOption table[] = {
       "測試用：遊戲視窗改用 X11 開啟（在 Wayland 桌面上會經過 XWayland），而不是 Wayland，與先前的版本相同。"
       "若在 Wayland 桌面上視窗沒有出現、無法調整大小或全螢幕，或有其他異常，可試著開啟。啟動器下次開啟時也會使用。"},
      on, "#365"},
+    {"SFR_TEST_STEREO", TestGroup::graphics, test_platform::all,
+     {"Stereo side by side (VR test)", "左右並排立體（VR 測試）"},
+     {"For testing, toward a VR mode: a one-player race draws its 3D twice, the left eye's view in the left half "
+      "of the picture and the right eye's in the right half, for cross or parallel viewing. The HUD and menus "
+      "stay as they are. Slower: the race's 3D is drawn twice.",
+      "測試用，為 VR 模式做準備：單人比賽的 3D 畫面畫兩次，左眼的畫面在左半邊、右眼的在右半邊，"
+      "可用交叉或平行法觀看。HUD 與選單不變。比較慢：比賽的 3D 會畫兩次。"},
+     on, "#460"},
+    {"SFR_TEST_STEREO_SEPARATION", TestGroup::graphics, test_platform::all,
+     {"Stereo eye distance", "立體的雙眼距離"},
+     {"For testing, with Stereo side by side: how far apart the two eyes are. None draws both halves from the "
+      "same place (they should look the same); Default is a person's.",
+      "測試用，搭配左右並排立體：兩眼相距多遠。「無」讓兩半從同一個位置畫（兩邊應該完全相同）；預設為一般人的距離。"},
+     stereo_separations, "#460"},
+    {"SFR_TEST_FIRST_PERSON", TestGroup::graphics, test_platform::all,
+     {"First-person camera (VR test)", "第一人稱鏡頭（VR 測試）"},
+     {"For testing, toward a VR mode: a one-player race is drawn from the rider's head, looking where the board "
+      "is heading, instead of from behind. Only the picture changes; the race is the same.",
+      "測試用，為 VR 模式做準備：單人比賽改從選手頭部的位置、朝滑板前進的方向畫，而不是從後方。只有畫面改變，比賽本身不變。"},
+     on, "#460"},
     // ---- processor
     {"SFR_CORE_PLAN", TestGroup::processor, test_platform::android,
      {"Core placement", "核心配置"},

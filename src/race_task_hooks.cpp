@@ -2,6 +2,7 @@
 #include "draw_read_watch.h"
 #include "ppc_recomp_shared.h"
 #include "race_frame_clock.h"
+#include "race_stereo.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -331,7 +332,10 @@ SFR_CONCURRENT_HOOK(sub_824A00C8) {
             ++table.manager_calls;
         }
     } manager_clock{timing, drawn_frame, manager_start};
-    if (!skip_drawing && !watching && !timing) {
+    // The stereo test view and first-person camera (race_stereo.cpp) draw a
+    // drawn race frame's 3D their own way; a frame not drawn stays as it is.
+    const bool views = race_frame && drawn_frame && !skip_drawing && sfr::race_stereo::enabled();
+    if (!skip_drawing && !watching && !timing && !views) {
         __imp__sub_824A00C8(ctx, base);
         return;
     }
@@ -384,32 +388,52 @@ SFR_CONCURRENT_HOOK(sub_824A00C8) {
                     ctx.r4.u64 = round;
                     sfr::call_indirect(ctx, base, before);
                 }
-                for (uint32_t element = memory.load<uint32_t>(end); element != end; element = memory.load<uint32_t>(element)) {
-                    const uint32_t task = memory.load<uint32_t>(element + 8);
-                    memory.store<uint32_t>(manager + 188, task);
-                    const uint32_t mask = memory.load<uint32_t>(phase + 12);
-                    if (mask && (memory.load<uint32_t>(task + 8) & mask)) continue;
-                    if (skip_drawing && function == draw_method && skipped_when_undrawn(memory.load<uint32_t>(task))) continue;
-                    const uint32_t task_kind = memory.load<uint32_t>(task);
-                    const bool areas_only = skip_drawing && function == draw_method && stage_areas_only() &&
-                                            !kept_when_undrawn(task_kind) && memory.load<uint32_t>(task_kind + 12) == stage_draw;
-                    ctx.r3.u64 = task;
-                    const bool watch_task = watching && watch::by_kind() && function == draw_method && watch::sampled(race_frames);
-                    if (watching) sfr::draw_reads::set_reader(task_kind, key);
-                    if (watch_task) watch::before_task(base, task_kind);
-                    const uint64_t start = timing ? task_times::now() : 0;
-                    const uint64_t host_start = timing ? sfr::draw_call_host_ns.load(std::memory_order_relaxed) : 0;
-                    const uint64_t draws_start = timing ? sfr::draw_call_count.load(std::memory_order_relaxed) : 0;
-                    if (areas_only) find_stage_areas(ctx, base, task);
-                    else sfr::call_indirect(ctx, base, function);
-                    if (watch_task) watch::after_task(base, task, task_kind);
-                    if (timing) {
-                        const uint32_t kind = memory.load<uint32_t>(task);
-                        task_times::name(function, key, kind);
-                        task_times::add(drawn_frame, function, key, kind, task_times::now() - start,
-                                        sfr::draw_call_host_ns.load(std::memory_order_relaxed) - host_start,
-                                        sfr::draw_call_count.load(std::memory_order_relaxed) - draws_start);
+                const auto run_tasks = [&] {
+                    for (uint32_t element = memory.load<uint32_t>(end); element != end; element = memory.load<uint32_t>(element)) {
+                        const uint32_t task = memory.load<uint32_t>(element + 8);
+                        memory.store<uint32_t>(manager + 188, task);
+                        const uint32_t mask = memory.load<uint32_t>(phase + 12);
+                        if (mask && (memory.load<uint32_t>(task + 8) & mask)) continue;
+                        if (skip_drawing && function == draw_method && skipped_when_undrawn(memory.load<uint32_t>(task))) continue;
+                        const uint32_t task_kind = memory.load<uint32_t>(task);
+                        const bool areas_only = skip_drawing && function == draw_method && stage_areas_only() &&
+                                                !kept_when_undrawn(task_kind) && memory.load<uint32_t>(task_kind + 12) == stage_draw;
+                        ctx.r3.u64 = task;
+                        const bool watch_task = watching && watch::by_kind() && function == draw_method && watch::sampled(race_frames);
+                        if (watching) sfr::draw_reads::set_reader(task_kind, key);
+                        if (watch_task) watch::before_task(base, task_kind);
+                        const uint64_t start = timing ? task_times::now() : 0;
+                        const uint64_t host_start = timing ? sfr::draw_call_host_ns.load(std::memory_order_relaxed) : 0;
+                        const uint64_t draws_start = timing ? sfr::draw_call_count.load(std::memory_order_relaxed) : 0;
+                        if (areas_only) find_stage_areas(ctx, base, task);
+                        else sfr::call_indirect(ctx, base, function);
+                        if (watch_task) watch::after_task(base, task, task_kind);
+                        if (timing) {
+                            const uint32_t kind = memory.load<uint32_t>(task);
+                            task_times::name(function, key, kind);
+                            task_times::add(drawn_frame, function, key, kind, task_times::now() - start,
+                                            sfr::draw_call_host_ns.load(std::memory_order_relaxed) - host_start,
+                                            sfr::draw_call_count.load(std::memory_order_relaxed) - draws_start);
+                        }
                     }
+                };
+                // The 3D drawing once per eye (or once from the first-person
+                // camera), then the title's own callback as after one pass.
+                const bool shooting = views && function == draw_method && key == 4 && round == 0 &&
+                                      sfr::race_stereo::shot_due();
+                if (shooting) {
+                    run_tasks();
+                    sfr::race_stereo::shot("mono");
+                }
+                if (views && function == draw_method && key == 4 && round == 0 && sfr::race_stereo::begin(ctx, base)) {
+                    for (int pass = 0; pass < sfr::race_stereo::passes(); ++pass) {
+                        sfr::race_stereo::pass(ctx, base, pass);
+                        run_tasks();
+                    }
+                    sfr::race_stereo::end(ctx, base);
+                    if (shooting) sfr::race_stereo::shot("stereo");
+                } else if (!shooting) {
+                    run_tasks();
                 }
                 const uint32_t after = memory.load<uint32_t>(manager + 200);
                 if (!after) break;

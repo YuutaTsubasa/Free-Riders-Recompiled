@@ -114,7 +114,14 @@ void write_framebuffer(const char* path) {
     u32(40); u32(width); u32(uint32_t(-int32_t(height))); u16(1); u16(32); u32(0); u32(size); u32(2835); u32(2835); u32(0); u32(0);
     out.write(reinterpret_cast<const char*>(rows),std::streamsize(size));
 }
+}
 
+namespace sfr {
+// For the stereo test view's mid-frame pictures (race_stereo.cpp).
+void write_framebuffer(const char* path) { ::write_framebuffer(path); }
+}
+
+namespace {
 // SFR_FLAT_FRAME_TRACE=<file%d.bmp>: read every presented frame back and,
 // when it is nearly one colour (the spread of a sample of pixels' brightness
 // under 8, any colour: white, beige, black) right after a frame that was not

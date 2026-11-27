@@ -118,7 +118,14 @@ private:
     // hands, On your Gear). The layout's width, this frame and the last.
     uint32_t split_layout_ = 0, split_layout_last_ = 0;
     bool plain_loading_screen_ = false, plain_now_loading_ = false;  // set_plain_loading_screen
+    bool frame_views_ = false;  // set_frame_views
 public:
+    // The race's stereo test view (race_stereo.cpp, Issue #460) draws two
+    // half views of the whole frame, which a one-view race draws into: while
+    // set, a view with an offset on the back buffer is bounded by the frame,
+    // not by the 880-wide layout the race reset the back buffer to, and is
+    // not taken for a two-player split.
+    void set_frame_views(bool on) noexcept { frame_views_ = on; }
     // Whether the frame is (or the last one was) such a frame: it is laid out
     // and shown as the title's own 16:9 picture, not widened.
     [[nodiscard]] bool split_frame() const noexcept { return split_layout_ || split_layout_last_; }
