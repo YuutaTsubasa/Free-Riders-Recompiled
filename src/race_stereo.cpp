@@ -129,13 +129,15 @@ Frame frame;
 uint32_t stereo_frames = 0;
 
 // The racer the camera follows: of the race's racers ([83E52FDC]+36), the
-// one nearest the camera's target. 0 when there is none.
+// one nearest the camera's target. 0 when there are fewer than two: the
+// World Grand Prix's story scenes and loading already raise the race flag
+// with one racer made (twelve once the race is set up).
 uint32_t followed_racer(stereo::Vec3 target) {
     auto& memory = *active_memory;
     const uint32_t team = memory.readable(racer_team, 4) ? memory.load<uint32_t>(racer_team) : 0;
     if (!team || !memory.readable(team + 36, 8)) return 0;
     const uint32_t begin = memory.load<uint32_t>(team + 36), end = memory.load<uint32_t>(team + 40);
-    if (end <= begin || end - begin > 64 * 4) return 0;
+    if (end <= begin + 4 || end - begin > 64 * 4) return 0;
     uint32_t best = 0;
     float best_distance = 0;
     for (uint32_t slot = begin; slot < end; slot += 4) {
@@ -256,10 +258,10 @@ bool start(PPCContext& ctx, uint8_t* base) {
     const uint32_t entry = memory.load<uint32_t>(layout + 148);
     if (!camera || !entry || !memory.readable(camera, camera_size) || !memory.readable(entry, layout_entry_size)) return false;
     if (!active_guest_graphics || !active_guest_graphics->created()) return false;
-    // Only the race itself, with its racers: the race flag is up already on
-    // the World Grand Prix's story scenes, whose drawing does not stand being
-    // run twice (with two passes their SKIP never filled, and the run went
-    // round the story and the team select again).
+    // Only the race itself, with its racers (followed_racer): the race flag
+    // is up already on the World Grand Prix's story scenes and loading, and
+    // one run drawing a story scene twice stopped on a heap block freed with
+    // a broken header (82497DF8, guest 0x01000000).
     if (!followed_racer(load_vec(camera + camera_target))) return false;
     const uint32_t vtable = memory.load<uint32_t>(camera);
     if (memory.load<uint32_t>(vtable + 4) != camera_update) {
