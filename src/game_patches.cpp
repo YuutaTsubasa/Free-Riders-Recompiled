@@ -87,6 +87,53 @@ SFR_CONCURRENT_HOOK(sub_8222B058) { sfr::enter_function(ctx,"sub_8222B058",0x822
 SFR_CONCURRENT_HOOK(sub_82242AB8) { sfr::enter_function(ctx,"sub_82242AB8",0x82242AB8); refresh_camera_aspect(); __imp__sub_82242AB8(ctx,base); }
 SFR_CONCURRENT_HOOK(sub_823F29D8) { sfr::enter_function(ctx,"sub_823F29D8",0x823F29D8); refresh_camera_aspect(); __imp__sub_823F29D8(ctx,base); }
 
+PPC_FUNC_IMPL(__imp__sub_823E29C0);
+
+// Ultrawide (Issue #461): a scene handing the shared 3D camera back.
+//
+// 823E29C0 ends a scene (it is called from 823DB19C, 823DB308 and 823DB650,
+// and by its deleting destructor 823E2968; on a fresh save it runs when the
+// World Grand Prix's opening story scene ends). It gives the camera
+// it borrowed (its +140) the view of the 2D screen (the graphics record's
+// size, which is the wide frame's: sub_8249B068) and an aspect of 16/9 from
+// a constant (82196EFC), and applies them (the camera's virtual +32). On a
+// frame wider than 16:9 the camera then draws a 16:9 picture across the
+// whole frame, stretched by the frame's ratio, until the title applies a view
+// layout to it again (8222B5B0, with the aspects made at boot from the frame,
+// sub_8249B068): a Free Race does at its start, a Grand Prix mission does not,
+// so the mission's race (and its pause menu) were stretched instead of
+// showing more at the sides.
+//
+// After the scene's own work, a camera left at exactly 16/9 is given the
+// frame's aspect (GuestGraphics::frame_camera_aspect) and applied again
+// through the same virtual call. A 16:9 frame, or a two-player layout shown
+// as 16:9, is left alone.
+SFR_CONCURRENT_HOOK(sub_823E29C0) {
+    sfr::enter_function(ctx,"sub_823E29C0",0x823E29C0);
+    auto& memory=*sfr::active_memory;
+    const auto word=[&](uint64_t address) { return memory.readable(address,4) ? memory.load<uint32_t>(address) : 0u; };
+    const uint32_t camera=wide_logical_width() ? word(uint64_t(ctx.r3.u32)+140) : 0;
+    __imp__sub_823E29C0(ctx,base);
+    if(!camera || !sfr::active_guest_graphics || !memory.readable(uint64_t(camera)+492,4)) return;
+    constexpr uint32_t title_aspect=std::bit_cast<uint32_t>(16.0f/9.0f);
+    const float aspect=sfr::active_guest_graphics->frame_camera_aspect();
+    if(aspect<=0.0f || std::bit_cast<uint32_t>(aspect)==title_aspect || memory.load<uint32_t>(uint64_t(camera)+492)!=title_aspect)
+        return;
+    const uint32_t apply=word(uint64_t(word(camera))+32);
+    if(!apply) return;
+    memory.store<uint32_t>(uint64_t(camera)+492,std::bit_cast<uint32_t>(aspect));
+    const auto r3=ctx.r3, r4=ctx.r4;
+    const auto lr=ctx.lr;
+    const auto ctr=ctx.ctr.u64;
+    ctx.r3.u64=camera;
+    ctx.ctr.u64=apply;
+    PPC_CALL_INDIRECT_FUNC(apply);
+    ctx.r3=r3, ctx.r4=r4, ctx.lr=lr, ctx.ctr.u64=ctr;
+    static std::atomic<bool> logged{false};
+    if(!logged.exchange(true))
+        std::cerr << "GAME_PATCH scene_camera_aspect camera=0x" << std::hex << camera << std::dec << " aspect=" << aspect << '\n';
+}
+
 PPC_FUNC_IMPL(__imp__sub_8226CB10);
 PPC_FUNC_IMPL(__imp__sub_823F18D0);
 

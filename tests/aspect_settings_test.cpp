@@ -65,12 +65,26 @@ void race_layout() {
         require(race_layout_width(width) % 2 == 0, "the layout is even, so the halves are whole");
 }
 
+// Issue #461: a camera drawn across a wide frame wants the frame's aspect;
+// 16:9 only while a split or Tag Race layout is shown as 16:9.
+void camera_aspect() {
+    using sfr::aspect::camera_aspect;
+    const float wide = 1680.0f / 720.0f, title = 16.0f / 9.0f;
+    require(camera_aspect(1680, 720, 0) == wide, "no split: the frame's shape");
+    require(camera_aspect(2560, 720, 0) == 2560.0f / 720.0f, "32:9: the frame's shape");
+    require(camera_aspect(1680, 720, 880) == title, "a split of the 880 layout is shown as 16:9");
+    require(camera_aspect(1680, 720, 1156) == wide, "a widened race layout fills the frame");
+    require(camera_aspect(1680, 720, 1280) == wide, "two 640 halves are shown across the frame");
+    require(camera_aspect(1680, 0, 0) == title, "no height: 16:9");
+}
+
 int main() {
     try {
         parsing();
         widths();
         layout_helpers();
         race_layout();
+        camera_aspect();
     } catch (const std::exception& error) {
         std::cerr << "aspect_settings_test failed: " << error.what() << '\n';
         return 1;

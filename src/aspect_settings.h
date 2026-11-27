@@ -65,6 +65,17 @@ inline constexpr uint32_t title_calibration_width = 880;
     return view_width == title_layout_width || view_width == title_calibration_width;
 }
 
+// The aspect a scene camera of the title wants on a frame wider than 16:9
+// that is drawn across the whole frame: the frame's shape (hor+). The
+// exception is a frame shown as 16:9: a two-player split or Tag Race layout
+// that is not widened (split_layout 880 or less, as present() shows it).
+// Used where the title gives a camera a 16:9 aspect of its own (Issue #461).
+[[nodiscard]] constexpr float camera_aspect(uint32_t frame_width, uint32_t frame_height,
+                                            uint32_t split_layout) noexcept {
+    const bool shown_16x9 = split_layout != 0 && split_layout <= title_calibration_width;
+    return shown_16x9 || frame_height == 0 ? 16.0f / 9.0f : float(frame_width) / float(frame_height);
+}
+
 // The width of the centered 16:9 area of a frame logical_height tall.
 [[nodiscard]] constexpr uint32_t center_width(uint32_t logical_height) noexcept {
     return (logical_height * 16 + 4) / 9;
