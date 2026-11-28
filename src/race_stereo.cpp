@@ -1,5 +1,6 @@
 #include "race_stereo.h"
 
+#include "avatar_state.h"
 #include "diagnostic_hooks.h"
 #include "guest_graphics.h"
 #include "native_presentation.h"
@@ -128,37 +129,30 @@ struct Frame {
 Frame frame;
 uint32_t stereo_frames = 0;
 
-// A computer racer: its controller ([+0xC94]) is the computer's (vtable
-// 821A1EF0) and +0x74 is 1, as SFR_RACE_TRACK reads it (game_patches.cpp).
-bool computer_racer(uint32_t racer) {
-    auto& memory = *active_memory;
-    const uint32_t controller = memory.load<uint32_t>(racer + 0xC94);
-    return controller && memory.readable(controller, 4) && memory.load<uint32_t>(controller) == 0x821A1EF0u &&
-           memory.load<uint32_t>(racer + 0x74) == 1;
-}
-
-// The racer the camera follows: of the race's racers ([83E52FDC]+36), the
-// player's (not a computer's) nearest the camera's target, so the first-person
-// camera does not jump to a computer racer passing close by; any racer when
-// none is the player's. 0 when there are fewer than two: the World Grand
-// Prix's story scenes and loading already raise the race flag with one racer
-// made (twelve once the race is set up).
+// The racer the camera follows: the local player's, the first entrant of the
+// race's list (avatar_state.h: 8228B310 marks the first local_count entrants
+// as local; a computer controller can drive it in autopilot, so the control
+// type does not tell). Without that list, the racer nearest the camera's
+// target. 0 when the race has fewer than two racers: the World Grand Prix's
+// story scenes and loading already raise the race flag with one racer made
+// (twelve once the race is set up).
 uint32_t followed_racer(stereo::Vec3 target) {
     auto& memory = *active_memory;
     const uint32_t team = memory.readable(racer_team, 4) ? memory.load<uint32_t>(racer_team) : 0;
     if (!team || !memory.readable(team + 36, 8)) return 0;
     const uint32_t begin = memory.load<uint32_t>(team + 36), end = memory.load<uint32_t>(team + 40);
     if (end <= begin + 4 || end - begin > 64 * 4) return 0;
+    if (const auto local = avatar_state_detail::local_racers(memory); local && local->populated_count >= 2) {
+        const uint32_t racer = memory.load<uint32_t>(local->begin);
+        if (racer && memory.readable(racer, 0x200)) return racer;
+    }
     uint32_t best = 0;
     float best_distance = 0;
-    bool best_player = false;
     for (uint32_t slot = begin; slot < end; slot += 4) {
         const uint32_t racer = memory.load<uint32_t>(slot);
-        if (!racer || !memory.readable(racer, 0xC98)) continue;
-        const bool player = !computer_racer(racer);
+        if (!racer || !memory.readable(racer, 0x200)) continue;
         const float distance = stereo::length(load_vec(racer + 0x120) - target);
-        if (!best || (player && !best_player) || (player == best_player && distance < best_distance))
-            best = racer, best_distance = distance, best_player = player;
+        if (!best || distance < best_distance) best = racer, best_distance = distance;
     }
     return best;
 }
