@@ -619,6 +619,14 @@ struct NativePresentation::Impl {
     std::pair<uint32_t, uint32_t> presented_area{0, 0};
     float presented_aspect = 0.0f;
     std::atomic<bool> corner_anchor{false};  // set_corner_anchor
+    // The stereo test view's left eye (keep_left_eye): the whole frame as it
+    // was drawn for that eye, its view for the blit, and whether the next
+    // present shows it.
+    std::unique_ptr<plume::RenderTexture> left_eye;
+    std::unique_ptr<plume::RenderTextureView> left_eye_view;
+    std::unique_ptr<plume::RenderDescriptorSet> left_eye_texture;
+    uint32_t left_eye_width = 0, left_eye_height = 0;
+    bool stereo_pending = false;
     void build_blit();
     void build_blit_targets();
     // The framebuffer's colour and depth textures and their framebuffer, at
@@ -1923,6 +1931,9 @@ void NativePresentation::Impl::rescale(uint32_t percent) {
     bound = nullptr;
     deferred_clear.reset();
     surfaces.clear();
+    left_eye_texture.reset();
+    left_eye_view.reset();
+    left_eye.reset();
     blit_view.reset();
     framebuffer.reset();
     depth.reset();
@@ -2285,7 +2296,63 @@ std::pair<uint32_t, uint32_t> NativePresentation::presented_area() const noexcep
     return impl_->presented_area.first ? impl_->presented_area : std::pair{impl_->width, impl_->height};
 }
 
-std::vector<uint8_t> NativePresentation::readback_color() {
+void NativePresentation::keep_left_eye() {
+    auto& impl = *impl_;
+    impl.refuse_during_gpu_wait();
+    if (!impl.left_eye || impl.left_eye_width != impl.render_width || impl.left_eye_height != impl.render_height) {
+        impl.drain();
+        impl.flush();
+        impl.graphics->wait_idle();
+        impl.build_blit();
+        auto& device = impl.graphics->device();
+        impl.left_eye_texture.reset();
+        impl.left_eye_view.reset();
+        impl.left_eye = device.createTexture(
+            plume::RenderTextureDesc::Texture2D(impl.render_width, impl.render_height, 1, plume::RenderFormat::B8G8R8A8_UNORM));
+        if (!impl.left_eye) unavailable("stereo left eye texture");
+        impl.left_eye_view = impl.left_eye->createTextureView(plume::RenderTextureViewDesc::Texture2D(plume::RenderFormat::B8G8R8A8_UNORM));
+        plume::RenderDescriptorSetBuilder textures;
+        textures.begin();
+        textures.addTexture(0);
+        textures.end();
+        impl.left_eye_texture = textures.create(&device);
+        if (!impl.left_eye_view || !impl.left_eye_texture) unavailable("stereo left eye view");
+        impl.left_eye_texture->setTexture(0, impl.left_eye.get(), plume::RenderTextureLayout::SHADER_READ, impl.left_eye_view.get());
+        impl.left_eye_width = impl.render_width;
+        impl.left_eye_height = impl.render_height;
+    }
+    impl.emit_deferred_clear();
+    // In the frame's own list, after the draws it copies, as a resolve's copy.
+    struct Copy {
+        plume::RenderTexture* source;
+        plume::RenderTexture* target;
+        void operator()(plume::RenderCommandList& list, uint64_t) const {
+            const std::array<plume::RenderTextureBarrier, 2> before{
+                plume::RenderTextureBarrier(source, plume::RenderTextureLayout::COPY_SOURCE),
+                plume::RenderTextureBarrier(target, plume::RenderTextureLayout::COPY_DEST)};
+            list.barriers(plume::RenderBarrierStage::COPY, before.data(), uint32_t(before.size()));
+            list.copyTexture(target, source);
+            const std::array<plume::RenderTextureBarrier, 2> after{
+                plume::RenderTextureBarrier(target, plume::RenderTextureLayout::SHADER_READ),
+                plume::RenderTextureBarrier(source, plume::RenderTextureLayout::COLOR_WRITE)};
+            list.barriers(plume::RenderBarrierStage::GRAPHICS, after.data(), uint32_t(after.size()));
+        }
+    };
+    record_async(Copy{impl.color.get(), impl.left_eye.get()});
+    impl.stereo_pending = true;
+}
+
+bool NativePresentation::stereo_pending() const noexcept { return impl_->stereo_pending && impl_->left_eye; }
+
+std::vector<uint8_t> NativePresentation::readback_left_eye() {
+    if (!impl_->left_eye) return {};
+    return readback(*impl_->left_eye, plume::RenderTextureLayout::SHADER_READ);
+}
+
+std::vector<uint8_t> NativePresentation::readback_color() { return readback(*impl_->color, plume::RenderTextureLayout::COLOR_WRITE); }
+
+// A texture of the framebuffer's size and format, read back; left in `after`.
+std::vector<uint8_t> NativePresentation::readback(plume::RenderTexture& texture, plume::RenderTextureLayout after) {
     impl_->emit_deferred_clear();
     constexpr uint32_t bytes_per_pixel = 4;
     if (impl_->graphics->backend() == GraphicsBackend::vulkan) {
@@ -2296,17 +2363,17 @@ std::vector<uint8_t> NativePresentation::readback_color() {
         impl_->flush();
         impl_->begin_list();
         impl_->command_list->barriers(plume::RenderBarrierStage::COPY,
-            plume::RenderTextureBarrier(impl_->color.get(), plume::RenderTextureLayout::COPY_SOURCE));
+            plume::RenderTextureBarrier(&texture, plume::RenderTextureLayout::COPY_SOURCE));
         VkBufferImageCopy region{};
         region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         region.imageSubresource.layerCount = 1;
         region.imageExtent = {impl_->render_width, impl_->render_height, 1};
         vkCmdCopyImageToBuffer(static_cast<plume::VulkanCommandList*>(impl_->command_list.get())->vk,
-                               static_cast<plume::VulkanTexture*>(impl_->color.get())->vk,
+                               static_cast<plume::VulkanTexture*>(&texture)->vk,
                                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                static_cast<plume::VulkanBuffer*>(buffer.get())->vk, 1, &region);
         impl_->command_list->barriers(plume::RenderBarrierStage::GRAPHICS,
-            plume::RenderTextureBarrier(impl_->color.get(), plume::RenderTextureLayout::COLOR_WRITE));
+            plume::RenderTextureBarrier(&texture, after));
         impl_->end_list();
         impl_->execute();
         const auto* mapped = static_cast<const uint8_t*>(buffer->map());
@@ -2330,7 +2397,7 @@ std::vector<uint8_t> NativePresentation::readback_color() {
             plume::RenderTextureCopyLocation::PlacedFootprint(buffer.get(), plume::RenderFormat::B8G8R8A8_UNORM,
                                                               impl_->render_width, impl_->render_height, 1,
                                                               impl_->render_width),
-            plume::RenderTextureCopyLocation::Subresource(impl_->color.get()));
+            plume::RenderTextureCopyLocation::Subresource(&texture));
         impl_->end_list();
         impl_->execute();
         const auto* mapped = static_cast<const uint8_t*>(buffer->map());
@@ -2339,7 +2406,7 @@ std::vector<uint8_t> NativePresentation::readback_color() {
         buffer->unmap();
         return result;
     }
-    const auto resource_desc = static_cast<plume::D3D12Texture*>(impl_->color.get())->d3d->GetDesc();
+    const auto resource_desc = static_cast<plume::D3D12Texture*>(&texture)->d3d->GetDesc();
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
     UINT row_count = 0;
     UINT64 row_bytes = 0;
@@ -2357,20 +2424,20 @@ std::vector<uint8_t> NativePresentation::readback_color() {
     impl_->flush();
     impl_->begin_list();
     impl_->command_list->barriers(plume::RenderBarrierStage::COPY,
-        plume::RenderTextureBarrier(impl_->color.get(), plume::RenderTextureLayout::COPY_SOURCE));
+        plume::RenderTextureBarrier(&texture, plume::RenderTextureLayout::COPY_SOURCE));
     D3D12_TEXTURE_COPY_LOCATION destination{};
     destination.pResource = static_cast<plume::D3D12Buffer*>(buffer.get())->d3d;
     destination.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
     destination.PlacedFootprint = footprint;
     D3D12_TEXTURE_COPY_LOCATION source{};
-    source.pResource = static_cast<plume::D3D12Texture*>(impl_->color.get())->d3d;
+    source.pResource = static_cast<plume::D3D12Texture*>(&texture)->d3d;
     source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
     source.SubresourceIndex = 0;
     // Plume 1192686 dereferences a null destination texture for buffer footprints.
     static_cast<plume::D3D12CommandList*>(impl_->command_list.get())->d3d->CopyTextureRegion(
         &destination, 0, 0, 0, &source, nullptr);
     impl_->command_list->barriers(plume::RenderBarrierStage::GRAPHICS,
-        plume::RenderTextureBarrier(impl_->color.get(), plume::RenderTextureLayout::COLOR_WRITE));
+        plume::RenderTextureBarrier(&texture, after));
     impl_->end_list();
     impl_->execute();
 
@@ -2672,7 +2739,9 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
     // The button prompts under the game's pose figures (Issue #284,
     // control_prompts.h), drawn after the blit.
     const std::vector<prompts::Sighting> sightings = prompts::enabled() ? prompts::take_sightings() : std::vector<prompts::Sighting>{};
-    const bool stretch = !can_copy || part || out_width != impl_->render_width || out_height != impl_->render_height ||
+    // A stereo frame (keep_left_eye): both eyes squeezed side by side.
+    const bool stereo = std::exchange(impl_->stereo_pending, false) && impl_->left_eye_texture;
+    const bool stretch = stereo || !can_copy || part || out_width != impl_->render_width || out_height != impl_->render_height ||
                          pause > 0.0f || touch_shown || fps_shown || !model_line.empty() || layers_shown || !sightings.empty();
     // The copy to the swap-chain texture follows the frame's draws in their
     // own list; pipelined, the frame is submitted without waiting for it.
@@ -2723,9 +2792,17 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
         const float area[2] = {float(shown.right) / float(impl_->render_width),
                                float(shown.bottom) / float(impl_->render_height)};
         std::memcpy(constants.data(), area, sizeof area);
+        // A stereo frame (keep_left_eye) shows the left eye's frame in the left
+        // half and the framebuffer in the right half. The touch controls and
+        // readouts the blit draws go with the right half only (the left half's
+        // draw has none), so the touch reader is laid out for that half.
+        const float stereo_half = stereo ? viewport.width * 0.5f : 0.0f;
+        const plume::RenderViewport touch_viewport = stereo
+            ? plume::RenderViewport(viewport.x + stereo_half, viewport.y, viewport.width - stereo_half, viewport.height)
+            : viewport;
         // The controls keep their shape in an image of any aspect (Issue #443,
         // touch_controls.h): the touch reader lays them out for this viewport.
-        const float image_aspect = touch_image_aspect(viewport.width, viewport.height);
+        const float image_aspect = touch_image_aspect(touch_viewport.width, touch_viewport.height);
 #ifdef _WIN32
         // No touch reader here: SFR_TOUCH_CONTROLS=1 shows them at rest.
         TouchOverlay overlay = touch_shown ? touch_overlay_at_rest(image_aspect) : TouchOverlay{};
@@ -2739,40 +2816,66 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
                                                                3.0f + (std::min)(pause, 1.0f)};
         const auto touch_words = pack_touch_overlay(overlay);
         std::copy(touch_words.begin(), touch_words.end(), constants.begin() + 2);
-        impl_->touch_view = {viewport.x, viewport.y, viewport.width, viewport.height, float(out_width), float(out_height)};
-        set_pointer_view(viewport.x, viewport.y, viewport.width, viewport.height, float(out_width), float(out_height));
+        impl_->touch_view = {touch_viewport.x, touch_viewport.y, touch_viewport.width, touch_viewport.height,
+                             float(out_width), float(out_height)};
+        set_pointer_view(touch_viewport.x, touch_viewport.y, touch_viewport.width, touch_viewport.height,
+                         float(out_width), float(out_height));
+        if (stereo) {
+            // The left eye's whole frame into the left half, with the sampled
+            // area only (no controls or readouts).
+            std::array<uint32_t, 32> picture_only{};
+            std::copy(constants.begin(), constants.begin() + 2, picture_only.begin());
+            const plume::RenderViewport left(viewport.x, viewport.y, stereo_half, viewport.height);
+            impl_->command_list->setGraphicsDescriptorSet(impl_->left_eye_texture.get(), 0);
+            impl_->command_list->setViewports(&left, 1);
+            impl_->command_list->setGraphicsPushConstants(0, picture_only.data());
+            impl_->command_list->drawInstanced(3, 1, 0, 0);
+            impl_->command_list->setGraphicsDescriptorSet(impl_->blit_texture.get(), 0);
+            impl_->command_list->setViewports(&touch_viewport, 1);
+        }
         impl_->command_list->setGraphicsPushConstants(0, constants.data());
         impl_->command_list->drawInstanced(3, 1, 0, 0);
         if (!sightings.empty()) {
             // Pixel art of solid rectangles (control_prompts.h), cleared a
             // colour at a time in small batches like the line below.
-            const float view[4] = {viewport.x, viewport.y, viewport.width, viewport.height};
-            const int w = int(out_width), h = int(out_height);
-            std::vector<plume::RenderRect> batch;
-            for (const prompts::Sighting& sighting : sightings) {
-                const auto bindings = prompts::bindings(sighting.player);
-                const auto pieces = prompts::prompt_pieces(sighting.action, prompts::device(sighting.player, touch_shown),
-                                                           bindings ? *bindings : default_bindings(sighting.player));
-                if (pieces.empty()) continue;
-                const auto at = prompts::place_prompt(sighting, prompts::prompt_size(pieces), view, area, w, h);
-                auto rects = prompts::prompt_rectangles(pieces, at.x, at.y, at.unit);
-                std::stable_sort(rects.begin(), rects.end(),
-                                 [](const prompts::Rect& a, const prompts::Rect& b) { return a.colour < b.colour; });
-                for (size_t begin = 0; begin < rects.size();) {
-                    const uint32_t colour = rects[begin].colour;
-                    batch.clear();
-                    size_t end = begin;
-                    for (; end < rects.size() && rects[end].colour == colour; ++end) {
-                        const plume::RenderRect r{std::clamp(rects[end].left, 0, w), std::clamp(rects[end].top, 0, h),
-                                                  std::clamp(rects[end].right, 0, w), std::clamp(rects[end].bottom, 0, h)};
-                        if (r.left < r.right && r.top < r.bottom) batch.push_back(r);
+            // A stereo frame: each eye's half gets its own prompts, placed in it.
+            const int eyes = stereo ? 2 : 1;
+            for (int eye = 0; eye < eyes; ++eye) {
+                const float eye_width = viewport.width / float(eyes);
+                const float view[4] = {viewport.x + eye_width * float(eye), viewport.y, eye_width, viewport.height};
+                const int w = int(out_width), h = int(out_height);
+                // In a stereo frame each prompt stays inside its eye's half.
+                const int left_edge = stereo ? std::clamp(int(view[0]), 0, w) : 0;
+                const int right_edge = stereo ? std::clamp(int(view[0] + view[2]), left_edge, w) : w;
+                std::vector<plume::RenderRect> batch;
+                for (const prompts::Sighting& sighting : sightings) {
+                    if (stereo && sighting.eye != uint32_t(eye)) continue;
+                    const auto bindings = prompts::bindings(sighting.player);
+                    const auto pieces = prompts::prompt_pieces(sighting.action, prompts::device(sighting.player, touch_shown),
+                                                               bindings ? *bindings : default_bindings(sighting.player));
+                    if (pieces.empty()) continue;
+                    const auto size = prompts::prompt_size(pieces);
+                    auto at = prompts::place_prompt(sighting, size, view, area, w, h);
+                    if (stereo) at.x = std::clamp(at.x, left_edge, (std::max)(left_edge, right_edge - size.width * at.unit));
+                    auto rects = prompts::prompt_rectangles(pieces, at.x, at.y, at.unit);
+                    std::stable_sort(rects.begin(), rects.end(),
+                                     [](const prompts::Rect& a, const prompts::Rect& b) { return a.colour < b.colour; });
+                    for (size_t begin = 0; begin < rects.size();) {
+                        const uint32_t colour = rects[begin].colour;
+                        batch.clear();
+                        size_t end = begin;
+                        for (; end < rects.size() && rects[end].colour == colour; ++end) {
+                            const plume::RenderRect r{std::clamp(rects[end].left, left_edge, right_edge), std::clamp(rects[end].top, 0, h),
+                                                      std::clamp(rects[end].right, left_edge, right_edge), std::clamp(rects[end].bottom, 0, h)};
+                            if (r.left < r.right && r.top < r.bottom) batch.push_back(r);
+                        }
+                        begin = end;
+                        const plume::RenderColor value(float((colour >> 16) & 0xFF) / 255.0f, float((colour >> 8) & 0xFF) / 255.0f,
+                                                       float(colour & 0xFF) / 255.0f, 1.0f);
+                        for (size_t offset = 0; offset < batch.size(); offset += 16)
+                            impl_->command_list->clearColor(0, value, batch.data() + offset,
+                                                            uint32_t((std::min)(size_t(16), batch.size() - offset)));
                     }
-                    begin = end;
-                    const plume::RenderColor value(float((colour >> 16) & 0xFF) / 255.0f, float((colour >> 8) & 0xFF) / 255.0f,
-                                                   float(colour & 0xFF) / 255.0f, 1.0f);
-                    for (size_t offset = 0; offset < batch.size(); offset += 16)
-                        impl_->command_list->clearColor(0, value, batch.data() + offset,
-                                                        uint32_t((std::min)(size_t(16), batch.size() - offset)));
                 }
             }
         }

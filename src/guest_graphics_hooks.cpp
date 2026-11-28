@@ -48,6 +48,7 @@
 #include "performance_hint.h"
 #include "host_core_plan.h"
 #include "host_thread_stats.h"
+#include "race_stereo.h"
 #include <vector>
 #ifdef _WIN32
 #define NOMINMAX
@@ -79,8 +80,27 @@ sfr::GuestGraphics& graphics() {
 // framebuffer, with the presented area stretched over it as present() does.
 void write_framebuffer(const char* path) {
     auto& presentation=graphics().presentation();
-    const auto pixels=presentation.readback_color();
+    auto pixels=presentation.readback_color();
     const uint32_t width=presentation.render_width(), height=presentation.render_height(), size=width*height*4;
+    // A stereo frame (race_stereo.cpp) is shown as both eyes squeezed side
+    // by side (NativePresentation::keep_left_eye): written the same way, each
+    // pair of pixels averaged as the present's linear filter halves them.
+    if(presentation.stereo_pending() && pixels.size()>=size) {
+        const auto left=presentation.readback_left_eye();
+        if(left.size()>=size) {
+            std::vector<uint8_t> both(size);
+            const uint32_t half=width/2;
+            for(uint32_t y=0;y<height;++y)
+                for(uint32_t x=0;x<width;++x) {
+                    const auto& eye=x<half ? left : pixels;
+                    const uint32_t local=x<half ? x : x-half, span=x<half ? half : width-half;
+                    const uint64_t a=uint64_t(local)*width/span, b=(std::min)(a+1,uint64_t(width-1));
+                    for(uint32_t c=0;c<4;++c)
+                        both[(uint64_t(y)*width+x)*4+c]=uint8_t((eye[(uint64_t(y)*width+a)*4+c]+eye[(uint64_t(y)*width+b)*4+c]+1)/2);
+                }
+            pixels=std::move(both);
+        }
+    }
     const auto logical_area=presentation.presented_area();
     const auto rectangle=presentation.render_rectangle(plume::RenderRect(0,0,int32_t(logical_area.first),int32_t(logical_area.second)));
     const std::pair<uint32_t,uint32_t> area{uint32_t(rectangle.right),uint32_t(rectangle.bottom)};
@@ -114,7 +134,14 @@ void write_framebuffer(const char* path) {
     u32(40); u32(width); u32(uint32_t(-int32_t(height))); u16(1); u16(32); u32(0); u32(size); u32(2835); u32(2835); u32(0); u32(0);
     out.write(reinterpret_cast<const char*>(rows),std::streamsize(size));
 }
+}
 
+namespace sfr {
+// For the stereo test view's mid-frame pictures (race_stereo.cpp).
+void write_framebuffer(const char* path) { ::write_framebuffer(path); }
+}
+
+namespace {
 // SFR_FLAT_FRAME_TRACE=<file%d.bmp>: read every presented frame back and,
 // when it is nearly one colour (the spread of a sample of pixels' brightness
 // under 8, any colour: white, beige, black) right after a frame that was not
@@ -1608,6 +1635,17 @@ static bool native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
         }
     }
 
+    // The stereo test view's HUD depth (race_stereo.cpp, Issue #460): each
+    // eye's race HUD (the sprite drawer's draws, 824C08A4, orthographic onto
+    // the back buffer) moves sideways by that eye's shift, so the HUD stands
+    // at a distance instead of at infinity. Anchoring's offset, if any, stays.
+    if(const float shift=sfr::race_stereo::hud_shift();
+       shift!=0.0f && (memory.load<uint32_t>(uint64_t(device)+10572)&0x3F) && !presentation.target_is_surface() &&
+       uint32_t(ctx.lr)==0x824C08A4 && memory.load<uint32_t>(uint64_t(device)+0x3148)==sfr::GuestGraphics::color_handle) {
+        if(draw.shared.screen_space_offset[1]==0.0f) draw.shared.screen_space_offset[1]=1.0f;
+        draw.shared.screen_space_offset[0]+=shift;
+    }
+
     // Ultrawide: the title's 3D cameras are built for the wide frame at boot
     // (the race needs that). While a 1280/880-wide view is on screen (menus,
     // calibration), the scene they draw is the wide one squeezed into 16:9:
@@ -1811,7 +1849,8 @@ static bool native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
         }
         // Not for a player a Kinect or a camera drives: they do the pose.
         const bool shown=action && *action!=sfr::prompts::Action::count && !sfr::nui_body_from_sensor() && !sfr::camera_controls_player(player,sfr::camera_motion_active());
-        if(shown) sfr::prompts::note_sighting({frame_x(lo[0]),frame_y(lo[1]),frame_x(hi[0]),frame_y(hi[1]),player,*action});
+        if(shown) sfr::prompts::note_sighting({frame_x(lo[0]),frame_y(lo[1]),frame_x(hi[0]),frame_y(hi[1]),player,*action,
+                                               sfr::race_stereo::current_eye()});
         // SFR_GUIDE_TRACE=1: each frame of a pose figure the title shows; =2 also
         // sprites from other textures of that size and format.
         static const int trace=[]{ const char* t=std::getenv("SFR_GUIDE_TRACE"); return t ? std::atoi(t) : 0; }();
