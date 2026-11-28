@@ -8,51 +8,51 @@
 #include "stereo_view.h"
 
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 
-// The race's stereo test view (Issue #460): a race frame drawn twice side by
-// side, the left eye into the left half of the race's view and the right eye
-// into the right half, for looking at without a headset (cross or parallel
-// viewing) before a VR runtime is added.
+// The race's stereo test view (Issue #460): each eye of a race frame drawn
+// as a whole frame of its own, its post effects and HUD included, and the
+// two shown side by side, each squeezed into its half (left eye left), for
+// looking at without a headset (cross or parallel viewing) before a VR
+// runtime is added.
 //
-// How the title draws a frame of N views: its task manager (824A00C8, hooked
-// in race_task_hooks.cpp) runs the 3D drawing (phase key 4, each task's
-// method 12) once per view. The layout manager's callback after each round
-// (8222B940) switches the view with 8222B6F8 (the viewport from the layout's
-// entry for it, the camera's projection for the scene graph) and the lights
-// (82214698), and says whether to go round again; after the last view it
-// selects the whole frame and the full-frame passes (phase key 8: the post
-// chain, the composite and the HUD) run once. A two-player race draws its
-// 3D twice a frame like this, so the title's drawing already copes with
-// running twice. Here a one-view race does the same with one camera moved to
-// each eye in turn:
-//   - the view's layout entry ([layout+148], x/y/width/height and aspect)
-//     becomes the eye's half, and the camera's viewport (+688 x, +692 width)
-//     and aspect (+492) follow it;
+// How the title draws a frame: its task manager (824A00C8, hooked in
+// race_task_hooks.cpp) runs the 3D drawing (phase key 4, each task's method
+// 12), then the full-frame passes (phase key 8: the post chain, the
+// composite and the HUD). For N views the 3D phase goes round once per view:
+// the layout manager's callback after each round (8222B940) switches the
+// view with 8222B6F8 (the viewport from the layout's entry for it, the
+// camera's projection for the scene graph) and the lights (82214698). A
+// two-player race draws its 3D twice a frame like this. Here a one-view race
+// draws the left eye's 3D and full-frame passes, its frame is kept aside
+// (NativePresentation::keep_left_eye), then the right eye's 3D and the
+// frame's own full-frame passes run as usual, and the present shows both.
+// For each eye:
 //   - the camera's eye (+432) and target (+448) move by half the separation
 //     along the view's right; its matrices are made again by its update
 //     (824B0018) with its controller ([+496]) set aside, so the controller
 //     does not step (that is the update the title runs once a frame);
-//   - then what a two-player view switch does: 8222B6F8(layout, 0, force)
-//     sets the viewport and the projection, the camera table's vt+8 gives
-//     the renderer the camera's view and projection, and 82214698 the
-//     lights.
+//   - then what a two-player view switch does, for the whole frame:
+//     8222B6F8(layout, 0, force) sets the viewport and the projection, the
+//     camera table's vt+8 gives the renderer the camera's view and
+//     projection, and 82214698 the lights;
+//   - its HUD is moved sideways by hud_shift (SFR_TEST_STEREO_HUD_DEPTH),
+//     so that it stands at that distance instead of at infinity.
 // The view count (+152), the current view (+164) and the current camera
 // ([cameras+28]) stay as they are: the race camera's controller and other
-// logic read the count. After the second eye the camera and the layout entry
-// are put back byte for byte, and the view state is set from them again, so
-// the full-frame passes and the next frame's logic see the camera the title
+// logic read the count. After the right eye's full-frame passes the camera
+// and the layout entry are put back byte for byte and the view state is set
+// from them again, so the next frame's logic sees the camera the title
 // made. Menus, two-player races and anything not drawn stay as they are.
 //
 // SFR_TEST_FIRST_PERSON=1 moves the camera to the rider's head the same way
 // (only while drawing; the logic keeps the title's camera), with or without
 // stereo.
-
-namespace sfr { void write_framebuffer(const char* path); }  // guest_graphics_hooks.cpp
 
 PPC_FUNC(sub_8222B6F8);
 PPC_FUNC(sub_82214698);
@@ -69,8 +69,8 @@ constexpr uint32_t camera_update = 0x824B0018;
 // The camera's fields this file reads or writes (see stereo_view.h): it is
 // put back whole, 0x2C0 bytes, as far as the viewport's last float.
 constexpr uint32_t camera_size = 0x2C0;
-constexpr uint32_t camera_view = 32, camera_eye = 432, camera_target = 448, camera_up = 464, camera_aspect = 492,
-                   camera_controller = 496, camera_viewport_x = 688, camera_viewport_width = 692;
+constexpr uint32_t camera_view = 32, camera_projection = 224, camera_eye = 432, camera_target = 448, camera_up = 464,
+                   camera_aspect = 492, camera_controller = 496;
 constexpr uint32_t layout_entry_size = 28;
 // The first-person eye: above the racer's position (at its feet) and ahead,
 // out of the rider's own head (metres).
@@ -98,13 +98,10 @@ bool log_on() {
     static const bool on = flag("SFR_TEST_STEREO_LOG");
     return on;
 }
-// SFR_TEST_STEREO_ALTERNATE=1 (testing): every other presented frame is
-// drawn as the title draws it, so a paused race (whose picture holds still)
-// shows the same moment in stereo and in mono, frame after frame, to compare
-// each eye with the middle of the mono picture.
-bool alternate_mono() {
-    static const bool on = flag("SFR_TEST_STEREO_ALTERNATE");
-    return on && present_count.load(std::memory_order_relaxed) % 2 == 0;
+// SFR_TEST_STEREO_HUD_DEPTH: how far away the HUD stands (stereo_view.h).
+float hud_depth() {
+    static const float value = stereo::parse_hud_depth(std::getenv("SFR_TEST_STEREO_HUD_DEPTH"));
+    return value;
 }
 
 float load_float(uint32_t address) { return std::bit_cast<float>(active_memory->load<uint32_t>(address)); }
@@ -122,9 +119,10 @@ struct Frame {
     std::array<uint8_t, camera_size> camera_bytes{};
     std::array<uint8_t, layout_entry_size> entry_bytes{};
     uint32_t width = 0, height = 0;
-    float aspect = 0;
+    float aspect = 0, projection_x = 0;
     stereo::Vec3 eye, target, up, right;
     int passes = 1;
+    float hud_shift = 0;  // the current eye's (hud_shift)
 };
 Frame frame;
 uint32_t stereo_frames = 0;
@@ -252,7 +250,7 @@ bool begin(PPCContext& ctx, uint8_t* base) {
 namespace {
 bool start(PPCContext& ctx, uint8_t* base) {
     frame.active = false;
-    if (!enabled() || !active_memory || alternate_mono()) return false;
+    if (!enabled() || !active_memory) return false;
     auto& memory = *active_memory;
     if (!memory.load<uint32_t>(race_flag)) return false;
     const uint32_t layout = memory.load<uint32_t>(layout_manager);
@@ -270,7 +268,9 @@ bool start(PPCContext& ctx, uint8_t* base) {
     // is up already on the World Grand Prix's story scenes and loading, and
     // one run drawing a story scene twice stopped on a heap block freed with
     // a broken header (82497DF8, guest 0x01000000).
-    if (!followed_racer(load_vec(camera + camera_target))) return false;
+    // SFR_TEST_STEREO_ANY_SCENE=1 (testing) lifts this, to look at that stop again.
+    static const bool any_scene = flag("SFR_TEST_STEREO_ANY_SCENE");
+    if (!any_scene && !followed_racer(load_vec(camera + camera_target))) return false;
     const uint32_t vtable = memory.load<uint32_t>(camera);
     if (memory.load<uint32_t>(vtable + 4) != camera_update) {
         static bool told = false;
@@ -287,11 +287,12 @@ bool start(PPCContext& ctx, uint8_t* base) {
     // A one-view race sets no viewport of its own (8222B6F8 leaves a
     // one-view layout alone; its entry says 880, the layout the console
     // scales to 16:9): it draws into the whole frame, whose viewport its
-    // render target set. The eyes split that frame.
+    // render target set. Each eye is drawn into that whole frame too.
     frame.width = active_guest_graphics->presentation().width();
     frame.height = active_guest_graphics->presentation().height();
     if (frame.width < 2 || !frame.height) return false;
     frame.aspect = load_float(camera + camera_aspect);
+    frame.projection_x = load_float(camera + camera_projection);
     frame.eye = load_vec(camera + camera_eye);
     frame.target = load_vec(camera + camera_target);
     frame.up = load_vec(camera + camera_up);
@@ -316,7 +317,6 @@ bool start(PPCContext& ctx, uint8_t* base) {
         }
     }
     frame.passes = stereo_on() ? stereo::eye_count : 1;
-    if (frame.passes == stereo::eye_count) active_guest_graphics->set_frame_views(true);
     if (log_on() && stereo_frames % 300 == 0) log_view(followed_racer(load_vec(camera + camera_target)));
     ++stereo_frames;
     frame.active = true;
@@ -326,49 +326,17 @@ bool start(PPCContext& ctx, uint8_t* base) {
 
 int passes() { return frame.active ? frame.passes : 1; }
 
-// SFR_TEST_STEREO_SHOT=<directory> (testing, with SFR_TEST_STEREO=1): every
-// SFR_TEST_STEREO_SHOT_EVERY-th drawn race frame (300), the 3D is
-// drawn once more first, as the title draws it, and the framebuffer is
-// written after it (mono-<present>.bmp) and after the eyes
-// (stereo-<present>.bmp), before the post effects and the HUD. The eyes
-// then cover the whole frame again. With no separation each eye should be
-// the middle of the mono picture, pixel for pixel.
-bool shot_due() {
-    static const char* const directory = std::getenv("SFR_TEST_STEREO_SHOT");
-    static const uint32_t every = [] {
-        const char* t = std::getenv("SFR_TEST_STEREO_SHOT_EVERY");
-        const long n = t ? std::strtol(t, nullptr, 10) : 300;
-        return uint32_t(n > 0 ? n : 300);
-    }();
-    static uint32_t frames = 0;
-    // Race frames only (the readback stalls a frame; on the story scenes,
-    // timed by the clock, that made the test route miss its SKIP).
-    if (!directory || !stereo_on() || !active_memory || !followed_racer({})) return false;
-    return ++frames % every == 0;
-}
-void shot(const char* what) {
-    char path[1024];
-    std::snprintf(path, sizeof path, "%s/%s-%u.bmp", std::getenv("SFR_TEST_STEREO_SHOT"), what,
-                  present_count.load(std::memory_order_relaxed));
-    write_framebuffer(path);
-    std::cerr << "STEREO_SHOT " << path << '\n';
-}
-
 void pass(PPCContext& ctx, uint8_t* base, int index) {
     if (!frame.active) return;
     auto& memory = *active_memory;
     std::memcpy(base + frame.camera, frame.camera_bytes.data(), camera_size);
     stereo::Vec3 offset{};
+    frame.hud_shift = 0;
     if (frame.passes == stereo::eye_count) {
-        const stereo::Span span = stereo::eye_span(0, frame.width, index);
-        set_entry(span.x, span.width);
-        store_float(frame.camera + camera_viewport_x, float(span.x));
-        store_float(frame.camera + camera_viewport_width, float(span.width));
-        store_float(frame.camera + camera_aspect, stereo::eye_aspect(frame.aspect, frame.width, span.width));
         offset = stereo::eye_offset(frame.right, separation(), index);
-    } else {
-        set_entry(0, frame.width);
+        frame.hud_shift = stereo::hud_shift(frame.projection_x, separation(), hud_depth(), index);
     }
+    set_entry(0, frame.width);
     store_vec(frame.camera + camera_eye, frame.eye + offset);
     store_vec(frame.camera + camera_target, frame.target + offset);
     store_vec(frame.camera + camera_up, frame.up);
@@ -385,7 +353,21 @@ void end(PPCContext& ctx, uint8_t* base) {
     set_entry(0, frame.width);
     select_view(ctx, base);
     std::memcpy(base + frame.entry, frame.entry_bytes.data(), layout_entry_size);
-    active_guest_graphics->set_frame_views(false);
+    frame.hud_shift = 0;
     frame.active = false;
 }
+
+bool stereo_frame() { return frame.active && frame.passes == stereo::eye_count; }
+
+void keep_left_eye() {
+    if (stereo_frame()) active_guest_graphics->presentation().keep_left_eye();
+}
+
+float hud_shift() { return frame.active ? frame.hud_shift : 0.0f; }
+
+namespace {
+std::atomic<bool> ui_held{false};
+}
+void hold_ui(bool on) { ui_held.store(on, std::memory_order_relaxed); }
+bool holding_ui() { return ui_held.load(std::memory_order_relaxed); }
 }

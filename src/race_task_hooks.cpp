@@ -26,6 +26,9 @@
 // (race_frame_clock.h) leaves most of that drawing out, so it costs little
 // more than the race itself, and the race keeps real time on a slow device.
 namespace sfr { bool race_frame_drawn(); extern std::atomic<uint64_t> draw_call_host_ns, draw_call_count; }
+// SFR_TEST_TASK_TIMES: the phase key whose tasks run now (0 outside them), and
+// the UI timeline updates (824AE2A0, race_frame_clock_hooks.cpp) made in each.
+namespace sfr { std::atomic<uint32_t> task_phase_key{0}; std::atomic<uint64_t> ui_timeline_calls[16]{}; }
 
 namespace {
 constexpr uint32_t race_flag = 0x83E52F8C;
@@ -262,7 +265,10 @@ bool enabled() {
     return on;
 }
 struct Entry { uint64_t ns = 0, calls = 0, host_ns = 0, draws = 0; };
-struct Table { std::unordered_map<uint64_t, Entry> entries; uint64_t frames = 0, manager_ns = 0, manager_calls = 0; };
+// outside_draws: draws between one call of the manager and the next (the
+// main loop's own drawing, outside the task phases).
+struct Table { std::unordered_map<uint64_t, Entry> entries; uint64_t frames = 0, manager_ns = 0, manager_calls = 0, outside_draws = 0; };
+uint64_t last_manager_draws = 0;
 Table tables[2];  // [drawn]
 uint64_t now() { return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()); }
 uint64_t key_of(uint32_t function, uint32_t key, uint32_t kind) { return (uint64_t(function) << 32) ^ (uint64_t(key) << 28) ^ kind; }
@@ -292,9 +298,15 @@ void report(uint32_t race_frames) {
                           double(e.calls) / n, double(e.host_ns) / 1e6 / n, double(e.draws) / n);
             text += item;
         }
-        std::fprintf(stderr, "TASK_TIMES race_frame=%u drawn=%d frames=%llu manager_ms=%.3f managers=%.2f tasks_ms=%.3f host_ms=%.3f draws=%.1f%s\n",
+        std::fprintf(stderr, "TASK_TIMES race_frame=%u drawn=%d frames=%llu manager_ms=%.3f managers=%.2f tasks_ms=%.3f host_ms=%.3f draws=%.1f outside_draws=%.1f%s\n",
                      race_frames, drawn, static_cast<unsigned long long>(table.frames), double(table.manager_ns) / 1e6 / n,
-                     double(table.manager_calls) / n, double(total) / 1e6 / n, double(host) / 1e6 / n, double(draws) / n, text.c_str());
+                     double(table.manager_calls) / n, double(total) / 1e6 / n, double(host) / 1e6 / n, double(draws) / n,
+                     double(table.outside_draws) / n, text.c_str());
+        std::fprintf(stderr, "TASK_UI_TIMELINES race_frame=%u drawn=%d outside=%llu key2=%llu key4=%llu key8=%llu\n", race_frames, drawn,
+                     static_cast<unsigned long long>(sfr::ui_timeline_calls[0].exchange(0)),
+                     static_cast<unsigned long long>(sfr::ui_timeline_calls[2].exchange(0)),
+                     static_cast<unsigned long long>(sfr::ui_timeline_calls[4].exchange(0)),
+                     static_cast<unsigned long long>(sfr::ui_timeline_calls[8].exchange(0)));
         table = Table{};
     }
 }
@@ -330,8 +342,12 @@ SFR_CONCURRENT_HOOK(sub_824A00C8) {
             auto& table = task_times::tables[drawn];
             table.manager_ns += task_times::now() - start;
             ++table.manager_calls;
+            task_times::last_manager_draws = sfr::draw_call_count.load(std::memory_order_relaxed);
         }
     } manager_clock{timing, drawn_frame, manager_start};
+    if (timing && task_times::last_manager_draws)
+        task_times::tables[drawn_frame].outside_draws +=
+            sfr::draw_call_count.load(std::memory_order_relaxed) - task_times::last_manager_draws;
     // The stereo test view and first-person camera (race_stereo.cpp) draw a
     // drawn race frame's 3D their own way; a frame not drawn stays as it is.
     const bool views = race_frame && drawn_frame && !skip_drawing && sfr::race_stereo::enabled();
@@ -350,11 +366,66 @@ SFR_CONCURRENT_HOOK(sub_824A00C8) {
         return memory.load<uint32_t>(iterator);
     };
     memory.store<uint32_t>(iterator, memory.load<uint32_t>(sentinel()));
+    uint32_t full_frame_phase = 0;  // key 8's, for the stereo view's left eye
     for (uint32_t node = memory.load<uint32_t>(iterator); node != sentinel();) {
         const uint32_t phase = memory.load<uint32_t>(node + 16);
         memory.store<uint32_t>(phase + 12, memory.load<uint32_t>(phase + 8));
+        if (memory.load<uint32_t>(node + 12) == 8 && memory.load<uint32_t>(memory.load<uint32_t>(phase + 4) + 4))
+            full_frame_phase = phase;
         node = advance();
     }
+    // One round of a phase over its tasks (phase +0 the function, +4 the list).
+    const auto run_tasks = [&](uint32_t key, uint32_t phase) {
+        const uint32_t function = memory.load<uint32_t>(phase);
+        const uint32_t end = memory.load<uint32_t>(memory.load<uint32_t>(phase + 4));
+        for (uint32_t element = memory.load<uint32_t>(end); element != end; element = memory.load<uint32_t>(element)) {
+            const uint32_t task = memory.load<uint32_t>(element + 8);
+            memory.store<uint32_t>(manager + 188, task);
+            const uint32_t mask = memory.load<uint32_t>(phase + 12);
+            if (mask && (memory.load<uint32_t>(task + 8) & mask)) continue;
+            if (skip_drawing && function == draw_method && skipped_when_undrawn(memory.load<uint32_t>(task))) continue;
+            const uint32_t task_kind = memory.load<uint32_t>(task);
+            const bool areas_only = skip_drawing && function == draw_method && stage_areas_only() &&
+                                    !kept_when_undrawn(task_kind) && memory.load<uint32_t>(task_kind + 12) == stage_draw;
+            ctx.r3.u64 = task;
+            const bool watch_task = watching && watch::by_kind() && function == draw_method && watch::sampled(race_frames);
+            if (watching) sfr::draw_reads::set_reader(task_kind, key);
+            if (watch_task) watch::before_task(base, task_kind);
+            const uint64_t start = timing ? task_times::now() : 0;
+            const uint64_t host_start = timing ? sfr::draw_call_host_ns.load(std::memory_order_relaxed) : 0;
+            const uint64_t draws_start = timing ? sfr::draw_call_count.load(std::memory_order_relaxed) : 0;
+            sfr::task_phase_key.store(key, std::memory_order_relaxed);
+            if (areas_only) find_stage_areas(ctx, base, task);
+            else sfr::call_indirect(ctx, base, function);
+            sfr::task_phase_key.store(0, std::memory_order_relaxed);
+            if (watch_task) watch::after_task(base, task, task_kind);
+            if (timing) {
+                const uint32_t kind = memory.load<uint32_t>(task);
+                task_times::name(function, key, kind);
+                task_times::add(drawn_frame, function, key, kind, task_times::now() - start,
+                                sfr::draw_call_host_ns.load(std::memory_order_relaxed) - host_start,
+                                sfr::draw_call_count.load(std::memory_order_relaxed) - draws_start);
+            }
+        }
+    };
+    // The manager's callbacks around a round: before (+196), and after (+200),
+    // which says whether to go round again.
+    const auto before_round = [&](uint32_t key, uint32_t round) {
+        if (const uint32_t before = memory.load<uint32_t>(manager + 196)) {
+            ctx.r3.u64 = key;
+            ctx.r4.u64 = round;
+            sfr::call_indirect(ctx, base, before);
+        }
+    };
+    const auto after_round = [&](uint32_t key, uint32_t round) {
+        const uint32_t after = memory.load<uint32_t>(manager + 200);
+        if (!after) return false;
+        ctx.r3.u64 = key;
+        ctx.r4.u64 = round;
+        sfr::call_indirect(ctx, base, after);
+        return (ctx.r3.u32 & 0xFF) != 0;
+    };
+    bool views_drawn = false;  // race_stereo::begin said yes; end() after key 8
     memory.store<uint32_t>(iterator, memory.load<uint32_t>(sentinel()));
     for (uint32_t node = memory.load<uint32_t>(iterator); node != sentinel();) {
         const uint32_t phase = memory.load<uint32_t>(node + 16);
@@ -383,65 +454,41 @@ SFR_CONCURRENT_HOOK(sub_824A00C8) {
         } else {
             memory.store<uint32_t>(manager + 204, key);
             for (uint32_t round = 0;; ++round) {
-                if (const uint32_t before = memory.load<uint32_t>(manager + 196)) {
-                    ctx.r3.u64 = key;
-                    ctx.r4.u64 = round;
-                    sfr::call_indirect(ctx, base, before);
-                }
-                const auto run_tasks = [&] {
-                    for (uint32_t element = memory.load<uint32_t>(end); element != end; element = memory.load<uint32_t>(element)) {
-                        const uint32_t task = memory.load<uint32_t>(element + 8);
-                        memory.store<uint32_t>(manager + 188, task);
-                        const uint32_t mask = memory.load<uint32_t>(phase + 12);
-                        if (mask && (memory.load<uint32_t>(task + 8) & mask)) continue;
-                        if (skip_drawing && function == draw_method && skipped_when_undrawn(memory.load<uint32_t>(task))) continue;
-                        const uint32_t task_kind = memory.load<uint32_t>(task);
-                        const bool areas_only = skip_drawing && function == draw_method && stage_areas_only() &&
-                                                !kept_when_undrawn(task_kind) && memory.load<uint32_t>(task_kind + 12) == stage_draw;
-                        ctx.r3.u64 = task;
-                        const bool watch_task = watching && watch::by_kind() && function == draw_method && watch::sampled(race_frames);
-                        if (watching) sfr::draw_reads::set_reader(task_kind, key);
-                        if (watch_task) watch::before_task(base, task_kind);
-                        const uint64_t start = timing ? task_times::now() : 0;
-                        const uint64_t host_start = timing ? sfr::draw_call_host_ns.load(std::memory_order_relaxed) : 0;
-                        const uint64_t draws_start = timing ? sfr::draw_call_count.load(std::memory_order_relaxed) : 0;
-                        if (areas_only) find_stage_areas(ctx, base, task);
-                        else sfr::call_indirect(ctx, base, function);
-                        if (watch_task) watch::after_task(base, task, task_kind);
-                        if (timing) {
-                            const uint32_t kind = memory.load<uint32_t>(task);
-                            task_times::name(function, key, kind);
-                            task_times::add(drawn_frame, function, key, kind, task_times::now() - start,
-                                            sfr::draw_call_host_ns.load(std::memory_order_relaxed) - host_start,
-                                            sfr::draw_call_count.load(std::memory_order_relaxed) - draws_start);
-                        }
-                    }
-                };
+                before_round(key, round);
                 // The 3D drawing once per eye (or once from the first-person
-                // camera), then the title's own callback as after one pass.
-                const bool shooting = views && function == draw_method && key == 4 && round == 0 &&
-                                      sfr::race_stereo::shot_due();
-                if (shooting) {
-                    run_tasks();
-                    sfr::race_stereo::shot("mono");
-                }
+                // camera). In a stereo frame the left eye's frame is finished
+                // at once (the callback after its 3D, its full-frame passes)
+                // and kept; the right eye's goes on as the title's frame.
                 if (views && function == draw_method && key == 4 && round == 0 && sfr::race_stereo::begin(ctx, base)) {
-                    for (int pass = 0; pass < sfr::race_stereo::passes(); ++pass) {
+                    views_drawn = true;
+                    const int passes = sfr::race_stereo::passes();
+                    for (int pass = 0; pass < passes; ++pass) {
                         sfr::race_stereo::pass(ctx, base, pass);
-                        run_tasks();
+                        run_tasks(key, phase);
+                        if (pass + 1 == passes) break;
+                        after_round(key, round);
+                        if (full_frame_phase) {
+                            sfr::race_stereo::hold_ui(true);
+                            memory.store<uint32_t>(manager + 204, 8);
+                            for (uint32_t full_round = 0;; ++full_round) {
+                                before_round(8, full_round);
+                                run_tasks(8, full_frame_phase);
+                                if (!after_round(8, full_round)) break;
+                            }
+                            memory.store<uint32_t>(manager + 204, key);
+                            sfr::race_stereo::hold_ui(false);
+                        }
+                        sfr::race_stereo::keep_left_eye();
                     }
-                    sfr::race_stereo::end(ctx, base);
-                    if (shooting) sfr::race_stereo::shot("stereo");
-                } else if (!shooting) {
-                    run_tasks();
+                } else {
+                    run_tasks(key, phase);
                 }
-                const uint32_t after = memory.load<uint32_t>(manager + 200);
-                if (!after) break;
-                ctx.r3.u64 = key;
-                ctx.r4.u64 = round;
-                sfr::call_indirect(ctx, base, after);
-                if (!(ctx.r3.u32 & 0xFF)) break;
+                if (!after_round(key, round)) break;
             }
+        }
+        if (views_drawn && key == 8) {
+            sfr::race_stereo::end(ctx, base);
+            views_drawn = false;
         }
         if (watching && function == draw_method && key == 8) {
             if (!watch::sampled(race_frames)) {
@@ -449,8 +496,10 @@ SFR_CONCURRENT_HOOK(sub_824A00C8) {
             else watch::after_drawing(base);
             if (race_frames % 600 == 0) sfr::draw_reads::report(race_frames);
         }
+        if (timing && race_frames == 600) std::fprintf(stderr, "TASK_PHASE key=%u function=%08x tasks=%u\n", key, function, memory.load<uint32_t>(list + 4));
         node = advance();
     }
+    if (views_drawn) sfr::race_stereo::end(ctx, base);
     memory.store<uint32_t>(manager + 188, 0);
     if (watching) sfr::draw_reads::set_reader(0, 0);
     ctx.r1.u64 = saved_r1;

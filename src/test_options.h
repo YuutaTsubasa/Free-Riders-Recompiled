@@ -79,6 +79,10 @@ inline constexpr TestChoice step_rates[] = {
 inline constexpr TestChoice stereo_separations[] = {
     {"0", {"None", "無"}}, {"0.03", {"Narrow", "窄"}}, {"0.15", {"Wide", "寬"}}, {"0.5", {"Very wide", "很寬"}},
 };
+// The stereo HUD's distance (stereo_view.h), in the title's world units (metres).
+inline constexpr TestChoice stereo_hud_depths[] = {
+    {"0", {"At infinity", "無限遠"}}, {"1.5", {"1.5 m", "1.5 公尺"}}, {"10", {"10 m", "10 公尺"}},
+};
 inline constexpr TestChoice core_plan[] = {
     {"13", {"As in 0.10.8", "與 0.10.8 相同"}},
     {"0", {"Left to Android", "交給 Android"}},
@@ -216,11 +220,11 @@ inline constexpr TestOption table[] = {
      on, "#365"},
     {"SFR_TEST_STEREO", TestGroup::graphics, test_platform::all,
      {"Stereo side by side (VR test)", "左右並排立體（VR 測試）"},
-     {"For testing, toward a VR mode: a one-player race draws its 3D twice, the left eye's view in the left half "
-      "of the picture and the right eye's in the right half, for cross or parallel viewing. The HUD and menus "
-      "stay as they are. Slower: the race's 3D is drawn twice.",
-      "測試用，為 VR 模式做準備：單人比賽的 3D 畫面畫兩次，左眼的畫面在左半邊、右眼的在右半邊，"
-      "可用交叉或平行法觀看。HUD 與選單不變。比較慢：比賽的 3D 會畫兩次。"},
+     {"For testing, toward a VR mode: a one-player race is drawn twice, once for each eye, each a whole picture "
+      "with its effects and HUD, and shown side by side squeezed into its half (left eye left), for cross or "
+      "parallel viewing. Menus stay as they are. Slower: the race is drawn twice.",
+      "測試用，為 VR 模式做準備：單人比賽畫兩次，每隻眼睛各一張完整的畫面（含特效與 HUD），"
+      "並排顯示、各壓縮到一半（左眼在左），可用交叉或平行法觀看。選單不變。比較慢：比賽會畫兩次。"},
      on, "#460"},
     {"SFR_TEST_STEREO_SEPARATION", TestGroup::graphics, test_platform::all,
      {"Stereo eye distance", "立體的雙眼距離"},
@@ -228,6 +232,13 @@ inline constexpr TestOption table[] = {
       "same place (they should look the same); Default is a person's.",
       "測試用，搭配左右並排立體：兩眼相距多遠。「無」讓兩半從同一個位置畫（兩邊應該完全相同）；預設為一般人的距離。"},
      stereo_separations, "#460"},
+    {"SFR_TEST_STEREO_HUD_DEPTH", TestGroup::graphics, test_platform::all,
+     {"Stereo HUD distance", "立體的 HUD 距離"},
+     {"For testing, with Stereo side by side: how far away the HUD appears. At infinity draws it the same in both "
+      "eyes (behind everything); Default is 3 m, in front of the course ahead.",
+      "測試用，搭配左右並排立體：HUD 看起來在多遠的地方。「無限遠」讓兩眼的 HUD 完全相同（在一切之後）；"
+      "預設為 3 公尺，在前方賽道之前。"},
+     stereo_hud_depths, "#460"},
     {"SFR_TEST_FIRST_PERSON", TestGroup::graphics, test_platform::all,
      {"First-person camera (VR test)", "第一人稱鏡頭（VR 測試）"},
      {"For testing, toward a VR mode: a one-player race is drawn from the rider's head, looking where the board "

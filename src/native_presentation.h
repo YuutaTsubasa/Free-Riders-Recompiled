@@ -17,6 +17,7 @@ struct RenderRect;
 struct RenderShader;
 struct RenderTexture;
 enum class RenderPrimitiveTopology;
+enum class RenderTextureLayout;
 struct RenderViewport;
 }
 
@@ -122,6 +123,16 @@ public:
     [[nodiscard]] std::string target_trace_name() const;
     // Tightly packed BGRA at render_width() x render_height().
     [[nodiscard]] std::vector<uint8_t> readback_color();
+    // The race's stereo test view (race_stereo.cpp, Issue #460): each eye is
+    // drawn as a whole frame. keep_left_eye copies the frame drawn so far (the
+    // left eye's, with its post effects and HUD) into a texture of its own;
+    // the next present shows that squeezed into the left half of the picture
+    // and the framebuffer (the right eye's) squeezed into the right half.
+    void keep_left_eye();
+    // Whether the next present is such a stereo frame.
+    [[nodiscard]] bool stereo_pending() const noexcept;
+    // The kept left eye, read back as readback_color reads the framebuffer.
+    [[nodiscard]] std::vector<uint8_t> readback_left_eye();
     // Presents the framebuffer. When the frame only drew into the top-left
     // area (a title rendering at a back buffer smaller than the framebuffer),
     // that area is stretched to the window, as a console's scaler does; zero
@@ -207,6 +218,7 @@ public:
 private:
     using RecordFunction = void (*)(const void* payload, plume::RenderCommandList&, uint64_t generation);
     void record_async_raw(RecordFunction function, const void* payload, size_t bytes);
+    std::vector<uint8_t> readback(plume::RenderTexture& texture, plume::RenderTextureLayout after);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

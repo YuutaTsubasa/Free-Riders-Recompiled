@@ -1,7 +1,8 @@
 #pragma once
 // The pure part of the race's stereo test view (Issue #460, race_stereo.cpp):
-// where each eye's camera stands and which half of the race's view it draws
-// into. No guest memory here, so tests/stereo_view_test.cpp checks it alone.
+// where each eye's camera stands, how far its HUD moves, and the
+// first-person pose. No guest memory here, so tests/stereo_view_test.cpp
+// checks it alone.
 //
 // The title's scene camera (vtable 821AA688/821AA8C0) keeps its view matrix
 // at +32 as 16 floats, row-major for row vectors (v_view = v_world * M, as
@@ -45,25 +46,6 @@ constexpr Vec3 eye_offset(Vec3 right, float separation, int eye) noexcept {
     return right * ((eye == 0 ? -0.5f : 0.5f) * separation);
 }
 
-// An eye's part of a view x..x+width wide: the left half, then the rest
-// (the right one is a pixel wider when the width is odd). Whole pixels, so
-// the two halves meet without a gap or an overlap.
-struct Span {
-    uint32_t x = 0, width = 0;
-};
-constexpr Span eye_span(uint32_t x, uint32_t width, int eye) noexcept {
-    const uint32_t left = width / 2;
-    return eye == 0 ? Span{x, left} : Span{x + left, width - left};
-}
-
-// The aspect (width over height) an eye's camera draws at: the whole view's,
-// narrowed with the width. The vertical field of view stays the title's, so
-// each eye sees the middle of what the whole view would, as a two-player
-// half does.
-constexpr float eye_aspect(float aspect, uint32_t whole_width, uint32_t eye_width) noexcept {
-    return whole_width ? aspect * float(eye_width) / float(whole_width) : aspect;
-}
-
 // SFR_TEST_STEREO_SEPARATION: the eyes' distance in the title's world units
 // (metres: a rider is about 1.7 tall). Fixed choices on the Test options page;
 // anything else falls back to the default, negative to 0.
@@ -74,6 +56,31 @@ inline float parse_separation(const char* text) noexcept {
     const float value = std::strtof(text, &end);
     if (end == text || *end || !std::isfinite(value)) return default_separation;
     return value < 0 ? 0.0f : (value > 10.0f ? 10.0f : value);
+}
+
+// SFR_TEST_STEREO_HUD_DEPTH: how far away (title units) the HUD appears.
+// Drawn the same into both eyes it would stand at infinity, behind the
+// scene; moved sideways by the disparity of that distance it stands there.
+// 0 leaves it at infinity. Fixed choices on the Test options page; anything
+// else falls back to the default, negative to 0.
+inline constexpr float default_hud_depth = 3.0f;
+inline float parse_hud_depth(const char* text) noexcept {
+    if (!text || !*text) return default_hud_depth;
+    char* end = nullptr;
+    const float value = std::strtof(text, &end);
+    if (end == text || *end || !std::isfinite(value)) return default_hud_depth;
+    return value < 0 ? 0.0f : value;
+}
+
+// The clip-space x shift of an eye's HUD for it to stand `depth` away: a
+// point that far straight ahead lands projection_x * (separation / 2) /
+// depth to the side of the centre in each eye (projection_x: the
+// projection's x scale, 1 / tan of half the horizontal field of view), the
+// left eye's to the right. 0 with no separation or depth.
+constexpr float hud_shift(float projection_x, float separation, float depth, int eye) noexcept {
+    if (!(depth > 0.0f) || !(separation > 0.0f)) return 0.0f;
+    const float shift = projection_x * separation * 0.5f / depth;
+    return eye == 0 ? shift : -shift;
 }
 
 // The first-person camera (SFR_TEST_FIRST_PERSON): at the rider's head,

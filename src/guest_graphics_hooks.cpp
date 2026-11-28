@@ -48,6 +48,7 @@
 #include "performance_hint.h"
 #include "host_core_plan.h"
 #include "host_thread_stats.h"
+#include "race_stereo.h"
 #include <vector>
 #ifdef _WIN32
 #define NOMINMAX
@@ -79,8 +80,27 @@ sfr::GuestGraphics& graphics() {
 // framebuffer, with the presented area stretched over it as present() does.
 void write_framebuffer(const char* path) {
     auto& presentation=graphics().presentation();
-    const auto pixels=presentation.readback_color();
+    auto pixels=presentation.readback_color();
     const uint32_t width=presentation.render_width(), height=presentation.render_height(), size=width*height*4;
+    // A stereo frame (race_stereo.cpp) is shown as both eyes squeezed side
+    // by side (NativePresentation::keep_left_eye): written the same way, each
+    // pair of pixels averaged as the present's linear filter halves them.
+    if(presentation.stereo_pending() && pixels.size()>=size) {
+        const auto left=presentation.readback_left_eye();
+        if(left.size()>=size) {
+            std::vector<uint8_t> both(size);
+            const uint32_t half=width/2;
+            for(uint32_t y=0;y<height;++y)
+                for(uint32_t x=0;x<width;++x) {
+                    const auto& eye=x<half ? left : pixels;
+                    const uint32_t local=x<half ? x : x-half, span=x<half ? half : width-half;
+                    const uint64_t a=uint64_t(local)*width/span, b=(std::min)(a+1,uint64_t(width-1));
+                    for(uint32_t c=0;c<4;++c)
+                        both[(uint64_t(y)*width+x)*4+c]=uint8_t((eye[(uint64_t(y)*width+a)*4+c]+eye[(uint64_t(y)*width+b)*4+c]+1)/2);
+                }
+            pixels=std::move(both);
+        }
+    }
     const auto logical_area=presentation.presented_area();
     const auto rectangle=presentation.render_rectangle(plume::RenderRect(0,0,int32_t(logical_area.first),int32_t(logical_area.second)));
     const std::pair<uint32_t,uint32_t> area{uint32_t(rectangle.right),uint32_t(rectangle.bottom)};
@@ -1613,6 +1633,17 @@ static bool native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
                 if(side==-1 || side==+1) draw.shared.screen_space_offset[0]=float(side)*(1.0f-layout_share);
             }
         }
+    }
+
+    // The stereo test view's HUD depth (race_stereo.cpp, Issue #460): each
+    // eye's race HUD (the sprite drawer's draws, 824C08A4, orthographic onto
+    // the back buffer) moves sideways by that eye's shift, so the HUD stands
+    // at a distance instead of at infinity. Anchoring's offset, if any, stays.
+    if(const float shift=sfr::race_stereo::hud_shift();
+       shift!=0.0f && (memory.load<uint32_t>(uint64_t(device)+10572)&0x3F) && !presentation.target_is_surface() &&
+       uint32_t(ctx.lr)==0x824C08A4 && memory.load<uint32_t>(uint64_t(device)+0x3148)==sfr::GuestGraphics::color_handle) {
+        if(draw.shared.screen_space_offset[1]==0.0f) draw.shared.screen_space_offset[1]=1.0f;
+        draw.shared.screen_space_offset[0]+=shift;
     }
 
     // Ultrawide: the title's 3D cameras are built for the wide frame at boot

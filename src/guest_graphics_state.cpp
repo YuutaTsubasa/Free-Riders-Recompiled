@@ -123,8 +123,7 @@ bool GuestGraphics::set_viewport(uint32_t device,uint32_t descriptor) {
     // Offset split views still need the guest surface boundary; otherwise the
     // right half of an 880-wide target extends from x=440 all the way to 1280.
     viewport_surface_space_=!(x==0 && y==0) && attachment!=color_handle && attachment!=depth_handle;
-    const bool back_buffer=attachment==color_handle || attachment==depth_handle;
-    const auto [surface_width,surface_height]=(x==0 && y==0) || (frame_views_ && back_buffer)
+    const auto [surface_width,surface_height]=(x==0 && y==0)
         ? std::pair{native.width(),native.height()}
         : attachment_size(memory_,device,attachment);
     int64_t width=std::min<int64_t>(surface_width,right)-x;
@@ -158,7 +157,7 @@ bool GuestGraphics::set_viewport(uint32_t device,uint32_t descriptor) {
     // Two half views side by side, the full height: a two-player split (of
     // the race layout, 880 or widened: race_layout_width).
     const uint32_t race_width=memory_.load<uint32_t>(device+0x35BC);
-    if(!frame_views_ && y==0 && back_buffer && uint32_t(viewport.height)==native.height() &&
+    if(y==0 && (attachment==color_handle || attachment==depth_handle) && uint32_t(viewport.height)==native.height() &&
        (viewport.width==440.0f || viewport.width==640.0f || 2*uint32_t(viewport.width)==race_width) &&
        (x==0 || x==int64_t(viewport.width)))
         split_layout_=2*uint32_t(viewport.width);

@@ -3,6 +3,7 @@
 #include "race_frame_clock.h"
 #include <algorithm>
 #include <atomic>
+#include "race_stereo.h"
 #include <bit>
 #include <chrono>
 #include <cstdlib>
@@ -241,7 +242,24 @@ PPC_FUNC_IMPL(__imp__sub_824AE2A0);
 // speed, not clock+40. Each original call evaluates this frame's actions,
 // then advances the timeline by at most one frame. Replaying bounded steps
 // preserves intermediate events; multiplying the position alone skips them.
+namespace sfr { extern std::atomic<uint32_t> task_phase_key; extern std::atomic<uint64_t> ui_timeline_calls[16]; }
 SFR_CONCURRENT_HOOK(sub_824AE2A0) {
+    sfr::ui_timeline_calls[sfr::task_phase_key.load(std::memory_order_relaxed) & 15].fetch_add(1, std::memory_order_relaxed);
+    // The stereo test view's left eye (race_stereo.h, hold_ui): the timeline
+    // is evaluated where it is, at a rate of 0 (its rate is +40, as below),
+    // and steps once in the right eye's passes.
+    if (sfr::race_stereo::holding_ui()) {
+        auto& memory = *sfr::active_memory;
+        const uint32_t wrapper = ctx.r3.u32;
+        const uint32_t rate_bits = memory.load<uint32_t>(wrapper + 40);
+        const float rate = std::bit_cast<float>(rate_bits);
+        if (rate > 0.0f && rate <= 1.0f) {
+            memory.store<uint32_t>(wrapper + 40, 0);
+            __imp__sub_824AE2A0(ctx, base);
+            memory.store<uint32_t>(wrapper + 40, rate_bits);
+            return;
+        }
+    }
     const float frames = race_ui_frames.load(std::memory_order_relaxed);
     if (!realtime_ui() || updating_race_ui || frames == 1.0f) {
         __imp__sub_824AE2A0(ctx, base);

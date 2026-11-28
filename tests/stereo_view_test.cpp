@@ -65,18 +65,30 @@ void eye_offsets() {
     require(near(left[13], centre[13], 1e-4f) && near(left[14], centre[14], 1e-4f), "and nowhere else");
 }
 
-void halves() {
-    const auto l = sfr::stereo::eye_span(0, 880, 0), r = sfr::stereo::eye_span(0, 880, 1);
-    require(l.x == 0 && l.width == 440 && r.x == 440 && r.width == 440, "an 880 view splits at 440 (the two-player halves)");
-    const auto l2 = sfr::stereo::eye_span(10, 1211, 0), r2 = sfr::stereo::eye_span(10, 1211, 1);
-    require(l2.x == 10 && l2.width == 605 && r2.x == 615 && r2.width == 606, "an odd width: halves meet, the right a pixel wider");
-    require(l2.x + l2.width == r2.x && r2.x + r2.width == 10 + 1211, "the halves cover the view exactly");
+// A point `depth` straight ahead of the centre camera, seen from an eye:
+// its clip-space x is the shift hud_shift gives that eye's HUD.
+float clip_x(float projection_x, float separation, float depth, int eye) {
+    const float x_view = -sfr::stereo::eye_offset({1, 0, 0}, separation, eye).x;
+    return projection_x * x_view / depth;
 }
 
-void aspects() {
-    require(near(sfr::stereo::eye_aspect(16.0f / 9.0f, 880, 440), 8.0f / 9.0f), "half of 16:9 is 8:9");
-    require(near(sfr::stereo::eye_aspect(2.3333f, 1210, 605), 2.3333f / 2), "half of a 21:9 race view");
-    require(near(sfr::stereo::eye_aspect(1.5f, 0, 0), 1.5f), "no width keeps the aspect");
+void hud_depths() {
+    using sfr::stereo::hud_shift;
+    const float p = 0.9743f, sep = 0.065f;
+    for (const float depth : {1.5f, 3.0f, 10.0f})
+        for (int eye = 0; eye < 2; ++eye)
+            require(near(hud_shift(p, sep, depth, eye), clip_x(p, sep, depth, eye), 1e-6f),
+                    "the HUD moves as a point at its depth does");
+    require(hud_shift(p, sep, 3, 0) > 0 && hud_shift(p, sep, 3, 1) < 0, "the left eye's HUD to the right (crossed: in front of infinity)");
+    require(near(hud_shift(p, sep, 3, 0), -hud_shift(p, sep, 3, 1)), "the two eyes alike");
+    require(near(hud_shift(p, sep, 1.5f, 0), 2 * hud_shift(p, sep, 3, 0)), "twice as near, twice the shift");
+    require(hud_shift(p, 0, 3, 0) == 0 && hud_shift(p, sep, 0, 0) == 0, "no separation or depth: no shift");
+    using sfr::stereo::default_hud_depth;
+    require(near(sfr::stereo::parse_hud_depth(nullptr), default_hud_depth), "absent: the default");
+    require(near(sfr::stereo::parse_hud_depth("0"), 0), "0: at infinity");
+    require(near(sfr::stereo::parse_hud_depth("1.5"), 1.5f), "a number");
+    require(near(sfr::stereo::parse_hud_depth("-2"), 0), "negative: 0");
+    require(near(sfr::stereo::parse_hud_depth("far"), default_hud_depth), "not a number: the default");
 }
 
 void separations() {
@@ -111,8 +123,7 @@ int main() {
     try {
         right_of_a_view();
         eye_offsets();
-        halves();
-        aspects();
+        hud_depths();
         separations();
         head();
     } catch (const std::exception& error) {
