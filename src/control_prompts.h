@@ -128,6 +128,9 @@ struct Sighting {
     float left, top, right, bottom;
     uint32_t player;
     Action action;
+    // The stereo test view's eye whose frame it was seen in (race_stereo.h;
+    // 0 otherwise): that eye's half shows it.
+    uint32_t eye = 0;
     bool operator==(const Sighting&) const = default;
 };
 // The figure's pose, by its picture. The title draws the figure from ten

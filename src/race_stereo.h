@@ -31,6 +31,8 @@ void keep_left_eye();
 // in a frame drawn once.
 void hold_ui(bool on);
 bool holding_ui();
+// The eye being drawn in a stereo frame (0 left, 1 right; 0 otherwise).
+uint32_t current_eye();
 // The current eye's HUD shift in clip space (0 outside a stereo frame), for
 // the race HUD's draws (guest_graphics_hooks.cpp).
 float hud_shift();

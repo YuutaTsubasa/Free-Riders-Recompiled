@@ -2792,9 +2792,17 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
         const float area[2] = {float(shown.right) / float(impl_->render_width),
                                float(shown.bottom) / float(impl_->render_height)};
         std::memcpy(constants.data(), area, sizeof area);
+        // A stereo frame (keep_left_eye) shows the left eye's frame in the left
+        // half and the framebuffer in the right half. The touch controls and
+        // readouts the blit draws go with the right half only (the left half's
+        // draw has none), so the touch reader is laid out for that half.
+        const float stereo_half = stereo ? viewport.width * 0.5f : 0.0f;
+        const plume::RenderViewport touch_viewport = stereo
+            ? plume::RenderViewport(viewport.x + stereo_half, viewport.y, viewport.width - stereo_half, viewport.height)
+            : viewport;
         // The controls keep their shape in an image of any aspect (Issue #443,
         // touch_controls.h): the touch reader lays them out for this viewport.
-        const float image_aspect = touch_image_aspect(viewport.width, viewport.height);
+        const float image_aspect = touch_image_aspect(touch_viewport.width, touch_viewport.height);
 #ifdef _WIN32
         // No touch reader here: SFR_TOUCH_CONTROLS=1 shows them at rest.
         TouchOverlay overlay = touch_shown ? touch_overlay_at_rest(image_aspect) : TouchOverlay{};
@@ -2808,21 +2816,24 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
                                                                3.0f + (std::min)(pause, 1.0f)};
         const auto touch_words = pack_touch_overlay(overlay);
         std::copy(touch_words.begin(), touch_words.end(), constants.begin() + 2);
-        impl_->touch_view = {viewport.x, viewport.y, viewport.width, viewport.height, float(out_width), float(out_height)};
-        set_pointer_view(viewport.x, viewport.y, viewport.width, viewport.height, float(out_width), float(out_height));
-        impl_->command_list->setGraphicsPushConstants(0, constants.data());
+        impl_->touch_view = {touch_viewport.x, touch_viewport.y, touch_viewport.width, touch_viewport.height,
+                             float(out_width), float(out_height)};
+        set_pointer_view(touch_viewport.x, touch_viewport.y, touch_viewport.width, touch_viewport.height,
+                         float(out_width), float(out_height));
         if (stereo) {
-            // The left eye's whole frame into the left half, the framebuffer
-            // (the right eye's) into the right half.
-            const float half = viewport.width * 0.5f;
-            const plume::RenderViewport left(viewport.x, viewport.y, half, viewport.height);
-            const plume::RenderViewport right(viewport.x + half, viewport.y, viewport.width - half, viewport.height);
+            // The left eye's whole frame into the left half, with the sampled
+            // area only (no controls or readouts).
+            std::array<uint32_t, 32> picture_only{};
+            std::copy(constants.begin(), constants.begin() + 2, picture_only.begin());
+            const plume::RenderViewport left(viewport.x, viewport.y, stereo_half, viewport.height);
             impl_->command_list->setGraphicsDescriptorSet(impl_->left_eye_texture.get(), 0);
             impl_->command_list->setViewports(&left, 1);
+            impl_->command_list->setGraphicsPushConstants(0, picture_only.data());
             impl_->command_list->drawInstanced(3, 1, 0, 0);
             impl_->command_list->setGraphicsDescriptorSet(impl_->blit_texture.get(), 0);
-            impl_->command_list->setViewports(&right, 1);
+            impl_->command_list->setViewports(&touch_viewport, 1);
         }
+        impl_->command_list->setGraphicsPushConstants(0, constants.data());
         impl_->command_list->drawInstanced(3, 1, 0, 0);
         if (!sightings.empty()) {
             // Pixel art of solid rectangles (control_prompts.h), cleared a
@@ -2835,6 +2846,7 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
                 const int w = int(out_width), h = int(out_height);
                 std::vector<plume::RenderRect> batch;
                 for (const prompts::Sighting& sighting : sightings) {
+                    if (stereo && sighting.eye != uint32_t(eye)) continue;
                     const auto bindings = prompts::bindings(sighting.player);
                     const auto pieces = prompts::prompt_pieces(sighting.action, prompts::device(sighting.player, touch_shown),
                                                                bindings ? *bindings : default_bindings(sighting.player));

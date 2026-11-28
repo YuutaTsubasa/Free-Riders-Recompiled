@@ -1849,7 +1849,8 @@ static bool native_draw(PPCContext& ctx, uint32_t source, uint32_t device, uint3
         }
         // Not for a player a Kinect or a camera drives: they do the pose.
         const bool shown=action && *action!=sfr::prompts::Action::count && !sfr::nui_body_from_sensor() && !sfr::camera_controls_player(player,sfr::camera_motion_active());
-        if(shown) sfr::prompts::note_sighting({frame_x(lo[0]),frame_y(lo[1]),frame_x(hi[0]),frame_y(hi[1]),player,*action});
+        if(shown) sfr::prompts::note_sighting({frame_x(lo[0]),frame_y(lo[1]),frame_x(hi[0]),frame_y(hi[1]),player,*action,
+                                               sfr::race_stereo::current_eye()});
         // SFR_GUIDE_TRACE=1: each frame of a pose figure the title shows; =2 also
         // sprites from other textures of that size and format.
         static const int trace=[]{ const char* t=std::getenv("SFR_GUIDE_TRACE"); return t ? std::atoi(t) : 0; }();

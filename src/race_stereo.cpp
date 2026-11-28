@@ -123,6 +123,7 @@ struct Frame {
     stereo::Vec3 eye, target, up, right;
     int passes = 1;
     float hud_shift = 0;  // the current eye's (hud_shift)
+    uint32_t eye_index = 0;  // the eye being drawn (current_eye)
 };
 Frame frame;
 uint32_t stereo_frames = 0;
@@ -332,6 +333,7 @@ void pass(PPCContext& ctx, uint8_t* base, int index) {
     std::memcpy(base + frame.camera, frame.camera_bytes.data(), camera_size);
     stereo::Vec3 offset{};
     frame.hud_shift = 0;
+    frame.eye_index = uint32_t(index);
     if (frame.passes == stereo::eye_count) {
         offset = stereo::eye_offset(frame.right, separation(), index);
         frame.hud_shift = stereo::hud_shift(frame.projection_x, separation(), hud_depth(), index);
@@ -364,6 +366,8 @@ void keep_left_eye() {
 }
 
 float hud_shift() { return frame.active ? frame.hud_shift : 0.0f; }
+
+uint32_t current_eye() { return stereo_frame() ? frame.eye_index : 0u; }
 
 namespace {
 std::atomic<bool> ui_held{false};
