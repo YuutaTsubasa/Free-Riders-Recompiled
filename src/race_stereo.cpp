@@ -128,10 +128,21 @@ struct Frame {
 Frame frame;
 uint32_t stereo_frames = 0;
 
+// A computer racer: its controller ([+0xC94]) is the computer's (vtable
+// 821A1EF0) and +0x74 is 1, as SFR_RACE_TRACK reads it (game_patches.cpp).
+bool computer_racer(uint32_t racer) {
+    auto& memory = *active_memory;
+    const uint32_t controller = memory.load<uint32_t>(racer + 0xC94);
+    return controller && memory.readable(controller, 4) && memory.load<uint32_t>(controller) == 0x821A1EF0u &&
+           memory.load<uint32_t>(racer + 0x74) == 1;
+}
+
 // The racer the camera follows: of the race's racers ([83E52FDC]+36), the
-// one nearest the camera's target. 0 when there are fewer than two: the
-// World Grand Prix's story scenes and loading already raise the race flag
-// with one racer made (twelve once the race is set up).
+// player's (not a computer's) nearest the camera's target, so the first-person
+// camera does not jump to a computer racer passing close by; any racer when
+// none is the player's. 0 when there are fewer than two: the World Grand
+// Prix's story scenes and loading already raise the race flag with one racer
+// made (twelve once the race is set up).
 uint32_t followed_racer(stereo::Vec3 target) {
     auto& memory = *active_memory;
     const uint32_t team = memory.readable(racer_team, 4) ? memory.load<uint32_t>(racer_team) : 0;
@@ -140,11 +151,14 @@ uint32_t followed_racer(stereo::Vec3 target) {
     if (end <= begin + 4 || end - begin > 64 * 4) return 0;
     uint32_t best = 0;
     float best_distance = 0;
+    bool best_player = false;
     for (uint32_t slot = begin; slot < end; slot += 4) {
         const uint32_t racer = memory.load<uint32_t>(slot);
-        if (!racer || !memory.readable(racer, 0x200)) continue;
+        if (!racer || !memory.readable(racer, 0xC98)) continue;
+        const bool player = !computer_racer(racer);
         const float distance = stereo::length(load_vec(racer + 0x120) - target);
-        if (!best || distance < best_distance) best = racer, best_distance = distance;
+        if (!best || (player && !best_player) || (player == best_player && distance < best_distance))
+            best = racer, best_distance = distance, best_player = player;
     }
     return best;
 }
