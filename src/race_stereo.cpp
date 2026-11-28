@@ -333,7 +333,9 @@ bool shot_due() {
         return uint32_t(n > 0 ? n : 300);
     }();
     static uint32_t frames = 0;
-    if (!directory || !stereo_on()) return false;
+    // Race frames only (the readback stalls a frame; on the story scenes,
+    // timed by the clock, that made the test route miss its SKIP).
+    if (!directory || !stereo_on() || !active_memory || !followed_racer({})) return false;
     return ++frames % every == 0;
 }
 void shot(const char* what) {
