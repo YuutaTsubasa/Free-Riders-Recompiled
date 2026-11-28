@@ -2827,33 +2827,38 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
         if (!sightings.empty()) {
             // Pixel art of solid rectangles (control_prompts.h), cleared a
             // colour at a time in small batches like the line below.
-            const float view[4] = {viewport.x, viewport.y, viewport.width, viewport.height};
-            const int w = int(out_width), h = int(out_height);
-            std::vector<plume::RenderRect> batch;
-            for (const prompts::Sighting& sighting : sightings) {
-                const auto bindings = prompts::bindings(sighting.player);
-                const auto pieces = prompts::prompt_pieces(sighting.action, prompts::device(sighting.player, touch_shown),
-                                                           bindings ? *bindings : default_bindings(sighting.player));
-                if (pieces.empty()) continue;
-                const auto at = prompts::place_prompt(sighting, prompts::prompt_size(pieces), view, area, w, h);
-                auto rects = prompts::prompt_rectangles(pieces, at.x, at.y, at.unit);
-                std::stable_sort(rects.begin(), rects.end(),
-                                 [](const prompts::Rect& a, const prompts::Rect& b) { return a.colour < b.colour; });
-                for (size_t begin = 0; begin < rects.size();) {
-                    const uint32_t colour = rects[begin].colour;
-                    batch.clear();
-                    size_t end = begin;
-                    for (; end < rects.size() && rects[end].colour == colour; ++end) {
-                        const plume::RenderRect r{std::clamp(rects[end].left, 0, w), std::clamp(rects[end].top, 0, h),
-                                                  std::clamp(rects[end].right, 0, w), std::clamp(rects[end].bottom, 0, h)};
-                        if (r.left < r.right && r.top < r.bottom) batch.push_back(r);
+            // A stereo frame: each eye's half gets its own prompts, placed in it.
+            const int eyes = stereo ? 2 : 1;
+            for (int eye = 0; eye < eyes; ++eye) {
+                const float eye_width = viewport.width / float(eyes);
+                const float view[4] = {viewport.x + eye_width * float(eye), viewport.y, eye_width, viewport.height};
+                const int w = int(out_width), h = int(out_height);
+                std::vector<plume::RenderRect> batch;
+                for (const prompts::Sighting& sighting : sightings) {
+                    const auto bindings = prompts::bindings(sighting.player);
+                    const auto pieces = prompts::prompt_pieces(sighting.action, prompts::device(sighting.player, touch_shown),
+                                                               bindings ? *bindings : default_bindings(sighting.player));
+                    if (pieces.empty()) continue;
+                    const auto at = prompts::place_prompt(sighting, prompts::prompt_size(pieces), view, area, w, h);
+                    auto rects = prompts::prompt_rectangles(pieces, at.x, at.y, at.unit);
+                    std::stable_sort(rects.begin(), rects.end(),
+                                     [](const prompts::Rect& a, const prompts::Rect& b) { return a.colour < b.colour; });
+                    for (size_t begin = 0; begin < rects.size();) {
+                        const uint32_t colour = rects[begin].colour;
+                        batch.clear();
+                        size_t end = begin;
+                        for (; end < rects.size() && rects[end].colour == colour; ++end) {
+                            const plume::RenderRect r{std::clamp(rects[end].left, 0, w), std::clamp(rects[end].top, 0, h),
+                                                      std::clamp(rects[end].right, 0, w), std::clamp(rects[end].bottom, 0, h)};
+                            if (r.left < r.right && r.top < r.bottom) batch.push_back(r);
+                        }
+                        begin = end;
+                        const plume::RenderColor value(float((colour >> 16) & 0xFF) / 255.0f, float((colour >> 8) & 0xFF) / 255.0f,
+                                                       float(colour & 0xFF) / 255.0f, 1.0f);
+                        for (size_t offset = 0; offset < batch.size(); offset += 16)
+                            impl_->command_list->clearColor(0, value, batch.data() + offset,
+                                                            uint32_t((std::min)(size_t(16), batch.size() - offset)));
                     }
-                    begin = end;
-                    const plume::RenderColor value(float((colour >> 16) & 0xFF) / 255.0f, float((colour >> 8) & 0xFF) / 255.0f,
-                                                   float(colour & 0xFF) / 255.0f, 1.0f);
-                    for (size_t offset = 0; offset < batch.size(); offset += 16)
-                        impl_->command_list->clearColor(0, value, batch.data() + offset,
-                                                        uint32_t((std::min)(size_t(16), batch.size() - offset)));
                 }
             }
         }
