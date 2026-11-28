@@ -2844,6 +2844,9 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
                 const float eye_width = viewport.width / float(eyes);
                 const float view[4] = {viewport.x + eye_width * float(eye), viewport.y, eye_width, viewport.height};
                 const int w = int(out_width), h = int(out_height);
+                // In a stereo frame each prompt stays inside its eye's half.
+                const int left_edge = stereo ? std::clamp(int(view[0]), 0, w) : 0;
+                const int right_edge = stereo ? std::clamp(int(view[0] + view[2]), left_edge, w) : w;
                 std::vector<plume::RenderRect> batch;
                 for (const prompts::Sighting& sighting : sightings) {
                     if (stereo && sighting.eye != uint32_t(eye)) continue;
@@ -2851,7 +2854,9 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
                     const auto pieces = prompts::prompt_pieces(sighting.action, prompts::device(sighting.player, touch_shown),
                                                                bindings ? *bindings : default_bindings(sighting.player));
                     if (pieces.empty()) continue;
-                    const auto at = prompts::place_prompt(sighting, prompts::prompt_size(pieces), view, area, w, h);
+                    const auto size = prompts::prompt_size(pieces);
+                    auto at = prompts::place_prompt(sighting, size, view, area, w, h);
+                    if (stereo) at.x = std::clamp(at.x, left_edge, (std::max)(left_edge, right_edge - size.width * at.unit));
                     auto rects = prompts::prompt_rectangles(pieces, at.x, at.y, at.unit);
                     std::stable_sort(rects.begin(), rects.end(),
                                      [](const prompts::Rect& a, const prompts::Rect& b) { return a.colour < b.colour; });
@@ -2860,8 +2865,8 @@ void NativePresentation::present(uint32_t area_width, uint32_t area_height, floa
                         batch.clear();
                         size_t end = begin;
                         for (; end < rects.size() && rects[end].colour == colour; ++end) {
-                            const plume::RenderRect r{std::clamp(rects[end].left, 0, w), std::clamp(rects[end].top, 0, h),
-                                                      std::clamp(rects[end].right, 0, w), std::clamp(rects[end].bottom, 0, h)};
+                            const plume::RenderRect r{std::clamp(rects[end].left, left_edge, right_edge), std::clamp(rects[end].top, 0, h),
+                                                      std::clamp(rects[end].right, left_edge, right_edge), std::clamp(rects[end].bottom, 0, h)};
                             if (r.left < r.right && r.top < r.bottom) batch.push_back(r);
                         }
                         begin = end;
